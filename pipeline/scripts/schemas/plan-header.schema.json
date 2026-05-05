@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Plan Header Schema",
+  "description": "Validates the pipeline status header in docs/tasks/plan.md",
+  "type": "object",
+  "required": ["version", "steps"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Current pipeline version"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "done"],
+        "properties": {
+          "id": { "type": "string", "description": "Step ID from pipeline.json" },
+          "label": { "type": "string" },
+          "done": { "type": "boolean" },
+          "timestamp": { "type": "string", "description": "ISO timestamp when completed (iff done=true)" }
+        }
+      }
+    }
+  }
+}

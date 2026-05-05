@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QA Report Schema",
+  "description": "Schema for QA execution reports (docs/qa/report-v{N}.md)",
+  "type": "object",
+  "required": ["version", "result", "test_results"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Version number matching {N} in filename"
+    },
+    "result": {
+      "type": "string",
+      "enum": ["PASS", "FAIL"],
+      "description": "Overall result"
+    },
+    "rebound_target": {
+      "type": "string",
+      "enum": ["step-6-dev", "step-2a-architecture", "step-1-prd", null],
+      "description": "Required when result=FAIL. Tells runner which step to loop back to."
+    },
+    "rebound_reason": {
+      "type": "string",
+      "description": "Required when result=FAIL. Classification: implementation-bug, design-gap, prd-gap."
+    },
+    "test_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "passed"],
+        "properties": {
+          "id": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "detail": { "type": "string", "description": "Failure detail when passed=false" }
+        }
+      }
+    },
+    "critical_bugs": {
+      "type": "integer",
+      "description": "Count of critical/high severity bugs"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief summary of findings"
+    }
+  }
+}
