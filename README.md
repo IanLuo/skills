@@ -1,89 +1,117 @@
-# Pipeline
+# skills
 
-A deterministic 7-step development pipeline that separates LLM content generation from script-based validation. Scripts own gates, state, and routing — the LLM only generates.
+Personal skills repo + a deploy script that symlinks skills into the global
+skills folders of supported coding agents.
 
-## Install
+```
+skills/                 ← source of truth (one dir per skill)
+  <skill-name>/
+    SKILL.md            ← required frontmatter (name, description, ...)
+bin/
+  deploy.sh             ← symlinks every skill into each agent's global dir
+```
 
-**Remote (recommended):**
+## Layout
+
+Each skill is a directory under [`skills/`](skills/) containing at minimum a
+`SKILL.md` with YAML frontmatter:
+
+```yaml
+---
+name: my-skill
+description: What it does and WHEN to use it. This is what agents match on.
+compatibility: Works across Claude, OpenCode, Codex, and other loaders.
+metadata:
+  audience: personal
+  domain: general
+---
+```
+
+See [`skills/skill-template/`](skills/skill-template/SKILL.md) for a skeleton.
+
+## Deploy
+
+Symlink every skill into every detected agent's global skills folder:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/IanLuo/skills/main/install.sh | bash
+./bin/deploy.sh
 ```
 
-**Local clone:**
+Symlinking means edits you make in this repo are **instantly live** — no
+re-deploy needed to pick up changes. The repo just has to stay at this path (if you
+move it, re-run `./bin/deploy.sh` to repoint symlinks, or `--doctor` to check).
+
+### Options
 
 ```bash
-git clone https://github.com/IanLuo/skills.git
-cd skills && bash install.sh
+./bin/deploy.sh --list              # show skills + agents, deploy nothing
+./bin/deploy.sh --skill my-skill     # deploy only named skill(s)
+./bin/deploy.sh --agent claude       # deploy only to named agent(s)
+./bin/deploy.sh --doctor            # health-check deployed symlinks
+./bin/deploy.sh --dry-run            # show what would happen, change nothing
+./bin/deploy.sh --no-skip-system     # also overwrite system-managed skills
 ```
 
-The installer asks two questions:
+Multiple `--skill` / `--agent` flags are allowed.
 
-1. **Target project directory** — where to install (defaults to current)
-2. **Coding agent** — `opencode`, `claude`, `cursor`, or custom
+### Supported agents
 
-Skills are copied to the agent's skill directory (e.g. `.opencode/skills/`, `.claude/skills/`). Scripts go to `scripts/pipeline/`. All agent-specific paths are auto-patched.
+| Agent    | Global skills dir            |
+|----------|------------------------------|
+| claude   | `~/.claude/skills`           |
+| opencode | `~/.config/opencode/skills`  |
+| codex    | `~/.codex/skills`            |
+| agents   | `~/.agents/skills`           |
+| cursor   | `~/.cursor/skills`           |
+| gemini   | `~/.gemini/skills`           |
+| windsurf | `~/.codeium/skills`          |
+| zed      | `~/.config/zed/skills`       |
+| aider    | `~/.aider/skills`            |
+| cline    | `~/.cline/skills`            |
 
-## Usage
+On this machine `~/.claude/skills`, `~/.config/opencode/skills`, and
+`~/.agents/skills` are all symlinks to the **same** shared folder
+(`~/.agents/skills`), so deploying to any one of them covers all three.
+
+Agents whose top-level config dir isn't present are skipped automatically —
+use `--agent <name>` to force-deploy to one that isn't detected.
+
+### Safety
+
+- **Never overwrites real files/dirs.** Existing entries that aren't symlinks
+  (e.g. nix-managed skills like `grill`, `handoff`, `nix-config`) are skipped.
+  Pass `--no-skip-system` to overwrite them.
+- **Existing symlinks are refreshed** (repointed to this repo).
+- **Nothing is deleted** that wasn't created by this script.
+
+## Workflow
 
 ```bash
-# Run all 7 steps (stops only at approval gate or failure)
-/pipeline-orchestrator run
+# 1. create a skill (scaffolds valid frontmatter + optional resource dirs)
+bash skills/skill-man/scripts/new-skill.sh my-skill --resources scripts,references
+$EDITOR skills/my-skill/SKILL.md          # fill in the description (the trigger) + body
 
-# Run one step at a time
-/pipeline-orchestrator step
+# 2. validate it against the spec
+python3 skills/skill-man/scripts/validate.py skills/my-skill
 
-# Reset pipeline state for a fresh run
-bash scripts/pipeline/reset.sh
+# 3. deploy it
+./bin/deploy.sh --skill my-skill
+
+# 4. iterate — edits in the repo are live immediately (symlinked)
+
+# 5. commit
+git add skills/my-skill && git commit -m "feat: my-skill"
 ```
 
-## Architecture
+Restart the target agent after the first deploy so it picks up the new skill.
 
-```
-Pipeline (7 steps)
-  Step 1:  ANALYST         → docs/prd/v{N}.md          [gate: user_approval]
-  Step 2a: ARCHITECT        → docs/architecture.md       [gate: boundary_check]
-  Step 2b: DESIGNER         → docs/ui-ux/                [gate: consistency_check]
-  Step 2v: STEWARD          → review gate                [gates: schema, boundary, consistency]
-  Step 3:  PLANNER          → docs/tasks/plan.md         [gate: self_consistency]
-  Step 4:  STEWARD          → cross-review               [gates: persona_cascade, coherence]
-  Step 5:  QA ARCHITECT     → docs/qa/test-plan.md       [gate: traceability]
-  Step 6:  DEVELOPER        → code                       [dev-workflow]
-  Step 7:  QA EXECUTOR      → docs/qa/report.md          [gate: qa_pass]
-```
+## skill-man — the authoring skill
 
-### Key principles
-
-- **Scripts validate (exit 0/1), LLM generates** — gates are grep/count checks, never LLM judgment
-- **Fresh sub-agent per step** — no conversation leaks between steps
-- **All inputs inlined** — sub-agents receive file contents in their prompt, never read files
-- **`pipeline.json` defines routing** — the orchestrator never decides where to go next
-- **`plan.md` header tracks state** — `[ ]` → `[x]` checkboxes define what runs
-
-### Output files
-
-| File | Writer | When |
-|---|---|---|
-| `docs/prd/v{N}.md` | Step 1 | Every version |
-| `docs/architecture.md` | Step 2a | Delta per version |
-| `docs/detailed-components.md` | Step 2a | Delta per version |
-| `docs/ui-ux/*` | Step 2b | Delta per version |
-| `docs/tasks/plan.md` | Step 3 | Cumulative, per version |
-| `docs/qa/test-plan-v{N}.md` | Step 5 | Every version |
-| `docs/qa/report-v{N}.md` | Step 7 | Every run |
-| `docs/pipeline/report-v{N}.md` | Orchestrator | Every run |
-
-### Scripts
-
-| Script | Purpose |
-|---|---|
-| `run.sh` | Main loop entry — pre-flight → dispatch → post-flight → gates → advance |
-| `check-inputs.sh` | Verify all declared input files exist before step runs |
-| `check-outputs.sh` | Verify all declared output files exist after step runs |
-| `gate-boundary.sh` | Architecture boundary rules (5 vital slots, State <4KB, credentials isolation) |
-| `gate-traceability.sh` | Every test case maps to a plan task and PRD criterion |
-| `gate-schema.sh` | Output files match declared schema requirements |
-| `advance.sh` | Mark step `[x]` in plan.md header |
-| `reset.sh` | Reset all steps to `[ ]` for a fresh run |
-| `report.sh` | Append event entries to the execution report |
-| `init.sh` | Bootstrap docs/ directory and plan.md header |
+[`skills/skill-man`](skills/skill-man/SKILL.md) is a meta-skill that teaches how to
+create, validate, and deploy skills, with reference docs for the
+[spec](skills/skill-man/references/skill-spec.md),
+[best practices](skills/skill-man/references/best-practices.md), and a
+[popular-skills catalog](skills/skill-man/references/popular-skills.md). It also
+carries the scaffolding scripts (`new-skill.sh`, `validate.py`) and a
+`sync-check.sh` that reports whether the repo's spec is behind upstream
+`anthropics/skills`. Tests live in [`tests/`](tests) — run `bash tests/run.sh`.

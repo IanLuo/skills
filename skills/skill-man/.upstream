@@ -1,0 +1,4 @@
+# The anthropics/skills commit SHA that skill-man's spec was last synced from.
+# Compare against current upstream HEAD with: bash scripts/sync-check.sh
+# When syncing: update this SHA + SPEC_PINNED_REF in validate.py together.
+57546260929473d4e0d1c1bb75297be2fdfa1949
