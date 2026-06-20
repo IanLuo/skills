@@ -1,4 +1,4 @@
-<!-- synced: cee7b68 -->
+<!-- synced: b13a50b -->
 
 # CURSOR — skills repo (2026-06-20)
 
