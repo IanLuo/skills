@@ -12,6 +12,8 @@
 #   ./deploy.sh --no-skip-system # also deploy into a system/managed dir
 #                                #   (dangerous: overwrites nix-managed skills)
 #   ./deploy.sh --dry-run        # show what would happen, change nothing
+#   ./deploy.sh --prune          # remove deployed symlinks whose skill was deleted from the repo
+#                                #   (only touches symlinks pointing into this repo; never nix/third-party)
 #
 # Skills live in ./skills/<skill-name>/SKILL.md (one skill per directory).
 # Agents are defined in the AGENTS table below. Each is a (name, global dir).
@@ -61,6 +63,7 @@ WANT_SKILLS=()
 WANT_AGENTS=()
 LIST_ONLY=0
 DOCTOR=0
+PRUNE=0
 
 # ──────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -107,6 +110,7 @@ while [ $# -gt 0 ]; do
     --no-skip-system) SKIP_SYSTEM=0; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     --doctor)         DOCTOR=1; shift ;;
+    --prune)          PRUNE=1; shift ;;
     -h|--help)        usage ;;
     *) err "Unknown option: $1"; usage ;;
   esac
@@ -170,6 +174,53 @@ if [ "$DOCTOR" -eq 1 ]; then
     exit 1
   fi
   log "✓ No dangling symlinks. (~ = advisory; ✓ = healthy)"
+  exit 0
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# Prune mode: remove deployed symlinks whose skill was deleted from the repo.
+# Safety: only removes symlinks whose target is inside this repo's skills/.
+# Never touches real files/dirs, out-of-repo symlinks (nix/third-party), or
+# dangling links whose target can't be confirmed as a former repo skill.
+# ──────────────────────────────────────────────────────────────────────────
+if [ "$PRUNE" -eq 1 ]; then
+  [ "$DRY_RUN" -eq 1 ] && log "DRY RUN — no changes will be made"
+  log "Prune: removing symlinks to skills no longer in $SKILLS_SRC"
+  removed=0
+  for entry in "${AGENTS[@]}"; do
+    name="${entry%%|*}"; gdir="${entry#*|}"
+    [ -d "$gdir" ] || continue
+    for link in "$gdir"/*; do
+      [ -L "$link" ] || continue   # only symlinks; skip real files/dirs
+      target="$(readlink "$link")"
+      base="$(basename "$link")"
+      # Only touch symlinks that point into this repo's skills source.
+      # Resolve to an absolute path for the comparison.
+      case "$target" in
+        "$SKILLS_SRC"/*) src_skill_dir="$target" ;;
+        *) continue ;;  # out-of-repo (nix/third-party) — leave alone
+      esac
+      # If the target still exists as a dir, the skill is still in the repo — keep it.
+      if [ -d "$src_skill_dir" ]; then
+        continue
+      fi
+      # Target is gone (or dangling) AND pointed into our skills source → prune.
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "  [${name}] ${base}: would remove (skill no longer in repo)"
+      else
+        rm "$link"
+        log "  [${name}] ${base}: removed (skill no longer in repo)"
+      fi
+      removed=$((removed + 1))
+    done
+  done
+  echo ""
+  if [ "$removed" -eq 0 ]; then
+    log "✓ Nothing to prune. No deployed symlinks point to deleted skills."
+  else
+    [ "$DRY_RUN" -eq 1 ] && log "Would remove $removed symlink(s). Re-run without --dry-run to apply." \
+                          || log "Removed $removed symlink(s)."
+  fi
   exit 0
 fi
 

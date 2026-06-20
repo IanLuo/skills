@@ -1,33 +1,47 @@
 # skills
 
-Personal skills repo + a deploy script that symlinks skills into the global
-skills folders of supported coding agents.
+Personal skills repo — a deploy script that symlinks skills into the global
+skills folders of 10 coding agents, plus the skills themselves.
 
 ```
 skills/                 ← source of truth (one dir per skill)
-  <skill-name>/
-    SKILL.md            ← required frontmatter (name, description, ...)
+  init-context/         ← bootstraps AGENTS.md + CURSOR.md for a project
+  skill-man/            ← meta-skill: authoring, validation, deploy, upstream-sync
+  skill-template/       ← starter skeleton
 bin/
   deploy.sh             ← symlinks every skill into each agent's global dir
+tests/
+  fixtures/             ← validation test fixtures (10 cases)
+  run.sh                ← test suite + upstream-conformance cross-check
+AGENTS.md               ← this repo's own stable agent context
+CURSOR.md               ← this repo's own volatile resume cursor (dogfood)
 ```
+
+## Skills
+
+| Skill | What it does |
+|---|---|
+| **[skill-man](skills/skill-man/SKILL.md)** | Create, validate, and deploy skills. Carries the spec, best-practices reference, and popular-skills catalog. |
+| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (stable: purpose, how-to-run, conventions, deploy, gotchas) and `CURSOR.md` (volatile: current position, next action, blockers, open issues, health, verification) with a state-tracking protocol so every future session can resume from the cursor. |
+| **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
 
 ## Layout
 
-Each skill is a directory under [`skills/`](skills/) containing at minimum a
-`SKILL.md` with YAML frontmatter:
+Each skill is a directory under `skills/` containing at minimum a `SKILL.md`
+with YAML frontmatter:
 
 ```yaml
 ---
 name: my-skill
 description: What it does and WHEN to use it. This is what agents match on.
-compatibility: Works across Claude, OpenCode, Codex, and other loaders.
 metadata:
   audience: personal
   domain: general
 ---
 ```
 
-See [`skills/skill-template/`](skills/skill-template/SKILL.md) for a skeleton.
+Optional subdirs: `scripts/`, `references/`, `assets/`. No README, CHANGELOG, or
+install docs — skills are for agents, not humans.
 
 ## Deploy
 
@@ -37,9 +51,8 @@ Symlink every skill into every detected agent's global skills folder:
 ./bin/deploy.sh
 ```
 
-Symlinking means edits you make in this repo are **instantly live** — no
-re-deploy needed to pick up changes. The repo just has to stay at this path (if you
-move it, re-run `./bin/deploy.sh` to repoint symlinks, or `--doctor` to check).
+Symlinking means edits in this repo are **instantly live** — no re-deploy needed.
+If you move the repo, re-run `./bin/deploy.sh` (or `--doctor` to check symlinks).
 
 ### Options
 
@@ -48,11 +61,24 @@ move it, re-run `./bin/deploy.sh` to repoint symlinks, or `--doctor` to check).
 ./bin/deploy.sh --skill my-skill     # deploy only named skill(s)
 ./bin/deploy.sh --agent claude       # deploy only to named agent(s)
 ./bin/deploy.sh --doctor            # health-check deployed symlinks
+./bin/deploy.sh --prune             # remove symlinks to skills deleted from the repo
 ./bin/deploy.sh --dry-run            # show what would happen, change nothing
 ./bin/deploy.sh --no-skip-system     # also overwrite system-managed skills
 ```
 
 Multiple `--skill` / `--agent` flags are allowed.
+
+### Keeping deployed skills in sync
+
+Because deploy uses **symlinks** (not copies), changes propagate automatically:
+
+- **Edit a skill** → live immediately in every agent. No re-deploy; just edit and commit.
+- **Add a skill** → run `./bin/deploy.sh --skill <name>` once to create the symlink, then it's live forever.
+- **Delete a skill** → `rm -rf skills/<name>`, then `./bin/deploy.sh --prune` to remove the now-dangling symlinks.
+- **Move the repo** → re-run `./bin/deploy.sh` to repoint all symlinks (`--doctor` detects broken ones).
+
+`--prune` only removes symlinks that point *into this repo* — it never touches real
+files (nix-managed skills) or third-party symlinks.
 
 ### Supported agents
 
@@ -105,13 +131,11 @@ git add skills/my-skill && git commit -m "feat: my-skill"
 
 Restart the target agent after the first deploy so it picks up the new skill.
 
-## skill-man — the authoring skill
+## Repo context
 
-[`skills/skill-man`](skills/skill-man/SKILL.md) is a meta-skill that teaches how to
-create, validate, and deploy skills, with reference docs for the
-[spec](skills/skill-man/references/skill-spec.md),
-[best practices](skills/skill-man/references/best-practices.md), and a
-[popular-skills catalog](skills/skill-man/references/popular-skills.md). It also
-carries the scaffolding scripts (`new-skill.sh`, `validate.py`) and a
-`sync-check.sh` that reports whether the repo's spec is behind upstream
-`anthropics/skills`. Tests live in [`tests/`](tests) — run `bash tests/run.sh`.
+This repo dogfoods its own `init-context` skill. [`AGENTS.md`](AGENTS.md) holds
+the stable context (purpose, how-to-run, conventions, deploy topology, gotchas)
+and the state-tracking protocol. [`CURSOR.md`](CURSOR.md) holds the volatile
+resume cursor (current position, next action, blockers, open issues, health,
+verification) — read it before every session. The protocol is: git IS history;
+the cursor carries only forward-looking state git can't express.
