@@ -1,89 +1,141 @@
-# Pipeline
+# skills
 
-A deterministic 7-step development pipeline that separates LLM content generation from script-based validation. Scripts own gates, state, and routing — the LLM only generates.
-
-## Install
-
-**Remote (recommended):**
-
-```bash
-curl -sSL https://raw.githubusercontent.com/IanLuo/skills/main/install.sh | bash
-```
-
-**Local clone:**
-
-```bash
-git clone https://github.com/IanLuo/skills.git
-cd skills && bash install.sh
-```
-
-The installer asks two questions:
-
-1. **Target project directory** — where to install (defaults to current)
-2. **Coding agent** — `opencode`, `claude`, `cursor`, or custom
-
-Skills are copied to the agent's skill directory (e.g. `.opencode/skills/`, `.claude/skills/`). Scripts go to `scripts/pipeline/`. All agent-specific paths are auto-patched.
-
-## Usage
-
-```bash
-# Run all 7 steps (stops only at approval gate or failure)
-/pipeline-orchestrator run
-
-# Run one step at a time
-/pipeline-orchestrator step
-
-# Reset pipeline state for a fresh run
-bash scripts/pipeline/reset.sh
-```
-
-## Architecture
+Personal skills repo — a deploy script that symlinks skills into the global
+skills folders of 10 coding agents, plus the skills themselves.
 
 ```
-Pipeline (7 steps)
-  Step 1:  ANALYST         → docs/prd/v{N}.md          [gate: user_approval]
-  Step 2a: ARCHITECT        → docs/architecture.md       [gate: boundary_check]
-  Step 2b: DESIGNER         → docs/ui-ux/                [gate: consistency_check]
-  Step 2v: STEWARD          → review gate                [gates: schema, boundary, consistency]
-  Step 3:  PLANNER          → docs/tasks/plan.md         [gate: self_consistency]
-  Step 4:  STEWARD          → cross-review               [gates: persona_cascade, coherence]
-  Step 5:  QA ARCHITECT     → docs/qa/test-plan.md       [gate: traceability]
-  Step 6:  DEVELOPER        → code                       [dev-workflow]
-  Step 7:  QA EXECUTOR      → docs/qa/report.md          [gate: qa_pass]
+skills/                 ← source of truth (one dir per skill)
+  init-context/         ← bootstraps AGENTS.md + CURSOR.md for a project
+  skill-man/            ← meta-skill: authoring, validation, deploy, upstream-sync
+  skill-template/       ← starter skeleton
+bin/
+  deploy.sh             ← symlinks every skill into each agent's global dir
+tests/
+  fixtures/             ← validation test fixtures (10 cases)
+  run.sh                ← test suite + upstream-conformance cross-check
+AGENTS.md               ← this repo's own stable agent context
+CURSOR.md               ← this repo's own volatile resume cursor (dogfood)
 ```
 
-### Key principles
+## Skills
 
-- **Scripts validate (exit 0/1), LLM generates** — gates are grep/count checks, never LLM judgment
-- **Fresh sub-agent per step** — no conversation leaks between steps
-- **All inputs inlined** — sub-agents receive file contents in their prompt, never read files
-- **`pipeline.json` defines routing** — the orchestrator never decides where to go next
-- **`plan.md` header tracks state** — `[ ]` → `[x]` checkboxes define what runs
-
-### Output files
-
-| File | Writer | When |
-|---|---|---|
-| `docs/prd/v{N}.md` | Step 1 | Every version |
-| `docs/architecture.md` | Step 2a | Delta per version |
-| `docs/detailed-components.md` | Step 2a | Delta per version |
-| `docs/ui-ux/*` | Step 2b | Delta per version |
-| `docs/tasks/plan.md` | Step 3 | Cumulative, per version |
-| `docs/qa/test-plan-v{N}.md` | Step 5 | Every version |
-| `docs/qa/report-v{N}.md` | Step 7 | Every run |
-| `docs/pipeline/report-v{N}.md` | Orchestrator | Every run |
-
-### Scripts
-
-| Script | Purpose |
+| Skill | What it does |
 |---|---|
-| `run.sh` | Main loop entry — pre-flight → dispatch → post-flight → gates → advance |
-| `check-inputs.sh` | Verify all declared input files exist before step runs |
-| `check-outputs.sh` | Verify all declared output files exist after step runs |
-| `gate-boundary.sh` | Architecture boundary rules (5 vital slots, State <4KB, credentials isolation) |
-| `gate-traceability.sh` | Every test case maps to a plan task and PRD criterion |
-| `gate-schema.sh` | Output files match declared schema requirements |
-| `advance.sh` | Mark step `[x]` in plan.md header |
-| `reset.sh` | Reset all steps to `[ ]` for a fresh run |
-| `report.sh` | Append event entries to the execution report |
-| `init.sh` | Bootstrap docs/ directory and plan.md header |
+| **[skill-man](skills/skill-man/SKILL.md)** | Create, validate, and deploy skills. Carries the spec, best-practices reference, and popular-skills catalog. |
+| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (stable: purpose, how-to-run, conventions, deploy, gotchas) and `CURSOR.md` (volatile: current position, next action, blockers, open issues, health, verification) with a state-tracking protocol so every future session can resume from the cursor. |
+| **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
+
+## Layout
+
+Each skill is a directory under `skills/` containing at minimum a `SKILL.md`
+with YAML frontmatter:
+
+```yaml
+---
+name: my-skill
+description: What it does and WHEN to use it. This is what agents match on.
+metadata:
+  audience: personal
+  domain: general
+---
+```
+
+Optional subdirs: `scripts/`, `references/`, `assets/`. No README, CHANGELOG, or
+install docs — skills are for agents, not humans.
+
+## Deploy
+
+Symlink every skill into every detected agent's global skills folder:
+
+```bash
+./bin/deploy.sh
+```
+
+Symlinking means edits in this repo are **instantly live** — no re-deploy needed.
+If you move the repo, re-run `./bin/deploy.sh` (or `--doctor` to check symlinks).
+
+### Options
+
+```bash
+./bin/deploy.sh --list              # show skills + agents, deploy nothing
+./bin/deploy.sh --skill my-skill     # deploy only named skill(s)
+./bin/deploy.sh --agent claude       # deploy only to named agent(s)
+./bin/deploy.sh --doctor            # health-check deployed symlinks
+./bin/deploy.sh --prune             # remove symlinks to skills deleted from the repo
+./bin/deploy.sh --dry-run            # show what would happen, change nothing
+./bin/deploy.sh --no-skip-system     # also overwrite system-managed skills
+```
+
+Multiple `--skill` / `--agent` flags are allowed.
+
+### Keeping deployed skills in sync
+
+Because deploy uses **symlinks** (not copies), changes propagate automatically:
+
+- **Edit a skill** → live immediately in every agent. No re-deploy; just edit and commit.
+- **Add a skill** → run `./bin/deploy.sh --skill <name>` once to create the symlink, then it's live forever.
+- **Delete a skill** → `rm -rf skills/<name>`, then `./bin/deploy.sh --prune` to remove the now-dangling symlinks.
+- **Move the repo** → re-run `./bin/deploy.sh` to repoint all symlinks (`--doctor` detects broken ones).
+
+`--prune` only removes symlinks that point *into this repo* — it never touches real
+files (nix-managed skills) or third-party symlinks.
+
+### Supported agents
+
+| Agent    | Global skills dir            |
+|----------|------------------------------|
+| claude   | `~/.claude/skills`           |
+| opencode | `~/.config/opencode/skills`  |
+| codex    | `~/.codex/skills`            |
+| agents   | `~/.agents/skills`           |
+| cursor   | `~/.cursor/skills`           |
+| gemini   | `~/.gemini/skills`           |
+| windsurf | `~/.codeium/skills`          |
+| zed      | `~/.config/zed/skills`       |
+| aider    | `~/.aider/skills`            |
+| cline    | `~/.cline/skills`            |
+
+On this machine `~/.claude/skills`, `~/.config/opencode/skills`, and
+`~/.agents/skills` are all symlinks to the **same** shared folder
+(`~/.agents/skills`), so deploying to any one of them covers all three.
+
+Agents whose top-level config dir isn't present are skipped automatically —
+use `--agent <name>` to force-deploy to one that isn't detected.
+
+### Safety
+
+- **Never overwrites real files/dirs.** Existing entries that aren't symlinks
+  (e.g. nix-managed skills like `grill`, `handoff`, `nix-config`) are skipped.
+  Pass `--no-skip-system` to overwrite them.
+- **Existing symlinks are refreshed** (repointed to this repo).
+- **Nothing is deleted** that wasn't created by this script.
+
+## Workflow
+
+```bash
+# 1. create a skill (scaffolds valid frontmatter + optional resource dirs)
+bash skills/skill-man/scripts/new-skill.sh my-skill --resources scripts,references
+$EDITOR skills/my-skill/SKILL.md          # fill in the description (the trigger) + body
+
+# 2. validate it against the spec
+python3 skills/skill-man/scripts/validate.py skills/my-skill
+
+# 3. deploy it
+./bin/deploy.sh --skill my-skill
+
+# 4. iterate — edits in the repo are live immediately (symlinked)
+
+# 5. commit
+git add skills/my-skill && git commit -m "feat: my-skill"
+```
+
+Restart the target agent after the first deploy so it picks up the new skill.
+
+## Repo context
+
+This repo dogfoods its own `init-context` skill. [`AGENTS.md`](AGENTS.md) holds
+the stable context (purpose, how-to-run, conventions, deploy topology, gotchas)
+and the state-tracking protocol. [`CURSOR.md`](CURSOR.md) holds the volatile
+resume cursor (current position, next action, blockers, open issues, health,
+verification) — read it before every session. The protocol is: git IS history;
+the cursor carries only forward-looking state git can't express.

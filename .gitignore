@@ -1,3 +1,11 @@
-.opencode/
-scripts/pipeline/
-docs/
+# OS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Notes / scratch
+scratch/
+*.log

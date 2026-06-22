@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate all skills
+        run: python3 skills/skill-man/scripts/validate.py
+
+      - name: Run test suite (includes upstream-conformance cross-check)
+        run: bash tests/run.sh
+
+      - name: Check skill-man is in sync with upstream spec
+        run: bash skills/skill-man/scripts/sync-check.sh
