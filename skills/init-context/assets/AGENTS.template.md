@@ -1,8 +1,8 @@
 # AGENTS.md — <project-name>
 
-## What this project is
+## Intent
 
-<one sentence: what the project IS — its purpose, what it produces, who it's for>
+<≤3 lines: the product goal the agent must not satisfice past. What problem it solves, for whom, the one non-negotiable outcome. This is the irreversible-blindspot content — the code doesn't encode it; a fresh agent without it picks the wrong metric. One sentence is fine.>
 
 ## How to run / build / test
 
@@ -20,23 +20,39 @@
 <lint command>
 ```
 
-## Conventions
+Each command verified before writing — if impractical to run, note why explicitly.
 
-- <code style, naming conventions, architectural rules>
-- <workflow: how PRs/reviews/releases work>
-- <testing discipline>
+## Hot invariants
 
-## Deploy / infra
+- <never X, because Y>
+- <always Z, because W>
+- <do not touch A unless B>
 
-- <how it deploys, where it runs, what envs exist>
-- <secrets management, config locations>
-- <monitoring / logs>
+Only the frozen "because" rules a fresh agent would silently break — a handful, not a catalog. Longer conventions live in `CONVENTIONS.md` (see Deeper docs).
 
-## Gotchas / don't touch
+## Architecture elevator
 
-- <things that break in non-obvious ways>
-- <files/modules that should never be hand-edited>
-- <constraints that aren't obvious from code>
+<5 lines: the load-bearing structure — layers, ownership, boundaries. A one-level repo tree is enough. Deep rationale (why these choices) lives in ARCHITECTURE.md or docs/adr/.>
+
+```
+src/          — <one-line purpose>
+tests/        — <one-line purpose>
+docs/         — <one-line purpose>
+```
+
+## Deeper docs
+
+<when X, read Y table — one row per doc that exists on disk this run. Omit rows for docs that don't exist yet. Re-derive this section on each init-context run so it stays current.>
+
+| When you need… | Read… |
+|---|---|
+| product intent, scope, acceptance criteria | `docs/prd.md` |
+| system shape, component boundaries, ownership | `ARCHITECTURE.md` |
+| why a choice was made | `docs/adr/NNNN-title.md` |
+| UI / visual guidelines | `design-system.md` |
+| coding patterns not inlined above | `CONVENTIONS.md` |
+| how to release / deploy | `docs/release.md` |
+| security constraints and threat model | `docs/security.md` |
 
 ---
 

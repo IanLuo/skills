@@ -2,9 +2,10 @@
 name: init-context
 description: >
   One-shot bootstrap of agent working context for a project.
-  Analyzes the codebase and writes AGENTS.md (stable: purpose, how-to-run, conventions, deploy, gotchas)
-  and CURSOR.md (volatile: current position, next action, blockers, open issues, health, verification)
-  with a self-contained state-tracking protocol so every future session can resume.
+  Analyzes the codebase and writes AGENTS.md (a compact index: Intent, run/build/test,
+  hot invariants, architecture elevator, deeper-docs pointer table, state-tracking
+  protocol) and CURSOR.md (volatile: current position, next action, blockers, open
+  issues, health, verification) so every future session can resume.
   Use when starting work on a new or unfamiliar codebase, onboarding to a repo,
   running /init, bootstrapping project context,
   or when a project lacks AGENTS.md and a state-tracking cursor.
@@ -20,11 +21,19 @@ metadata:
 
 # init-context
 
-One-shot bootstrap. Writes `AGENTS.md` (stable) + `CURSOR.md` (volatile) at the
-repo root, with a self-contained state-tracking protocol so every future session
-can resume. Read the full protocol at
+One-shot bootstrap. Writes `AGENTS.md` (compact stable index) + `CURSOR.md` (volatile
+state) at the repo root, with a self-contained state-tracking protocol so every future
+session can resume. Read the full protocol at
 **[references/protocol.md](references/protocol.md)** — the AGENTS.md section is a
 summary; this is the canonical rulebook.
+
+AGENTS.md is an **index, not a manifest.** It embeds only what a fresh agent can't
+recover from code and would get wrong without: the project intent, verified commands,
+a handful of frozen invariants, and a short architecture elevator. Everything else
+(PRD, full architecture rationale, design guidelines, pattern catalog, deploy detail)
+is pointed to from a "Deeper docs" jump-table — one row per doc that exists on disk
+this run. No docs yet → no rows. Runs are reconciling: re-derive the table from disk
+state each time; add rows for new docs, drop rows for those that disappeared.
 
 ## Workflow
 
@@ -40,30 +49,43 @@ Read these in order, building the mental model:
 
 Goal: understand *purpose*, *stack*, *how to run/build/test*, *conventions*, *deploy model*, *gotchas*.
 
-### 2. Write AGENTS.md from template
+### 2. Write AGENTS.md — tier-routing, not section-filling
 
-Copy **[assets/AGENTS.template.md](assets/AGENTS.template.md)** → `AGENTS.md` at
-repo root. Fill every section from survey findings:
+Copy **[assets/AGENTS.template.md](assets/AGENTS.template.md)** to `AGENTS.md` at
+repo root. Then fill each section, routing every survey finding through this gate:
 
-- **What this project is** — one sentence. If a README exists and says it well, quote it.
+**Embed in AGENTS.md** iff all three hold:
+(a) not recoverable by one command/read,
+(b) a fresh agent would get WRONG (not just slow) without it, AND
+(c) it's a frozen "because" rule or a verified command (tiny token cost).
+
+**Point to from the Deeper-docs table** iff: a doc (PRD, ARCHITECTURE.md, CONVENTIONS.md, design-system.md, docs/adr/NNNN-*, etc.) exists on disk that holds it. Source the table from what's actually on disk this run. Omit rows for docs that don't exist yet. Do not create stub files.
+
+**Drop** everything else. The model is smart; let it derive what it can.
+
+Section-by-section guidance:
+
+- **Intent** — ≤3 lines. The product goal the agent must not satisfice past.
+  This is the one thing code doesn't encode and a fresh agent can't re-derive.
 - **How to run / build / test** — exact commands. **Verify each command works
   *before* writing it** — run it, confirm it succeeds, then write the verified
-  form. Verify-then-write is sequential per command, not a deferred batch at the
-  end. If a command is impractical to run (slow build, needs secrets, network),
+  form. If a command is impractical to run (slow build, needs secrets, network),
   say so explicitly rather than write it unverified — an unverified command is
-  worse than no command. Example: `npm test`, `cargo build`, `pytest`.
-- **Conventions** — code style, naming, architectural rules, workflow. The non-obvious
-  things a fresh agent gets wrong.
-- **Deploy / infra** — how it ships, where it runs, secrets/config locations.
-- **Gotchas / don't touch** — files that break in non-obvious ways, constraints not
-  visible in code.
-
-Keep it terse. Stable context is read every session — ruthlessly cut platitudes.
-
-The template already carries the **State-tracking protocol** section (inclusion gate,
-cursor fields, discipline). Do not modify it — it's the contract. If the project
-already has an AGENTS.md, merge into it: preserve existing content the template
-doesn't cover, add missing sections, and ensure the protocol section is present.
+  worse than no command.
+- **Hot invariants** — only the frozen "because" rules a fresh agent would
+  silently break. If it's a style preference the model already knows, skip it.
+  If it's "never touch this boundary because the serializer depends on its shape,"
+  embed it. A handful, never a catalog.
+- **Architecture elevator** — 5 lines + a one-level repo tree with one-line
+  purpose per dir. Deep rationale goes in `ARCHITECTURE.md` or `docs/adr/` — if
+  those exist on disk, add rows to the Deeper-docs table.
+- **Deeper docs** — scan disk for: `docs/prd.md`, `ARCHITECTURE.md`,
+  `CONVENTIONS.md`, `design-system.md`, `docs/adr/*.md`, `docs/release.md`,
+  `docs/security.md`. For each that exists, add a row to the table: a "when you
+  need…" cue and the path. If zero docs exist, the table has zero rows.
+- **State-tracking protocol** — the template carries this block verbatim. Do not
+  modify it — it's the contract. The section headers and protocol block must be
+  byte-identical across projects so agents can rely on them.
 
 ### 3. Write CURSOR.md from template
 
@@ -89,6 +111,8 @@ repo root. Fill initial state:
 - Every file path listed in CURSOR.md exists on disk.
 - `synced: <sha>` matches current HEAD.
 - `git status` shows the two new files.
+- Run `../task-core/scripts/check` (if task-core is deployed) — ensure the drift
+  gate passes on the fresh cursor.
 
 ### 5. Hand off
 
@@ -97,14 +121,28 @@ every future session reads CURSOR.md first, reconciles `synced:` vs HEAD, works,
 rewrites CURSOR.md in-place at session end against the protocol rules. The protocol
 lives in AGENTS.md for reference.
 
+## Re-running
+
+init-context is safe to run again as the project matures. On a re-run:
+
+- **Preserve** the user's manual prose and the State-tracking protocol block.
+- **Re-derive** the Intent, Hot invariants, and Architecture elevator from a fresh
+  survey — update them if the project direction or invariants changed.
+- **Re-derive** the Deeper-docs table from current disk state: add rows for new
+  docs, drop rows for docs that no longer exist, refresh the "when you need…"
+  cues. Never assume a fixed doc set.
+- **Don't touch** CURSOR.md unless the user asks — it's volatile; overwriting it
+  would lose live task state.
+
 ## Rules
 
 - Never overwrite an existing AGENTS.md — merge into it. For CURSOR.md, overwrite
   only if it's a fresh bootstrap (no existing cursor); if one exists, ask.
 - Templates in `assets/` are the single source of truth for file structure — copy
-  them verbatim. The section headers and protocol block must be byte-identical
-  across projects so agents can rely on them.
+  the State-tracking protocol block verbatim. The section headers and protocol
+  block must be byte-identical across projects so agents can rely on them.
 - Build + test commands in AGENTS.md must be *verified* before writing — run them
   and confirm they succeed. An unverified command is worse than no command.
 - The model is already smart. Add only what it doesn't already know. Prefer
   concrete examples over prose.
+- AGENTS.md is an index, not a manifest. Route everything through the embed/point/drop gate.
