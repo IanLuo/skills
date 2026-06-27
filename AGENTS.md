@@ -1,12 +1,10 @@
 # AGENTS.md — skills repo
 
-## What this project is
+## Intent
 
-A personal-skills manager. Skills are one-folder-per-skill in `skills/`; `bin/deploy.sh`
-symlinks them into supported coding agents' global skills folders (10 agents). Edits are
-live immediately (symlinked). Three skills: `skill-man` (the meta-skill — authoring,
-validation, deploy, upstream-sync), `skill-template` (a starter skeleton), and
-`init-context` (bootstraps AGENTS.md + CURSOR.md for a project).
+Personal-skills manager — author, validate, and deploy AI coding-agent skills across
+10 agent harnesses from a single repo. Deployability and spec-conformance are
+non-negotiable.
 
 ## How to run / build / test
 
@@ -19,9 +17,9 @@ bash tests/run.sh
 
 # Deploy
 ./bin/deploy.sh
-./bin/deploy.sh --skill my-skill   # one skill
-./bin/deploy.sh --dry-run          # preview
-./bin/deploy.sh --doctor           # health-check symlinks
+./bin/deploy.sh --skill <name>   # one skill
+./bin/deploy.sh --dry-run        # preview
+./bin/deploy.sh --doctor         # health-check symlinks
 
 # Check upstream sync (are we behind anthropics/skills?)
 bash skills/skill-man/scripts/sync-check.sh
@@ -30,31 +28,34 @@ bash skills/skill-man/scripts/sync-check.sh
 bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,references,assets]
 ```
 
-## Conventions
+## Hot invariants
 
-- Skill name = lowercase-hyphen-case (`^[a-z0-9-]+$`, no leading/trailing/double `-`, ≤64 chars).
-- One skill per folder. Required `SKILL.md`; optional `scripts/`, `references/`, `assets/`.
-  No README, CHANGELOG, or install docs — the skill is for an agent.
-- `description` is the primary trigger. Enumerate literal triggers + a negative trigger.
-- Progressive disclosure: body ≤500 lines; split detail into `references/` linked with
-  one-line "read this when…" cues.
-- Validate before deploying (`validate.py` is the single source of truth for the spec,
-  pinned to `anthropics/skills` at `5754626`).
-- Deploy uses symlinks. Never overwrite real files/dirs (nix-managed skills are skipped).
-- Forward-test new skills with a fresh subagent (baseline-then-write: watch it fail without
-  the skill first).
+- Never overwrite nix-managed skills (real files in `/nix/store/*`) — deploy.sh skips them unless `--no-skip-system`.
+- Skill name = `^[a-z0-9-]+$`, no leading/trailing/double `-`, ≤64 chars; equals folder name.
+- `description` is the primary trigger — enumerate literal triggers + negative trigger there, not in the body.
+- One skill per folder: required `SKILL.md`; optional `scripts/`, `references/`, `assets/`. No README/CHANGELOG.
+- Validate before deploying (`validate.py` is the source of truth for the spec, pinned to `anthropics/skills` `5754626`).
+- Forward-test new skills with a fresh subagent (baseline-then-write: watch it fail without the skill first).
 
-## Deploy topology (this machine)
+## Architecture elevator
 
-`~/.claude/skills`, `~/.config/opencode/skills`, and `~/.agents/skills` are all symlinks
-to the shared `~/.agents/skills`. `~/.codex/skills` is separate. Nix-managed skills
-(`grill`, `handoff`, `nix-config`) live in `/nix/store/…` — **never overwrite.** Deploy
-targets 10 agents; absent ones are skipped automatically.
+```
+skills/        — one folder per skill (skill-man, init-context, task-core, dev-task, design-task, skill-template)
+bin/           — deploy.sh (symlinks skills into each detected agent's global skills dir)
+tests/         — validation fixture tests + upstream-conformance cross-check
+```
 
-## Don't touch
+Skills call sibling skills' scripts by relative path (`../task-core/scripts/update-progress`).
+Deploy uses symlinks — edits are live immediately; no re-deploy needed to pick up changes.
 
-- `/nix/store/*` — nix-managed skills; deploy.sh skips them unless `--no-skip-system`.
-- `tests/fixtures/` — validation test fixtures; they're the spec's integration tests.
+## Deeper docs
+
+| When you need… | Read… |
+|---|---|
+| skill authoring rules, spec cheatsheet, best practices | `skills/skill-man/SKILL.md` |
+| state-tracking protocol (cursor fields, inclusion gate, session ritual) | `skills/init-context/references/protocol.md` |
+| task-core shared spine + domain overlay protocol | `skills/task-core/references/protocol.md` |
+| deploy topology and constraints | `bin/deploy.sh` |
 
 ---
 

@@ -4,6 +4,36 @@ The full rulebook referenced by every project's AGENTS.md state-tracking section
 Read when you need the complete discipline — the AGENTS.md section is a summary;
 this is the canonical text.
 
+## AGENTS.md index discipline
+
+AGENTS.md is an **index, not a manifest.** It embeds only what a fresh agent can't
+recover from code and would get wrong without:
+
+- Intent (≤3 lines),
+- verified commands,
+- a handful of frozen invariants,
+- a short architecture elevator.
+
+Everything else (PRD, full architecture rationale, design guidelines, pattern
+catalog, deploy detail) lives in **pointed-to docs** indexed in the Deeper-docs
+jump-table. Each row encodes both *what to read* and *when to read it* ("When you
+need X, read Y").
+
+Rules for the index:
+
+- **Derive from disk, not memory.** Scan the project's docs tree this run; add a
+  row iff the doc file exists on disk. No file → no row. Never create stub files.
+- **Re-run reconciles.** Each init-context run diff-merges: add rows for new
+  docs, drop rows for docs that disappeared, refresh the "when you need…" cues.
+  The Deeper-docs section is always current to the run that wrote it.
+- **Never inline a doc.** The Deeper-docs table is a launchpad, not a container.
+  Each row gives the agent a path it can open when the task demands it; the
+  always-in-context window stays small.
+- **Use the inclusion gate on every candidate.** Something belongs in the
+  embedded tier (Intent, Hot invariants, verified commands, 5-line architecture)
+  only if: (a) not recoverable by one command, (b) a fresh agent would get WRONG
+  without it, and (c) it's stable. Otherwise point to it or drop it.
+
 ## Purpose
 
 An AI coding agent, between sessions, has no memory. The cursor fills that gap:
@@ -57,10 +87,18 @@ If X fails either gate, drop it. If it passes both, record the shortest form pos
 7. **Drop transient noise.** Greetings, tangents, resolved clarifications, retried
    failures that didn't change the plan — none of it belongs in the cursor.
 
+8. **Run the drift gate.** At session start and before writing, run
+   `../task-core/scripts/check` to validate every pointer and the synced SHA
+   against git. A failed check stops you from acting on stale state.
+
 ## Session ritual
 
 ```
-START  → read CURSOR.md → reconcile synced:<sha> vs HEAD → work
+START  → read CURSOR.md → reconcile synced:<sha> vs HEAD
+       → ../task-core/scripts/check          (drift gate: stale pointers? behind HEAD?)
+       → work
 END    → re-read diff → update affected fields → set synced:<new HEAD>
-         → trim to ≤40 lines → verify every path → overwrite CURSOR.md
+       → trim to ≤40 lines → verify every path
+       → ../task-core/scripts/check          (re-verify before committing the cursor)
+       → overwrite CURSOR.md
 ```

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TYPE=""
+SUMMARY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --type) TYPE="${2:-}"; shift 2 ;;
+    --summary) SUMMARY="${2:-}"; shift 2 ;;
+    *) printf 'create-goal: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$TYPE" ] || { printf 'create-goal: --type is required\n' >&2; exit 2; }
+[ -n "$SUMMARY" ] || { printf 'create-goal: --summary is required\n' >&2; exit 2; }
+
+CURSOR="${CURSOR_FILE:-CURSOR.md}"
+SHA="$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+
+if [ ! -f "$CURSOR" ]; then
+  cat >"$CURSOR" <<EOF
+<!-- synced: $SHA -->
+
+# CURSOR
+
+**Position:** $TYPE task started: $SUMMARY. Next: gather context and choose the first concrete step.
+**Blockers:** none.
+**Open:** evidence requirements not yet satisfied.
+**Health:** 🟢 task initialized.
+**Verification:** claimed: task accepted; verified: pending fresh evidence.
+**Errors-that-changed-plan:** none.
+**Decisions:** $TYPE task uses task-core for progress tracking.
+**Active pointers:** $CURSOR
+EOF
+  exit 0
+fi
+
+tmp="$(mktemp)"
+awk -v type="$TYPE" -v summary="$SUMMARY" '
+  /^\*\*Position:\*\*/ { print "**Position:** " type " task in progress: " summary ". Next: gather context and choose the first concrete step."; done=1; next }
+  { print }
+  END { if (!done) print "**Position:** " type " task in progress: " summary ". Next: gather context and choose the first concrete step." }
+' "$CURSOR" >"$tmp"
+mv "$tmp" "$CURSOR"

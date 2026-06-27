@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CURSOR="${CURSOR_FILE:-CURSOR.md}"
+HAD_ERROR=0
+
+# --- Arg parsing ---
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cursor) CURSOR="${2:-}"; shift 2 ;;
+    *) printf 'check: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+# --- Preflight ---
+[ -f "$CURSOR" ] || { printf 'check: %s not found; run create-goal first\n' "$CURSOR" >&2; exit 1; }
+
+# --- 1. Stale pointers ---
+# Active pointers live on the same line as the bold field label, space-separated.
+# Extract the value after "**Active pointers:**" on every matching line.
+while IFS= read -r line; do
+  # strip leading up to and including the bold label
+  value="${line#*\*Active pointers:\*\*}"
+  # skip if the line didn't actually contain the label (e.g. sed falling through)
+  [ "$value" = "$line" ] && continue
+  # split on whitespace into individual paths; strip markdown wrapping
+  for path in $value; do
+    [ -n "$path" ] || continue
+    path="${path#\`}"; path="${path%\`}"; path="${path%,}"; path="${path%;}"
+    [ -n "$path" ] || continue
+    if [ ! -e "$path" ]; then
+      printf 'check: stale pointer: %s (does not exist)\n' "$path" >&2
+      HAD_ERROR=1
+    fi
+  done
+done <<< "$(grep '^\*\*Active pointers:\*\*' "$CURSOR" || true)"
+
+# --- 2. synced:<sha> drift ---
+SYNCED_SHA=$(sed -n 's/^<!-- synced: \([a-f0-9]*\) -->/\1/p' "$CURSOR" | head -1)
+
+if [ -z "$SYNCED_SHA" ]; then
+  printf 'check: sync marker missing\n' >&2
+  HAD_ERROR=1
+elif ! git rev-parse --verify --quiet "$SYNCED_SHA^{commit}" >/dev/null 2>&1; then
+  printf 'check: synced sha %s not in git history\n' "$SYNCED_SHA" >&2
+  HAD_ERROR=1
+elif git merge-base --is-ancestor "$SYNCED_SHA" HEAD 2>/dev/null; then
+  # synced sha is an ancestor (including equal) of HEAD.
+  # Clean only if it IS HEAD (cursor written at the tip).
+  HEAD_SHORT=$(git rev-parse --short HEAD)
+  if [ "$SYNCED_SHA" != "$HEAD_SHORT" ]; then
+    printf 'check: cursor is behind HEAD (synced %s, HEAD %s); reconcile before work\n' "$SYNCED_SHA" "$HEAD_SHORT" >&2
+    HAD_ERROR=1
+  fi
+else
+  # synced sha is not an ancestor — divergent, behind-cursor, or unrelated.
+  printf 'check: cursor synced %s is not an ancestor of HEAD; reconcile before work\n' "$SYNCED_SHA" >&2
+  HAD_ERROR=1
+fi
+
+# --- verdict ---
+if [ "$HAD_ERROR" -eq 0 ]; then
+  printf 'check: ok\n'
+  exit 0
+else
+  exit 1
+fi

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TYPE=""
+STATUS=""
+SUMMARY=""
+EVIDENCE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --type) TYPE="${2:-}"; shift 2 ;;
+    --status) STATUS="${2:-}"; shift 2 ;;
+    --summary) SUMMARY="${2:-}"; shift 2 ;;
+    --evidence) EVIDENCE="${2:-}"; shift 2 ;;
+    *) printf 'update-progress: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$TYPE" ] || { printf 'update-progress: --type is required\n' >&2; exit 2; }
+[ -n "$STATUS" ] || { printf 'update-progress: --status is required\n' >&2; exit 2; }
+case "$STATUS" in claimed|verified|blocked) ;; *) printf 'update-progress: --status must be claimed, verified, or blocked\n' >&2; exit 2 ;; esac
+if [ "$STATUS" = "verified" ] && [ -z "$EVIDENCE" ]; then
+  printf 'update-progress: verified status requires --evidence\n' >&2
+  exit 2
+fi
+
+CURSOR="${CURSOR_FILE:-CURSOR.md}"
+[ -f "$CURSOR" ] || { printf 'update-progress: %s not found; run create-goal first\n' "$CURSOR" >&2; exit 1; }
+
+case "$STATUS" in
+  claimed) LINE="**Verification:** claimed: ${SUMMARY:-$TYPE progress updated}; verified: pending fresh evidence." ;;
+  verified) LINE="**Verification:** claimed: ${SUMMARY:-$TYPE progress updated}; verified: $EVIDENCE." ;;
+  blocked) LINE="**Blockers:** ${SUMMARY:-blocked; reason not specified}" ;;
+esac
+
+tmp="$(mktemp)"
+awk -v status="$STATUS" -v summary="$SUMMARY" -v line="$LINE" -v type="$TYPE" '
+  status != "blocked" && /^\*\*Position:\*\*/ {
+    print "**Position:** " type " task " status ": " (summary ? summary : "progress updated") ". Next: continue from the latest evidence."; pos=1; next
+  }
+  status == "verified" && /^\*\*Open:\*\*/ { print "**Open:** none."; next }
+  status == "verified" && /^\*\*Health:\*\*/ { print "**Health:** 🟢 verified by fresh evidence."; next }
+  status == "claimed" && /^\*\*Open:\*\*/ { print "**Open:** verification evidence still pending."; next }
+  status == "blocked" && /^\*\*Blockers:\*\*/ { print line; hit=1; next }
+  status == "blocked" && /^\*\*Health:\*\*/ { print "**Health:** 🔴 blocked."; next }
+  status != "blocked" && /^\*\*Verification:\*\*/ { print line; hit=1; next }
+  { print }
+  END {
+    if (status != "blocked" && !pos) print "**Position:** " type " task " status ": " (summary ? summary : "progress updated") ". Next: continue from the latest evidence."
+    if (!hit) print line
+  }
+' "$CURSOR" >"$tmp"
+mv "$tmp" "$CURSOR"
