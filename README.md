@@ -1,13 +1,16 @@
 # skills
 
 Personal skills repo — a deploy script that symlinks skills into the global
-skills folders of 10 coding agents, plus the skills themselves.
+skills folders of 11 coding agents, plus the skills themselves.
 
 ```
 skills/                 ← source of truth (one dir per skill)
   init-context/         ← bootstraps AGENTS.md + CURSOR.md for a project
   skill-man/            ← meta-skill: authoring, validation, deploy, upstream-sync
   skill-template/       ← starter skeleton
+  task-core/            ← shared task-state spine (create-goal, update-progress, update-doc, check)
+  dev-task/             ← dev tasks with TDD/BDD + coding conduct
+  design-task/          ← design tasks with elicitation + tokens + fidelity evidence
 bin/
   deploy.sh             ← symlinks every skill into each agent's global dir
 tests/
@@ -21,8 +24,11 @@ CURSOR.md               ← this repo's own volatile resume cursor (dogfood)
 
 | Skill | What it does |
 |---|---|
-| **[skill-man](skills/skill-man/SKILL.md)** | Create, validate, and deploy skills. Carries the spec, best-practices reference, and popular-skills catalog. |
-| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (stable: purpose, how-to-run, conventions, deploy, gotchas) and `CURSOR.md` (volatile: current position, next action, blockers, open issues, health, verification) with a state-tracking protocol so every future session can resume from the cursor. |
+| **[skill-man](skills/skill-man/SKILL.md)** | Create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. The meta-skill that manages this repo. |
+| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (a compact index: Intent, run/build/test commands, hot invariants, architecture elevator, and a disk-sourced deeper-docs pointer table) and `CURSOR.md` (volatile resume cursor) with a state-tracking protocol so every future session can resume. Rerunnable — re-derives the docs index from disk on each run. |
+| **[task-core](skills/task-core/SKILL.md)** | Non-triggerable shared spine for task-family skills. Owns four scripts — `create-goal`, `update-progress`, `update-doc`, and `check` (a fail-loud drift gate that validates CURSOR pointers and synced SHA against git). Domain skills call these by sibling-relative path. |
+| **[dev-task](skills/dev-task/SKILL.md)** | Start and run software development tasks with task-core tracking plus TDD/BDD, coding conduct, implementation, verification, and progress updates. Triggers on "implement", "fix bug", "add feature", "refactor", "write tests". |
+| **[design-task](skills/design-task/SKILL.md)** | Start and run product/interface design tasks with task-core tracking plus elicitation, references, style direction, design guide/tokens, component inventory, concept acceptance, and fidelity evidence. Triggers on "design this", "make a UI", "visual direction", "mockup", "redesign". |
 | **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
 
 ## Layout
@@ -90,6 +96,7 @@ files (nix-managed skills) or third-party symlinks.
 | agents   | `~/.agents/skills`           |
 | cursor   | `~/.cursor/skills`           |
 | gemini   | `~/.gemini/skills`           |
+| hermes   | `~/.hermes/skills`           |
 | windsurf | `~/.codeium/skills`          |
 | zed      | `~/.config/zed/skills`       |
 | aider    | `~/.aider/skills`            |
@@ -134,8 +141,8 @@ Restart the target agent after the first deploy so it picks up the new skill.
 ## Repo context
 
 This repo dogfoods its own `init-context` skill. [`AGENTS.md`](AGENTS.md) holds
-the stable context (purpose, how-to-run, conventions, deploy topology, gotchas)
-and the state-tracking protocol. [`CURSOR.md`](CURSOR.md) holds the volatile
-resume cursor (current position, next action, blockers, open issues, health,
-verification) — read it before every session. The protocol is: git IS history;
-the cursor carries only forward-looking state git can't express.
+the stable context (Intent, run/build/test, hot invariants, architecture elevator,
+deeper-docs pointer table, and state-tracking protocol). [`CURSOR.md`](CURSOR.md)
+holds the volatile resume cursor (current position, next action, blockers, open
+issues, health, verification) — read it before every session. The protocol is:
+git IS history; the cursor carries only forward-looking state git can't express.

@@ -48,6 +48,7 @@ AGENTS=(
   "agents|${HOME}/.agents/skills"
   "cursor|${HOME}/.cursor/skills"
   "gemini|${HOME}/.gemini/skills"
+  "hermes|${HOME}/.hermes/skills"
   "windsurf|${HOME}/.codeium/skills"
   "zed|${HOME}/.config/zed/skills"
   "aider|${HOME}/.aider/skills"
