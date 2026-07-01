@@ -121,6 +121,25 @@ every future session reads CURSOR.md first, reconciles `synced:` vs HEAD, works,
 rewrites CURSOR.md in-place at session end against the protocol rules. The protocol
 lives in AGENTS.md for reference.
 
+### Delegation
+
+For any non-trivial project (large codebase, many package manifests, complex CI),
+delegate the survey to subagents via the Agent tool. The orchestrator that loaded this
+skill:
+
+- **Owns** the goal, the final AGENTS.md/CURSOR.md output, and the verification gate.
+- **Delegates** survey dimensions to subagents in parallel — one for source tree
+  structure + stack, one for build/test commands (and verify each), one for CI
+  config + deploy model, one for recent git history + conventions. Each subagent
+  returns structured findings against the embed/point/drop gate.
+- **Merges** results — reconcile findings, resolve conflicts, write the two files.
+- **Does NOT** read every file in a large repo itself. If the codebase has more than
+  a few top-level directories, spawn subagents.
+
+For large projects, fan out the survey in parallel, then synthesize into a single
+coherent AGENTS.md. The re-derive-on-rerun contract still holds: each subagent surveys
+from disk, not from prior AGENTS.md.
+
 ## Re-running
 
 init-context is safe to run again as the project matures. On a re-run:

@@ -40,6 +40,24 @@ survive across implementation sessions.
 ../task-core/scripts/update-progress --type design --status verified --evidence "<visual QA or fidelity evidence>"
 ```
 
+### Delegation
+
+For any non-trivial task (multi-screen, multi-component, or requires broad exploration),
+delegate heavy work to subagents via the Agent tool. The orchestrator that loaded this
+skill:
+
+- **Owns** the goal, cursor state, design direction, and final acceptance gate.
+- **Delegates** elicitation, reference gathering, component design, mockup generation,
+  and fidelity checks to subagents. Each subagent gets a focused prompt with the
+  specific scope it owns and the design artifact it must read.
+- **Merges** results — collect subagent outputs, reconcile against the design
+  artifact, and update progress.
+- **Does NOT** inline large design explorations or read dozens of reference files
+  itself. If the task spans more than 2-3 components or screens, spawn subagents.
+
+For complex design tasks, fan out independent components/screens in parallel
+subagents, then integrate into a single coherent artifact.
+
 ## Done
 
 - A design task is verified only when evidence exists: screenshot review, fidelity

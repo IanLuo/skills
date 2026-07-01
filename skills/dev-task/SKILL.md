@@ -37,6 +37,22 @@ Use this for coding tasks that should produce a verifiable software change.
 ../task-core/scripts/update-progress --type dev --status verified --evidence "<command + result>"
 ```
 
+### Delegation
+
+For any non-trivial task (multi-file, multi-step, or requires broad reading), delegate
+heavy work to subagents via the Agent tool. The orchestrator that loaded this skill:
+
+- **Owns** the goal, cursor state, progress updates, and the final verification gate.
+- **Delegates** implementation (reading, editing, test runs, refactors) to subagents.
+  Each subagent gets a focused prompt with the specific files it owns and the expected
+  outcome.
+- **Merges** results — collect subagent outputs, run the cursor drift gate, and update
+  progress.
+- **Does NOT** inline large diffs or read dozens of files itself. If the task spans
+  more than 2-3 files, spawn subagents.
+
+For complex tasks, fan out independent work in parallel subagents, then integrate.
+
 ## Done
 
 - A dev task is verified only when fresh command output, CI status, or an equivalent
