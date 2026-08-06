@@ -46,6 +46,7 @@ AGENTS=(
   "opencode|${HOME}/.config/opencode/skills"
   "codex|${HOME}/.codex/skills"
   "agents|${HOME}/.agents/skills"
+  "pi|${HOME}/.pi/agent/skills"
   "cursor|${HOME}/.cursor/skills"
   "gemini|${HOME}/.gemini/skills"
   "hermes|${HOME}/.hermes/skills"
@@ -312,6 +313,7 @@ for entry in "${AGENTS[@]}"; do
     case "$name" in
       opencode) local_top="${HOME}/.config/opencode" ;;
       agents)   local_top="${HOME}/.agents" ;;
+      pi)       local_top="${HOME}/.pi" ;;
       windsurf) local_top="${HOME}/.codeium" ;;
       zed)      local_top="${HOME}/.config/zed" ;;
       *)        local_top="${HOME}/.${name}" ;;

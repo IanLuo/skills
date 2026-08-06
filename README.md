@@ -1,34 +1,58 @@
 # skills
 
 Personal skills repo — a deploy script that symlinks skills into the global
-skills folders of 11 coding agents, plus the skills themselves.
+skills folders of 12 coding agents, plus the skills themselves.
+
+## Design
+
+A **5-skill pipeline** for structured software work, plus cross-cutting and auxiliary skills.
 
 ```
-skills/                 ← source of truth (one dir per skill)
-  init-context/         ← bootstraps AGENTS.md + CURSOR.md for a project
-  skill-man/            ← meta-skill: authoring, validation, deploy, upstream-sync
-  skill-template/       ← starter skeleton
-  task-core/            ← shared task-state spine (create-goal, update-progress, update-doc, check)
-  dev-task/             ← dev tasks with TDD/BDD + coding conduct
-  design-task/          ← design tasks with elicitation + tokens + fidelity evidence
-bin/
-  deploy.sh             ← symlinks every skill into each agent's global dir
-tests/
-  fixtures/             ← validation test fixtures (10 cases)
-  run.sh                ← test suite + upstream-conformance cross-check
-AGENTS.md               ← this repo's own stable agent context
-CURSOR.md               ← this repo's own volatile resume cursor (dogfood)
+SESSION.md ── one-line append-only session log (every skill appends on completion)
+
+grill ── cross-cutting critical thinking (applies to every turn)
+
+init-context → prd → design-task → dev-task → review-task
+   │            │          │            │            │
+   │            │          │            │            └── verify against locked docs;
+   │            │          │            │               route ⚠️/🔴 back to owning skill
+   │            │          │            │
+   │            │          │            └── implement one deliverable with TDD/BDD
+   │            │          │
+   │            │          └── lock design-system.md (frozen tokens, components, concepts)
+   │            │
+   │            └── lock PRD/system-design/architecture docs (elicit + freeze decisions)
+   │
+   └── bootstrap AGENTS.md + SESSION.md for a project
 ```
+
+**Lock markers** freeze decisions so fresh agents don't re-litigate:
+- `<!-- prd:locked:<sha> <date> -->` on spec docs
+- `<!-- design:locked:<sha> <date> -->` on design-system.md
+
+Consumer skills discover upstream docs by grepping lock markers on disk:
+`grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`
+
+**SESSION.md** is an append-only one-line log at the repo root. Every session reads
+the last line to know where things stand, then appends one line on completion:
+`<date> · <skill> · <what happened>. Next: <next step>.`
+
+**review-task** closes the loop — ⚠️ gaps and 🔴 regressions route back to the owning
+skill (prd, dev-task, or design-task) for follow-up.
 
 ## Skills
 
 | Skill | What it does |
 |---|---|
-| **[skill-man](skills/skill-man/SKILL.md)** | Create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. The meta-skill that manages this repo. |
-| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (a compact index: Intent, run/build/test commands, hot invariants, architecture elevator, and a disk-sourced deeper-docs pointer table) and `CURSOR.md` (volatile resume cursor) with a state-tracking protocol so every future session can resume. Rerunnable — re-derives the docs index from disk on each run. |
-| **[task-core](skills/task-core/SKILL.md)** | Non-triggerable shared spine for task-family skills. Owns four scripts — `create-goal`, `update-progress`, `update-doc`, and `check` (a fail-loud drift gate that validates CURSOR pointers and synced SHA against git). Domain skills call these by sibling-relative path. |
-| **[dev-task](skills/dev-task/SKILL.md)** | Start and run software development tasks with task-core tracking plus TDD/BDD, coding conduct, implementation, verification, and progress updates. Triggers on "implement", "fix bug", "add feature", "refactor", "write tests". |
-| **[design-task](skills/design-task/SKILL.md)** | Start and run product/interface design tasks with task-core tracking plus elicitation, references, style direction, design guide/tokens, component inventory, concept acceptance, and fidelity evidence. Triggers on "design this", "make a UI", "visual direction", "mockup", "redesign". |
+| **[grill](skills/grill/SKILL.md)** | Cross-cutting critical thinking — pressure-test ideas, offer alternatives, cite sources. Applies to every turn. |
+| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (a compact index: Intent, run/build/test, hot invariants, architecture elevator, deeper docs) and `SESSION.md` (one-line session log). Rerunnable — re-derives from a fresh survey. |
+| **[prd](skills/prd/SKILL.md)** | Interactive elicitation — one rung at a time — that locks decisions into durable PRD, system-design, or architecture docs. On re-entry, shows the locked doc and re-elicits only what changed. |
+| **[design-task](skills/design-task/SKILL.md)** | Visual/product/interface design with elicitation, tokens, component inventory, concept acceptance, and fidelity evidence. Locks `design-system.md` when verified. |
+| **[dev-task](skills/dev-task/SKILL.md)** | Software development with TDD/BDD, coding conduct, implementation, and verification. One dev-task = one deliverable. Checks for locked upstream docs before starting. |
+| **[review-task](skills/review-task/SKILL.md)** | Correctness gate — verify that a completed task's changes match its defining docs. Catch regressions, invariant violations, and stale evidence. Routes findings back to the owning skill. |
+| **[herdr](skills/herdr/SKILL.md)** | Control the herdr terminal workspace manager — spawn agents in panes, send prompts, wait for results, read output, clean up. Agent-agnostic. |
+| **[librarian](skills/librarian/SKILL.md)** | Personal research library — fan out subagents that cross-score each other, then curate verified results into `~/Documents/librarian/library/`. Query-first, research on cache miss. |
+| **[skill-man](skills/skill-man/SKILL.md)** | Meta-skill — create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. |
 | **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
 
 ## Layout
@@ -63,13 +87,13 @@ If you move the repo, re-run `./bin/deploy.sh` (or `--doctor` to check symlinks)
 ### Options
 
 ```bash
-./bin/deploy.sh --list              # show skills + agents, deploy nothing
-./bin/deploy.sh --skill my-skill     # deploy only named skill(s)
-./bin/deploy.sh --agent claude       # deploy only to named agent(s)
-./bin/deploy.sh --doctor            # health-check deployed symlinks
-./bin/deploy.sh --prune             # remove symlinks to skills deleted from the repo
-./bin/deploy.sh --dry-run            # show what would happen, change nothing
-./bin/deploy.sh --no-skip-system     # also overwrite system-managed skills
+./bin/deploy.sh --list               # show skills + agents, deploy nothing
+./bin/deploy.sh --skill my-skill      # deploy only named skill(s)
+./bin/deploy.sh --agent claude        # deploy only to named agent(s)
+./bin/deploy.sh --doctor             # health-check deployed symlinks
+./bin/deploy.sh --prune              # remove symlinks to skills deleted from the repo
+./bin/deploy.sh --dry-run             # show what would happen, change nothing
+./bin/deploy.sh --no-skip-system      # also overwrite system-managed skills
 ```
 
 Multiple `--skill` / `--agent` flags are allowed.
@@ -94,6 +118,7 @@ files (nix-managed skills) or third-party symlinks.
 | opencode | `~/.config/opencode/skills`  |
 | codex    | `~/.codex/skills`            |
 | agents   | `~/.agents/skills`           |
+| pi       | `~/.pi/agent/skills`         |
 | cursor   | `~/.cursor/skills`           |
 | gemini   | `~/.gemini/skills`           |
 | hermes   | `~/.hermes/skills`           |
@@ -101,10 +126,6 @@ files (nix-managed skills) or third-party symlinks.
 | zed      | `~/.config/zed/skills`       |
 | aider    | `~/.aider/skills`            |
 | cline    | `~/.cline/skills`            |
-
-On this machine `~/.claude/skills`, `~/.config/opencode/skills`, and
-`~/.agents/skills` are all symlinks to the **same** shared folder
-(`~/.agents/skills`), so deploying to any one of them covers all three.
 
 Agents whose top-level config dir isn't present are skipped automatically —
 use `--agent <name>` to force-deploy to one that isn't detected.
@@ -120,19 +141,19 @@ use `--agent <name>` to force-deploy to one that isn't detected.
 ## Workflow
 
 ```bash
-# 1. create a skill (scaffolds valid frontmatter + optional resource dirs)
+# 1. Create a skill (scaffolds valid frontmatter + optional resource dirs)
 bash skills/skill-man/scripts/new-skill.sh my-skill --resources scripts,references
 $EDITOR skills/my-skill/SKILL.md          # fill in the description (the trigger) + body
 
-# 2. validate it against the spec
+# 2. Validate it against the spec
 python3 skills/skill-man/scripts/validate.py skills/my-skill
 
-# 3. deploy it
+# 3. Deploy it
 ./bin/deploy.sh --skill my-skill
 
-# 4. iterate — edits in the repo are live immediately (symlinked)
+# 4. Iterate — edits in the repo are live immediately (symlinked)
 
-# 5. commit
+# 5. Commit
 git add skills/my-skill && git commit -m "feat: my-skill"
 ```
 
@@ -142,7 +163,6 @@ Restart the target agent after the first deploy so it picks up the new skill.
 
 This repo dogfoods its own `init-context` skill. [`AGENTS.md`](AGENTS.md) holds
 the stable context (Intent, run/build/test, hot invariants, architecture elevator,
-deeper-docs pointer table, and state-tracking protocol). [`CURSOR.md`](CURSOR.md)
-holds the volatile resume cursor (current position, next action, blockers, open
-issues, health, verification) — read it before every session. The protocol is:
-git IS history; the cursor carries only forward-looking state git can't express.
+deeper docs). [`SESSION.md`](SESSION.md) holds the one-line append-only session log —
+read the last line before every session; append one line at session end.
+git history IS the work-history record.

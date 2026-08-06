@@ -23,9 +23,9 @@ Contract defaults: `upstream: prd, system-design`; `referrers: dev/design tasks`
 4. **Cross-cutting concerns.** Logging, auth, error model, state — the few global
    conventions that don't belong to any one layer. Each: where the convention lives,
    and how a new component obeys it (one-line, not a manual).
-5. **Pointers.** ADRs (`docs/adr/*`), CONVENTIONS.md, the system-design doc — list the
-   ones that exist on disk. Don't describe them; point to them. This keeps the
-   architecture doc an index-of-rationale, not a manifest.
+5. **Pointers.** List the ADRs (`docs/adr/*`), CONVENTIONS.md, and system-design doc
+   that exist on disk. Point, don't describe. The agent can find these — only list
+   the ones whose *choice* matters, not every file.
 
 ## Contract rung (last, before lock)
 

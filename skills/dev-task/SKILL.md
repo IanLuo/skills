@@ -1,6 +1,6 @@
 ---
 name: dev-task
-description: Start and run software development tasks with task-core tracking plus TDD/BDD, coding conduct, implementation, verification, and progress updates. Use for triggers like "new dev task", "implement", "fix bug", "add feature", "refactor", "write tests", "make this code change", or any coding task expected to modify a repo. Do NOT use for visual/product design tasks without code changes or pure research summaries.
+description: Start and run software development tasks with TDD/BDD, coding conduct, implementation, and verification. Use for "new dev task", "implement", "fix bug", "add feature", "refactor", "write tests", "make this code change", or any coding task expected to modify a repo. Do NOT use for visual/product design tasks without code changes or pure research summaries.
 metadata:
   audience: personal
   domain: development
@@ -8,21 +8,16 @@ metadata:
 
 # dev-task
 
-Use this for coding tasks that should produce a verifiable software change.
-
 ## Start
 
-1. Read the project cursor or equivalent state file before editing.
-2. Create or refresh the task state:
-
-```bash
-../task-core/scripts/create-goal --type dev --summary "<task summary>"
-```
-
-3. Read [references/tdd-bdd.md](references/tdd-bdd.md) when the task touches
-   behavior, regressions, or user-facing workflows.
-4. Read [references/triggers.md](references/triggers.md) when deciding what progress
-   and evidence to record.
+1. Read the last line of `SESSION.md` and `AGENTS.md` before editing.
+2. Find locked docs on disk: `grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`.
+   If a needed doc (PRD, system-design, architecture) is absent, flag it and ask before
+   proceeding. If `design-system.md` exists, check its first line for
+   `<!-- design:locked:` — if absent, flag "design not frozen; run design-task first."
+   Don't silently assume scope.
+3. If the locked PRD covers more than one deliverable, ask the user which slice this
+   task implements. One dev-task = one deliverable.
 
 ## Work
 
@@ -30,32 +25,34 @@ Use this for coding tasks that should produce a verifiable software change.
 - Keep edits scoped to the request and existing project style.
 - Run the smallest meaningful verification first, then broader tests when shared
   behavior or risk warrants it.
-- Update progress after each material phase:
+- For multi-file tasks, spawn subagents for parallel implementation.
 
-```bash
-../task-core/scripts/update-progress --type dev --status claimed --summary "<what changed>"
-../task-core/scripts/update-progress --type dev --status verified --evidence "<command + result>"
-```
+### TDD/BDD loop
 
-### Delegation
+1. Characterize current behavior with a focused test or command.
+2. Write the smallest failing test when the expected behavior is clear.
+3. Implement the narrowest change that makes the test pass.
+4. Run the focused check again.
+5. Run broader verification when shared code, integrations, or public behavior changed.
 
-For any non-trivial task (multi-file, multi-step, or requires broad reading), delegate
-heavy work to subagents via the Agent tool. The orchestrator that loaded this skill:
+For user-visible behavior: **Given** the relevant state, **When** the user does X,
+**Then** Y changes.
 
-- **Owns** the goal, cursor state, progress updates, and the final verification gate.
-- **Delegates** implementation (reading, editing, test runs, refactors) to subagents.
-  Each subagent gets a focused prompt with the specific files it owns and the expected
-  outcome.
-- **Merges** results — collect subagent outputs, run the cursor drift gate, and update
-  progress.
-- **Does NOT** inline large diffs or read dozens of files itself. If the task spans
-  more than 2-3 files, spawn subagents.
+Skip a new failing test only when: mechanical rename/doc-only, no viable test harness,
+existing failing test already captures it, or exploratory/prototype work. When skipping,
+record why.
 
-For complex tasks, fan out independent work in parallel subagents, then integrate.
+### Verification evidence
+
+Good: `pytest tests/test_auth.py -q` passes. `npm test` fails on a named unrelated test.
+CI check green for commit `<sha>`. Manual repro no longer reproduces with exact steps.
+
+Not evidence: "Looks right." "I inspected the code." "Should work."
 
 ## Done
 
-- A dev task is verified only when fresh command output, CI status, or an equivalent
+- A dev task is verified only when fresh command output, CI status, or equivalent
   executable check supports the claim.
-- If verification cannot run, record the blocker and leave completion as claimed, not
-  verified.
+- If verification cannot run, record the blocker and leave the task unverified.
+- Append one line to SESSION.md:
+  `<date> · dev-task · <what was done, proof, next step>.`
