@@ -1,58 +1,50 @@
 # Scoring rubric
 
 Read this when running the **Research workflow** — it defines the three scoring
-dimensions and the cross-scoring protocol. You (the orchestrator) make the
-accept/refine/stop call; there is no gate script.
+dimensions and the self-scoring protocol. Research agents self-assess; you (the
+orchestrator) review and adjust, then make the accept/low-confidence call.
 
 ## The three dimensions
 
-Every finding is scored on three dimensions, each 1–5. Scoring is *adversarial*: a
-finding's own author never scores it; sibling subagents do.
+Every finding is scored on three dimensions, each 1–5. Each research agent self-scores
+its own finding; you verify when reviewing.
 
 | dimension | question | 1 | 5 |
 |---|---|---|---|
-| **source quality** | Is the origin authoritative/primary? | blog spam, no cite | official docs, peer-reviewed, primary source |
-| **claim specificity** | Concrete vs hand-wavy? | "often helps", vague | exact numbers, names, versions, mechanisms |
-| **gap coverage** | Does it answer the angle it was assigned? | off-topic or shallow | fully addresses the sub-question |
+| **source_quality** | Is the origin authoritative/primary? | blog spam, no cite | official docs, peer-reviewed, primary source |
+| **claim_specificity** | Concrete vs hand-wavy? | "often helps", vague | exact numbers, names, versions, mechanisms |
+| **gap_coverage** | Does it answer the angle it was assigned? | off-topic or shallow | fully addresses the sub-question |
 
 The binding number for a finding is the **floor** — the minimum of its three dimension
-means (mean each dimension across the ≥2 sibling scorers, then take the min of those
-three means). A finding must clear *all* dimensions, not just the average. A 5/5/2 is a
+scores. A finding must clear *all* dimensions, not just the average. A 5/5/2 is a
 refine, not an accept.
 
-## Cross-scoring protocol
+## Self-scoring protocol
 
-On each round:
+1. Each research agent includes a self-assessment block in its structured output:
+   `source_quality: N`, `claim_specificity: N`, `gap_coverage: N`, each 1–5.
+2. You (the orchestrator) read each finding and verify the self-scores against the
+   rubric. Adjust any score that looks inflated or missed. This takes seconds — do not
+   spawn scoring subagents.
 
-1. Have each finding scored by **≥2 sibling subagents** that did *not* author it. Average
-   per dimension into a mean.
-2. **Decide:** accept (floor ≥ threshold), refine (below threshold, rounds remain),
-   or low-confidence (below threshold at the cap).
-3. If refined: re-dispatch that angle via the Agent tool with the specific feedback
-   ("below 4 on claim_specificity"). Re-score. Loop.
+## Accept / low-confidence
 
-## Stopping rules
+One pass, no refinement loop:
 
-Stop at the **first** of:
+- **floor ≥ accept threshold** → accept. Threshold is 3 for `skim`, 4 for `read`/`study`.
+- **floor < threshold** → admit as-is, tagged `confidence: low`.
 
-1. **Threshold met** — every finding's floor ≥ the depth's accept threshold → done.
-2. **Plateau** — a full scoring round moved no dimension mean by anything noticeable.
-   Stop even if some findings are below threshold. A stuck loop is making no progress.
-3. **Hard cap** — the depth's max rounds reached. Any finding still below threshold is
-   accepted but tagged `confidence: low`.
-
-You enforce all three. There is no scenario in which the loop runs forever — the cap is
-absolute; never extend it "to be sure."
+Do not re-dispatch findings that fall below threshold. The user can re-run the angle at
+`study` depth later if they want deeper coverage.
 
 ## The meaning of confidence
 
 The entry's `confidence` frontmatter field (you pass it to `write-entry.py`):
 
 - **high** — all findings cleared threshold.
-- **medium** — a minority of findings `low-confidence` at the cap.
+- **medium** — a minority of findings `low-confidence`.
 - **low** — a majority `low-confidence`. Honest: the entry is your current best, with
   gaps named in `## Open questions`.
 
 `low` is not a failure — it is a durable record that this angle couldn't be sourced at
-the requested depth in the rounds available. The user can re-run that angle at `study`
-later.
+the requested depth. The user can re-run that angle at `study` later.

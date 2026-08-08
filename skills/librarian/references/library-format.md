@@ -2,7 +2,7 @@
 
 Read this when you need the exact entry schema or index layout. Entries are written by
 `scripts/write-entry.py`, not by hand — this documents what that script produces so
-`query.py` (and you) can rely on it.
+full-body search (`rg`) and you can rely on it.
 
 ## TOC
 
@@ -36,7 +36,7 @@ One entry per topic. `<slug>` is the title in lowercase-hyphen-case.
 ---
 title: "Pod networking in Kubernetes"
 category: technology              # ^[a-z0-9-]+$ — the folder name under library/
-tags: ["kubernetes", "networking", "cni"]   # query.py weights these heavily
+tags: ["kubernetes", "networking", "cni"]   # searched alongside title + body
 sources:
   - url: "https://kubernetes.io/docs/..."
     title: "K8s Docs — Networking"
@@ -73,8 +73,8 @@ researched_at: 2026-07-08
 
 ## 4. `index.md` layout
 
-Maintained by `write-entry.py`. Do not hand-edit unless reorganizing — `query.py`
-parses it as one source of truth.
+Maintained by `write-entry.py`. Do not hand-edit unless reorganizing — queries search
+the entry files directly with `rg`, not this index.
 
 ```markdown
 # Librarian library index

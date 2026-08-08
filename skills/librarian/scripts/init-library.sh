@@ -39,9 +39,9 @@ if [ ! -s "$LIBRARY/index.md" ]; then
   cat >"$LIBRARY/index.md" <<'INDEX'
 # Librarian library index
 
-Categories and entries are appended here by `write-entry.py`. Query with
-`query.py`. Do not hand-edit unless reorganizing — the paths below are the
-source of truth for `query.py`.
+Categories and entries are appended here by `write-entry.py`. Queries search
+the entry files directly with `rg` — this index is for browsing. Do not
+hand-edit unless reorganizing.
 
 ## Categories
 

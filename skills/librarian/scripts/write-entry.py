@@ -5,7 +5,7 @@ write-entry.py — persist a researched topic into the librarian library.
 Writes one markdown entry with YAML frontmatter under
 library/<category>/<slug>.md and updates the index. The model hands it
 accepted findings + a synthesis; the script owns the on-disk format so
-query.py can rely on it.
+full-body search (`rg`) can rely on it.
 
 .INPUT --topic "<title>"
 .INPUT --category <category>    e.g. technology, science. ^[a-z0-9-]+$
