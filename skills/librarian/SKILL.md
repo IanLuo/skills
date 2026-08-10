@@ -1,6 +1,6 @@
 ---
 name: librarian
-description: Research any question by fanning out self-scoring subagents, then curate verified results into a durable knowledge library at ~/Documents/librarian/library/ and answer later questions by querying that library first. Use for "research X", "look into X", "study X", "what do I know about X", "find out about X", or any request to find, verify, and synthesize information into a queryable library. Control breadth with a depth argument — skim, read (default), or study. Do NOT use for codebase exploration, local-file reading, or software-architecture research (use Explore subagents); for a one-shot research report with no library curation, prefer deep-research.
+description: Research questions by fanning out self-scoring subagents, curate verified results into a durable library at ~/Documents/librarian/library/, and answer later questions by querying it first. Use for "research X", "look into X", "study X", "what do I know about X", "find out about X", or any find/verify/synthesize request that belongs in a queryable library. Depth argument — skim (default), read, or study. Do NOT use for codebase exploration or software-architecture research (use Explore); for a one-shot report with no library curation, prefer deep-research.
 metadata:
   audience: personal
   domain: research
@@ -18,7 +18,7 @@ Always run Query first; only Research when the library is thin.
 
 ## Depth
 
-The user controls breadth per call. Default `read`.
+The user controls breadth per call. Default `skim`.
 
 | depth | use when | subagents |
 |---|---|---|
@@ -48,8 +48,8 @@ The user controls breadth per call. Default `read`.
    hit. Match count is the relevance proxy (a file that mentions the term 20× is more
    relevant than one that mentions it once). It stays fast at thousands of entries.
 
-3. If matches return: read the top entries, summarize them **with their source
-   links and confidence tags** for the user, and stop.
+3. If matches return: read the top entries, summarize the key facts tersely — bullets
+   only, no framing prose — **with source links and confidence tags** for the user, and stop.
 4. If no matches (or the user explicitly wants fresh info): fall through to Research.
 
    **Query is read-only — it never saves.** If the user asks to file something they
@@ -62,10 +62,26 @@ The user controls breadth per call. Default `read`.
    should cover the question — a 4-angle `read` might be: definition, mechanisms,
    evidence/examples, open problems.
 3. Fan out N `general-purpose` subagents via the Agent tool — one per angle. Each
-   researches with WebSearch/WebFetch and returns **structured output**: an angle name,
-   bullet-point body with concrete facts (numbers/versions/names), sources with
-   URLs + access dates, AND a **self-assessment** on the three rubric dimensions:
+   researches with WebSearch/WebFetch and returns **structured output**:
+   - **angle** — the assigned angle name.
+   - **body** — bullet points, **≤300 words**, concrete facts only (numbers/versions/names).
+   - **sources** — **≤5**, most authoritative first, URL + access date each.
+   - **self-assessment** — 1–5 on each rubric dimension below.
 
+   Paste the research discipline + rubric into each agent's prompt:
+
+   *Research discipline (keeps the fan-out cheap — paste into each prompt):*
+   - **Search first.** Prefer WebSearch (snippets) over WebFetch (full pages).
+   - **Fetch ≤3 pages**, only authoritative/primary ones. Use WebFetch's extraction prompt
+     to pull just the answer to your angle — don't read whole pages.
+   - **Stop when you can answer the angle.** A targeted 2–3-source answer beats a 10-source
+     essay. Depth is in the answer, not the page count.
+   - **Facts only, terse.** Return findings with no intro, no "here's what I found", no
+     closing summary, no hedging ("seems", "arguably"). Bullets are verb + fact
+     ("v2.3 replaces X with Y"), not padded sentences. Every claim traces to a cited
+     source; unsupported claims are omitted.
+
+   *Rubric (self-scoring):*
    | dimension | question | 1 | 5 |
    |---|---|---|---|
    | source_quality | Is the origin authoritative/primary? | blog spam, no cite | official docs, peer-reviewed, primary source |
@@ -81,11 +97,13 @@ The user controls breadth per call. Default `read`.
    threshold (3 for `skim`, 4 for `read`/`study`). Findings below threshold at any depth
    are admitted as-is and tagged `confidence: low` — honest, not a failure. Do not
    re-dispatch; the user can re-run at `study` depth later if they want deeper coverage.
-6. Synthesize accepted findings into one entry. **Do not persist yet** — nothing is
-   written to disk until the user asks.
+6. Synthesize accepted findings into one entry — one tight paragraph tying the angles
+   together, no re-stating of the bullets. **Do not persist yet** — nothing is written
+   to disk until the user asks.
 
-7. Show the entry to the user and ask explicitly: **"Save to library?"** Persist only
-   what the user explicitly asks to save:
+7. Show the entry to the user as-is — the bullets ARE the deliverable; don't re-narrate
+   or add commentary. Then ask explicitly: **"Save to library?"** Persist only what the
+   user explicitly asks to save:
    - whole entry → `write-entry.py` with all findings;
    - a subset → save just the named finding(s) — `findings.json` holds only those;
    - "no" → return the answer and stop; the library is untouched.
@@ -125,6 +143,12 @@ frontmatter; the script keeps it consistent so full-body search (`rg`) can rely 
 - **One pass.** Do not re-dispatch findings that fall below threshold. Tag them
   `confidence: low` and move on. The refinement loop was removed — it doubled agent count
   with diminishing returns.
+- **Bound the fan-out.** Cap research agents at ~300-word findings, ≤5 sources, ≤3 fetches
+  (search first). Depth comes from more angles, not longer outputs. A concise answer you
+  act on beats a long one you skim.
+- **Terse output everywhere.** Facts only, at every layer — subagent findings, your
+  synthesis, user-facing summaries. No intro/conclusion padding, no hedging. A claim
+  without a source is dropped, not hedged: accuracy beats completeness.
 - Accept `low-confidence` honestly into the library — it is a durable record of a gap,
   not a failure. Name the gap in `## Open questions`.
 - Keep entries sourced. A finding without a source URL scores low on source quality by

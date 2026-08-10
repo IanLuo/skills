@@ -1,238 +1,183 @@
 ---
 name: herdr
-description: Drive herdr panes and agents from the terminal. Use when you need to spawn another agent (pi, claude, codex, shell command) in a herdr pane, send it prompts, wait for results, read output, or clean up panes — all programmatically without the user switching panes. Triggers include "spawn an agent", "send to pane", "herdr", "parallel agents", "delegate to another agent", "review in another pane", "start a worker", "one-shot agent". Do NOT use for ordinary local bash commands inside the current pane — use the bash tool directly for those.
+description: Control herdr — the terminal workspace manager — to spawn agents (pi, claude, codex, shell) in panes, submit prompts, wait for results, read output, and clean up. Use when the user explicitly mentions herdr, or asks to inspect/control panes, tabs, workspaces, commands, or another agent. Trigger phrases — "spawn an agent", "send to pane", "herdr", "review in another pane", "start a worker", "one-shot agent", "in a pane/tab". Do NOT use for ordinary local bash in the current pane (use the bash tool), or merely because a task could benefit from delegation or parallel work — that's the delegate skill (in-process subagents). Requires HERDR_ENV=1.
 metadata:
   audience: personal
   domain: agent-orchestration
-compatibility: Requires herdr running and HERDR_ENV=1
+compatibility: Requires herdr running (HERDR_ENV=1) and the herdr CLI. The installed binary is the authority for syntax — run `herdr --help` / `herdr agent` / `herdr pane` to discover commands.
 ---
 
 # herdr
 
-Control herdr — the terminal workspace manager — via its CLI. You can spawn agents in
-new panes, send prompts, wait for completion, read output, and close panes when done.
-The agent choice is a parameter; this skill is the herdr-control layer, completely
-agent-agnostic.
+Control herdr — the terminal workspace manager — via its CLI. Spawn agents in
+panes, submit prompts, wait for completion, read output, close panes. The agent
+choice is a parameter; this skill is the herdr-control layer, agent-agnostic.
 
 ## Prerequisites
 
-You must be running inside a herdr session. Verify:
+You must be running inside a herdr session:
 
 ```bash
-echo $HERDR_ENV   # must be "1"
-echo $HERDR_PANE_ID  # must be set
+echo $HERDR_ENV        # must be "1"
+echo $HERDR_PANE_ID    # must be set
 ```
 
 If not set, tell the user to launch herdr first.
 
-## CLI Reference
+## The CLI is the authority
 
-### `herdr agent start <name> -- <command...>`
-
-Spawn a new agent in a herdr pane. `<name>` is a unique, short, descriptive label
-you'll use in every subsequent command (`pi-review`, `claude-impl`, `gpt-scout`).
+The installed binary owns the syntax and evolves between versions (the repo skill
+is not guaranteed current). Before driving commands you haven't used this session,
+discover them:
 
 ```bash
-# One-shot pi review (background, no focus)
-herdr agent start pi-review --split right --no-focus -- pi -p "Review the last commit for bugs"
-
-# Spawn an agent focused (user explicitly asked to see it)
-herdr agent start claude-worker --split down --focus -- claude -p "Refactor auth.ts"
-
-# Target a specific workspace/tab with a working directory
-herdr agent start worker-1 --cwd /path/to/project --tab 0 --split right --no-focus -- pi -p "Add error handling to users.ts"
+herdr --help           # top-level commands
+herdr agent            # agent subcommands: list get read send-keys prompt wait
+herdr pane             # pane subcommands: split run wait-output read close
+herdr --skill          # herdr's own canonical agent instructions
 ```
 
-Key flags:
-- `--split right|down` — vertical or horizontal split
-- `--focus|--no-focus` — default is focus; prefer `--no-focus` unless user asks to switch
-- `--cwd PATH` — working directory
-- `--tab ID` — target a specific tab
-- `--workspace ID` — target a specific workspace
-- `--env KEY=VALUE` — inject environment variables
-- `--` — **required** separator between herdr flags and the agent command
+## Primitives and targeting
 
-### `herdr agent send <target> <text>`
+- **Panes** = raw terminals (shells, tests, servers). **Agents** = the recognized
+  coding agent occupying a pane. A pane exists whether or not it contains an agent.
+- IDs: workspace `w1`, tab `w1:t1`, pane `w1:p1`. Closed IDs are never reused;
+  `pane move` re-qualifies the pane ID.
+- Agent commands accept a **unique live agent name** or the **pane ID** hosting it —
+  never terminal IDs, never bare kind labels. Names match `[a-z][a-z0-9_-]{0,31}`.
+- Prefer `--current` or your own `$HERDR_PANE_ID`; never assume the focused pane is
+  yours. Read IDs from JSON responses (`.result.pane.pane_id`), not sidebar order.
 
-Send literal text to a running agent. `<target>` is the agent name, pane ID, or
-terminal ID. This sends raw text — it does NOT press Enter.
+## Lifecycle states
+
+`idle` = ready for input (its tab seen); `done` = idle after unseen background work;
+`blocked` = approval/question UI; `working`; `unknown`. `agent prompt --wait` settles
+on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
+
+## Core workflow: spawn → prompt → wait → read → close
+
+1. **Split a pane** — sibling, preserve your cwd, keep user focus:
+
+   ```bash
+   herdr pane split --current --direction right --cwd "$PWD" --no-focus
+   # -> new pane id in .result.pane.pane_id (read it; don't guess)
+   ```
+
+2. **Start an agent** in that pane (must be at an interactive shell prompt):
+
+   ```bash
+   herdr agent start <name> --kind pi --pane <pane-id> [-- <agent-args>]
+   ```
+
+   Kinds: `pi`, `claude`, `codex`, `gemini`, … (run `herdr agent` for the list).
+   Returns only once the agent is detected and ready for input.
+
+3. **Submit work**:
+
+   ```bash
+   herdr agent prompt <target> "<task>" --wait --timeout 120000
+   ```
+
+   `prompt` atomically submits text + Enter (honors bracketed paste). From a
+   non-working state it must observe a lifecycle change within 5s or returns
+   `agent_prompt_stalled`. `--wait` is enough for normal work — don't restate the
+   defaults with `--until`.
+
+4. **Read the result**:
+
+   ```bash
+   herdr agent read <target> --source recent-unwrapped --lines 200 --format text
+   ```
+
+5. **Close what you created** (only panes you created):
+
+   ```bash
+   herdr pane close <pane-id>
+   ```
+
+## Inspect, wait, interact
+
+- `herdr agent list` — all agents: names, pane IDs, states.
+- `herdr agent get <target>` — current state (add `--json` to parse).
+- `herdr agent wait <target> --until blocked --timeout 120000` — wait for a specific
+  state (blocked = needs input). Without `--until`, settles on idle/done/blocked.
+- `herdr agent send-keys <target> esc` — logical keys for interactive agent UIs.
+- On a failed wait or `blocked`: read the transcript (`agent get` / `agent read`)
+  BEFORE deciding what input to send.
+
+## Ordinary commands in a pane (no agent)
 
 ```bash
-herdr agent send pi-review "Now also check for SQL injection vulnerabilities"
+herdr pane run <pane-id> "just test"
+herdr pane wait-output <pane-id> --match "test result" --timeout 120000
+herdr pane read <pane-id> --source recent-unwrapped --lines 120
 ```
 
-### `herdr agent read <target>`
+`pane run` sends text + Enter atomically. `--match` is a literal substring;
+`--regex` for a Rust regex. Omitting `--timeout` waits indefinitely.
 
-Read an agent's terminal output.
+## Read sources
+
+`visible` (rendered viewport) · `recent` (rendered, soft-wrapped) ·
+`recent-unwrapped` (wraps joined — prefer for logs/transcripts) · `detection`
+(bottom-buffer, used for detection). Use `--format text`; `ansi` only when styling
+is evidence. If raising `--lines` reveals no more output, the agent is on the
+alternate screen — fallback: ask it to write the full response to a temp file and
+reply with only the path, then read that file. Don't request file output in the
+initial prompt.
+
+## Patterns
+
+### One-shot (spawn → prompt → wait → read → close)
 
 ```bash
-# Visible screen content (default)
-herdr agent read pi-review
-
-# Scrollback, unwrapped, plain text — best for parsing
-herdr agent read pi-review --source recent-unwrapped --lines 200
-
-# Plain text, no ANSI codes
-herdr agent read pi-review --format text --source recent --lines 500
+P=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')
+herdr agent start reviewer --kind pi --pane "$P"
+herdr agent prompt reviewer "Review the last commit for bugs. Report only actionable findings." --wait --timeout 120000
+herdr agent read reviewer --source recent-unwrapped --lines 120 --format text
+herdr pane close "$P"
 ```
 
-Options:
-- `--source visible|recent|recent-unwrapped` — prefer `recent` or `recent-unwrapped` for complete output
-- `--lines N` — max lines
-- `--format text|ansi` — prefer `text` to avoid ANSI noise
+### Interactive (spawn → prompt → wait → read → follow up → … → close)
 
-### `herdr agent wait <target> --status <state> [--timeout MS]`
-
-Block until an agent reaches a given state or times out (ms).
+Keep an agent alive across follow-ups based on earlier output:
 
 ```bash
-# Wait for agent to finish its turn (60s timeout)
-herdr agent wait pi-review --status idle --timeout 60000
-
-# Wait for agent to start working (10s timeout)
-herdr agent wait pi-review --status working --timeout 10000
-
-# Wait for blocked state (needs user input)
-herdr agent wait pi-review --status blocked --timeout 30000
+herdr agent prompt worker "Analyze src/auth.ts for security issues." --wait --timeout 120000
+herdr agent read worker --source recent-unwrapped --lines 120 --format text
+herdr agent prompt worker "Now check whether those issues also exist in src/session.ts." --wait --timeout 120000
+herdr agent read worker --source recent-unwrapped --lines 120 --format text
+# ... then close
 ```
 
-States: `idle`, `working`, `blocked`, `unknown`. Omit `--timeout` to wait
-indefinitely (dangerous — always set a timeout).
+### Parallel workers (split N → start N → prompt all → wait all → read all → close all)
 
-### `herdr agent list`
-
-List all running agents with names, pane IDs, and states.
+Run several agents simultaneously, then gather:
 
 ```bash
-herdr agent list
-```
-
-Use before spawning to avoid duplicate agents. Reuse an idle existing agent instead of
-creating a new one.
-
-### `herdr agent explain <target> [--json]`
-
-Detailed agent info: state, session, model, pane ID.
-
-```bash
-herdr agent explain pi-review --json | jq -r '.pane_id'
-```
-
-### `herdr pane close <pane_id>`
-
-Close a pane and terminate its process. Get `<pane_id>` from `herdr agent list` or
-`herdr agent explain --json`.
-
-```bash
-herdr pane close <pane_id>
-```
-
-### `herdr agent focus <target>`
-
-Switch the user's view to an agent's pane. Use only when the user explicitly asks.
-
-```bash
-herdr agent focus pi-review
-```
-
-## Workflow Patterns
-
-### Pattern 1: One-shot review (spawn → wait → read → close)
-
-Fire-and-forget: spawn an agent, wait for it to finish, read the result, clean up.
-
-```bash
-# 1. Spawn in background
-herdr agent start reviewer --split right --no-focus -- pi -p "Review the last commit for bugs. Be thorough."
-
-# 2. Wait for completion (2 min timeout)
-herdr agent wait reviewer --status idle --timeout 120000
-
-# 3. Read the result
-herdr agent read reviewer --source recent --lines 300 --format text
-
-# 4. Report findings to user, then clean up
-herdr pane close $(herdr agent explain reviewer --json | jq -r '.pane_id')
-```
-
-### Pattern 2: Interactive delegation (spawn → send → wait → read → send more)
-
-Keep an agent alive across multiple prompts, sending follow-ups based on earlier
-results.
-
-```bash
-# 1. Spawn without -p (stays open for interactive use)
-herdr agent start worker --split right --no-focus -- pi --model gpt-4o
-
-# 2. Send first task, wait for idle, read
-herdr agent send worker "Analyze src/auth.ts for security issues."
-herdr agent wait worker --status idle --timeout 60000
-herdr agent read worker --source recent --lines 200
-
-# 3. Follow up based on results
-herdr agent send worker "Now check if any of those issues also exist in src/session.ts."
-herdr agent wait worker --status idle --timeout 60000
-herdr agent read worker --source recent --lines 200
-
-# 4. Clean up when done
-herdr pane close $(herdr agent explain worker --json | jq -r '.pane_id')
-```
-
-### Pattern 3: Parallel workers (spawn N → wait all → collect)
-
-Run multiple agents simultaneously, then gather all results.
-
-```bash
-# Spawn all workers in parallel
-herdr agent start worker-1 --split right --no-focus -- pi -p "Add error handling to users.ts"
-herdr agent start worker-2 --split right --no-focus -- pi -p "Add error handling to orders.ts"
-herdr agent start worker-3 --split right --no-focus -- pi -p "Add error handling to products.ts"
-
-# Wait for all (poll with list, then wait individually)
-herdr agent list
-herdr agent wait worker-1 --status idle --timeout 120000
-herdr agent wait worker-2 --status idle --timeout 120000
-herdr agent wait worker-3 --status idle --timeout 120000
-
-# Read all results
-herdr agent read worker-1 --source recent --lines 200 --format text
-herdr agent read worker-2 --source recent --lines 200 --format text
-herdr agent read worker-3 --source recent --lines 200 --format text
-
-# Clean up
-herdr pane close $(herdr agent explain worker-1 --json | jq -r '.pane_id')
-herdr pane close $(herdr agent explain worker-2 --json | jq -r '.pane_id')
-herdr pane close $(herdr agent explain worker-3 --json | jq -r '.pane_id')
+for i in 1 2 3; do
+  P=$(herdr pane split --current --direction down --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')
+  herdr agent start worker-$i --kind pi --pane "$P"
+done
+herdr agent prompt worker-1 "Add error handling to orders.ts" --wait --timeout 120000
+herdr agent prompt worker-2 "Add error handling to products.ts" --wait --timeout 120000
+herdr agent prompt worker-3 "Add error handling to users.ts" --wait --timeout 120000
+herdr agent read worker-1 --source recent-unwrapped --lines 120 --format text
+herdr agent read worker-2 --source recent-unwrapped --lines 120 --format text
+herdr agent read worker-3 --source recent-unwrapped --lines 120 --format text
 ```
 
 ## Rules
 
-1. **Default to `--no-focus`.** Don't yank the user's view to another pane unless they
+1. **Default `--no-focus`.** Don't yank the user's view to another pane unless they
    explicitly ask.
-
-2. **Always clean up one-shot agents.** Close with `herdr pane close`. For long-running
-   agents, ask the user whether to keep or close.
-
-3. **Wait, then read.** Always `herdr agent wait --status idle` before reading.
-   Reading too early returns incomplete output.
-
-4. **Use `--source recent` or `recent-unwrapped`** when reading results. `visible`
-   only shows the on-screen portion.
-
-5. **Use `--format text`** when parsing output. ANSI escape codes will confuse you.
-
-6. **Short, descriptive names.** `pi-review`, `claude-impl`, `gpt-scout`. You'll type
-   these names in every subsequent command.
-
-7. **Check `herdr agent list` before spawning.** Don't create duplicates. Reuse idle
-   agents.
-
-8. **Prefer one-shot mode (`-p`).** For fire-and-forget tasks, use `pi -p "..."` so
-   the agent exits when done instead of sitting at an interactive prompt.
-
-9. **Handle timeouts.** If `herdr agent wait` times out, run `herdr agent explain` to
-   see the actual state. The agent might be `blocked` on a question — read its output
-   to diagnose.
-
-10. **Own the errors.** If an agent fails, read its output, diagnose, and either retry
-    with a better prompt or report the failure. Don't silently move on.
+2. **Target explicitly.** `--current`, an explicit pane ID, or a unique agent name.
+   Never rely on another client's focused pane.
+3. **Parse IDs from JSON responses**, never from sidebar order or examples.
+4. **Close only what you created.** Don't close panes/agents/workspaces the user or
+   another session owns. Never `herdr server stop` from an active session. Never kill
+   the main herdr process — for experiments use an isolated `herdr --session <name>`.
+5. **herdr = external agents/panes.** For in-process subagents use the `delegate`
+   skill; for wide deterministic sweeps use the Workflow tool — both are out of scope
+   here.
+6. **CLI errors:** server errors are JSON on stderr (exit 1); syntax errors exit 2.

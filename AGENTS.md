@@ -40,14 +40,16 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 ## Architecture elevator
 
 ```
-skills/          — 10 skills (see README table)
+skills/          — 12 skills (see README table)
   grill/           cross-cutting critical thinking
   init-context/    bootstrap AGENTS.md + SESSION.md
   prd/             elicit + lock PRD/system-design/architecture docs
   design-task/     lock design-system.md
   dev-task/        implement with TDD/BDD
   review-task/     verify against locked docs; route findings back
-  herdr/           control herdr terminal workspace
+  handoff/         verified session summary + chain across sessions
+  herdr/           control herdr terminal workspace (external agents in panes)
+  delegate/        in-process subagents — delegability gate + spawn→wait→read
   librarian/       personal research library
   skill-man/       create, validate, deploy skills
   skill-template/  starter skeleton

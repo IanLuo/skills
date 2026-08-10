@@ -21,7 +21,7 @@ git status --short && echo "---" && git diff --stat && echo "---" && git log --o
 ```
 
 Re-read every file the handoff will name. Run tests if claiming they pass.
-Sniff for prior handoffs: `ls HANDOFF.md .claude/handoff/SESSION.md 2>/dev/null`.
+Sniff for prior handoffs: `ls HANDOFF.md SESSION.md .agents/handoff-history/ 2>/dev/null`.
 If a prior handoff exists, read it — chain by incrementing its sequence number;
 don't repeat what it already captured.
 
@@ -91,7 +91,7 @@ Write `HANDOFF.md` at the project root (overwrite; a single file, not a log):
 - Decisions include rationale ("because…").
 - Artifacts section cites existing docs by path rather than restating.
 - If a prior handoff existed: sequence number incremented, prior handoff archived to
-  `.claude/handoff-history/<YYYY-MM-DD>-seq<N>.md`.
+  `.agents/handoff-history/<YYYY-MM-DD>-seq<N>.md`.
 - HANDOFF.md written to project root.
 - Append one line to SESSION.md:
   `<date> · handoff · seq <N>, HANDOFF.md written. Next: resume from HANDOFF.md.`

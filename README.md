@@ -50,8 +50,10 @@ skill (prd, dev-task, or design-task) for follow-up.
 | **[design-task](skills/design-task/SKILL.md)** | Visual/product/interface design with elicitation, tokens, component inventory, concept acceptance, and fidelity evidence. Locks `design-system.md` when verified. |
 | **[dev-task](skills/dev-task/SKILL.md)** | Software development with TDD/BDD, coding conduct, implementation, and verification. One dev-task = one deliverable. Checks for locked upstream docs before starting. |
 | **[review-task](skills/review-task/SKILL.md)** | Correctness gate — verify that a completed task's changes match its defining docs. Catch regressions, invariant violations, and stale evidence. Routes findings back to the owning skill. |
-| **[herdr](skills/herdr/SKILL.md)** | Control the herdr terminal workspace manager — spawn agents in panes, send prompts, wait for results, read output, clean up. Agent-agnostic. |
-| **[librarian](skills/librarian/SKILL.md)** | Personal research library — fan out subagents that cross-score each other, then curate verified results into `~/Documents/librarian/library/`. Query-first, research on cache miss. |
+| **[handoff](skills/handoff/SKILL.md)** | Extract a verified, facts-only session summary so a fresh session can resume without guessing. Chains across multi-session work streams; archives prior handoffs to `.agents/handoff-history/`. |
+| **[herdr](skills/herdr/SKILL.md)** | Control the herdr terminal workspace manager — spawn agents in panes, submit prompts, wait for results, read output, clean up. Agent-agnostic. External agents in panes. |
+| **[delegate](skills/delegate/SKILL.md)** | Move self-contained or noisy work into an in-process subagent to keep the parent context lean. Delegability gate + spawn→wait→read→report; files are escalation only. |
+| **[librarian](skills/librarian/SKILL.md)** | Personal research library — fan out self-scoring subagents, then curate verified results into `~/Documents/librarian/library/`. Query-first, research on cache miss. |
 | **[skill-man](skills/skill-man/SKILL.md)** | Meta-skill — create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. |
 | **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
 

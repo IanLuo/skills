@@ -1,89 +1,62 @@
-# Handoff: librarian + handoff skill redesign — seq 1
+# Handoff: librarian deep-edit + handoff skill shipped + subagent research — seq 2
 
 ## Goal
 
-Improve the `librarian` skill (was slow, under-capturing) and create an improved
-`handoff` skill, grounded in community research (GitHub + web). Then commit.
+Continue the skill-set simplification. This session: evolve the librarian skill through multiple optimization rounds, ship the new handoff skill, and research subagent-management patterns for a future skill.
 
 ## Done
 
-- [V] **Librarian speed fixed** — `skills/librarian/SKILL.md`. Cross-scoring fanout (≥2
-  scorers/finding + refinement loop) replaced with **self-scoring single-pass**: research
-  agents self-assess on the 3 rubric dimensions, orchestrator reviews in seconds. Agent
-  count for `read` depth: 12–20 → 3–5.
-- [V] **query.py deleted** — `skills/librarian/scripts/query.py` removed (117 lines).
-  Query workflow now uses **ripgrep** one-liners in SKILL.md (full-body search,
-  `--glob '!index.md'`, ranked by match count). Fixes the `len(t) > 2` acronym bug by
-  eliminating tokenization entirely.
-- [V] **Explicit save model** — `skills/librarian/SKILL.md` steps 6–7 + Rules. No
-  auto-persist, no save-before-show. Show entry → ask "Save to library?" → persist only
-  what the user names (whole entry or subset). Query is read-only.
-- [V] **Handoff skill created** — `skills/handoff/SKILL.md` (new, untracked). Dead ends
-  mandatory, `[V]`/`[?]` claim tags, artifacts cited by path, chain sequence numbers,
-  source-of-truth rank on resume (code > tests > docs > HANDOFF > older handoffs).
-- [V] **Deployed** — handoff replaced nix version at `~/.claude/skills/handoff`
-  (symlink → repo), deployed to all 10 agents. task-core dangling symlinks pruned (7 agents).
-- [V] **Validate** — `validate.py` passes for both `librarian` and `handoff`.
-- [V] **Committed** — c7af840 "skill-set simplification" (34 files, README + AGENTS.md
-  rewritten, CURSOR→SESSION, task-core eliminated) was committed earlier this session.
+- [V] **Librarian query: query.py replaced with ripgrep** — `skills/librarian/scripts/query.py` deleted (117 lines). `skills/librarian/SKILL.md` Query workflow now uses `rg -il` / `rg -i -c` one-liners for full-body search with match-count ranking. Fixes the `len(t) > 2` acronym bug (no tokenization in rg). Commit: `fa0d647`.
+- [V] **Librarian scoring: cross-scoring → self-scoring** — Cross-scoring fanout (≥2 sibling scorers per finding + refinement loop) replaced with self-scoring single-pass. Research agents self-assess on rubric dimensions; orchestrator reviews in seconds. Agent count for `read` depth: 12–20 → 3–5. Commit: `fa0d647`.
+- [V] **Librarian saves: auto-persist → explicit-only** — Step 6-7 rewritten: show entry first, ask "Save to library?", persist only what the user explicitly names (whole entry or subset). Query is read-only. New rule at top: "Explicit saves only." Commit: `fa0d647`.
+- [V] **Handoff skill created, deployed, exercised** — `skills/handoff/SKILL.md` created (8-section format, `[V]`/`[?]` tags, dead ends mandatory, artifacts-by-path, chain sequence numbers, source-of-truth rank on resume). Deployed over nix-managed version to all 10 agents. Run twice now: seq 1 (prior session) and seq 2 (this session). Commit: `fa0d647`.
+- [V] **Handoff design validated** — archive-on-write model confirmed against community research (all tools converge on this). Entry saved to librarian library: `~/Documents/librarian/library/agent-engineering/handoff-archive-model-consume-on-resume-vs-supersede-on-write.md`. Commit: `fa0d647`.
+- [V] **Librarian entry: handoff ecosystem 2026** — Research on community handoff patterns saved to library during prior session. 3 entries total in library now.
+- [V] **README.md + AGENTS.md rewritten** — 10-skill table, 5-skill pipeline diagram, lock markers, SESSION.md protocol. Commit: `c7af840`.
+- [V] **Committed** — `fa0d647` (librarian self-scoring + rg queries + new handoff skill). Working tree clean.
 
 ## Dead ends (do not repeat)
 
-- **Cross-scoring subagents** (≥2 sibling scorers per finding + refine/plateau/cap loop)
-  — the main slowness. Removed; scoring is mechanical and the orchestrator can review
-  in seconds. Do not re-add.
-- **Index-only grep** (Option B: search `index.md` only) — rejected because it loses
-  body-level detail; a keyword in a finding's body never hits. Went with full-body `rg`.
-- **write-entry.py in bash** — rejected; its complexity (YAML frontmatter, JSON, slug,
-  deterministic index rebuild) is justified in Python. Replacing it would be harder, not easier.
-- **`grep` vs `rg`** — this machine's `grep` is a shell function wrapping `ugrep`, but
-  other agents may get BSD grep. Use `rg` explicitly; it's installed
-  (`/etc/profiles/per-user/ianluo/bin/rg`).
+- **Index-only grep for librarian queries** (Option B: search `index.md` only) — rejected because it loses body-level detail; a keyword buried in a finding's body never hits. Went with full-body `rg`.
+- **"Write-to-files" pattern as default for subagent delegation** — grilled; concluded it's unnecessary for simple delegation. Subagent final text IS the result. Files only needed for: cross-agent coordination, >10K-token results, or cross-session persistence. Default mode: spawn → wait → read final text → report. No files.
+- **Hooks-based automation for handoff** (PreCompact safety net) — user explicitly rejected. Handoff is manual-only.
 
 ## Decisions
 
-- Use **ripgrep** over grep for queries — C-parallel, fast at thousands of entries, no
-  tokenization (so no acronym bug). Match count is the relevance proxy.
-- **Self-score, then orchestrator reviews** — no scoring subagents ever.
-- **Explicit saves only** — library changes only on an explicit "save" from the user.
-- **Handoff = repo-verified claims** — every Done claim tagged `[V]` (verified) or `[?]`
-  (from memory, treat as lead).
-- **Handoff keeps to 4 sections was insufficient** — expanded to 8 (Goal, Done, Dead ends,
-  Decisions, In progress, Blocked, Next step, Parameters, Artifacts).
-- **PreCompact hook dropped** (user decided) — handoff is run manually, not automated.
+- **ripgrep over Python for queries** — C-parallel, fast at thousands of entries, no tokenization. Match count is relevance proxy.
+- **Self-score over cross-score** — scoring is mechanical; orchestrator review in seconds beats spawning 8 scoring subagents.
+- **Explicit saves over auto-persist** — library changes only on explicit "save" from user. Show first, write second.
+- **Supersede-on-write over consume-on-resume** for handoff archiving — crash-safe, compaction-safe. All community tools agree.
+- **Delegate skill should NOT default to file-output** — subagent final text is the result. Grill confirmed.
 
 ## In progress
 
-- None — all planned edits are applied.
+- **Subagent-management research completed but NOT saved** — 4-agent fan-out (native tools, community skills, context isolation, orchestration patterns) returned rich findings. Two skill ideas survived: `delegate` (lightweight fan-out to subagents for noisy work) and `agents-health` (worktree cleanup, orphan detection). These were NOT written to the librarian library (user never said "save"). The transcripts live in `~/.claude/projects/{project}/{sessionId}/subagents/agent-{id}.jsonl`.
+- **No subagent skills implemented yet** — research is done, synthesis was presented, but the user moved on to grill before confirming next steps.
 
 ## Blocked / open questions
 
-- **Librarian never live-tested end-to-end** — web was blocked, so the new flows
-  (self-scoring, rg query, explicit save) have not run in a real session. First real
-  `/librarian` research should be treated as a forward-test.
-- **Memory stale** — `~/.claude/projects/.../memory/librarian-skill.md` still says
-  "cross-scoring fanout"; update to self-scoring single-pass + explicit save.
-- **Uncommitted** — librarian changes + new handoff skill are not committed yet.
+- **Librarian never live-tested end-to-end** — web was blocked during development. New flows (self-scoring, rg query, explicit save) exist on paper only.
+- **Memory notes may be stale** — `librarian-skill.md` memory may still describe old cross-scoring model.
 
 ## Next step
 
-- Commit the uncommitted work: `git add -A && git commit` (librarian edits + new handoff skill).
+- Decide whether to implement `delegate` and/or `agents-health` skills based on the subagent research, or move on to other priorities.
 
 ## Parameters to resume
 
 - repo: `/Users/ianluo/Documents/apps/skills`, branch: `main`
 - key files:
   - `skills/librarian/SKILL.md` — rg query + self-scoring + explicit-save workflow
-  - `skills/librarian/references/rubric.md` — self-scoring rubric
-  - `skills/librarian/scripts/write-entry.py` — the only writer; `init-library.sh` bootstraps
-  - `skills/handoff/SKILL.md` — new skill, this handoff follows its format
-  - `skills/skill-man/scripts/validate.py` — run to validate skills
-- env: none non-standard; `LIBRARY_ROOT` overrides library path (default `~/Documents/librarian`)
+  - `skills/handoff/SKILL.md` — session handoff skill (format this document follows)
+  - `skills/grill/SKILL.md` — cross-cutting critical thinking
+  - `AGENTS.md` — repo index; `README.md` — skills table + design
+- env: none non-standard
+- subagent transcripts: `~/.claude/projects/.../subagents/agent-*.jsonl` — subagent research findings
 
 ## Artifacts
 
-- `~/Documents/librarian/library/` — user data, outside the repo; 2 entries
-  (`agent-engineering/` handoff research, `technology/cni-basics`), `index.md` maintained
-  by `write-entry.py`
-- `skills/librarian/SKILL.md` — the librarian workflow
-- `skills/handoff/SKILL.md` — this skill, whose format this document follows
+- `HANDOFF.md` — this file, seq 2. seq 1 archived to `.agents/handoff-history/2026-08-06-seq1.md`
+- `SESSION.md` — two-line session log (seq 1 + seq 2)
+- `~/Documents/librarian/library/` — 3 entries (handoff ecosystem, CNI basics, handoff-archive-model)
+- `~/.claude/projects/.../subagents/agent-*.jsonl` — subagent research transcripts (not in repo)
