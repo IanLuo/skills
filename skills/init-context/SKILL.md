@@ -63,7 +63,7 @@ Section-by-section guidance:
 - **Architecture elevator** — 5 lines + a one-level repo tree with one-line purpose
   per dir. Deep rationale goes in ARCHITECTURE.md or ADRs.
 - **Deeper docs** — list paths to locked docs that exist on disk (find with
-  `grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`). One line each:
+  `grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`). One line each:
   `<path>` — `<one-line purpose>`. Zero docs → omit the section. This is a
   snapshot, not a registry — consumers discover docs by grepping lock markers directly.
 
@@ -107,3 +107,5 @@ Safe to run again as the project matures:
   worse than no command.
 - Add only what a fresh agent can't derive. Prefer concrete over prose.
 - AGENTS.md is an index, not a manifest. Route everything through the embed/point/drop gate.
+- AGENTS.md/SESSION.md follow the house agent-oriented doc format — bullets, concrete,
+  checklist-complete, freshness date (see `skill-man/references/doc-format.md`).

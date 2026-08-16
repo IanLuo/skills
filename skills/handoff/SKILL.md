@@ -72,6 +72,9 @@ Write `HANDOFF.md` at the project root (overwrite; a single file, not a log):
 
 ### Section rules
 
+HANDOFF.md follows the house agent-oriented doc format — bullets, facts, `[V]`/`[?]`
+tags, no padding (see `skill-man/references/doc-format.md`).
+
 - **Every claim in Done gets a tag:** `[V]` means you verified it against the repo during
   this handoff (re-read the file, ran the command, checked the output). `[?]` means you're
   recalling from memory — a fresh agent must treat it as a lead, not a fact.

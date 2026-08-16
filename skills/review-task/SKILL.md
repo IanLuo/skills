@@ -14,7 +14,7 @@ task goals. This is a correctness gate, not a code-quality review.
 ## Start
 
 1. Read the last line of `SESSION.md` and `AGENTS.md` before inspecting changes.
-2. Find locked docs on disk: `grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`.
+2. Find locked docs on disk: `grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`.
    If a defining doc the diff touches is absent, report "no locked doc for `<area>`;
    can't verify fidelity, only invariants." Don't guess a path.
 
@@ -56,7 +56,7 @@ For multi-file reviews, spawn one subagent per review dimension (invariants, doc
 - Clean verdict: append to SESSION.md:
   `<date> · review-task · clean: N claims, M files, evidence reproduces, no regressions. Next: <next skill to run>.`
 - **Route non-clean findings back to the owning skill:**
-  - ⚠️ gap in spec/PRD/architecture fidelity → re-run `prd` on the relevant rung, or `dev-task` to close the gap.
+  - ⚠️ gap in spec/PRD/architecture fidelity → re-run `specs` on the relevant rung, or `dev-task` to close the gap.
   - ⚠️ gap in design fidelity → re-run `design-task` to reconcile the artifact.
   - 🔴 regression or invariant violation → re-run `dev-task` to fix.
   - Tell the user which skill to re-run and why.

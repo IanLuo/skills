@@ -9,7 +9,7 @@ cross-cutting concerns. It is *not* a duplicate of AGENTS.md's architecture-elev
 This doc holds the elevator + the rationale for *why these choices*, which init-context
 deliberately leaves to a pointer.
 
-Contract defaults: `upstream: prd, system-design`; `referrers: dev/design tasks`.
+Contract defaults: `upstream: spec, system-design`; `referrers: dev/design tasks`.
 
 ## Rungs
 
@@ -29,7 +29,7 @@ Contract defaults: `upstream: prd, system-design`; `referrers: dev/design tasks`
 
 ## Contract rung (last, before lock)
 
-- **upstream**: the locked PRD + locked system-design (name both paths)
+- **upstream**: the locked spec + locked system-design (name both paths)
 - **referrers**: dev tasks, design tasks
 
 ## What not to bake in

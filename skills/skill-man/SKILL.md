@@ -34,6 +34,9 @@ While authoring the body, read these (each loaded only when you need it):
 - **[best-practices.md](references/best-practices.md)** — read before and while
   writing the body. Covers progressive disclosure, conciseness, degrees of freedom,
   description-as-trigger, and forward-testing.
+- **[doc-format.md](references/doc-format.md)** — the house standard for docs skills
+  produce: agent-oriented (not human), minimum size, checklist-complete, freshness.
+  Every doc-producing skill links to it.
 - **[popular-skills.md](references/popular-skills.md)** — read when you want
   inspiration or want to study how well-known skills are structured.
 

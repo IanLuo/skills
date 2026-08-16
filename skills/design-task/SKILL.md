@@ -14,7 +14,7 @@ survive across implementation sessions.
 ## Start
 
 1. Read the last line of `SESSION.md` and `AGENTS.md` before editing.
-2. Find locked docs on disk: `grep -rl '<!-- prd:locked:' *.md`. If a needed
+2. Find locked docs on disk: `grep -rl '<!-- specs:locked:' *.md`. If a needed
    upstream doc (PRD, architecture) is absent, flag it and ask before committing
    a direction. Don't silently assume product intent.
 
@@ -50,6 +50,9 @@ For multi-screen/component tasks, fan out subagents in parallel, then integrate 
   for it before implementing. Re-run design-task to update (overwrite the old marker).
 - Append one line to SESSION.md:
   `<date> · design-task · <what was designed, accepted, next step>.`
+- The design artifact follows the house agent-oriented doc format — bullets only,
+  completeness via checklist, explicit `N/A:`, freshness stamp. See
+  `skill-man/references/doc-format.md`.
 
 ### Verification evidence
 

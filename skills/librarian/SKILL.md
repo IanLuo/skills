@@ -149,6 +149,8 @@ frontmatter; the script keeps it consistent so full-body search (`rg`) can rely 
 - **Terse output everywhere.** Facts only, at every layer — subagent findings, your
   synthesis, user-facing summaries. No intro/conclusion padding, no hedging. A claim
   without a source is dropped, not hedged: accuracy beats completeness.
+- Saved entries follow the house agent-oriented doc format (`skill-man/references/doc-format.md`):
+  bullets only, checklist-complete sections, explicit `N/A:`, freshness date in frontmatter.
 - Accept `low-confidence` honestly into the library — it is a durable record of a gap,
   not a failure. Name the gap in `## Open questions`.
 - Keep entries sourced. A finding without a source URL scores low on source quality by

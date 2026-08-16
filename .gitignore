@@ -9,3 +9,6 @@
 # Notes / scratch
 scratch/
 *.log
+
+# Generated agent artifacts (regenerable — not source)
+.agents/artifacts/

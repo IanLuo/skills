@@ -11,7 +11,7 @@ metadata:
 ## Start
 
 1. Read the last line of `SESSION.md` and `AGENTS.md` before editing.
-2. Find locked docs on disk: `grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`.
+2. Find locked docs on disk: `grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`.
    If a needed doc (PRD, system-design, architecture) is absent, flag it and ask before
    proceeding. If `design-system.md` exists, check its first line for
    `<!-- design:locked:` — if absent, flag "design not frozen; run design-task first."

@@ -5,7 +5,7 @@ clear [judging.md](judging.md) before advancing. A system-design doc is **not** 
 PRD and **not** the architecture — it holds the *component-level how* (components,
 data, interfaces, failure) that the architecture layer loads on.
 
-Contract defaults: `upstream: prd`; `referrers: architecture, design-system`.
+Contract defaults: `upstream: spec`; `referrers: architecture, design-system`.
 
 ## Rungs
 
@@ -27,7 +27,7 @@ Contract defaults: `upstream: prd`; `referrers: architecture, design-system`.
 
 ## Contract rung (last, before lock)
 
-- **upstream**: the locked PRD (name its path)
+- **upstream**: the locked spec (name its path)
 - **referrers**: architecture, design-system, dev tasks
 
 ## What not to bake in

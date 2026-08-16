@@ -12,7 +12,7 @@ SESSION.md ── one-line append-only session log (every skill appends on compl
 
 grill ── cross-cutting critical thinking (applies to every turn)
 
-init-context → prd → design-task → dev-task → review-task
+init-context → specs → design-task → dev-task → review-task
    │            │          │            │            │
    │            │          │            │            └── verify against locked docs;
    │            │          │            │               route ⚠️/🔴 back to owning skill
@@ -21,24 +21,24 @@ init-context → prd → design-task → dev-task → review-task
    │            │          │
    │            │          └── lock design-system.md (frozen tokens, components, concepts)
    │            │
-   │            └── lock PRD/system-design/architecture docs (elicit + freeze decisions)
+   │            └── lock spec/system-design/architecture docs (elicit + freeze decisions)
    │
    └── bootstrap AGENTS.md + SESSION.md for a project
 ```
 
 **Lock markers** freeze decisions so fresh agents don't re-litigate:
-- `<!-- prd:locked:<sha> <date> -->` on spec docs
+- `<!-- specs:locked:<sha> <date> -->` on spec docs
 - `<!-- design:locked:<sha> <date> -->` on design-system.md
 
 Consumer skills discover upstream docs by grepping lock markers on disk:
-`grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`
+`grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`
 
 **SESSION.md** is an append-only one-line log at the repo root. Every session reads
 the last line to know where things stand, then appends one line on completion:
 `<date> · <skill> · <what happened>. Next: <next step>.`
 
 **review-task** closes the loop — ⚠️ gaps and 🔴 regressions route back to the owning
-skill (prd, dev-task, or design-task) for follow-up.
+skill (specs, dev-task, or design-task) for follow-up.
 
 ## Skills
 
@@ -46,13 +46,15 @@ skill (prd, dev-task, or design-task) for follow-up.
 |---|---|
 | **[grill](skills/grill/SKILL.md)** | Cross-cutting critical thinking — pressure-test ideas, offer alternatives, cite sources. Applies to every turn. |
 | **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (a compact index: Intent, run/build/test, hot invariants, architecture elevator, deeper docs) and `SESSION.md` (one-line session log). Rerunnable — re-derives from a fresh survey. |
-| **[prd](skills/prd/SKILL.md)** | Interactive elicitation — one rung at a time — that locks decisions into durable PRD, system-design, or architecture docs. On re-entry, shows the locked doc and re-elicits only what changed. |
+| **[specs](skills/specs/SKILL.md)** | Interactive elicitation — one rung at a time — that locks decisions into a durable formal spec (problem/who, scope+flow, acceptance criteria, KPIs, NFRs, assumptions, data, rollback/recovery, security, verification), plus system-design and architecture docs. On re-entry, shows the locked doc and re-elicits only what changed. |
 | **[design-task](skills/design-task/SKILL.md)** | Visual/product/interface design with elicitation, tokens, component inventory, concept acceptance, and fidelity evidence. Locks `design-system.md` when verified. |
 | **[dev-task](skills/dev-task/SKILL.md)** | Software development with TDD/BDD, coding conduct, implementation, and verification. One dev-task = one deliverable. Checks for locked upstream docs before starting. |
 | **[review-task](skills/review-task/SKILL.md)** | Correctness gate — verify that a completed task's changes match its defining docs. Catch regressions, invariant violations, and stale evidence. Routes findings back to the owning skill. |
 | **[handoff](skills/handoff/SKILL.md)** | Extract a verified, facts-only session summary so a fresh session can resume without guessing. Chains across multi-session work streams; archives prior handoffs to `.agents/handoff-history/`. |
 | **[herdr](skills/herdr/SKILL.md)** | Control the herdr terminal workspace manager — spawn agents in panes, submit prompts, wait for results, read output, clean up. Agent-agnostic. External agents in panes. |
 | **[delegate](skills/delegate/SKILL.md)** | Move self-contained or noisy work into an in-process subagent to keep the parent context lean. Delegability gate + spawn→wait→read→report; files are escalation only. |
+| **[task-agent](skills/task-agent/SKILL.md)** | Hand a task to a new agent on its own git worktree, then collect and merge. `start` (worktree + task card + spawn via herdr) and manual `end` (verify → review-task → merge → clean up). Coordinator-only. |
+| **[artifact](skills/artifact/SKILL.md)** | Render context/AI response as a self-contained interactive HTML page the user can annotate; feedback is copy-pasted back and resolved to the exact `data-anchor` it points at. No server. |
 | **[librarian](skills/librarian/SKILL.md)** | Personal research library — fan out self-scoring subagents, then curate verified results into `~/Documents/librarian/library/`. Query-first, research on cache miss. |
 | **[skill-man](skills/skill-man/SKILL.md)** | Meta-skill — create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. |
 | **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
@@ -99,6 +101,19 @@ If you move the repo, re-run `./bin/deploy.sh` (or `--doctor` to check symlinks)
 ```
 
 Multiple `--skill` / `--agent` flags are allowed.
+
+**Global agent instructions** — one canonical `global/AGENTS.md` (currently Karpathy's
+core rules) symlinked into every agent's global instruction file (`~/.claude/CLAUDE.md`,
+`~/.agents/AGENTS.md`, opencode/codex `AGENTS.md`, `~/.gemini/GEMINI.md`):
+
+```bash
+./bin/deploy-global.sh                # link global/AGENTS.md to all supported agents
+./bin/deploy-global.sh --list         # show agents + their global instruction files
+./bin/deploy-global.sh --agent claude # link only to named agent(s)
+./bin/deploy-global.sh --doctor       # verify links point at the repo source
+./bin/deploy-global.sh --dry-run      # show what would happen, change nothing
+./bin/deploy-global.sh --force        # overwrite a real file (backs it up to .bak)
+```
 
 ### Keeping deployed skills in sync
 

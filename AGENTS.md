@@ -21,6 +21,9 @@ bash tests/run.sh
 ./bin/deploy.sh --dry-run        # preview
 ./bin/deploy.sh --doctor         # health-check symlinks
 
+# Global agent instructions (global/AGENTS.md → every agent's global instruction file)
+./bin/deploy-global.sh           # link; --list / --doctor / --dry-run / --force
+
 # Check upstream sync (are we behind anthropics/skills?)
 bash skills/skill-man/scripts/sync-check.sh
 
@@ -40,16 +43,18 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 ## Architecture elevator
 
 ```
-skills/          — 12 skills (see README table)
+skills/          — 14 skills (see README table)
   grill/           cross-cutting critical thinking
   init-context/    bootstrap AGENTS.md + SESSION.md
-  prd/             elicit + lock PRD/system-design/architecture docs
+  specs/           elicit + lock formal spec/system-design/architecture docs
   design-task/     lock design-system.md
   dev-task/        implement with TDD/BDD
   review-task/     verify against locked docs; route findings back
   handoff/         verified session summary + chain across sessions
   herdr/           control herdr terminal workspace (external agents in panes)
   delegate/        in-process subagents — delegability gate + spawn→wait→read
+  task-agent/       worktree-delegated tasks — start (dispatch) / end (merge back)
+  artifact/         interactive HTML view of context + copy-paste annotation feedback
   librarian/       personal research library
   skill-man/       create, validate, deploy skills
   skill-template/  starter skeleton
@@ -57,8 +62,8 @@ bin/             — deploy.sh (symlinks skills into each detected agent's globa
 tests/           — validation fixture tests + upstream-conformance cross-check
 ```
 
-The core pipeline is: init-context → prd → design-task → dev-task → review-task.
-Lock markers (`<!-- prd:locked:... -->`, `<!-- design:locked:... -->`) freeze decisions;
+The core pipeline is: init-context → specs → design-task → dev-task → review-task.
+Lock markers (`<!-- specs:locked:... -->`, `<!-- design:locked:... -->`) freeze decisions;
 consumer skills discover upstream docs by grepping for them. SESSION.md is an
 append-only one-line session log at the repo root. Deploy uses symlinks — edits are
 live immediately.
@@ -69,5 +74,5 @@ live immediately.
 |---|---|
 | skill authoring rules, spec cheatsheet, best practices | `skills/skill-man/SKILL.md` |
 | deploy topology and constraints | `bin/deploy.sh` |
-| prd elicitation ladders (prd, system-design, architecture) | `skills/prd/references/` |
+| specs elicitation ladders (spec, system-design, architecture) | `skills/specs/references/` |
 | librarian entry format and rubric | `skills/librarian/references/` |

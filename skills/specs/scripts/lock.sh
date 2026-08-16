@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# lock.sh — write the prd lock marker + link contract at the top of a doc and freeze it.
+# lock.sh — write the specs lock marker + link contract at the top of a doc and freeze it.
 #
 # Usage:
-#   lock.sh <doc> --type <prd|system-design|architecture> \
+#   lock.sh <doc> --type <spec|system-design|architecture> \
 #           [--upstream <docs>] [--referrers <docs>] [--force] [--date YYYY-MM-DD]
 #
 #   --upstream   docs this one relied on at lock time ("none" for a root).
@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
     --referrers)  shift; REFERRERS="${1:-}"; shift ;;
     --force)      FORCE=1; shift ;;
     --date)       shift; DATE="${1:-}"; shift ;;
-    -h|--help)    printf 'Usage: lock.sh <doc> --type <prd|system-design|architecture> [--upstream <docs>] [--referrers <docs>] [--force] [--date YYYY-MM-DD]\n'; exit 0 ;;
+    -h|--help)    printf 'Usage: lock.sh <doc> --type <spec|system-design|architecture> [--upstream <docs>] [--referrers <docs>] [--force] [--date YYYY-MM-DD]\n'; exit 0 ;;
     -*)           printf 'lock: unknown option: %s\n' "$1" >&2; exit 2 ;;
     *)
       if [ -z "$DOC" ]; then DOC="$1"
@@ -41,8 +41,8 @@ done
 
 [ -n "$DOC" ] || { printf 'lock: <doc> is required\n' >&2; exit 2; }
 case "$TYPE" in
-  prd|system-design|architecture) ;;
-  *) printf 'lock: --type must be prd|system-design|architecture (got "%s")\n' "${TYPE:-}" >&2; exit 2 ;;
+  spec|system-design|architecture) ;;
+  *) printf 'lock: --type must be spec|system-design|architecture (got "%s")\n' "${TYPE:-}" >&2; exit 2 ;;
 esac
 
 SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
@@ -51,7 +51,7 @@ if [ -z "$SHA" ]; then
 fi
 [ -n "$DATE" ] || DATE="$(date +%F)"
 
-if grep -qE '^<!-- prd:locked:[0-9a-f]+ [0-9-]+ type=' "$DOC" 2>/dev/null; then
+if grep -qE '^<!-- specs:locked:[0-9a-f]+ [0-9-]+ type=' "$DOC" 2>/dev/null; then
   if [ "$FORCE" -ne 1 ]; then
     printf 'lock: %s is already locked; pass --force to rotate\n' "$DOC" >&2; exit 1
   fi
@@ -69,14 +69,14 @@ REFERRERS_NORM="$(normalize_list "$REFERRERS")"
 [ -z "$UPSTREAM_NORM" ] && UPSTREAM_NORM="none"
 [ -z "$REFERRERS_NORM" ] && REFERRERS_NORM="none"
 
-MARKER="<!-- prd:locked:${SHA} ${DATE} type=${TYPE} -->"
+MARKER="<!-- specs:locked:${SHA} ${DATE} type=${TYPE} -->"
 CONTRACT_HEADER="## Link contract"
 UPSTREAM_LINE="- **upstream** (this doc relies on): ${UPSTREAM_NORM}"
 REFERRERS_LINE="- **referrers** (must cite this when they change): ${REFERRERS_NORM}"
 
 # Read existing body, stripping old marker + contract block.
 if [ -f "$DOC" ]; then
-  awk -v marker_re='^<!-- prd:locked:' -v contract_hdr="$CONTRACT_HEADER" '
+  awk -v marker_re='^<!-- specs:locked:' -v contract_hdr="$CONTRACT_HEADER" '
     BEGIN { skip = 0; started = 0 }
     NR == 1 && $0 ~ marker_re { next }
     NR == 2 && $0 == "" { next }

@@ -43,6 +43,6 @@ docs/         — <one-line purpose>
 ## Deeper docs
 
 <List locked docs that exist on disk — one line each. Find with:
-`grep -rl '<!-- prd:locked:\|<!-- design:locked:' *.md`. Omit this section if zero docs exist.>
+`grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`. Omit this section if zero docs exist.>
 
 - `<path>` — `<one-line purpose>`
