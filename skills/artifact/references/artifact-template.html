@@ -4,99 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>artifact</title>
-<style>
-  /* One design system, reused everywhere: the same tokens drive the content AND the
-     annotation chrome, so the dialog, buttons and decorators follow the newspaper
-     design instead of carrying their own neutral look. */
-  :root { color-scheme: light dark;
-          --sug:#4a7dff; --imp:#e8a33d; --crit:#e5484d; --amber:#e8a33d;
-          --paper:      light-dark(#f6f1e3, #1d1a15);   /* newsprint */
-          --ink:        light-dark(#1a1a1a, #e8e2d3);
-          --ink-soft:   light-dark(#00000045, #ffffff45);  /* muted text */
-          --rule:       light-dark(rgba(26,26,26,.30), rgba(232,226,211,.30));  /* decorative lines — faint, never text-weight */
-          --border:     light-dark(#0000002e, #ffffff2e); }  /* thin, light border */
-  body { font-family: Georgia, "Times New Roman", serif; background: var(--paper); color: var(--ink);
-         max-width: 46rem; margin: 2rem auto; padding: 2.5rem 3rem; line-height: 1.7; font-size: 1.05rem; }
-
-  /* Masthead — the artifact title as a newspaper nameplate. Faint double rule. */
-  h1[data-anchor="title"] { font-size: 2.6rem; font-weight: 700; line-height: 1.1;
-         text-align: center; letter-spacing: .01em; margin: 0 0 .4rem;
-         border-bottom: 4px double var(--rule); padding-bottom: .8rem; }
-
-  /* Section rules — classic newspaper sub-head rule, faint. */
-  h2 { font-size: 1.4rem; font-weight: 700; margin: 1.9rem 0 .5rem;
-       border-bottom: 2px solid var(--rule); padding-bottom: .25rem; }
-  h3 { font-size: 1.15rem; font-weight: 700; margin: 1.4rem 0 .3rem; }
-
-  p { margin: .55rem 0; }
-  ul, ol { margin: .5rem 0 .5rem 1.4rem; padding: 0; }
-  li { margin: .3rem 0; }
-  code { font-family: ui-monospace, monospace; font-size: .92em; background: light-dark(#0001, #fff1);
-         border-radius: 3px; padding: 0 .2em; }
-  a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-
-  /* Anchors: clickable + annotated. Decorators stay barely-there — a soft tint,
-     no outlines that compete with the text. */
-  [data-anchor] { cursor: pointer; border-radius: 4px; }
-  [data-anchor]:hover { background: light-dark(rgba(0,0,0,.04), rgba(255,255,255,.05)); }
-  [data-anchor].marked { background: color-mix(in srgb, var(--amber) 7%, transparent); }
-  [data-anchor].marked::after { content: "●"; color: color-mix(in srgb, var(--amber) 45%, transparent);
-                                margin-left: 6px; font-size: .65rem; }
-
-  /* Annotation dialog — SAME newsprint paper as the page, so it looks native.
-     Elevation comes from the border + shadow only; no colored card, no accent line. */
-  #form { position: fixed; z-index: 10; width: 16rem; background: var(--paper); color: var(--ink);
-          border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px #0005;
-          font-size: .95rem; overflow: hidden; }
-  #form .head { padding: .45rem .6rem; border-bottom: 1px solid var(--border);
-                font-size: .72rem; letter-spacing: .06em; text-transform: uppercase;
-                color: var(--ink-soft); }
-  #form .body { padding: .6rem; }
-  #form textarea { width: 100%; box-sizing: border-box; min-height: 3.2rem; font-size: .95rem; font-family: inherit;
-                   padding: .4rem; border-radius: 4px; border: 1px solid var(--border);
-                   background: var(--paper); color: var(--ink); margin-bottom: .4rem; }
-
-  /* Level buttons — newspaper-styled: a small colored dot carries the severity,
-     the selected state is ink-filled (no big blue/amber/red fills). */
-  #levels { display: flex; gap: .35rem; margin-bottom: .5rem; }
-  #levels .lvl { flex: 1; display: flex; align-items: center; justify-content: center; gap: .3rem;
-                 padding: .45rem 0; font-size: .72rem; border-radius: 6px;
-                 border: 1px solid var(--border); background: transparent; color: var(--ink);
-                 font-family: inherit; cursor: pointer; }
-  #levels .lvl::before { content: "●"; font-size: .55rem; }
-  #levels .lvl[data-sev="suggestion"]::before { color: var(--sug); }
-  #levels .lvl[data-sev="important"]::before { color: var(--imp); }
-  #levels .lvl[data-sev="critical"]::before { color: var(--crit); }
-  #levels .lvl.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-  #levels .lvl.active::before { color: var(--paper); }
-
-  #form .actions { display: flex; gap: .4rem; }
-  #form .actions button { flex: 1; padding: .5rem 0; font-size: .85rem; border-radius: 6px; cursor: pointer; }
-  #add { background: var(--ink); color: var(--paper); border: 0; }
-  #cancel { background: transparent; border: 1px solid var(--border); color: var(--ink); }
-
-  #done { position: fixed; bottom: 1rem; right: 1rem; z-index: 20; padding: .7rem 1.4rem; border: 0;
-          border-radius: 999px; background: var(--ink); color: var(--paper); font-size: 1rem;
-          cursor: pointer; box-shadow: 0 6px 16px #0005; font-family: Georgia, serif; }
-  #raw { position: fixed; bottom: 1.35rem; right: 7.2rem; z-index: 20; font-size: .75rem;
-         color: var(--ink-soft); cursor: pointer; font-family: Georgia, serif; }
-  #status { position: fixed; bottom: 1rem; left: 1rem; z-index: 20; font-size: .8rem; color: var(--ink-soft); }
-</style>
+<!-- Static chrome — NOT generated per artifact. Copy chrome.css + chrome.js from the
+     skill's references/ into the artifact dir once per project, then reference them. -->
+<link rel="stylesheet" href="chrome.css">
 </head>
 <body>
 
 <!-- ============================================================
-     AI: render the data below in newspaper style — the h1[data-anchor=title]
-     is the masthead, h2 headings get section rules. Put the load-bearing
-     element in the title. Every element the user might comment on gets a
-     STABLE, kebab-case data-anchor id (e.g. data-anchor="section-goals").
-     Clicking an element opens an inline feedback box right there. Do not
-     change anchor ids between iterations — the pasted feedback resolves by id.
+     AI: render the data below. Every element the user might
+     comment on gets a STABLE, kebab-case data-anchor id, e.g.
+     data-anchor="section-goals". Clicking an element opens an
+     inline feedback box right there. Do not change anchor ids
+     between iterations — the pasted feedback resolves by id.
      ============================================================ -->
 
 <h1 data-anchor="title">…</h1>
 
-<!-- Required: Done button + inline form + script. Keep verbatim. -->
+<!-- Required chrome markup — keep verbatim. -->
 <button id="done">Done · <span id="count">0</span></button>
 <span id="raw" title="Copy as raw JSON">raw</span>
 <div id="status"></div>
@@ -114,97 +38,6 @@
   </div>
 </div>
 
-<script>
-  // Click-to-annotate + Done-copy-close. Keep verbatim. Uses
-  // document.execCommand('copy'), NOT navigator.clipboard — unavailable on file://.
-  const ANNOTATIONS = [];
-  let target = null;   // {el, id, snippet}
-  let severity = 'suggestion';
-
-  document.addEventListener('click', (e) => {
-    const el = e.target.closest('[data-anchor]');
-    if (!el) return;
-    e.preventDefault();
-    target = { el, id: el.dataset.anchor, snippet: el.textContent.trim().slice(0, 80) };
-    showForm(el);
-  });
-
-  // Position the dialog beside the clicked element, clamped fully on-screen.
-  function showForm(el) {
-    const f = document.getElementById('form');
-    f.hidden = false;                                   // make it measurable
-    const r = el.getBoundingClientRect();
-    const w = f.offsetWidth, h = f.offsetHeight;
-    let x = Math.max(4, Math.min(r.left, window.innerWidth - w - 4));
-    let y = r.bottom + 6;
-    if (y + h > window.innerHeight - 4) y = Math.max(4, r.top - h - 6);  // flip above if needed
-    f.style.left = x + 'px';
-    f.style.top = y + 'px';
-    document.getElementById('comment').value = '';
-    document.getElementById('comment').focus();
-  }
-
-  // Severity as three toggle buttons (no dropdown).
-  document.querySelectorAll('#levels .lvl').forEach((b) => {
-    b.onclick = () => {
-      severity = b.dataset.sev;
-      document.querySelectorAll('#levels .lvl').forEach((x) => x.classList.toggle('active', x === b));
-    };
-  });
-
-  document.getElementById('cancel').onclick = () => {
-    document.getElementById('form').hidden = true;
-    target = null;
-  };
-
-  document.getElementById('add').onclick = () => {
-    const c = document.getElementById('comment').value.trim();
-    if (!target || !c) return;
-    ANNOTATIONS.push({ anchor: { id: target.id, snippet: target.snippet }, comment: c, severity });
-    target.el.classList.add('marked');
-    document.getElementById('count').textContent = ANNOTATIONS.length;
-    document.getElementById('form').hidden = true;
-    target = null;
-  };
-
-  // Copy in a compact, readable line format (id (severity): comment — "snippet").
-  function renderFeedback() {
-    return ANNOTATIONS.map((a) =>
-      a.anchor.id + ' (' + a.severity + '): ' + a.comment +
-      ' — "' + a.anchor.snippet.slice(0, 40) + '…"'
-    ).join('\n');
-  }
-
-  function copyText(text) {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
-    document.body.removeChild(ta);
-    return ok;
-  }
-
-  document.getElementById('done').onclick = () => {
-    const btn = document.getElementById('done');
-    const status = document.getElementById('status');
-    if (ANNOTATIONS.length === 0) { status.textContent = 'No feedback yet — click any element to add.'; return; }
-    if (!copyText(renderFeedback())) {
-      status.textContent = 'Copy failed — select manually:\n' + renderFeedback();
-      return;
-    }
-    btn.textContent = 'Copied ✓';
-    status.textContent = 'Paste it into the AI window, then close this tab.';
-    setTimeout(() => { try { window.close(); } catch (err) {} }, 200);
-  };
-
-  document.getElementById('raw').onclick = () => {
-    const status = document.getElementById('status');
-    if (ANNOTATIONS.length === 0) { status.textContent = 'No feedback yet.'; return; }
-    status.textContent = copyText(JSON.stringify(ANNOTATIONS)) ? 'Raw JSON copied.' : 'Copy failed.';
-  };
-</script>
+<script src="chrome.js"></script>
 </body>
 </html>

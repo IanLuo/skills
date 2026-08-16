@@ -15,18 +15,22 @@ feedback loop is copy-paste — no server, no POST.
 
 ## Generate
 
-1. Take the data from the current context or the AI's response. Render it as ONE
-   self-contained HTML file — inline CSS/JS, no external CDN/fonts/network, no build.
-   Write it to a durable path in the project's agent-data dir:
-   `.agents/artifacts/<name>.html`.
-2. Put a **stable `data-anchor="<kebab-id>"`** on every element the user might want to
-   comment on. Anchor ids must NOT change between iterations — the pasted feedback
-   resolves by id, with the quote as fallback.
-3. Include the click-to-annotate JS + Done button from
-   [references/artifact-template.html](references/artifact-template.html) **verbatim** —
-   clicking an element opens an inline feedback box right there; a fixed **Done** button
-   copies the feedback JSON and tries to close the page. It uses
-   `document.execCommand('copy')`, NOT `navigator.clipboard` (unavailable on `file://`).
+1. Take the data from the current context or the AI's response. Render it as
+   `artifact.html` in the project's agent-data dir: `.agents/artifacts/<name>.html`.
+   The file is the CONTENT + the small chrome markup — it does NOT inline the CSS/JS.
+2. **Copy the static chrome once per project** (if not already there):
+   `cp` `chrome.css` + `chrome.js` from this skill's `references/` into
+   `.agents/artifacts/`. They are shared by every artifact in the project — never
+   regenerate them.
+3. Write `artifact.html` following
+   [references/artifact-template.html](references/artifact-template.html):
+   - `<link rel="stylesheet" href="chrome.css">` in the head, `<script src="chrome.js">`
+     at the end (relative links work on `file://`).
+   - The chrome markup verbatim (Done button, `raw`, `status`, the `#form` with the
+     three level buttons).
+   - Your content in place of the placeholder — with a **stable
+     `data-anchor="<kebab-id>"`** on every element the user might comment on. Anchor
+     ids must NOT change between iterations; the pasted feedback resolves by id.
 4. Open it in the browser: `open <path>` (macOS) or `xdg-open <path>` (Linux). Tell the
    user it's open, that every element is clickable to annotate, and the Done button
    copies the feedback for pasting back.
