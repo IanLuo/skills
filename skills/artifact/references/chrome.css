@@ -4,22 +4,24 @@
   :root { color-scheme: light dark;
           --sug:#4a7dff; --imp:#e8a33d; --crit:#e5484d; --amber:#e8a33d;
           --paper:      light-dark(#f6f1e3, #1d1a15);   /* newsprint */
-          --ink:        light-dark(#1a1a1a, #e8e2d3);
+          --ink:        light-dark(#4d4943, #c9c2b2);   /* body ink — clearly muted warm gray */
+          --ink-strong: light-dark(#33302c, #e0dbcc);   /* headings — softer than before */
           --ink-soft:   light-dark(#00000045, #ffffff45);  /* muted text */
-          --rule:       light-dark(rgba(26,26,26,.30), rgba(232,226,211,.30));  /* decorative lines — faint, never text-weight */
+          --rule:       light-dark(rgba(26,26,26,.26), rgba(232,226,211,.26));  /* decorative lines — fainter */
           --border:     light-dark(#0000002e, #ffffff2e); }  /* thin, light border */
   body { font-family: Georgia, "Times New Roman", serif; background: var(--paper); color: var(--ink);
-         max-width: 46rem; margin: 2rem auto; padding: 2.5rem 3rem; line-height: 1.7; font-size: 1.05rem; }
+         max-width: 46rem; margin: 2rem auto; padding: 2.5rem 3rem; line-height: 1.8; font-size: .96rem;
+         font-weight: 400; }
 
-  /* Masthead — the artifact title as a newspaper nameplate. Faint double rule. */
-  h1[data-anchor="title"] { font-size: 2.6rem; font-weight: 700; line-height: 1.1;
+  /* Masthead — the artifact title as a newspaper nameplate. Narrow, faint double rule. */
+  h1[data-anchor="title"] { font-size: 2rem; font-weight: 500; line-height: 1.15; color: var(--ink-strong);
          text-align: center; letter-spacing: .01em; margin: 0 0 .4rem;
-         border-bottom: 4px double var(--rule); padding-bottom: .8rem; }
+         border-bottom: 2px double var(--rule); padding-bottom: .8rem; }
 
-  /* Section rules — classic newspaper sub-head rule, faint. */
-  h2 { font-size: 1.4rem; font-weight: 700; margin: 1.9rem 0 .5rem;
-       border-bottom: 2px solid var(--rule); padding-bottom: .25rem; }
-  h3 { font-size: 1.15rem; font-weight: 700; margin: 1.4rem 0 .3rem; }
+  /* Section rules — classic newspaper sub-head rule, faint and thin. */
+  h2 { font-size: 1.12rem; font-weight: 500; color: var(--ink-strong); margin: 1.6rem 0 .45rem;
+       border-bottom: 1px solid var(--rule); padding-bottom: .25rem; }
+  h3 { font-size: .98rem; font-weight: 500; color: var(--ink-strong); margin: 1.1rem 0 .3rem; }
 
   p { margin: .55rem 0; }
   ul, ol { margin: .5rem 0 .5rem 1.4rem; padding: 0; }
