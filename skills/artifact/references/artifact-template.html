@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>artifact</title>
-<!-- Static chrome — NOT generated per artifact. Copy chrome.css + chrome.js from the
-     skill's references/ into the artifact dir once per project, then reference them. -->
-<link rel="stylesheet" href="chrome.css">
+<!-- Chrome is inlined at build time (scripts/build-artifact.py) — the AI writes only
+     the content. Keep __CHROME_CSS__ / __CHROME_JS__ placeholders exactly as-is. -->
+<style>
+/*__CHROME_CSS__*/
+</style>
 </head>
 <body>
 
@@ -28,6 +30,7 @@
 <div id="form" hidden>
   <div class="head">Feedback</div>
   <div class="body">
+    <div id="list"></div>
     <textarea id="comment" rows="3" placeholder="Feedback at this spot…"></textarea>
     <div id="levels">
       <button class="lvl active" data-sev="suggestion">suggestion</button>
@@ -38,6 +41,8 @@
   </div>
 </div>
 
-<script src="chrome.js"></script>
+<script>
+//__CHROME_JS__
+</script>
 </body>
 </html>

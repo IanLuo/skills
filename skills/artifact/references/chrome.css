@@ -37,17 +37,37 @@
                                 margin-left: 6px; font-size: .65rem; }
 
   /* Annotation dialog — SAME newsprint paper as the page, so it looks native.
-     Elevation comes from the border + shadow only; no colored card, no accent line. */
-  #form { position: fixed; z-index: 10; width: 16rem; background: var(--paper); color: var(--ink);
+     Elevation comes from the border + shadow only. RESIZABLE: drag the bottom-right
+     corner handle to expand the whole card; the input fills it. */
+  #form { position: fixed; z-index: 10; width: 18rem; min-width: 16rem; min-height: 11rem;
+          max-width: 40rem; max-height: 80vh; resize: both; overflow: hidden;
+          background: var(--paper); color: var(--ink); display: flex; flex-direction: column;
           border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px #0005;
-          font-size: .95rem; overflow: hidden; }
+          font-size: .95rem; }
+  /* The `hidden` attribute must beat the flex display — otherwise the dialog is
+     always visible and Cancel/Add misbehave. */
+  #form[hidden] { display: none; }
   #form .head { padding: .45rem .6rem; border-bottom: 1px solid var(--border);
                 font-size: .72rem; letter-spacing: .06em; text-transform: uppercase;
-                color: var(--ink-soft); }
-  #form .body { padding: .6rem; }
-  #form textarea { width: 100%; box-sizing: border-box; min-height: 3.2rem; font-size: .95rem; font-family: inherit;
-                   padding: .4rem; border-radius: 4px; border: 1px solid var(--border);
-                   background: var(--paper); color: var(--ink); margin-bottom: .4rem; }
+                color: var(--ink-soft); flex: none; }
+  #form .body { padding: .6rem; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+  #form textarea { width: 100%; flex: 1; resize: none; box-sizing: border-box; min-height: 2.6rem;
+                   font-size: .95rem; font-family: inherit; padding: .4rem; border-radius: 4px;
+                   border: 1px solid var(--border); background: var(--paper); color: var(--ink);
+                   margin-bottom: .4rem; }
+
+  /* Existing annotations for the clicked element — view/edit/delete. */
+  #list { display: none; margin-bottom: .4rem; }
+  #list.show { display: block; }
+  #list .item { border-top: 1px solid var(--border); padding: .3rem 0; font-size: .8rem; }
+  #list .item .row { display: flex; align-items: baseline; gap: .4rem; }
+  #list .item .dot { width: .5rem; height: .5rem; border-radius: 50%; flex: none; }
+  #list .item .dot[data-sev="suggestion"] { background: var(--sug); }
+  #list .item .dot[data-sev="important"] { background: var(--imp); }
+  #list .item .dot[data-sev="critical"] { background: var(--crit); }
+  #list .item .meta { flex: 1; word-break: break-word; }
+  #list .item button { font-size: .68rem; background: transparent; border: 1px solid var(--border);
+                       border-radius: 4px; color: var(--ink); cursor: pointer; }
 
   /* Level buttons — newspaper-styled: a small colored dot carries the severity,
      the selected state is ink-filled (no big blue/amber/red fills). */

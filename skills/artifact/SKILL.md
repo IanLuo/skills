@@ -27,23 +27,19 @@ nothing to point at or it's short, plain text is cheaper and quieter.
 
 ## Generate
 
-1. Take the data from the current context or the AI's response. Render it as
-   `artifact.html` in the project's agent-data dir: `.agents/artifacts/<name>.html`.
-   The file is the CONTENT + the small chrome markup — it does NOT inline the CSS/JS.
-2. **Copy the static chrome once per project** (if not already there):
-   `cp` `chrome.css` + `chrome.js` from this skill's `references/` into
-   `.agents/artifacts/`. They are shared by every artifact in the project — never
-   regenerate them.
-3. Write `artifact.html` following
-   [references/artifact-template.html](references/artifact-template.html):
-   - `<link rel="stylesheet" href="chrome.css">` in the head, `<script src="chrome.js">`
-     at the end (relative links work on `file://`).
-   - The chrome markup verbatim (Done button, `raw`, `status`, the `#form` with the
-     three level buttons).
-   - Your content in place of the placeholder — with a **stable
-     `data-anchor="<kebab-id>"`** on every element the user might comment on. Anchor
-     ids must NOT change between iterations; the pasted feedback resolves by id.
-4. Open it in the browser: `open <path>` (macOS) or `xdg-open <path>` (Linux). Tell the
+The AI writes ONLY the content; a build script inlines the static chrome so the
+artifact is ONE self-contained file (works from `file://`, which treats each page as a
+unique origin and blocks `<link>`/`<script src>` to sibling files).
+
+1. Take the data from the current context or the AI's response. Write ONLY the body
+   content to a temp file, e.g. `.agents/artifacts/<name>.content.html` — the data with
+   a **stable `data-anchor="<kebab-id>"`** on every element the user might comment on
+   (ids must NOT change between iterations; pasted feedback resolves by id).
+2. Inline the chrome: run this skill's build script
+   `python3 scripts/build-artifact.py <name> <name>.content.html` — it merges
+   `references/chrome.css` + `references/chrome.js` + the template + your content into
+   one self-contained `.agents/artifacts/<name>.html`. Delete the temp content file.
+3. Open it in the browser: `open <path>` (macOS) or `xdg-open <path>` (Linux). Tell the
    user it's open, that every element is clickable to annotate, and the Done button
    copies the feedback for pasting back.
 
