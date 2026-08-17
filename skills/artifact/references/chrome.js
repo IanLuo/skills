@@ -89,9 +89,8 @@ $('list').addEventListener('click', (e) => {
   }
 });
 
-$('cancel').onclick = () => { $('form').hidden = true; target = null; editing = null; };
-
-$('add').onclick = () => {
+function closeDialog() { $('form').hidden = true; target = null; editing = null; }
+function addAnnotation() {
   const c = $('comment').value.trim();
   if (!target || !c) return;
   if (editing !== null) {
@@ -104,7 +103,20 @@ $('add').onclick = () => {
   $('count').textContent = ANNOTATIONS.length;
   resetInput();
   renderList();
-};
+}
+$('cancel').onclick = closeDialog;
+$('add').onclick = addAnnotation;
+
+// Keyboard: Esc closes the dialog UNLESS the field has text (would lose it);
+// Enter in the field adds.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || $('form').hidden) return;
+  if ($('comment').value.trim() !== '') return;  // typed something — don't close
+  closeDialog();
+});
+$('comment').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addAnnotation(); }  // Shift+Enter = newline
+});
 
 // Copy in a compact, readable line format (id (severity): comment — "snippet").
 function renderFeedback() {
