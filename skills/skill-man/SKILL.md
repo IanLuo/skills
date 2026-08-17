@@ -9,7 +9,7 @@ metadata:
 # skill-man
 
 This repo is a personal-skills manager. Skills live in `skills/<name>/` and are
-symlinked into agents' global folders by `bin/deploy.sh`. This skill teaches how to
+symlinked into agents' global folders by `bin/deploy-skills.sh`. This skill teaches how to
 author good skills and ship them.
 
 The end-to-end loop is **create → validate → deploy**, plus **study** for ideas.
@@ -56,15 +56,15 @@ see [references/skill-spec.md](references/skill-spec.md).)
 ## 3. Deploy
 
 ```bash
-bash bin/deploy.sh               # all skills → all detected agents
-bash bin/deploy.sh --skill <name> # one skill
-bash bin/deploy.sh --dry-run      # preview first
-bash bin/deploy.sh --doctor       # health-check deployed symlinks
+bash bin/deploy-skills.sh               # all skills → all detected agents
+bash bin/deploy-skills.sh --skill <name> # one skill
+bash bin/deploy-skills.sh --dry-run      # preview first
+bash bin/deploy-skills.sh --doctor       # health-check deployed symlinks
 ```
 
 Deploy symlinks each skill into the global skills folder of every detected agent
 (claude, opencode, codex, cursor, gemini, windsurf, zed, aider, cline — see
-`bin/deploy.sh --list`). Because deploy uses symlinks, edits in this repo are live
+`bin/deploy-skills.sh --list`). Because deploy uses symlinks, edits in this repo are live
 immediately; no re-deploy needed to pick up changes. System-managed skills (real
 files, e.g. nix-managed) are never overwritten. Restart the agent after a first deploy
 so it discovers the new skill. `--doctor` reports dangling links (e.g. if the repo

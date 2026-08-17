@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — deploy personal skills from this repo into the global skills
+# deploy-skills.sh — deploy personal skills from this repo into the global skills
 # folders of supported coding agents, via symlinks.
 #
 # Usage:
-#   ./deploy.sh                  # deploy all skills to all agents (default)
-#   ./deploy.sh --list           # list skills + agents, deploy nothing
-#   ./deploy.sh --skill NAME     # deploy only the named skill(s)
-#   ./deploy.sh --agent AGENT    # deploy only to the named agent(s)
-#   ./deploy.sh --all            # alias for default (all skills, all agents)
-#   ./deploy.sh --no-skip-system # also deploy into a system/managed dir
+#   ./deploy-skills.sh                  # deploy all skills to all agents (default)
+#   ./deploy-skills.sh --list           # list skills + agents, deploy nothing
+#   ./deploy-skills.sh --skill NAME     # deploy only the named skill(s)
+#   ./deploy-skills.sh --agent AGENT    # deploy only to the named agent(s)
+#   ./deploy-skills.sh --all            # alias for default (all skills, all agents)
+#   ./deploy-skills.sh --no-skip-system # also deploy into a system/managed dir
 #                                #   (dangerous: overwrites nix-managed skills)
-#   ./deploy.sh --dry-run        # show what would happen, change nothing
-#   ./deploy.sh --prune          # remove deployed symlinks whose skill was deleted from the repo
+#   ./deploy-skills.sh --dry-run        # show what would happen, change nothing
+#   ./deploy-skills.sh --prune          # remove deployed symlinks whose skill was deleted from the repo
 #                                #   (only touches symlinks pointing into this repo; never nix/third-party)
 #
 # Skills live in ./skills/<skill-name>/SKILL.md (one skill per directory).
@@ -172,7 +172,7 @@ if [ "$DOCTOR" -eq 1 ]; then
   done
   echo ""
   if [ "$issues" -gt 0 ]; then
-    log "✖ $issues dangling symlink(s) found — re-run ./bin/deploy.sh to repoint, or move the repo back."
+    log "✖ $issues dangling symlink(s) found — re-run ./bin/deploy-skills.sh to repoint, or move the repo back."
     exit 1
   fi
   log "✓ No dangling symlinks. (~ = advisory; ✓ = healthy)"

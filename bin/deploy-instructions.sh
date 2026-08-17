@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy-global.sh — deploy the global agent instruction file (global/AGENTS.md)
+# deploy-instructions.sh — deploy the global agent instruction file (global/AGENTS.md)
 # into every coding agent's global-instruction location, via symlinks.
 #
 # One canonical file, symlinked everywhere: edit global/AGENTS.md, run this, and
@@ -8,12 +8,12 @@
 # layer — always-on instructions every agent loads in every project.
 #
 # Usage:
-#   ./deploy-global.sh               # link to all supported agents
-#   ./deploy-global.sh --list        # show agents + their global instruction files
-#   ./deploy-global.sh --agent NAME  # link only to the named agent(s)
-#   ./deploy-global.sh --dry-run     # show what would happen, change nothing
-#   ./deploy-global.sh --doctor      # verify existing links point at the repo source
-#   ./deploy-global.sh --force       # overwrite an existing REAL file (backs it up to .bak)
+#   ./deploy-instructions.sh               # link to all supported agents
+#   ./deploy-instructions.sh --list        # show agents + their global instruction files
+#   ./deploy-instructions.sh --agent NAME  # link only to the named agent(s)
+#   ./deploy-instructions.sh --dry-run     # show what would happen, change nothing
+#   ./deploy-instructions.sh --doctor      # verify existing links point at the repo source
+#   ./deploy-instructions.sh --force       # overwrite an existing REAL file (backs it up to .bak)
 #
 # A link is:  <agent-global-file> -> <repo>/global/AGENTS.md
 # If <agent-global-file> is a real file (not our symlink), deploy refuses unless
@@ -45,9 +45,9 @@ DOCTOR=0
 LIST_ONLY=0
 WANT=()
 
-log()  { printf '[deploy-global] %s\n' "$*"; }
-warn() { printf '[deploy-global] ⚠ %s\n' "$*" >&2; }
-err()  { printf '[deploy-global] ✖ %s\n' "$*" >&2; }
+log()  { printf '[deploy-instructions] %s\n' "$*"; }
+warn() { printf '[deploy-instructions] ⚠ %s\n' "$*" >&2; }
+err()  { printf '[deploy-instructions] ✖ %s\n' "$*" >&2; }
 
 usage() {
   sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' | sed 's/^#//'
@@ -92,7 +92,7 @@ for entry in "${INSTRUCTIONS[@]}"; do
 
   if [ ${#WANT[@]} -gt 0 ] && ! contains "$name" "${WANT[@]}"; then continue; fi
 
-  # Only act if the agent's top-level config dir exists (mirrors deploy.sh).
+  # Only act if the agent's top-level config dir exists (mirrors deploy-skills.sh).
   if [ ! -d "$top" ]; then
     log "[$name] not present ($top missing) — skipping"
     continue

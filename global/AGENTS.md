@@ -2,7 +2,7 @@
   GLOBAL agent instructions — symlinked into every coding agent's global instruction file
   (claude: ~/.claude/CLAUDE.md · agents: ~/.agents/AGENTS.md · opencode · codex · gemini …).
   Currently Karpathy's core rules, verbatim. Maintained here; edit THIS file, then run
-  bin/deploy-global.sh to propagate. Source: Karpathy's coding-agent observations
+  bin/deploy-instructions.sh to propagate. Source: Karpathy's coding-agent observations
   (doggy8088/andrej-karpathy-skills, 43k★). Project-specific instructions go in the
   project's own AGENTS.md — this is the global baseline, not the project context.
 -->

@@ -16,13 +16,13 @@ python3 skills/skill-man/scripts/validate.py
 bash tests/run.sh
 
 # Deploy
-./bin/deploy.sh
-./bin/deploy.sh --skill <name>   # one skill
-./bin/deploy.sh --dry-run        # preview
-./bin/deploy.sh --doctor         # health-check symlinks
+./bin/deploy-skills.sh
+./bin/deploy-skills.sh --skill <name>   # one skill
+./bin/deploy-skills.sh --dry-run        # preview
+./bin/deploy-skills.sh --doctor         # health-check symlinks
 
 # Global agent instructions (global/AGENTS.md → every agent's global instruction file)
-./bin/deploy-global.sh           # link; --list / --doctor / --dry-run / --force
+./bin/deploy-instructions.sh           # link; --list / --doctor / --dry-run / --force
 
 # Check upstream sync (are we behind anthropics/skills?)
 bash skills/skill-man/scripts/sync-check.sh
@@ -33,7 +33,7 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 
 ## Hot invariants
 
-- Never overwrite nix-managed skills (real files in `/nix/store/*`) — deploy.sh skips them unless `--no-skip-system`.
+- Never overwrite nix-managed skills (real files in `/nix/store/*`) — deploy-skills.sh skips them unless `--no-skip-system`.
 - Skill name = `^[a-z0-9-]+$`, no leading/trailing/double `-`, ≤64 chars; equals folder name.
 - `description` is the primary trigger — enumerate literal triggers + negative trigger there, not in the body.
 - One skill per folder: required `SKILL.md`; optional `scripts/`, `references/`, `assets/`. No README/CHANGELOG.
@@ -58,7 +58,7 @@ skills/          — 14 skills (see README table)
   librarian/       personal research library
   skill-man/       create, validate, deploy skills
   skill-template/  starter skeleton
-bin/             — deploy.sh (symlinks skills into each detected agent's global skills dir)
+bin/             — deploy-skills.sh (symlinks skills into each detected agent's global skills dir)
 tests/           — validation fixture tests + upstream-conformance cross-check
 ```
 
@@ -73,6 +73,6 @@ live immediately.
 | When you need… | Read… |
 |---|---|
 | skill authoring rules, spec cheatsheet, best practices | `skills/skill-man/SKILL.md` |
-| deploy topology and constraints | `bin/deploy.sh` |
+| deploy topology and constraints | `bin/deploy-skills.sh` |
 | specs elicitation ladders (spec, system-design, architecture) | `skills/specs/references/` |
 | librarian entry format and rubric | `skills/librarian/references/` |

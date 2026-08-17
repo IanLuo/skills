@@ -82,22 +82,22 @@ install docs — skills are for agents, not humans.
 Symlink every skill into every detected agent's global skills folder:
 
 ```bash
-./bin/deploy.sh
+./bin/deploy-skills.sh
 ```
 
 Symlinking means edits in this repo are **instantly live** — no re-deploy needed.
-If you move the repo, re-run `./bin/deploy.sh` (or `--doctor` to check symlinks).
+If you move the repo, re-run `./bin/deploy-skills.sh` (or `--doctor` to check symlinks).
 
 ### Options
 
 ```bash
-./bin/deploy.sh --list               # show skills + agents, deploy nothing
-./bin/deploy.sh --skill my-skill      # deploy only named skill(s)
-./bin/deploy.sh --agent claude        # deploy only to named agent(s)
-./bin/deploy.sh --doctor             # health-check deployed symlinks
-./bin/deploy.sh --prune              # remove symlinks to skills deleted from the repo
-./bin/deploy.sh --dry-run             # show what would happen, change nothing
-./bin/deploy.sh --no-skip-system      # also overwrite system-managed skills
+./bin/deploy-skills.sh --list               # show skills + agents, deploy nothing
+./bin/deploy-skills.sh --skill my-skill      # deploy only named skill(s)
+./bin/deploy-skills.sh --agent claude        # deploy only to named agent(s)
+./bin/deploy-skills.sh --doctor             # health-check deployed symlinks
+./bin/deploy-skills.sh --prune              # remove symlinks to skills deleted from the repo
+./bin/deploy-skills.sh --dry-run             # show what would happen, change nothing
+./bin/deploy-skills.sh --no-skip-system      # also overwrite system-managed skills
 ```
 
 Multiple `--skill` / `--agent` flags are allowed.
@@ -107,12 +107,12 @@ core rules) symlinked into every agent's global instruction file (`~/.claude/CLA
 `~/.agents/AGENTS.md`, opencode/codex `AGENTS.md`, `~/.gemini/GEMINI.md`):
 
 ```bash
-./bin/deploy-global.sh                # link global/AGENTS.md to all supported agents
-./bin/deploy-global.sh --list         # show agents + their global instruction files
-./bin/deploy-global.sh --agent claude # link only to named agent(s)
-./bin/deploy-global.sh --doctor       # verify links point at the repo source
-./bin/deploy-global.sh --dry-run      # show what would happen, change nothing
-./bin/deploy-global.sh --force        # overwrite a real file (backs it up to .bak)
+./bin/deploy-instructions.sh                # link global/AGENTS.md to all supported agents
+./bin/deploy-instructions.sh --list         # show agents + their global instruction files
+./bin/deploy-instructions.sh --agent claude # link only to named agent(s)
+./bin/deploy-instructions.sh --doctor       # verify links point at the repo source
+./bin/deploy-instructions.sh --dry-run      # show what would happen, change nothing
+./bin/deploy-instructions.sh --force        # overwrite a real file (backs it up to .bak)
 ```
 
 ### Keeping deployed skills in sync
@@ -120,9 +120,9 @@ core rules) symlinked into every agent's global instruction file (`~/.claude/CLA
 Because deploy uses **symlinks** (not copies), changes propagate automatically:
 
 - **Edit a skill** → live immediately in every agent. No re-deploy; just edit and commit.
-- **Add a skill** → run `./bin/deploy.sh --skill <name>` once to create the symlink, then it's live forever.
-- **Delete a skill** → `rm -rf skills/<name>`, then `./bin/deploy.sh --prune` to remove the now-dangling symlinks.
-- **Move the repo** → re-run `./bin/deploy.sh` to repoint all symlinks (`--doctor` detects broken ones).
+- **Add a skill** → run `./bin/deploy-skills.sh --skill <name>` once to create the symlink, then it's live forever.
+- **Delete a skill** → `rm -rf skills/<name>`, then `./bin/deploy-skills.sh --prune` to remove the now-dangling symlinks.
+- **Move the repo** → re-run `./bin/deploy-skills.sh` to repoint all symlinks (`--doctor` detects broken ones).
 
 `--prune` only removes symlinks that point *into this repo* — it never touches real
 files (nix-managed skills) or third-party symlinks.
@@ -166,7 +166,7 @@ $EDITOR skills/my-skill/SKILL.md          # fill in the description (the trigger
 python3 skills/skill-man/scripts/validate.py skills/my-skill
 
 # 3. Deploy it
-./bin/deploy.sh --skill my-skill
+./bin/deploy-skills.sh --skill my-skill
 
 # 4. Iterate — edits in the repo are live immediately (symlinked)
 
