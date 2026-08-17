@@ -1,6 +1,6 @@
 ---
 name: artifact
-description: Render the AI's context or a direct response as a self-contained interactive HTML page the user can annotate, then resolve pasted feedback back to the exact data it points at. Feedback travels by copy-paste — no server. Use for "render this as a page I can annotate", "make an interactive artifact", "let me give feedback on this", "show this as HTML I can comment on". Do NOT use for charts or dashboards (use dataviz), writing a spec (use specs), or design files (use design-task).
+description: Render a long AI response that asks for the user's input as an interactive HTML page the user can annotate, then resolve pasted feedback back to the exact data it points at. Use ONLY when the response solicits user input AND is long enough to need annotation, OR when the user explicitly asks for it. Feedback travels by copy-paste — no server. Do NOT use for short answers or quick reads (plain text suffices), charts or dashboards (use dataviz), specs (use specs), or design files (use design-task).
 metadata:
   audience: personal
   domain: agent-orchestration
@@ -12,6 +12,18 @@ compatibility: Opens a local HTML file in the browser (open / xdg-open). The pag
 Render what's in context (or the AI's direct response) as an interactive HTML page the
 user can annotate, then resolve the feedback back to the exact data it points at. The
 feedback loop is copy-paste — no server, no POST.
+
+## When to use
+
+Generate an artifact ONLY when:
+
+- **The response asks for the user's input** (a decision, feedback, a choice) **AND the
+  text is long** enough that pointing at the exact spot beats re-stating it, OR
+- **The user explicitly asks** for an artifact.
+
+Otherwise — short answers, quick reads, or responses that don't solicit input — reply
+in plain text. The artifact's whole value is *pointing at the exact place*; if there's
+nothing to point at or it's short, plain text is cheaper and quieter.
 
 ## Generate
 
