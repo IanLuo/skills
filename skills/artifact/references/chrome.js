@@ -28,6 +28,7 @@ function showForm(el) {
   f.style.top = y + 'px';
   resetInput();
   renderList();
+  $('comment').focus();                  // type immediately, no mouse needed
 }
 
 function resetInput() {
