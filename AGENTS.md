@@ -45,7 +45,7 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 ```
 skills/          — 14 skills (see README table)
   grill/           cross-cutting critical thinking
-  init-context/    bootstrap AGENTS.md + SESSION.md
+  init-context/    bootstrap AGENTS.md
   specs/           elicit + lock formal spec/system-design/architecture docs
   design-task/     lock design-system.md
   dev-task/        implement with TDD/BDD
@@ -64,8 +64,7 @@ tests/           — validation fixture tests + upstream-conformance cross-check
 
 The core pipeline is: init-context → specs → design-task → dev-task → review-task.
 Lock markers (`<!-- specs:locked:... -->`, `<!-- design:locked:... -->`) freeze decisions;
-consumer skills discover upstream docs by grepping for them. SESSION.md is an
-append-only one-line session log at the repo root. Deploy uses symlinks — edits are
+consumer skills discover upstream docs by grepping for them. Deploy uses symlinks — edits are
 live immediately.
 
 ## Deeper docs

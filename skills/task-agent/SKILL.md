@@ -42,8 +42,6 @@ Two modes, both invoked by you in the main checkout:
    herdr agent prompt <task> "Implement the task in TASK.md. Work only in this worktree; commit when done." --wait --timeout 30000
    ```
    The worker needs no skill — it just reads the card and works.
-4. **Record** in SESSION.md:
-   `<date> · task-agent · started <task> in <wt>. Next: /task-agent end when done.`
 
 ## end  (manual — you run this when the worker is done)
 
@@ -64,9 +62,6 @@ Two modes, both invoked by you in the main checkout:
    git worktree remove <wt>
    git branch -d <task>
    ```
-6. **Record** in SESSION.md:
-   `<date> · task-agent · merged <task> (<sha>).`
-
 ### end --abort
 
 Task failed or abandoned — remove the worktree + delete the branch, no merge, no review:

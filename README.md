@@ -8,7 +8,6 @@ skills folders of 12 coding agents, plus the skills themselves.
 A **5-skill pipeline** for structured software work, plus cross-cutting and auxiliary skills.
 
 ```
-SESSION.md ── one-line append-only session log (every skill appends on completion)
 
 grill ── cross-cutting critical thinking (applies to every turn)
 
@@ -23,7 +22,7 @@ init-context → specs → design-task → dev-task → review-task
    │            │
    │            └── lock spec/system-design/architecture docs (elicit + freeze decisions)
    │
-   └── bootstrap AGENTS.md + SESSION.md for a project
+   └── bootstrap AGENTS.md for a project
 ```
 
 **Lock markers** freeze decisions so fresh agents don't re-litigate:
@@ -33,10 +32,6 @@ init-context → specs → design-task → dev-task → review-task
 Consumer skills discover upstream docs by grepping lock markers on disk:
 `grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`
 
-**SESSION.md** is an append-only one-line log at the repo root. Every session reads
-the last line to know where things stand, then appends one line on completion:
-`<date> · <skill> · <what happened>. Next: <next step>.`
-
 **review-task** closes the loop — ⚠️ gaps and 🔴 regressions route back to the owning
 skill (specs, dev-task, or design-task) for follow-up.
 
@@ -45,7 +40,7 @@ skill (specs, dev-task, or design-task) for follow-up.
 | Skill | What it does |
 |---|---|
 | **[grill](skills/grill/SKILL.md)** | Cross-cutting critical thinking — pressure-test ideas, offer alternatives, cite sources. Applies to every turn. |
-| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (a compact index: Intent, run/build/test, hot invariants, architecture elevator, deeper docs) and `SESSION.md` (one-line session log). Rerunnable — re-derives from a fresh survey. |
+| **[init-context](skills/init-context/SKILL.md)** | One-shot bootstrap of agent working context. Writes `AGENTS.md` (a compact index: Intent, run/build/test, hot invariants, architecture elevator, deeper docs). Rerunnable — re-derives from a fresh survey. |
 | **[specs](skills/specs/SKILL.md)** | Interactive elicitation — one rung at a time — that locks decisions into a durable formal spec (problem/who, scope+flow, acceptance criteria, KPIs, NFRs, assumptions, data, rollback/recovery, security, verification), plus system-design and architecture docs. On re-entry, shows the locked doc and re-elicits only what changed. |
 | **[design-task](skills/design-task/SKILL.md)** | Visual/product/interface design with elicitation, tokens, component inventory, concept acceptance, and fidelity evidence. Locks `design-system.md` when verified. |
 | **[dev-task](skills/dev-task/SKILL.md)** | Software development with TDD/BDD, coding conduct, implementation, and verification. One dev-task = one deliverable. Checks for locked upstream docs before starting. |
@@ -180,6 +175,4 @@ Restart the target agent after the first deploy so it picks up the new skill.
 
 This repo dogfoods its own `init-context` skill. [`AGENTS.md`](AGENTS.md) holds
 the stable context (Intent, run/build/test, hot invariants, architecture elevator,
-deeper docs). [`SESSION.md`](SESSION.md) holds the one-line append-only session log —
-read the last line before every session; append one line at session end.
-git history IS the work-history record.
+deeper docs). git history IS the work-history record.

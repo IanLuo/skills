@@ -79,8 +79,7 @@ already-locked doc refuses so you can't clobber a frozen doc by accident.
 
 Tell the user: the doc is locked at `<sha>`. `review-task` is the skill to check
 later ("did the code do what this locked doc asked?"). Consumer skills discover this
-doc by grepping `<!-- specs:locked:` on disk. Append to SESSION.md:
-`<date> · specs · locked <type> doc at <path>. Next: choose the first implementation task.`
+doc by grepping `<!-- specs:locked:` on disk.
 
 ## Rules
 

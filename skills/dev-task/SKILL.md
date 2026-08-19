@@ -10,7 +10,7 @@ metadata:
 
 ## Start
 
-1. Read the last line of `SESSION.md` and `AGENTS.md` before editing.
+1. Read `AGENTS.md` before editing.
 2. Find locked docs on disk: `grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`.
    If a needed doc (PRD, system-design, architecture) is absent, flag it and ask before
    proceeding. If `design-system.md` exists, check its first line for
@@ -54,5 +54,3 @@ Not evidence: "Looks right." "I inspected the code." "Should work."
 - A dev task is verified only when fresh command output, CI status, or equivalent
   executable check supports the claim.
 - If verification cannot run, record the blocker and leave the task unverified.
-- Append one line to SESSION.md:
-  `<date> · dev-task · <what was done, proof, next step>.`

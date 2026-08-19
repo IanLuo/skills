@@ -3,8 +3,7 @@ name: init-context
 description: >
   One-shot bootstrap of agent working context for a project.
   Analyzes the codebase and writes AGENTS.md (a compact index: Intent, run/build/test,
-  hot invariants, architecture elevator, deeper docs) and SESSION.md (one-line session
-  log: what happened, next step) so every future session can resume.
+  hot invariants, architecture elevator, deeper docs) so every future session can resume.
   Use when starting work on a new or unfamiliar codebase, onboarding to a repo,
   running /init, bootstrapping project context,
   or when a project lacks AGENTS.md.
@@ -19,8 +18,7 @@ metadata:
 
 # init-context
 
-One-shot bootstrap. Writes `AGENTS.md` (compact stable index) + `SESSION.md`
-(one-line session log) at the repo root. AGENTS.md is an **index, not a manifest** —
+One-shot bootstrap. Writes `AGENTS.md` (compact stable index) at the repo root. AGENTS.md is an **index, not a manifest** —
 it embeds only what a fresh agent can't recover from code and would get wrong without.
 
 ## Workflow
@@ -67,29 +65,16 @@ Section-by-section guidance:
   `<path>` — `<one-line purpose>`. Zero docs → omit the section. This is a
   snapshot, not a registry — consumers discover docs by grepping lock markers directly.
 
-### 3. Write SESSION.md
-
-Create `SESSION.md` at the repo root with one line:
-
-```
-<YYYY-MM-DD> · init-context · project bootstrapped. Next: choose the first task.
-```
-
-SESSION.md is append-only — every session adds one line. A fresh agent reads the
-last line to know where things stand. Format: `<date> · <skill> · <what happened>. Next: <next step>.`
-
-### 4. Verify
+### 3. Verify
 
 - AGENTS.md exists at repo root and matches the template structure.
 - Every build/test command in AGENTS.md was actually run and succeeded.
-- SESSION.md exists with the bootstrap line.
 - `git status` shows the new files.
 
-### 5. Hand off
+### 4. Hand off
 
-Show the user the file tree + one-line summary of each file. Explain: every future
-session reads the last line of SESSION.md, then AGENTS.md, then works. At session
-end, append one line to SESSION.md.
+Show the user the file tree + one-line summary of each file. Explain: AGENTS.md is
+the project index every future session reads to resume.
 
 ## Re-running
 
@@ -97,7 +82,6 @@ Safe to run again as the project matures:
 - **Preserve** user's manual prose in AGENTS.md.
 - **Re-derive** Intent, Hot invariants, Architecture elevator, and Deeper docs list
   from a fresh survey.
-- Don't touch SESSION.md — it's the running session log.
 
 ## Rules
 
@@ -107,5 +91,5 @@ Safe to run again as the project matures:
   worse than no command.
 - Add only what a fresh agent can't derive. Prefer concrete over prose.
 - AGENTS.md is an index, not a manifest. Route everything through the embed/point/drop gate.
-- AGENTS.md/SESSION.md follow the house agent-oriented doc format — bullets, concrete,
+- AGENTS.md follows the house agent-oriented doc format — bullets, concrete,
   checklist-complete, freshness date (see `skill-man/references/doc-format.md`).

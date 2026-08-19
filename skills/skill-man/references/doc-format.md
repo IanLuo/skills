@@ -1,7 +1,7 @@
 # Document format — for agents, not humans
 
 The reader of any durable doc this repo's skills produce (spec, system-design,
-architecture, design-system, HANDOFF, AGENTS, library entry) is an **agent**, not a
+architecture, design-system, AGENTS, library entry) is an **agent**, not a
 person. Write for it: minimum size, complete information. A human reads prose; an
 agent reads structure.
 
