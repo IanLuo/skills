@@ -1,6 +1,6 @@
 ---
 name: artifact
-description: Render a long AI response that asks for the user's input as an interactive HTML page the user can annotate, then resolve pasted feedback back to the exact data it points at. Use ONLY when the response solicits user input AND is long enough to need annotation, OR when the user explicitly asks for it. Feedback travels by copy-paste — no server. Do NOT use for short answers or quick reads (plain text suffices), charts or dashboards (use dataviz), specs (use specs), or design files (use design-task).
+description: Render a decision-heavy response — options to choose between, a plan to review, a list the user must react to — as an annotatable HTML page they can point at, then resolve pasted feedback back to the exact data it points at. Reach for this whenever the user needs to give feedback or make a choice on concrete content, or when the user explicitly asks for it. Feedback travels by copy-paste — no server. Do NOT use for single-answer responses (plain text suffices), charts or dashboards (use dataviz), writing specs (use specs), or design files (use design-task).
 metadata:
   audience: personal
   domain: agent-orchestration
