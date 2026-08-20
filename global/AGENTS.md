@@ -79,4 +79,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 - **Commit authorship.** When committing, do NOT add the agent as an author or
   co-author in the commit message — no `Co-Authored-By: <agent>` trailer, no
-  attribution to the tool. 
+  attribution to the tool.
+- **Response style — short, clear, accurate.** Lead with the answer; no preamble,
+  no re-stating the question, no filler. Bullets for lists. Concrete over vague.
+  Say "I don't know" rather than hedge or fabricate. Verify claims against what
+  you actually read or ran — never assert unverified output as fact.
