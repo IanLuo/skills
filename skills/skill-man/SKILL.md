@@ -1,6 +1,6 @@
 ---
 name: skill-man
-description: Create, validate, and deploy personal skills in this repo, and decide what makes a good skill. Use when scaffolding a new skill, checking a skill's frontmatter against the spec, deploying skills to agents' global folders, or checking whether the repo's spec is in sync with upstream. Also use when you want best practices or popular-skill inspiration before authoring. Do NOT use for writing ordinary application code — only for managing skills themselves.
+description: Create, validate, deploy, and update personal skills in this repo, and decide what makes a good skill. Use when scaffolding a new skill, checking a skill's frontmatter against the spec, deploying skills to agents' global folders, checking whether the repo's spec is in sync with upstream, or running the periodic skill update search against the authorized source (anthropics/skills). Also use when you want best practices or popular-skill inspiration before authoring. Do NOT use for writing ordinary application code — only for managing skills themselves.
 metadata:
   audience: personal
   domain: tooling
@@ -80,6 +80,23 @@ bash skills/skill-man/scripts/sync-check.sh   # are we behind anthropics/skills?
 The spec is pinned to a commit of `anthropics/skills` (see `.upstream`). Run
 sync-check to detect drift; if behind, diff the upstream `quick_validate.py` against
 `validate.py`, update `SPEC_PINNED_REF` + `.upstream`, and re-run `tests/run.sh`.
+
+## 5. Update — search the authorized source for skill-related updates
+
+Run periodically to check what's new from the authorized source (`anthropics/skills`):
+
+```bash
+bash skills/skill-man/scripts/update.sh
+```
+
+It reports, from the authorized source, since the pinned ref:
+- **Spec drift** — did `quick_validate.py` change upstream?
+- **New / removed official skills** — inventory diff of `skills/*/SKILL.md`.
+
+It **never auto-applies** — it surfaces what changed; you review, then re-sync the
+spec (compare `quick_validate.py`, bump `SPEC_PINNED_REF` + `.upstream`, re-run
+`tests/run.sh`) only if you choose. Exit 0 = in sync, 1 = updates available,
+2 = pin refs disagree.
 
 ## Spec cheatsheet (needed on every authoring task)
 
