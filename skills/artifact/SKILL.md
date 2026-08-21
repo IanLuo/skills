@@ -1,6 +1,6 @@
 ---
 name: artifact
-description: Render a decision-heavy response — options to choose between, a plan to review, a list the user must react to — as an annotatable HTML page they can point at, then resolve pasted feedback back to the exact data it points at. Reach for this whenever the user needs to give feedback or make a choice on concrete content, or when the user explicitly asks for it. Feedback travels by copy-paste — no server. Do NOT use for single-answer responses (plain text suffices), charts or dashboards (use dataviz), writing specs (use specs), or design files (use design-task).
+description: Render content as an annotatable HTML page the user can point at, then resolve pasted feedback back to the exact data it points at. Use ONLY when the user explicitly asks for it — "/artifact", "as a page", "make this annotatable". Never auto-trigger. Feedback travels by copy-paste — no server. Do NOT use for plain answers (text suffices), charts or dashboards (use dataviz), writing specs (use specs), or design files (use design-task).
 metadata:
   audience: personal
   domain: agent-orchestration
@@ -15,15 +15,12 @@ feedback loop is copy-paste — no server, no POST.
 
 ## When to use
 
-Generate an artifact ONLY when:
+**Explicit-only.** Generate an artifact ONLY when the user asks for it — `/artifact`,
+"as a page", "make this annotatable". Never auto-trigger, never offer it unprompted:
+auto-fire is unreliable (the model defaults to text) and text-then-convert would
+double the tokens. The user decides upfront, and gets a single generation.
 
-- **The response asks for the user's input** (a decision, feedback, a choice) **AND the
-  text is long** enough that pointing at the exact spot beats re-stating it, OR
-- **The user explicitly asks** for an artifact.
-
-Otherwise — short answers, quick reads, or responses that don't solicit input — reply
-in plain text. The artifact's whole value is *pointing at the exact place*; if there's
-nothing to point at or it's short, plain text is cheaper and quieter.
+Plain answers stay plain text — cheaper and quieter.
 
 ## Generate
 
