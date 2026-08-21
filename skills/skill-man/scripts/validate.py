@@ -44,7 +44,9 @@ SPEC_REVIEWED = "2026-06"
 
 # ── Spec (the single source of truth) ─────────────────────────────────────
 SPEC = {
-    "allowed_keys": {"name", "description", "license", "allowed-tools", "metadata", "compatibility"},
+    # disable-model-invocation is a skill-man EXTENSION beyond the pinned
+    # anthropics/skills spec (community skills.sh convention): explicit-only skills.
+    "allowed_keys": {"name", "description", "license", "allowed-tools", "metadata", "compatibility", "disable-model-invocation"},
     "max_name": 64,
     "max_description": 1024,
     "max_compatibility": 500,

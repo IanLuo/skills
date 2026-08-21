@@ -1,6 +1,7 @@
 ---
 name: artifact
 description: Render content as an annotatable HTML page the user can point at, then resolve pasted feedback back to the exact data it points at. Use ONLY when the user explicitly asks for it — "/artifact", "as a page", "make this annotatable". Never auto-trigger. Feedback travels by copy-paste — no server. Do NOT use for plain answers (text suffices), charts or dashboards (use dataviz), writing specs (use specs), or design files (use design-task).
+disable-model-invocation: true
 metadata:
   audience: personal
   domain: agent-orchestration

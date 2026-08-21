@@ -63,7 +63,9 @@ else
   fi
   if [ -n "$UPSTREAM_CACHE" ] && [ -f "$UPSTREAM_CACHE" ]; then
     # skill-man intentionally enforces name==folder-name; upstream quick_validate.py
-    # does not. That's the one expected, legitimate divergence — not a regression.
+    # does not. That's one expected, legitimate divergence. Also: skill-man allows
+    # `disable-model-invocation` (explicit-only extension); upstream does not — but no
+    # fixture uses it, so it doesn't show up in the per-fixture comparison.
     EXPECTED_DIVERGENCE="name-folder-mismatch"
     CONF_PASS=0
     CONF_FAIL=0
