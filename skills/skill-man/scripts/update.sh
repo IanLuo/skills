@@ -34,13 +34,14 @@ if [ "$PINED_SHA" = "$HEAD_SHA" ]; then
   exit 0
 fi
 
-log "⚠ updates available: pinned ${PINED_SHA:0:7}, upstream HEAD ${HEAD_SHA:0:7}"
+log "upstream HEAD moved: pinned ${PINED_SHA:0:7}, now ${HEAD_SHA:0:7}"
 UPDATES=0
 
-# ── 1. Spec drift (quick_validate.py) ──────────────────────────────────────
-NEW_V="$(curl -fsSL "https://raw.githubusercontent.com/anthropics/skills/${HEAD_SHA}/skills/skill-creator/scripts/quick_validate.py" 2>/dev/null || true)"
-CUR_V="$(cat "$VALIDATE_PY" 2>/dev/null || true)"
-if [ -n "$NEW_V" ] && [ "$NEW_V" != "$CUR_V" ]; then
+# ── 1. Spec drift — compare upstream quick_validate.py AT PIN vs AT HEAD ───
+# (not vs our validate.py, which is a fork with intentional extensions)
+PIN_V="$(curl -fsSL "https://raw.githubusercontent.com/anthropics/skills/${PINED_SHA}/skills/skill-creator/scripts/quick_validate.py" 2>/dev/null || true)"
+HEAD_V="$(curl -fsSL "https://raw.githubusercontent.com/anthropics/skills/${HEAD_SHA}/skills/skill-creator/scripts/quick_validate.py" 2>/dev/null || true)"
+if [ -n "$PIN_V" ] && [ -n "$HEAD_V" ] && [ "$PIN_V" != "$HEAD_V" ]; then
   log "  • spec (quick_validate.py) CHANGED upstream — diff it against validate.py"
   UPDATES=$((UPDATES + 1))
 fi
@@ -60,6 +61,10 @@ if [ -n "$HEAD_SKILLS" ]; then
   if [ -n "$REMOVED" ]; then log "  • removed upstream skills:"; printf '%s\n' "$REMOVED" | sed 's/^/      /'; UPDATES=$((UPDATES + 1)); fi
 fi
 
+if [ "$UPDATES" -eq 0 ]; then
+  log "✓ upstream HEAD moved but NO skill-related changes (spec + skills identical) — nothing to do"
+  exit 0
+fi
 log "→ ${UPDATES} skill-related update(s) available. Review, then re-sync the spec as needed:"
 log "    compare quick_validate.py upstream against validate.py, bump SPEC_PINNED_REF +"
 log "    .upstream, re-run tests/run.sh. Never auto-apply."
