@@ -25,13 +25,16 @@ Plain answers stay plain text — cheaper and quieter.
 
 ## Generate
 
-The AI writes ONLY the content; a build script inlines the static chrome so the
-artifact is ONE self-contained file (works from `file://`, which treats each page as a
-unique origin and blocks `<link>`/`<script src>` to sibling files).
+The artifact IS your response — generate the content fresh for the user's request,
+then render it. Do NOT also write a separate text reply (that would double the tokens).
+The build script inlines the static chrome so the artifact is ONE self-contained file
+(works from `file://`, which treats each page as a unique origin and blocks
+`<link>`/`<script src>` to sibling files).
 
-1. Take the data from the current context or the AI's response. Write ONLY the body
-   content to a temp file, e.g. `.agents/artifacts/<name>.content.html` — the data with
-   a **stable `data-anchor="<kebab-id>"`** on every element the user might comment on
+1. **Produce the content** — answer the user's request (the options, the plan, the
+   list). This is your full response; don't duplicate it in chat. Write ONLY the body
+   content to a temp file, e.g. `.agents/artifacts/<name>.content.html` — with a
+   **stable `data-anchor="<kebab-id>"`** on every element the user might comment on
    (ids must NOT change between iterations; pasted feedback resolves by id).
 2. Inline the chrome: run this skill's build script
    `python3 scripts/build-artifact.py <name> <name>.content.html` — it merges
