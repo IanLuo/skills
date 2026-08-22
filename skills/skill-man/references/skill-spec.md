@@ -40,7 +40,7 @@ Only these keys are allowed. Any other key fails validation.
 | `allowed-tools` | no | space-separated string | e.g. `Bash(git:*) Bash(jq:*) Read`. **Experimental / harness-dependent:** honored by some harnesses (e.g. Codex) to restrict tool use; not read by all — verify your target harness enforces it before relying on it as a security control. |
 | `metadata` | no | map | free-form (e.g. `audience`, `domain`). **Harness-dependent:** read by some harnesses for UI/chips; not universal. |
 | `compatibility` | no | string | ≤500 chars; environment requirements, e.g. `Requires git, docker, jq, and access to the internet` or `Requires Python 3.14+ and uv`. Most skills do not need it. |
-| `disable-model-invocation` | no | `true` | **skill-man extension** (not in the pinned anthropics/skills spec — community skills.sh convention). Explicit-only skill: the model never auto-invokes it; only an explicit `/skill` call runs it. Pair with a description that says "Use ONLY when the user explicitly asks." |
+| `disable-model-invocation` | no | `true` | **skill-man extension** (not in the pinned anthropics/skills spec — community skills.sh convention). Explicit-only skill: the model never auto-invokes it; only an explicit `/skill` call runs it. **Caveat (2026-08-22): some harnesses disable explicit invocation TOO, not just model auto-invoke — verify your target harness before relying on it. If it blocks `/skill`, drop the key and use a description that says "Use ONLY when the user explicitly asks."** |
 
 Do **not** invent other top-level keys (`version`, `triggers`, …). Put non-standard
 metadata under `metadata`. The one exception above is `disable-model-invocation` —

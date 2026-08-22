@@ -113,7 +113,7 @@ Canonical spec: https://agentskills.io/specification (validator pinned at
 | `allowed-tools` | no | space-separated string (e.g. `Bash(git:*) Read`); experimental/harness-dependent |
 | `metadata` | no | free-form map (e.g. `audience`, `domain`); harness-dependent |
 | `compatibility` | no | ≤500-char string of environment requirements; most skills omit it |
-| `disable-model-invocation` | no | `true` — **explicit-only skill**: the model never auto-invokes it, only an explicit `/skill` call runs it. skill-man extension beyond the pinned spec (community skills.sh convention). |
+| `disable-model-invocation` | no | `true` — **explicit-only skill**: the model never auto-invokes it, only an explicit `/skill` call runs it. skill-man extension beyond the pinned spec (community skills.sh convention). ⚠ some harnesses disable explicit invocation too — verify before relying on it. |
 
 **Body** — keep under 500 lines (spec guidance; `validate.py` warns). Use progressive
 disclosure: put core workflow here, move detail into `references/` and link to it with
