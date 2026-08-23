@@ -9,9 +9,10 @@ compatibility: Opens a local HTML file in the browser (open / xdg-open). The pag
 
 # artifact
 
-Render what's in context (or the AI's direct response) as an interactive HTML page the
-user can annotate, then resolve the feedback back to the exact data it points at. The
-feedback loop is copy-paste — no server, no POST.
+Generate a response to the user's request as an interactive HTML page the user can
+annotate, then resolve the pasted feedback back to the exact data it points at. The
+artifact IS the response — you produce fresh content for the request, not a render of
+existing context. The feedback loop is copy-paste — no server, no POST.
 
 ## When to use
 
