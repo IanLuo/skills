@@ -1,6 +1,6 @@
 ---
 name: librarian
-description: Research questions by fanning out self-scoring subagents, curate verified results into a durable library at ~/Documents/librarian/library/, and answer later questions by querying it first. Use for "research X", "look into X", "study X", "what do I know about X", "find out about X", or any find/verify/synthesize request that belongs in a queryable library. Depth argument — skim (default), read, or study. Do NOT use for codebase exploration or software-architecture research (use Explore); for a one-shot report with no library curation, prefer deep-research.
+description: Research questions with self-scoring subagents (one at default depth, targeted follow-up on gaps), curate verified results into a durable library at ~/Documents/librarian/library/, and answer later questions by querying it first. Use for "research X", "look into X", "study X", "what do I know about X", "find out about X", or any find/verify/synthesize request that belongs in a queryable library. Depth argument — skim (default), read, or study. Do NOT use for codebase exploration or software-architecture research (use Explore); for a one-shot report with no library curation, prefer deep-research.
 metadata:
   audience: personal
   domain: research
@@ -9,24 +9,26 @@ compatibility: Research workflow requires internet (WebSearch/WebFetch) and the 
 
 # librarian
 
-A personal research librarian. Two workflows:
+A personal research librarian. Two workflows, in order:
 
-- **Query** — answer from the library if it already has usable notes.
-- **Research** — fan out self-scoring subagents, one pass, curate.
-
-Always run Query first; only Research when the library is thin.
+1. **Query** — answer from the library if it already has usable notes. **MANDATORY
+   FIRST STEP**: run the rg search before any web research.
+2. **Research** — only when the library is thin. Lean: self-scoring subagents, one at
+   default depth, one targeted follow-up on gaps.
 
 ## Depth
 
-The user controls breadth per call. Default `skim`.
+Default `skim`.
 
-| depth | use when | subagents |
+| depth | subagents | style |
 |---|---|---|
-| `skim`  | "what's the gist of X?" | 2–3 |
-| `read`  | "I need a solid understanding of X." | 3–5 |
-| `study` | "I need to know everything important about X." | 5–8 |
+| `skim`  | 1 | ONE subagent covers the whole question — it decomposes into sub-angles itself |
+| `read`  | 2–3 | one subagent per angle |
+| `study` | 3–5 | one subagent per angle, deeper coverage |
 
-## Query workflow
+## Query workflow — STEP 0, mandatory
+
+You MUST run this before any web research. If the library answers, stop — no Research.
 
 1. Check if the library exists: `ls ~/Documents/librarian/library/index.md`. If missing,
    run `bash ../librarian/scripts/init-library.sh` once.
@@ -57,29 +59,29 @@ The user controls breadth per call. Default `skim`.
 
 ## Research workflow
 
+Run ONLY after Query found nothing usable.
+
 1. If the library is missing, run `init-library.sh`.
-2. Decompose the question into N research angles (N from the depth table). The angles
-   should cover the question — a 4-angle `read` might be: definition, mechanisms,
-   evidence/examples, open problems.
-3. Fan out N `general-purpose` subagents via the Agent tool — one per angle. Each
-   researches with WebSearch/WebFetch and returns **structured output**:
-   - **angle** — the assigned angle name.
+2. Decompose the question into N angles (N from the depth table). For `skim` (1
+   subagent), the ONE subagent covers the WHOLE question — it decomposes into sub-angles
+   itself; you don't split it.
+3. Fan out N `general-purpose` subagents via the Agent tool. Each researches with
+   WebSearch/WebFetch and returns **structured output**:
+   - **angle** — the angle(s) it covered.
    - **body** — bullet points, **≤300 words**, concrete facts only (numbers/versions/names).
    - **sources** — **≤5**, most authoritative first, URL + access date each.
    - **self-assessment** — 1–5 on each rubric dimension below.
 
    Paste the research discipline + rubric into each agent's prompt:
 
-   *Research discipline (keeps the fan-out cheap — paste into each prompt):*
-   - **Search first.** Prefer WebSearch (snippets) over WebFetch (full pages).
-   - **Fetch ≤3 pages**, only authoritative/primary ones. Use WebFetch's extraction prompt
-     to pull just the answer to your angle — don't read whole pages.
-   - **Stop when you can answer the angle.** A targeted 2–3-source answer beats a 10-source
-     essay. Depth is in the answer, not the page count.
-   - **Facts only, terse.** Return findings with no intro, no "here's what I found", no
-     closing summary, no hedging ("seems", "arguably"). Bullets are verb + fact
-     ("v2.3 replaces X with Y"), not padded sentences. Every claim traces to a cited
-     source; unsupported claims are omitted.
+   *Research discipline (keeps it cheap — paste into each prompt):*
+   - **Search first, fetch ≤3 TOTAL.** Prefer WebSearch snippets; fetch only pages that
+     will settle a fact, and extract just the answer — don't read whole pages.
+   - **Cover all your sub-angles in one pass.** Split the question, search each part,
+     stop when you can answer it. A targeted 2–3-source answer beats a 10-source essay.
+   - **Facts only, terse.** No intro, no "here's what I found", no closing summary, no
+     hedging. Bullets are verb + fact ("v2.3 replaces X with Y"). Every claim traces to
+     a cited source; unsupported claims are omitted.
 
    *Rubric (self-scoring):*
    | dimension | question | 1 | 5 |
@@ -93,15 +95,18 @@ The user controls breadth per call. Default `skim`.
 4. **Review the self-assessments yourself.** You are the orchestrator — read each finding
    and verify the self-scores against the rubric. Adjust any score that looks inflated
    or missed. This takes seconds; do not spawn scoring subagents for this.
-5. **One pass, no refinement loop.** Accept every finding whose floor ≥ the depth's accept
-   threshold (3 for `skim`, 4 for `read`/`study`). Findings below threshold at any depth
-   are admitted as-is and tagged `confidence: low` — honest, not a failure. Do not
-   re-dispatch; the user can re-run at `study` depth later if they want deeper coverage.
-6. Synthesize accepted findings into one entry — one tight paragraph tying the angles
+5. **Gap-driven follow-up (targeted, not a fan-out).** If, after review, ONE finding is
+   floor-low or a specific angle is thin, dispatch ONE targeted subagent to fix exactly
+   that gap — then re-review it. Do NOT re-dispatch everything, do NOT loop more than once.
+   This is what makes research cheap AND better: one gap-close beats re-running N angles.
+6. **Accept.** Every finding whose floor ≥ the depth's threshold (3 for `skim`, 4 for
+   `read`/`study`) is accepted; below-threshold findings are admitted as-is tagged
+   `confidence: low` — honest, not a failure.
+7. Synthesize accepted findings into one entry — one tight paragraph tying the angles
    together, no re-stating of the bullets. **Do not persist yet** — nothing is written
    to disk until the user asks.
 
-7. Show the entry to the user as-is — the bullets ARE the deliverable; don't re-narrate
+8. Show the entry to the user as-is — the bullets ARE the deliverable; don't re-narrate
    or add commentary. Then ask explicitly: **"Save to library?"** Persist only what the
    user explicitly asks to save:
    - whole entry → `write-entry.py` with all findings;
@@ -136,14 +141,16 @@ frontmatter; the script keeps it consistent so full-body search (`rg`) can rely 
 - **Explicit saves only.** Never write to the library without an explicit "save" from
   the user. Show the entry first, write second. Save only what the user names — the
   whole entry or a subset. If the user says nothing about saving, nothing is saved.
-- Run Query before Research. Most repeat questions are already answered on disk.
+- **Query is the mandatory first step.** Run the rg search before ANY web research. If
+  the library answers, stop. Most repeat questions are already answered on disk.
 - **Self-score, then review.** Research agents self-assess on the rubric; you verify.
   Never spawn a subagent just to score another subagent's output — that's the whole point
   of this design.
-- **One pass.** Do not re-dispatch findings that fall below threshold. Tag them
-  `confidence: low` and move on. The refinement loop was removed — it doubled agent count
-  with diminishing returns.
-- **Bound the fan-out.** Cap research agents at ~300-word findings, ≤5 sources, ≤3 fetches
+- **One pass + at most ONE targeted gap follow-up.** Do not re-dispatch everything; do
+  not loop. If a single angle is thin, one surgical follow-up subagent fixes it, then
+  accept. Findings still below threshold are tagged `confidence: low` — honest, not a
+  failure.
+- **Bound the research.** Cap findings at ~300 words, ≤5 sources, **fetch ≤3 TOTAL**
   (search first). Depth comes from more angles, not longer outputs. A concise answer you
   act on beats a long one you skim.
 - **Terse output everywhere.** Facts only, at every layer — subagent findings, your
