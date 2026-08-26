@@ -12,3 +12,7 @@ scratch/
 
 # Generated agent artifacts (regenerable — not source)
 .agents/artifacts/
+
+# Rust build output (credentials skill) — compiled binary is regenerable
+src/credentials/target/
+skills/credentials/scripts/cred-run
