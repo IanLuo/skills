@@ -121,7 +121,11 @@ done
 # ──────────────────────────────────────────────────────────────────────────
 # Resolve selection
 # ──────────────────────────────────────────────────────────────────────────
-mapfile -t SKILLS < <(all_skills)
+# Read skills into array (Bash 3 compatible)
+SKILLS=()
+while IFS= read -r skill; do
+  SKILLS+=("$skill")
+done < <(all_skills)
 if [ ${#WANT_SKILLS[@]} -gt 0 ]; then
   for s in "${WANT_SKILLS[@]}"; do
     contains "$s" "${SKILLS[@]}" || { err "Skill not found in ${SKILLS_SRC}: $s"; exit 1; }

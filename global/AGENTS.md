@@ -84,3 +84,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   no re-stating the question, no filler. Bullets for lists. Concrete over vague.
   Say "I don't know" rather than hedge or fabricate. Verify claims against what
   you actually read or ran — never assert unverified output as fact.
+- **Token efficiency.** Tool calls show what you're doing — don't narrate them
+  ("let me check...", "now I'll..."). Show results with minimal commentary.
+  Filter at source (grep | head, jq field extraction, API limit params) before
+  content enters context. Stop speculative searches after 3-4 failed attempts —
+  ask for better constraints instead.

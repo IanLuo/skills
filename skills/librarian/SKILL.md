@@ -7,26 +7,43 @@ metadata:
 compatibility: Research workflow requires internet (WebSearch/WebFetch) and the Agent tool. Query workflow runs offline against the local library. Scripts require Python 3 and bash.
 ---
 
+
 # librarian
 
-A personal research librarian. Two workflows:
+A personal research librarian with a mandatory two-step check:
 
-- **Query** — answer from the library if it already has usable notes.
-- **Research** — fan out self-scoring subagents, one pass, curate.
+**ALWAYS START WITH QUERY.** Check the local library first. Only run Research if Query finds nothing useful.
 
-Always run Query first; only Research when the library is thin.
+## Two workflows
+
+- **Query** (run first, always) — answer from the library if it already has usable notes. Fast, offline, no agents.
+- **Research** (fallback only) — fan out self-scoring subagents, one pass, curate. Only when Query returns nothing.
+
+## Arguments
+
+Format: `/librarian [depth] <question>`
+
+- `depth` (optional): `skim` (default), `read`, or `study`
+- `<question>`: the research question
+
+**Examples:**
+- `/librarian what is eli5` → uses default `skim` (1 agent)
+- `/librarian read what is eli5` → uses `read` (3-5 agents)
+- `/librarian study kubernetes networking` → uses `study` (5-8 agents)
+
+**Parsing rule:** If the first word is `skim`, `read`, or `study`, consume it as depth; otherwise default to `skim`.
 
 ## Depth
 
-The user controls breadth per call. Default `skim`.
-
 | depth | use when | subagents |
 |---|---|---|
-| `skim`  | "what's the gist of X?" | 2–3 |
+| `skim`  | "what's the gist of X?" (default) | 1 |
 | `read`  | "I need a solid understanding of X." | 3–5 |
 | `study` | "I need to know everything important about X." | 5–8 |
 
-## Query workflow
+## Query workflow (START HERE)
+
+**Every librarian call starts with Query.** Do not skip to Research.
 
 1. Check if the library exists: `ls ~/Documents/librarian/library/index.md`. If missing,
    run `bash ../librarian/scripts/init-library.sh` once.
@@ -48,14 +65,16 @@ The user controls breadth per call. Default `skim`.
    hit. Match count is the relevance proxy (a file that mentions the term 20× is more
    relevant than one that mentions it once). It stays fast at thousands of entries.
 
-3. If matches return: read the top entries, summarize the key facts tersely — bullets
-   only, no framing prose — **with source links and confidence tags** for the user, and stop.
-4. If no matches (or the user explicitly wants fresh info): fall through to Research.
+3. If matches return: **read only the top 3-5 entries** (sorted by match count). Summarize the key facts tersely — bullets
+   only, no framing prose — **with source links and confidence tags** for the user, and **STOP HERE**. Don't read the entire result set if 20+ files match.
+4. **GATE:** Only proceed to Research if BOTH are true:
+   - No matches found in the library, OR the user explicitly wants fresh/updated info.
+   - You have explicitly told the user "No library entries found for [terms]" or confirmed they want new research.
 
    **Query is read-only — it never saves.** If the user asks to file something they
    found during Query, treat it as a Research-style entry and confirm before writing.
 
-## Research workflow
+## Research workflow (ONLY after Query gate)
 
 1. If the library is missing, run `init-library.sh`.
 2. Decompose the question into N research angles (N from the depth table). The angles
@@ -71,11 +90,12 @@ The user controls breadth per call. Default `skim`.
    Paste the research discipline + rubric into each agent's prompt:
 
    *Research discipline (keeps the fan-out cheap — paste into each prompt):*
-   - **Search first.** Prefer WebSearch (snippets) over WebFetch (full pages).
-   - **Fetch ≤3 pages**, only authoritative/primary ones. Use WebFetch's extraction prompt
-     to pull just the answer to your angle — don't read whole pages.
+   - **Search first.** Prefer WebSearch (snippets) over WebFetch (full pages). WebSearch is free; fetches cost tokens.
+   - **Fetch ≤3 pages**, only authoritative/primary ones. **CRITICAL:** Use WebFetch's `prompt` parameter
+     to extract ONLY what answers your angle — e.g., `prompt="Extract the definition and key mechanisms of X"`.
+     Never fetch without a targeted extraction prompt. The full page goes to the extraction model, not your context.
    - **Stop when you can answer the angle.** A targeted 2–3-source answer beats a 10-source
-     essay. Depth is in the answer, not the page count.
+     essay. Depth is in the answer, not the page count. If 3 searches + 2 fetches don't answer it, the angle may be unanswerable — report what you found and move on.
    - **Facts only, terse.** Return findings with no intro, no "here's what I found", no
      closing summary, no hedging ("seems", "arguably"). Bullets are verb + fact
      ("v2.3 replaces X with Y"), not padded sentences. Every claim traces to a cited
@@ -133,10 +153,10 @@ frontmatter; the script keeps it consistent so full-body search (`rg`) can rely 
 
 ## Rules
 
+- **Query first, always.** Every librarian invocation starts with Query. Run the ripgrep search before doing anything else. Only proceed to Research if Query explicitly finds no matches.
 - **Explicit saves only.** Never write to the library without an explicit "save" from
   the user. Show the entry first, write second. Save only what the user names — the
   whole entry or a subset. If the user says nothing about saving, nothing is saved.
-- Run Query before Research. Most repeat questions are already answered on disk.
 - **Self-score, then review.** Research agents self-assess on the rubric; you verify.
   Never spawn a subagent just to score another subagent's output — that's the whole point
   of this design.
@@ -145,7 +165,8 @@ frontmatter; the script keeps it consistent so full-body search (`rg`) can rely 
   with diminishing returns.
 - **Bound the fan-out.** Cap research agents at ~300-word findings, ≤5 sources, ≤3 fetches
   (search first). Depth comes from more angles, not longer outputs. A concise answer you
-  act on beats a long one you skim.
+  act on beats a long one you skim. If an agent's searches aren't converging after 3 attempts,
+  report partial findings — don't keep searching speculatively.
 - **Terse output everywhere.** Facts only, at every layer — subagent findings, your
   synthesis, user-facing summaries. No intro/conclusion padding, no hedging. A claim
   without a source is dropped, not hedged: accuracy beats completeness.
