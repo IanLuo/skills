@@ -18,13 +18,18 @@
      data-anchor="section-goals". Clicking an element opens an
      inline feedback box right there. Do not change anchor ids
      between iterations — the pasted feedback resolves by id.
+
+     Optional blueprint decoration classes:
+     <p class="kicker">Figure 1 · the mechanism</p> above a heading,
+     <p class="eyebrow">…</p> above the title, a mono status line as
+     <div class="meta-row"><span><b>N</b> items</span><span class="sep">·</span>…</div>,
+     and .card for a boxed block.
      ============================================================ -->
 
 <h1 data-anchor="title">…</h1>
 
 <!-- Required chrome markup — keep verbatim. -->
 <button id="done">Done · <span id="count">0</span></button>
-<span id="raw" title="Copy as raw JSON">raw</span>
 <div id="status"></div>
 
 <div id="form" hidden>

@@ -1,98 +1,145 @@
-/* One design system, reused everywhere: the same tokens drive the content AND the
-     annotation chrome, so the dialog, buttons and decorators follow the newspaper
-     design instead of carrying their own neutral look. */
-  :root { color-scheme: light dark;
-          --sug:#4a7dff; --imp:#e8a33d; --crit:#e5484d; --amber:#e8a33d;
-          --paper:      light-dark(#f6f1e3, #1d1a15);   /* newsprint */
-          --ink:        light-dark(#4d4943, #c9c2b2);   /* body ink — clearly muted warm gray */
-          --ink-strong: light-dark(#33302c, #e0dbcc);   /* headings — softer than before */
-          --ink-soft:   light-dark(#00000045, #ffffff45);  /* muted text */
-          --rule:       light-dark(rgba(26,26,26,.26), rgba(232,226,211,.26));  /* decorative lines — fainter */
-          --border:     light-dark(#0000002e, #ffffff2e); }  /* thin, light border */
-  body { font-family: Georgia, "Times New Roman", serif; background: var(--paper); color: var(--ink);
-         max-width: 46rem; margin: 2rem auto; padding: 2.5rem 3rem; line-height: 1.8; font-size: .96rem;
-         font-weight: 400; }
+/* Blueprint design system — IBM Plex pairing (mono for headings/labels, sans for
+   body), newsprint canvas with a warm accent. Always light — the page ignores OS
+   dark mode so it keeps the newspaper look everywhere. The same tokens drive the
+   content AND the annotation chrome, so the dialog, buttons and decorators follow
+   the blueprint look instead of carrying their own neutral style.
+   Self-contained: no webfonts, no CDN — Plex falls back to the system stack. */
+:root {
+  color-scheme: light;
+  --bg:      #f3f5f8;   /* paper — very light blue-gray, cooler than C */
+  --surface: #fbfcfd;
+  --surface-2: #e9ecf2;
+  --ink:     #16203a;
+  --ink-2:   #46536f;
+  --ink-3:   #717e9b;
+  --line:    #d6dbe4;
+  --accent:  #d8731f;
+  --accent-ink: #9c4a0c;
+  --on-accent:  #ffffff;
+  --blue:    #2f63c9;
+  --blue-ink: #274a8f;
+  --sug: var(--blue);  --imp: var(--accent);  --crit: #e5484d;
+}
 
-  /* Masthead — the artifact title as a newspaper nameplate. Narrow, faint double rule. */
-  h1[data-anchor="title"] { font-size: 2rem; font-weight: 500; line-height: 1.15; color: var(--ink-strong);
-         text-align: center; letter-spacing: .01em; margin: 0 0 .4rem;
-         border-bottom: 2px double var(--rule); padding-bottom: .8rem; }
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15.5px; line-height: 1.6; font-weight: 400;
+  max-width: 52rem; margin: 0 auto; padding: 3rem 2rem 5rem;
+  -webkit-font-smoothing: antialiased;
+}
+code, kbd, .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+.muted { color: var(--ink-3); }
 
-  /* Section rules — classic newspaper sub-head rule, faint and thin. */
-  h2 { font-size: 1.12rem; font-weight: 500; color: var(--ink-strong); margin: 1.6rem 0 .45rem;
-       border-bottom: 1px solid var(--rule); padding-bottom: .25rem; }
-  h3 { font-size: .98rem; font-weight: 500; color: var(--ink-strong); margin: 1.1rem 0 .3rem; }
+/* Decoration (blueprint style — the AI may use these): eyebrow/kicker above a
+   heading, .meta-row for a mono status line, .card for a boxed block. */
+.eyebrow, .kicker {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px; font-weight: 500; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--accent-ink); margin: 0 0 .7rem;
+}
+.meta-row {
+  display: flex; flex-wrap: wrap; gap: .45rem 1rem;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px; color: var(--ink-3); margin: 0 0 1.4rem;
+}
+.meta-row b { font-weight: 500; color: var(--ink-2); }
+.meta-row .sep { color: var(--line); }
+.card { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: .9rem 1.1rem; }
 
-  p { margin: .55rem 0; }
-  ul, ol { margin: .5rem 0 .5rem 1.4rem; padding: 0; }
-  li { margin: .3rem 0; }
-  code { font-family: ui-monospace, monospace; font-size: .92em; background: light-dark(#0001, #fff1);
-         border-radius: 3px; padding: 0 .2em; }
-  a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+/* Masthead — the artifact title as a clean blueprint hero. */
+h1[data-anchor="title"] {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-weight: 600; font-size: 2rem; line-height: 1.12; letter-spacing: -.01em;
+  color: var(--ink); margin: 0 0 .6rem; text-wrap: balance;
+  border-bottom: 1px solid var(--line); padding-bottom: .9rem;
+}
+h2 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight: 600;
+     font-size: 1.3rem; line-height: 1.2; color: var(--ink);
+     margin: 2.1rem 0 .55rem; text-wrap: balance; }
+h3 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight: 500;
+     font-size: .9rem; letter-spacing: .06em; text-transform: uppercase;
+     color: var(--ink-2); margin: 1.5rem 0 .45rem; }
 
-  /* Anchors: clickable + annotated. Decorators stay barely-there — a soft tint,
-     no outlines that compete with the text. */
-  [data-anchor] { cursor: pointer; border-radius: 4px; }
-  [data-anchor]:hover { background: light-dark(rgba(0,0,0,.04), rgba(255,255,255,.05)); }
-  [data-anchor].marked { background: color-mix(in srgb, var(--amber) 7%, transparent); }
-  [data-anchor].marked::after { content: "●"; color: color-mix(in srgb, var(--amber) 45%, transparent);
-                                margin-left: 6px; font-size: .65rem; }
+p { margin: .6rem 0; color: var(--ink-2); }
+p b, li b { color: var(--ink); font-weight: 600; }
+ul, ol { margin: .5rem 0 .5rem 1.4rem; padding: 0; }
+li { margin: .3rem 0; color: var(--ink-2); }
+code { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .87em;
+       color: var(--accent-ink); background: var(--surface-2); border-radius: 4px; padding: .1em .3em; }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 2.6rem 0; }
 
-  /* Annotation dialog — SAME newsprint paper as the page, so it looks native.
-     Elevation comes from the border + shadow only. RESIZABLE: drag the bottom-right
-     corner handle to expand the whole card; the input fills it. */
-  #form { position: fixed; z-index: 10; width: 18rem; min-width: 16rem; min-height: 11rem;
-          max-width: 40rem; max-height: 80vh; resize: both; overflow: hidden;
-          background: var(--paper); color: var(--ink); display: flex; flex-direction: column;
-          border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px #0005;
-          font-size: .95rem; }
-  /* The `hidden` attribute must beat the flex display — otherwise the dialog is
-     always visible and Cancel/Add misbehave. */
-  #form[hidden] { display: none; }
-  #form .head { padding: .45rem .6rem; border-bottom: 1px solid var(--border);
-                font-size: .72rem; letter-spacing: .06em; text-transform: uppercase;
-                color: var(--ink-soft); flex: none; }
-  #form .body { padding: .6rem; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
-  #form textarea { width: 100%; flex: 1; resize: none; box-sizing: border-box; min-height: 2.6rem;
-                   font-size: .95rem; font-family: inherit; padding: .4rem; border-radius: 4px;
-                   border: 1px solid var(--border); background: var(--paper); color: var(--ink);
-                   margin-bottom: .4rem; }
+/* Anchors: clickable + annotated. Decorators stay barely-there — a soft tint,
+   no outlines that compete with the text. */
+[data-anchor] { cursor: pointer; border-radius: 4px; }
+[data-anchor]:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+[data-anchor].marked { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+[data-anchor].marked::after { content: "●"; color: var(--accent); margin-left: 6px; font-size: .7rem; }
 
-  /* Existing annotations for the clicked element — view/edit/delete. */
-  #list { display: none; margin-bottom: .4rem; }
-  #list.show { display: block; }
-  #list .item { border-top: 1px solid var(--border); padding: .3rem 0; font-size: .8rem; }
-  #list .item .row { display: flex; align-items: baseline; gap: .4rem; }
-  #list .item .dot { width: .5rem; height: .5rem; border-radius: 50%; flex: none; }
-  #list .item .dot[data-sev="suggestion"] { background: var(--sug); }
-  #list .item .dot[data-sev="important"] { background: var(--imp); }
-  #list .item .dot[data-sev="critical"] { background: var(--crit); }
-  #list .item .meta { flex: 1; word-break: break-word; }
-  #list .item button { font-size: .68rem; background: transparent; border: 1px solid var(--border);
-                       border-radius: 4px; color: var(--ink); cursor: pointer; }
+/* Annotation dialog — same surface + tokens as the page, so it looks native.
+   Elevation comes from the border + shadow only. RESIZABLE: drag the bottom-right
+   corner handle to expand the whole card; the input fills it. */
+#form { position: fixed; z-index: 10; width: 18rem; min-width: 16rem; min-height: 11rem;
+        max-width: 40rem; max-height: 80vh; resize: both; overflow: hidden;
+        background: var(--surface); color: var(--ink); display: flex; flex-direction: column;
+        border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(11,16,28,.28);
+        font-size: .95rem; }
+/* The `hidden` attribute must beat the flex display — otherwise the dialog is
+   always visible and Cancel/Add misbehave. */
+#form[hidden] { display: none; }
+#form .head { padding: .5rem .7rem; border-bottom: 1px solid var(--line);
+              font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+              font-size: .7rem; letter-spacing: .16em; text-transform: uppercase;
+              color: var(--accent-ink); flex: none; }
+#form .body { padding: .7rem; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+#form textarea { width: 100%; flex: 1; resize: none; box-sizing: border-box; min-height: 2.6rem;
+                 font-size: .92rem; font-family: inherit; padding: .45rem; border-radius: 6px;
+                 border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+                 margin-bottom: .5rem; }
 
-  /* Level buttons — newspaper-styled: a small colored dot carries the severity,
-     the selected state is ink-filled (no big blue/amber/red fills). */
-  #levels { display: flex; gap: .35rem; margin-bottom: .5rem; }
-  #levels .lvl { flex: 1; display: flex; align-items: center; justify-content: center; gap: .3rem;
-                 padding: .45rem 0; font-size: .72rem; border-radius: 6px;
-                 border: 1px solid var(--border); background: transparent; color: var(--ink);
-                 font-family: inherit; cursor: pointer; }
-  #levels .lvl::before { content: "●"; font-size: .55rem; }
-  #levels .lvl[data-sev="suggestion"]::before { color: var(--sug); }
-  #levels .lvl[data-sev="important"]::before { color: var(--imp); }
-  #levels .lvl[data-sev="critical"]::before { color: var(--crit); }
-  #levels .lvl.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-  #levels .lvl.active::before { color: var(--paper); }
+/* Existing annotations for the clicked element — view/edit/delete. */
+#list { display: none; margin-bottom: .5rem; }
+#list.show { display: block; }
+#list .item { border-top: 1px solid var(--line); padding: .35rem 0; font-size: .8rem; }
+#list .item .row { display: flex; align-items: baseline; gap: .4rem; }
+#list .item .dot { width: .5rem; height: .5rem; border-radius: 50%; flex: none; }
+#list .item .dot[data-sev="suggestion"] { background: var(--sug); }
+#list .item .dot[data-sev="important"] { background: var(--imp); }
+#list .item .dot[data-sev="critical"] { background: var(--crit); }
+#list .item .meta { flex: 1; word-break: break-word; }
+#list .item button { font-size: .68rem; background: transparent; border: 1px solid var(--line);
+                     border-radius: 5px; color: var(--ink); cursor: pointer; }
 
-  #form .actions { display: flex; gap: .4rem; }
-  #form .actions button { flex: 1; padding: .5rem 0; font-size: .85rem; border-radius: 6px; cursor: pointer; }
-  #add { background: var(--ink); color: var(--paper); border: 0; }
-  #cancel { background: transparent; border: 1px solid var(--border); color: var(--ink); }
+/* Level buttons — blueprint style: a colored dot carries the severity, the selected
+   state is ink-filled (no big blue/amber/red fills). */
+#levels { display: flex; gap: .35rem; margin-bottom: .5rem; }
+#levels .lvl { flex: 1; display: flex; align-items: center; justify-content: center; gap: .3rem;
+               padding: .45rem 0; font-size: .72rem; border-radius: 7px;
+               border: 1px solid var(--line); background: transparent; color: var(--ink);
+               font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; cursor: pointer; }
+#levels .lvl::before { content: "●"; font-size: .55rem; }
+#levels .lvl[data-sev="suggestion"]::before { color: var(--sug); }
+#levels .lvl[data-sev="important"]::before { color: var(--imp); }
+#levels .lvl[data-sev="critical"]::before { color: var(--crit); }
+#levels .lvl.active { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+#levels .lvl.active::before { color: var(--surface); }
 
-  #done { position: fixed; bottom: 1rem; right: 1rem; z-index: 20; padding: .7rem 1.4rem; border: 0;
-          border-radius: 999px; background: var(--ink); color: var(--paper); font-size: 1rem;
-          cursor: pointer; box-shadow: 0 6px 16px #0005; font-family: Georgia, serif; }
-  #raw { position: fixed; bottom: 1.35rem; right: 7.2rem; z-index: 20; font-size: .75rem;
-         color: var(--ink-soft); cursor: pointer; font-family: Georgia, serif; }
-  #status { position: fixed; bottom: 1rem; left: 1rem; z-index: 20; font-size: .8rem; color: var(--ink-soft); }
+#form .actions { display: flex; gap: .4rem; }
+#form .actions button { flex: 1; padding: .5rem 0; font-size: .85rem; border-radius: 8px; cursor: pointer; }
+#add { background: var(--ink); color: var(--surface); border: 0; }
+#cancel { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+
+#done { position: fixed; bottom: 1rem; right: 1rem; z-index: 20; padding: .7rem 1.4rem; border: 0;
+        border-radius: 999px; background: #000; color: var(--on-accent);
+        font-size: .92rem; font-weight: 500; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+        cursor: pointer; box-shadow: 0 6px 16px rgba(11,16,28,.28); }
+#status { position: fixed; bottom: 1rem; left: 1rem; z-index: 20; font-size: .78rem;
+          color: var(--ink-3); font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
+
+@media (max-width: 640px) {
+  body { padding: 1.8rem 1.2rem 5rem; }
+  h1[data-anchor="title"] { font-size: 1.6rem; }
+}

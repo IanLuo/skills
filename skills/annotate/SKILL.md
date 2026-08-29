@@ -52,8 +52,6 @@ The user pastes the feedback into chat — one annotation per line, compact and 
 <data-anchor> (severity): <comment> — "<short snippet…>"
 ```
 
-(A "raw" link on the page copies the JSON form instead; same fields.)
-
 For each line, resolve it against the artifact file:
 1. **Locate** the element by `data-anchor` id in the artifact; if the id changed, use
    the snippet as a fallback hint.

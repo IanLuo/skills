@@ -150,9 +150,3 @@ $('done').onclick = () => {
   status.textContent = 'Paste it into the AI window, then close this tab.';
   setTimeout(() => { try { window.close(); } catch (err) {} }, 200);
 };
-
-$('raw').onclick = () => {
-  const status = $('status');
-  if (ANNOTATIONS.length === 0) { status.textContent = 'No feedback yet.'; return; }
-  status.textContent = copyText(JSON.stringify(ANNOTATIONS)) ? 'Raw JSON copied.' : 'Copy failed.';
-};
