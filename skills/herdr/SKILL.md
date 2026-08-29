@@ -1,10 +1,11 @@
 ---
 name: herdr
-description: Control herdr — the terminal workspace manager — to spawn agents (pi, claude, codex, shell) in panes, submit prompts, wait for results, read output, and clean up. Use when the user explicitly mentions herdr, or asks to inspect/control panes, tabs, workspaces, commands, or another agent. Trigger phrases — "spawn an agent", "send to pane", "herdr", "review in another pane", "start a worker", "one-shot agent", "in a pane/tab". Do NOT use for ordinary local bash in the current pane (use the bash tool), or merely because a task could benefit from delegation or parallel work — that's the delegate skill (in-process subagents). Requires HERDR_ENV=1.
+description: 'Open and control herdr tabs/panes — the terminal workspace manager — to run claude (or pi, codex, gemini, …) in a separate VISIBLE terminal: create a tab, split a pane, submit a prompt, wait, read output, close. Trigger on explicit "tab"/"pane"/"window" language — literal triggers: "open a new tab", "new tab", "another tab", "carry over / hand off work to a new tab", "spawn an agent in a pane", "run claude in a tab", "review/continue in another pane", "herdr", "not a background tab". A request for a real interactive terminal is herdr''s job, NOT the in-process Agent tool. Do NOT use for ordinary bash in the current pane (use the bash tool), or merely because work could benefit from delegation with no visible terminal — that is the delegate skill / Agent tool. Requires HERDR_ENV=1.'
 metadata:
   audience: personal
   domain: agent-orchestration
 compatibility: Requires herdr running (HERDR_ENV=1) and the herdr CLI. The installed binary is the authority for syntax — run `herdr --help` / `herdr agent` / `herdr pane` to discover commands.
+disable-model-invocation: true
 ---
 
 # herdr
@@ -18,8 +19,10 @@ choice is a parameter; this skill is the herdr-control layer, agent-agnostic.
 You must be running inside a herdr session:
 
 ```bash
-echo $HERDR_ENV        # must be "1"
-echo $HERDR_PANE_ID    # must be set
+echo $HERDR_ENV             # must be "1"
+echo $HERDR_WORKSPACE_ID    # w1
+echo $HERDR_TAB_ID          # w1:t1
+echo $HERDR_PANE_ID         # w1:p1 — your pane
 ```
 
 If not set, tell the user to launch herdr first.
@@ -37,12 +40,17 @@ herdr pane             # pane subcommands: split run wait-output read close
 herdr --skill          # herdr's own canonical agent instructions
 ```
 
+Never run bare `herdr` for discovery — it launches/attaches the TUI. And never probe
+a mutating nested command by omitting arguments (`herdr workspace create` executes
+with defaults).
+
 ## Primitives and targeting
 
 - **Panes** = raw terminals (shells, tests, servers). **Agents** = the recognized
   coding agent occupying a pane. A pane exists whether or not it contains an agent.
 - IDs: workspace `w1`, tab `w1:t1`, pane `w1:p1`. Closed IDs are never reused;
-  `pane move` re-qualifies the pane ID.
+  `pane move` re-qualifies the pane ID — continue with
+  `.result.move_result.pane.pane_id`, never the old value.
 - Agent commands accept a **unique live agent name** or the **pane ID** hosting it —
   never terminal IDs, never bare kind labels. Names match `[a-z][a-z0-9_-]{0,31}`.
 - Prefer `--current` or your own `$HERDR_PANE_ID`; never assume the focused pane is
@@ -56,6 +64,12 @@ on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
 
 ## Core workflow: spawn → prompt → wait → read → close
 
+**Tabs vs panes.** A **tab** is a container (`w1:t1`); **panes** live inside it
+(`w1:p1`). Default to a sibling pane; create a NEW TAB only when the user
+explicitly asks for a tab/window (`tab create` returns `.result.tab` +
+`.result.root_pane` — start the agent in the root pane). For "use claude code"
+requests the kind is `claude`.
+
 1. **Split a pane** — sibling, preserve your cwd, keep user focus:
 
    ```bash
@@ -63,14 +77,22 @@ on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
    # -> new pane id in .result.pane.pane_id (read it; don't guess)
    ```
 
-2. **Start an agent** in that pane (must be at an interactive shell prompt):
+   Direction: honor the user's request; otherwise inspect your pane —
+   `herdr pane layout --pane "$HERDR_PANE_ID"` — and split a wide pane right, a
+   narrow/tall pane down. Avoid repeated same-direction splits (unusable columns).
+
+2. **Start an agent** in that pane (must be at an interactive shell prompt — `agent
+   start` never creates/splits/moves layout, it needs an existing pane):
 
    ```bash
    herdr agent start <name> --kind pi --pane <pane-id> [-- <agent-args>]
    ```
 
    Kinds: `pi`, `claude`, `codex`, `gemini`, … (run `herdr agent` for the list).
-   Returns only once the agent is detected and ready for input.
+   Returns only once the agent is detected and ready for input. If the agent blocks
+   during startup it returns `agent_not_ready` immediately but keeps the name usable
+   for `agent read` / `agent send-keys` — wait for `idle` before prompting it.
+   Startup timeout is 30s by default.
 
 3. **Submit work**:
 
@@ -81,7 +103,9 @@ on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
    `prompt` atomically submits text + Enter (honors bracketed paste). From a
    non-working state it must observe a lifecycle change within 5s or returns
    `agent_prompt_stalled`. `--wait` is enough for normal work — don't restate the
-   defaults with `--until`.
+   defaults with `--until`. A prompt to an agent already at an approval/question
+   dialog is rejected with `agent_blocked` BEFORE any input is sent — inspect the
+   blocked UI and ask the user before answering it.
 
 4. **Read the result**:
 
@@ -97,6 +121,9 @@ on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
 
 ## Inspect, wait, interact
 
+- `herdr workspace list` / `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` /
+  `herdr pane list --workspace "$HERDR_WORKSPACE_ID"` — map the layout around you.
+- `herdr pane current --current` — identify your own pane.
 - `herdr agent list` — all agents: names, pane IDs, states.
 - `herdr agent get <target>` — current state (add `--json` to parse).
 - `herdr agent wait <target> --until blocked --timeout 120000` — wait for a specific
@@ -127,6 +154,16 @@ reply with only the path, then read that file. Don't request file output in the
 initial prompt.
 
 ## Patterns
+
+### New tab — when the user explicitly asks for a tab/window
+
+```bash
+herdr tab create --cwd "$PWD" --no-focus          # -> .result.tab + .result.root_pane (read them)
+herdr agent start <name> --kind claude --pane <root-pane-id>   # --kind claude for "use claude code"
+herdr agent prompt <name> "<task>" --wait --timeout 120000
+herdr agent read <name> --source recent-unwrapped --lines 200 --format text
+# leave the tab open for the user to interact with — close only what you created
+```
 
 ### One-shot (spawn → prompt → wait → read → close)
 
