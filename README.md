@@ -49,7 +49,7 @@ skill (specs, dev-task, or design-task) for follow-up.
 | **[herdr](skills/herdr/SKILL.md)** | Control the herdr terminal workspace manager — spawn agents in panes, submit prompts, wait for results, read output, clean up. Agent-agnostic. External agents in panes. |
 | **[delegate](skills/delegate/SKILL.md)** | Move self-contained or noisy work into an in-process subagent to keep the parent context lean. Delegability gate + spawn→wait→read→report; files are escalation only. |
 | **[task-agent](skills/task-agent/SKILL.md)** | Hand a task to a new agent on its own git worktree, then collect and merge. `start` (worktree + task card + spawn via herdr) and manual `end` (verify → review-task → merge → clean up). Coordinator-only. |
-| **[artifact](skills/artifact/SKILL.md)** | Render context/AI response as a self-contained interactive HTML page the user can annotate; feedback is copy-pasted back and resolved to the exact `data-anchor` it points at. No server. |
+| **[annotate](skills/annotate/SKILL.md)** | Render context/AI response as a self-contained interactive HTML page the user can annotate; feedback is copy-pasted back and resolved to the exact `data-anchor` it points at. No server. |
 | **[librarian](skills/librarian/SKILL.md)** | Personal research library — fan out self-scoring subagents, then curate verified results into `~/Documents/librarian/library/`. Query-first, research on cache miss. |
 | **[skill-man](skills/skill-man/SKILL.md)** | Meta-skill — create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. |
 | **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |

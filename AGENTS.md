@@ -54,7 +54,7 @@ skills/          — 14 skills (see README table)
   herdr/           control herdr terminal workspace (external agents in panes)
   delegate/        in-process subagents — delegability gate + spawn→wait→read
   task-agent/       worktree-delegated tasks — start (dispatch) / end (merge back)
-  artifact/         interactive HTML view of context + copy-paste annotation feedback
+  annotate/         interactive HTML view of context + copy-paste annotation feedback
   librarian/       personal research library
   skill-man/       create, validate, deploy skills
   skill-template/  starter skeleton
