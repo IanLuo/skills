@@ -29,6 +29,7 @@ content = content_file.read_text()
 html = (
     template.replace("/*__CHROME_CSS__*/", css)
             .replace("//__CHROME_JS__", js)
+            .replace("<title>artifact</title>", f"<title>{name}</title>")
             .replace('<h1 data-anchor="title">…</h1>', content)
 )
 

@@ -1,14 +1,13 @@
 ---
-name: artifact
-description: Render content as an annotatable HTML page the user can point at, then resolve pasted feedback back to the exact data it points at. Use ONLY when the user explicitly asks for it — "/artifact", "as a page", "make this annotatable". Never auto-trigger. Feedback travels by copy-paste — no server. Do NOT use for plain answers (text suffices), charts or dashboards (use dataviz), writing specs (use specs), or design files (use design-task).
+name: annotate
+description: Render content as an annotatable HTML page the user can point at, then resolve pasted feedback back to the exact data it points at. Use ONLY when the user explicitly asks for it — "/annotate", "as a page", "make this annotatable". Never auto-trigger. Feedback travels by copy-paste — no server. Do NOT use for plain answers (text suffices), charts or dashboards (use dataviz), writing specs (use specs), or design files (use design-task).
 metadata:
   audience: personal
   domain: agent-orchestration
 compatibility: Opens a local HTML file in the browser (open / xdg-open). The page runs entirely client-side on file:// — no server, no backend.
 ---
 
-
-# artifact
+# annotate
 
 Generate a response to the user's request as an interactive HTML page the user can
 annotate, then resolve the pasted feedback back to the exact data it points at. The
@@ -17,7 +16,7 @@ existing context. The feedback loop is copy-paste — no server, no POST.
 
 ## When to use
 
-**Explicit-only.** Generate an artifact ONLY when the user asks for it — `/artifact`,
+**Explicit-only.** Generate an artifact ONLY when the user asks for it — `/annotate`,
 "as a page", "make this annotatable". Never auto-trigger, never offer it unprompted:
 auto-fire is unreliable (the model defaults to text) and text-then-convert would
 double the tokens. The user decides upfront, and gets a single generation.
@@ -52,8 +51,6 @@ The user pastes the feedback into chat — one annotation per line, compact and 
 ```text
 <data-anchor> (severity): <comment> — "<short snippet…>"
 ```
-
-(A "raw" link on the page copies the JSON form instead; same fields.)
 
 For each line, resolve it against the artifact file:
 1. **Locate** the element by `data-anchor` id in the artifact; if the id changed, use
