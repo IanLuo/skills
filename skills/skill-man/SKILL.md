@@ -6,6 +6,7 @@ metadata:
   domain: tooling
 ---
 
+
 # skill-man
 
 This repo is a personal-skills manager. Skills live in `skills/<name>/` and are

@@ -7,6 +7,7 @@ metadata:
 compatibility: Requires herdr running (HERDR_ENV=1) and the herdr CLI. The installed binary is the authority for syntax — run `herdr --help` / `herdr agent` / `herdr pane` to discover commands.
 ---
 
+
 # herdr
 
 Control herdr — the terminal workspace manager — via its CLI. Spawn agents in

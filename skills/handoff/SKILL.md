@@ -6,6 +6,7 @@ metadata:
   domain: general
 ---
 
+
 # handoff
 
 Carry a task across a context break. You invoke it deliberately when you need to clear
@@ -38,7 +39,7 @@ deleted. Not a permanent record — no chain, no archive, no SESSION log.
 
 1. A fresh session reads the handoff doc — it exists only because a context break was
    pending.
-2. Re-verify `[?]` claims against the current repo before acting on them.
+2. Don't make any action, only load the information.
 3. After the task is resumed, **delete the doc** — it has served its purpose.
 
 ## Rules

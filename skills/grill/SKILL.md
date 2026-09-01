@@ -6,6 +6,7 @@ metadata:
   domain: general
 ---
 
+
 # grill
 
 Challenge, verify, and push back before implementing or agreeing. Applies to every

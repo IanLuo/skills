@@ -72,6 +72,41 @@ Think of the model as exploring a path: a narrow bridge over cliffs needs guardr
 (low freedom); an open field allows many routes (high freedom). Use strict scripts for
 the fragile parts and leave the rest as judgment.
 
+### When to extract to scripts/
+
+Repetitive bash patterns belong in `scripts/` rather than inline in SKILL.md when:
+
+1. **Repetition** — the pattern appears 3+ times in examples
+2. **Error handling boilerplate** — checking HTTP codes, parsing JSON errors, retries
+3. **Authentication/setup** — multi-step credential loading or environment checks
+4. **Dangerous operations** — commands that need consistent flags (e.g., `rm`, `git push --force`)
+
+Extract when the pattern is **reusable and fragile**. Keep inline when showing **variation** (each example teaches a different approach).
+
+**Example — inline bash (good for variation):**
+```bash
+# Search by project
+curl -s "${API_URL}/search?project=PROJ"
+
+# Search by assignee
+curl -s "${API_URL}/search?assignee=currentUser()"
+```
+
+**Example — extracted script (good for reuse):**
+```bash
+# scripts/api-request.sh wraps auth + error handling
+scripts/api-request.sh GET /search "project=PROJ"
+scripts/api-request.sh POST /issue @payload.json
+```
+
+Benefits of extraction:
+- **Scripts execute without being read** — zero context cost when invoked
+- **Easier to test** — script has clear inputs/outputs
+- **Consistent behavior** — auth, retries, error handling in one place
+- **Smaller SKILL.md** — examples become one-liners
+
+When in doubt: if you'd copy-paste the bash block verbatim, extract it.
+
 ## 4. Description-as-trigger
 
 (See [skill-spec.md](skill-spec.md) for the rules; this is the *why*.)

@@ -6,6 +6,7 @@ metadata:
   domain: design
 ---
 
+
 # design-task
 
 Use this for visual, product, or interface design work where taste decisions need to

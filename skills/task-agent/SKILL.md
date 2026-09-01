@@ -7,6 +7,7 @@ metadata:
 compatibility: Requires git worktrees and herdr running (HERDR_ENV=1) to spawn the worker. Worker kind is a parameter (pi, claude, codex, …).
 ---
 
+
 # task-agent
 
 Hand a task to a NEW agent working on its own worktree of the same project, then

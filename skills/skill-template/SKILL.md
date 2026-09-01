@@ -7,6 +7,7 @@ metadata:
   compatibility: Works across Claude, OpenCode, Codex, and other Skill.md loaders.
 ---
 
+
 ## What this skill is for
 
 One or two sentences on the job this skill does and when to reach for it. The

@@ -6,6 +6,7 @@ metadata:
   domain: specification
 ---
 
+
 # specs
 
 An interactive elicitation skill. The `grill` skill provides the critical-thinking

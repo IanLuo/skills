@@ -7,6 +7,7 @@ metadata:
 compatibility: Opens a local HTML file in the browser (open / xdg-open). The page runs entirely client-side on file:// — no server, no backend.
 ---
 
+
 # artifact
 
 Generate a response to the user's request as an interactive HTML page the user can

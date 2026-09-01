@@ -16,6 +16,7 @@ metadata:
   domain: general
 ---
 
+
 # init-context
 
 One-shot bootstrap. Writes `AGENTS.md` (compact stable index) at the repo root. AGENTS.md is an **index, not a manifest** —

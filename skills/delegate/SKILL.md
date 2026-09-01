@@ -7,6 +7,7 @@ metadata:
 compatibility: Requires a harness with an in-process subagent tool (Claude Code Agent tool). No other deps.
 ---
 
+
 # delegate
 
 Move self-contained or noisy work into an in-process subagent so the main context
