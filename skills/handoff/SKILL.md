@@ -38,7 +38,7 @@ deleted. Not a permanent record — no chain, no archive, no SESSION log.
 
 1. A fresh session reads the handoff doc — it exists only because a context break was
    pending.
-2. Re-verify `[?]` claims against the current repo before acting on them.
+2. Re-verify `[?]` claims against the current repo, don't do any action, if there's pending action, ask user.
 3. After the task is resumed, **delete the doc** — it has served its purpose.
 
 ## Rules
