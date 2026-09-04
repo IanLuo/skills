@@ -1,6 +1,6 @@
 ---
 name: herdr
-description: 'Open and control herdr tabs/panes — the terminal workspace manager — to run claude (or pi, codex, gemini, …) in a separate VISIBLE terminal: create a tab, split a pane, submit a prompt, wait, read output, close. Trigger on explicit "tab"/"pane"/"window" language — literal triggers: "open a new tab", "new tab", "another tab", "carry over / hand off work to a new tab", "spawn an agent in a pane", "run claude in a tab", "review/continue in another pane", "herdr", "not a background tab". A request for a real interactive terminal is herdr''s job, NOT the in-process Agent tool. Do NOT use for ordinary bash in the current pane (use the bash tool), or merely because work could benefit from delegation with no visible terminal — that is the delegate skill / Agent tool. Requires HERDR_ENV=1.'
+description: 'Open and control herdr tabs/panes — the terminal workspace manager — to run claude (or pi, codex, gemini, …) in a separate VISIBLE terminal: create a tab, split a pane, submit a prompt, wait, read output, close. Trigger on explicit "tab"/"pane"/"window" language — literal triggers: "open a new tab", "new tab", "another tab", "carry over / hand off work to a new tab", "spawn an agent in a pane", "run claude in a tab", "auto claude", "open claude code", "review/continue in another pane", "herdr", "not a background tab". A request for a real interactive terminal is herdr''s job, NOT the in-process Agent tool. Do NOT use for ordinary bash in the current pane (use the bash tool), or merely because work could benefit from delegation with no visible terminal — that is the delegate skill / Agent tool. Requires HERDR_ENV=1.'
 metadata:
   audience: personal
   domain: agent-orchestration
@@ -89,7 +89,10 @@ requests the kind is `claude`.
    ```
 
    Kinds: `pi`, `claude`, `codex`, `gemini`, … (run `herdr agent` for the list).
-   Returns only once the agent is detected and ready for input. If the agent blocks
+   For `claude`, pass `--permission-mode auto` at start so it acts
+   autonomously — see *Auto claude* below; a bare `claude` may open in manual
+   mode and ask before every action. Returns only once the agent is detected
+   and ready for input. If the agent blocks
    during startup it returns `agent_not_ready` immediately but keeps the name usable
    for `agent read` / `agent send-keys` — wait for `idle` before prompting it.
    Startup timeout is 30s by default.
@@ -155,14 +158,52 @@ initial prompt.
 
 ## Patterns
 
+### Auto claude — spawn Claude Code in auto mode (the common request)
+
+Users routinely ask to "open claude code in a new pane/tab" and expect it to work
+autonomously. A bare `claude` can start in manual mode and ask before every
+action, and toggling mode in-session (shift+tab) is unreliable in a background
+pane. **Fix the mode at launch**:
+
+```bash
+herdr agent start <name> --kind claude --pane <pane-id> -- --permission-mode auto
+```
+
+Terse request → what to do:
+
+| You say | You get |
+|---|---|
+| `claude <task>` / `auto claude <task>` | sibling pane · claude in **auto** mode · runs `<task>` · **closes pane when done** (temp) |
+| `claude tab <task>` / `auto claude tab <task>` | new tab · claude in auto mode · runs `<task>` · **closes tab when done** (temp) |
+| `… keep` / `… keep open` / `… interactive` | same, but **keeps** the pane/tab open for follow-ups |
+| `claude, careful` / `claude, ask me first` | claude with `--permission-mode manual` |
+
+Defaults:
+
+- **`claude` ⇒ auto mode by default.** The word "auto" is optional — it names
+  the default. Only reach for `manual`/`acceptEdits` when the user says to go
+  carefully.
+- `auto` is Claude Code's classifier mode: it acts without asking on most
+  things but still stops on genuinely risky ones. A `blocked` state mid-run is
+  the classifier doing its job, **not** "auto failed to enable" — read what it
+  asks and tell the user before answering it.
+- **Temp by default.** A `<task>` request is a one-shot: spawn → prompt → wait →
+  read → **close the pane/tab you created**. Trailing `keep` (or "keep open" /
+  "interactive") leaves it running for follow-ups instead. Only ever close what
+  you created.
+- If the user wants an open claude to work in *themselves* (no task — "open
+  claude", "a pane to try things"), start it in auto mode and keep it — no
+  `agent prompt`, no close.
+
 ### New tab — when the user explicitly asks for a tab/window
 
 ```bash
 herdr tab create --cwd "$PWD" --no-focus          # -> .result.tab + .result.root_pane (read them)
-herdr agent start <name> --kind claude --pane <root-pane-id>   # --kind claude for "use claude code"
+herdr agent start <name> --kind claude --pane <root-pane-id> -- --permission-mode auto   # claude defaults to auto mode
 herdr agent prompt <name> "<task>" --wait --timeout 120000
 herdr agent read <name> --source recent-unwrapped --lines 200 --format text
-# leave the tab open for the user to interact with — close only what you created
+# temp (a <task> was given): read the result, then close the tab. Persistent (user
+# wants the tab to work in themselves): leave it. Close only what you created.
 ```
 
 ### One-shot (spawn → prompt → wait → read → close)
