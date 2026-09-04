@@ -4,6 +4,10 @@ Read this when running the **Research workflow** — it defines the three scorin
 dimensions and the self-scoring protocol. Research agents self-assess; you (the
 orchestrator) review and adjust, then make the accept/low-confidence call.
 
+SKILL.md's Research step 2 carries the compressed paste-brief that goes into each
+subagent prompt; this file is the full wording for your own review — keep the three
+dimensions in sync across both.
+
 ## The three dimensions
 
 Every finding is scored on three dimensions, each 1–5. Each research agent self-scores
@@ -21,21 +25,22 @@ refine, not an accept.
 
 ## Self-scoring protocol
 
-1. Each research agent includes a self-assessment block in its structured output:
-   `source_quality: N`, `claim_specificity: N`, `gap_coverage: N`, each 1–5.
+1. Each research agent includes a one-line self-assessment in its structured output:
+   `self: source_quality=N claim_specificity=N gap_coverage=N`, each 1–5.
 2. You (the orchestrator) read each finding and verify the self-scores against the
    rubric. Adjust any score that looks inflated or missed. This takes seconds — do not
    spawn scoring subagents.
 
 ## Accept / low-confidence
 
-One pass, no refinement loop:
+One pass plus at most ONE targeted follow-up — no refinement loop, no re-fan-out (see
+SKILL.md Research step 4 for the follow-up trigger and what to hand the agent):
 
 - **floor ≥ accept threshold** → accept. Threshold is 3 for `skim`, 4 for `read`/`study`.
-- **floor < threshold** → admit as-is, tagged `confidence: low`.
+- **floor < threshold after the follow-up** → admit as-is, tagged `confidence: low`.
 
-Do not re-dispatch findings that fall below threshold. The user can re-run the angle at
-`study` depth later if they want deeper coverage.
+Do not re-dispatch a finding a second time, and never re-fan-out all angles. The user
+can re-run the angle at `study` depth later if they want deeper coverage.
 
 ## The meaning of confidence
 
