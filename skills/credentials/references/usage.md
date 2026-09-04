@@ -19,7 +19,7 @@ cred init
 Creates:
 
 - the encrypted vault `~/.config/cred/vault` (passphrase you set now; relocks
-  after 300s idle),
+  300s after unlock),
 - the profile dir `~/.config/cred/profiles/`.
 
 > ⚠️ The passphrase you type here is the only thing protecting the vault. Pick a
@@ -90,7 +90,7 @@ cred lock
 ```
 
 `unlock` decrypts the vault into a plaintext cache (`~/.config/cred/unlocked`,
-0600) that auto-expires after 300s idle; `lock` wipes it immediately. An agent
+0600) that auto-expires 300s after unlock; `lock` wipes it immediately. An agent
 **cannot** unlock it (no TTY); if `cred run` reports locked, tell the human.
 
 ### `cred run <profile> -- <cmd> [args]`
@@ -138,7 +138,8 @@ Rules:
 
 - `allow =` is **mandatory**. `cred run` fails closed (exit 5) without it.
 - `@secret` means "look up vault entry `profile=<profile>, var=<VAR>`".
-- Non-secret values are plain `KEY=value` lines. `#` starts a comment.
+- Non-secret values are plain `KEY=value` lines. `#` starts a comment — a whole
+  line, or anything after whitespace on a value line (`KEY = value # note`).
 
 ## 4. The safety model (what `cred run` guarantees)
 

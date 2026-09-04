@@ -65,7 +65,7 @@ fn load_profile(profile_dir: &str, name: &str) -> (Vec<(String, String)>, Vec<St
         }
         let (key, val) = line.split_once('=').unwrap();
         let key = key.trim();
-        let val = val.trim();
+        let val = strip_inline_comment(val.trim()).trim();
         if key == "allow" {
             allow = val.split_whitespace().map(str::to_string).collect();
         } else if val == "@secret" {
@@ -75,6 +75,22 @@ fn load_profile(profile_dir: &str, name: &str) -> (Vec<(String, String)>, Vec<St
         }
     }
     (vars, secrets, allow)
+}
+
+fn valid_profile(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// A `#` preceded by whitespace starts a trailing comment (whole-line `#`
+/// comments are skipped above). Values keep any other `#` (e.g. in a URL).
+fn strip_inline_comment(v: &str) -> &str {
+    let bytes = v.as_bytes();
+    for i in 1..bytes.len() {
+        if bytes[i] == b'#' && bytes[i - 1].is_ascii_whitespace() {
+            return &v[..i];
+        }
+    }
+    v
 }
 
 /// Read the unlocked cache into (profile, var, value) triples. Returns None when
@@ -132,20 +148,28 @@ fn stream_out<R: Read + Send + 'static>(
 ) {
     let mut secrets = secrets;
     secrets.sort_by_key(|b| std::cmp::Reverse(b.len()));
-    let reader = BufReader::new(reader);
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    let mut reader = BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf).unwrap_or(0) == 0 {
+            break;
+        }
+        // Byte-level read: invalid UTF-8 is lossy-replaced, never truncating
+        // the stream (BufReader::lines() dropped the rest on the first
+        // non-UTF-8 byte, hiding the child's own error output).
+        let line = String::from_utf8_lossy(&buf);
         let scrubbed = redact(&line, &secrets);
         let mut guard = out.lock().unwrap();
-        let _ = writeln!(guard, "{scrubbed}");
+        let _ = guard.write_all(scrubbed.as_bytes());
         let _ = guard.flush();
     }
 }
 
 fn run(profile: &str, argv: &[String], profile_dir: &str, unlocked: &str) -> i32 {
+    if !valid_profile(profile) {
+        die(&format!("invalid profile name '{profile}'"), 1);
+    }
     let (vars, secret_vars, allow) = load_profile(profile_dir, profile);
     if argv.is_empty() {
         die("no command given after '--'", 1);
@@ -160,16 +184,18 @@ fn run(profile: &str, argv: &[String], profile_dir: &str, unlocked: &str) -> i32
         );
     }
 
-    let cache = read_cache(unlocked).unwrap_or_else(|| {
-        die(
-            "vault is LOCKED — run 'cred unlock' first (this is the intended gate)",
-            2,
-        )
-    });
-
     let mut secrets: SecretMap = Vec::new();
-    for var in &secret_vars {
-        secrets.push((var.clone(), resolve_secret(&cache, profile, var)));
+    if !secret_vars.is_empty() {
+        // A profile with no secrets must work while the vault is locked.
+        let cache = read_cache(unlocked).unwrap_or_else(|| {
+            die(
+                "vault is LOCKED — run 'cred unlock' first (this is the intended gate)",
+                2,
+            )
+        });
+        for var in &secret_vars {
+            secrets.push((var.clone(), resolve_secret(&cache, profile, var)));
+        }
     }
     let values: Vec<String> = secrets.iter().map(|(_, v)| v.clone()).collect();
 

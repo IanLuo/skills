@@ -36,6 +36,12 @@ err() { printf 'cred: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
 require_tty() { [ -t 0 ] || die "this verb needs an interactive terminal (run it yourself)"; }
+valid_profile() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
+
+# Temp files to remove on exit. EXIT (not RETURN) so it also fires on set -e
+# abort and die — a RETURN trap would orphan plaintext vault temp files.
+_TMP_CLEANUP=""
+trap 'rm -f $_TMP_CLEANUP' EXIT
 
 usage() {
   cat <<'USAGE'
@@ -78,8 +84,10 @@ read_secret() { # $1 = prompt label (to stderr)
 
 # Encrypt a plaintext file into the vault. Call with CRED_PW=… set (env, never argv).
 VENC() { # $1 = plaintext file
-  "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:CRED_PW -in "$1" -out "$VAULT.tmp"
-  mv "$VAULT.tmp" "$VAULT"
+  local out="$VAULT.tmp.$$" # unique per process: concurrent adds can't clobber each other's tmp
+  "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:CRED_PW -in "$1" -out "$out" \
+    || { rm -f "$out"; return 1; }
+  mv "$out" "$VAULT"
 }
 
 # Decrypt the vault to a file ("-" for stdout). Call with CRED_PW=… set.
@@ -110,6 +118,7 @@ upsert() {
 vault_put() { # $1 = file, $2 = profile, $3 = var, $4 = value
   local f="$1" p="$2" v="$3" val="$4"
   awk -v p="$p" -v v="$v" 'BEGIN{FS=OFS="\t"} !($1==p && $2==v)' "$f" > "$f.new" || true
+  chmod 600 "$f.new" # shell `>` creates it 0644 — a full-vault plaintext must not sit wider than 0600
   : >> "$f.new"
   printf '%s\t%s\t%s\n' "$p" "$v" "$val" >> "$f.new"
   mv "$f.new" "$f"
@@ -136,11 +145,12 @@ cmd_init() {
   rm -f "$VAULT.plain"
   printf 'created encrypted vault %s\n' "$VAULT"
   printf 'profiles live in %s\n' "$PROFILE_DIR"
-  printf 'relocks after %ss idle — run "cred unlock" to open a window\n' "$TTL"
+  printf 'relocks %ss after unlock — run "cred unlock" to open a window\n' "$TTL"
 }
 
 cmd_add() {
   local profile="$1" var="$2"
+  valid_profile "$profile" || die "invalid profile name '$profile'"
   valid_name "$var" || die "invalid VAR name '$var'"
   require_tty
   [ -f "$VAULT" ] || die "no vault yet — run 'cred init'"
@@ -152,7 +162,7 @@ cmd_add() {
   local pw tmp
   pw="$(read_secret 'vault passphrase (hidden): ')"
   tmp="$(mktemp "${TMPDIR:-/tmp}/cred.XXXXXX")"
-  trap 'rm -f "$tmp"' RETURN
+  _TMP_CLEANUP="$_TMP_CLEANUP $tmp $tmp.new"
   CRED_PW="$pw" VDEC "$tmp" || die "wrong passphrase (or corrupt vault)"
   [ "$(head -n1 "$tmp")" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
 
@@ -162,7 +172,8 @@ cmd_add() {
   # Verify the value round-trips (readback compare, nothing printed).
   local got
   got="$(CRED_PW="$pw" VDEC -)"
-  printf '%s' "$got" | grep -qF "$(printf '%s\t%s\t%s' "$profile" "$var" "$secret")" \
+  # In-process compare — never put the secret on a subprocess argv (ps-visible).
+  [[ "$got" == *"$profile"$'\t'"$var"$'\t'"$secret"* ]] \
     || die "verification failed — value not stored correctly"
 
   # If the vault is unlocked, refresh the cache so `cred run` sees the new secret.
@@ -179,6 +190,7 @@ cmd_add() {
 
 cmd_set() {
   local profile="$1" var="$2" val="$3"
+  valid_profile "$profile" || die "invalid profile name '$profile'"
   valid_name "$var" || die "invalid VAR name '$var'"
   mkdir -p "$PROFILE_DIR"
   local f; f="$(profile_file "$profile")"
@@ -196,6 +208,7 @@ cmd_list() {
     fi
     return 0
   fi
+  valid_profile "$1" || die "invalid profile name '$1'"
   local f; f="$(profile_file "$1")"
   [ -f "$f" ] || { err "no profile '$1'"; return 1; }
   while IFS= read -r line; do
@@ -212,18 +225,19 @@ cmd_unlock() {
   local pw tmp
   pw="$(read_secret 'vault passphrase (hidden): ')"
   tmp="$(mktemp "${TMPDIR:-/tmp}/cred.XXXXXX")"
-  trap 'rm -f "$tmp"' RETURN
+  _TMP_CLEANUP="$_TMP_CLEANUP $tmp"
   CRED_PW="$pw" VDEC "$tmp" || die "wrong passphrase (or corrupt vault)"
   [ "$(head -n1 "$tmp")" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
   cp "$tmp" "$UNLOCKED"
   chmod 600 "$UNLOCKED"
-  printf 'unlocked — relocks after %ss of inactivity\n' "$TTL"
+  printf 'unlocked — relocks %ss after unlock\n' "$TTL"
 }
 
 cmd_lock() { rm -f "$UNLOCKED" && printf 'locked\n'; }
 
 cmd_run() {
   [ $# -ge 1 ] || die "usage: cred run <profile> -- <cmd> [args]"
+  valid_profile "$1" || die "invalid profile name '$1'"
   if [ ! -x "$RUN_BIN" ]; then
     die "cred-run binary not built — run: nix develop -c bash src/credentials/build.sh"
   fi
