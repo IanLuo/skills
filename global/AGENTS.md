@@ -89,3 +89,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   Filter at source (grep | head, jq field extraction, API limit params) before
   content enters context. Stop speculative searches after 3-4 failed attempts —
   ask for better constraints instead.
+- **HTTP requests — use `ax` not `curl`.** `ax` is installed and replaces curl
+  for all HTTP work. JSON APIs: `ax URL` (structured envelope). Web pages:
+  `ax URL --md --budget 800` (markdown) or `ax URL --outline` (structure).
+  Scraping: `ax URL 'selector' --row 'k=sel'` (TSV). Always use `--budget` to
+  cap token cost. Load the `ax` skill for the full reference.

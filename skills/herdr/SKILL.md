@@ -14,6 +14,41 @@ Control herdr — the terminal workspace manager — via its CLI. Spawn agents i
 panes, submit prompts, wait for completion, read output, close panes. The agent
 choice is a parameter; this skill is the herdr-control layer, agent-agnostic.
 
+## Quick command format
+
+The user can specify location and agent inline:
+
+```
+/herdr <location> <agent>: <task>
+```
+
+**Location** — where to put the agent:
+
+| token | meaning |
+|---|---|
+| `new-pane` or `pane` | `herdr pane split` (sibling pane in current tab) |
+| `new-tab` or `tab` | `herdr tab create` (new tab in current workspace) |
+| *(omitted)* | default to `new-pane` |
+
+**Agent** — which agent kind to start (maps to `--kind`):
+
+| token | `--kind` | launch command | auto-mode flag |
+|---|---|---|---|
+| `claude` or `claudecode` | `claude` | `claude` | `-- --permission-mode auto` |
+| `pi` | `pi` | `pi` | *(none — auto by default)* |
+| `codex` | `codex` | `codex` | `-- --full-auto` |
+| *(any other)* | as-is | as-is | *(discover with `herdr agent start --help`)* |
+
+**Examples:**
+
+- `/herdr new-pane claude: review the last commit` → split pane, start claude in auto mode, prompt it
+- `/herdr tab pi: analyze src/auth.ts` → new tab, start pi, prompt it
+- `/herdr claude: fix the failing tests` → default to new-pane, start claude in auto mode
+- `/herdr new-tab codex: add input validation` → new tab, start codex in full-auto
+
+When no agent is specified (just `/herdr new-pane: run tests`), use `pane run` for a
+plain shell command instead of starting an agent.
+
 ## Prerequisites
 
 You must be running inside a herdr session:
@@ -57,44 +92,62 @@ on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
 
 ## Core workflow: spawn → prompt → wait → read → close
 
-1. **Split a pane** — sibling, preserve your cwd, keep user focus:
+### 1. Create a location
 
-   ```bash
-   herdr pane split --current --direction right --cwd "$PWD" --no-focus
-   # -> new pane id in .result.pane.pane_id (read it; don't guess)
-   ```
+**Split pane** (sibling, preserve cwd, keep user focus):
 
-2. **Start an agent** in that pane (must be at an interactive shell prompt):
+```bash
+herdr pane split --current --direction right --cwd "$PWD" --no-focus
+# -> .result.pane.pane_id
+```
 
-   ```bash
-   herdr agent start <name> --kind pi --pane <pane-id> [-- <agent-args>]
-   ```
+**New tab** (separate tab, preserve cwd):
 
-   Kinds: `pi`, `claude`, `codex`, `gemini`, … (run `herdr agent` for the list).
-   Returns only once the agent is detected and ready for input.
+```bash
+herdr tab create --cwd "$PWD" --no-focus
+# -> .result.tab.pane_id (the tab's initial pane)
+```
 
-3. **Submit work**:
+### 2. Start an agent with auto mode
 
-   ```bash
-   herdr agent prompt <target> "<task>" --wait --timeout 120000
-   ```
+Pass agent-specific flags after `--` to enable auto/unattended mode:
 
-   `prompt` atomically submits text + Enter (honors bracketed paste). From a
-   non-working state it must observe a lifecycle change within 5s or returns
-   `agent_prompt_stalled`. `--wait` is enough for normal work — don't restate the
-   defaults with `--until`.
+```bash
+# Claude Code — auto mode
+herdr agent start <name> --kind claude --pane <pane-id> -- --permission-mode auto
 
-4. **Read the result**:
+# Pi — auto by default, no extra flags
+herdr agent start <name> --kind pi --pane <pane-id>
 
-   ```bash
-   herdr agent read <target> --source recent-unwrapped --lines 200 --format text
-   ```
+# Codex — full-auto mode
+herdr agent start <name> --kind codex --pane <pane-id> -- --full-auto
+```
 
-5. **Close what you created** (only panes you created):
+Kinds: `pi`, `claude`, `codex`, `gemini`, … (run `herdr agent start --help` for the
+full list). Returns only once the agent is detected and ready for input.
 
-   ```bash
-   herdr pane close <pane-id>
-   ```
+### 3. Submit work
+
+```bash
+herdr agent prompt <target> "<task>" --wait --timeout 120000
+```
+
+`prompt` atomically submits text + Enter (honors bracketed paste). From a
+non-working state it must observe a lifecycle change within 5s or returns
+`agent_prompt_stalled`. `--wait` is enough for normal work — don't restate the
+defaults with `--until`.
+
+### 4. Read the result
+
+```bash
+herdr agent read <target> --source recent-unwrapped --lines 200 --format text
+```
+
+### 5. Close what you created (only panes you created)
+
+```bash
+herdr pane close <pane-id>
+```
 
 ## Inspect, wait, interact
 
@@ -133,7 +186,7 @@ initial prompt.
 
 ```bash
 P=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')
-herdr agent start reviewer --kind pi --pane "$P"
+herdr agent start reviewer --kind claude --pane "$P" -- --permission-mode auto
 herdr agent prompt reviewer "Review the last commit for bugs. Report only actionable findings." --wait --timeout 120000
 herdr agent read reviewer --source recent-unwrapped --lines 120 --format text
 herdr pane close "$P"
@@ -182,3 +235,7 @@ herdr agent read worker-3 --source recent-unwrapped --lines 120 --format text
    skill; for wide deterministic sweeps use the Workflow tool — both are out of scope
    here.
 6. **CLI errors:** server errors are JSON on stderr (exit 1); syntax errors exit 2.
+7. **Auto mode by default.** When starting an agent for a task, always pass the
+   auto-mode flag (`-- --permission-mode auto` for claude, `-- --full-auto` for codex).
+   The user is delegating work — an agent that blocks on every permission prompt
+   defeats the purpose. Only omit auto mode if the user explicitly asks for manual.

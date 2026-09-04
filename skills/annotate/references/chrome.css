@@ -48,7 +48,7 @@ code, kbd, .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, M
 .meta-row .sep { color: var(--line); }
 .card { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: .9rem 1.1rem; }
 
-/* Masthead — the artifact title as a clean blueprint hero. */
+/* Masthead — the page title as a clean blueprint hero. */
 h1[data-anchor="title"] {
   font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   font-weight: 600; font-size: 2rem; line-height: 1.12; letter-spacing: -.01em;
