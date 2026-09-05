@@ -84,3 +84,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   no re-stating the question, no filler. Bullets for lists. Concrete over vague.
   Say "I don't know" rather than hedge or fabricate. Verify claims against what
   you actually read or ran — never assert unverified output as fact.
+- **Show structure visually.** When a reply is structural — control flow, an
+  architecture, a refactor, a large diff, data flow — and a diagram, tree, or
+  sketch would make the point clearer than prose, prefer that over a wall of
+  text. In Claude Code that is the `show-me` skill (pick the smallest view; don't
+  overwhelm). Never force a visual where prose suffices.
