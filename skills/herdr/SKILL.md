@@ -10,105 +10,92 @@ disable-model-invocation: true
 
 # herdr
 
-Control herdr — the terminal workspace manager — via its CLI. Spawn agents in
-panes, submit prompts, wait for completion, read output, close panes. The agent
-choice is a parameter; this skill is the herdr-control layer, agent-agnostic.
+Drive the herdr terminal workspace manager: spawn a supported coding agent — `pi`,
+`claude`, `codex`, `gemini`, `opencode`, `aider`, … — in a **new visible pane or
+tab**, hand it a task, wait, read its output, and close. You are the coordinator;
+the agent kind is a parameter you read from the user's request.
 
 ## Prerequisites
 
 You must be running inside a herdr session:
 
 ```bash
-echo $HERDR_ENV             # must be "1"
-echo $HERDR_WORKSPACE_ID    # w1
-echo $HERDR_TAB_ID          # w1:t1
-echo $HERDR_PANE_ID         # w1:p1 — your pane
+echo $HERDR_ENV          # must be "1"
+echo $HERDR_WORKSPACE_ID # w1
+echo $HERDR_TAB_ID       # w1:t1
+echo $HERDR_PANE_ID      # w1:p1 — your pane
 ```
 
-If not set, tell the user to launch herdr first.
+If unset, tell the user to launch herdr first.
 
-## The CLI is the authority
+## The one-shot shorthand — `/herdr <kind>: [pane|tab] <task> [keep]`
 
-The installed binary owns the syntax and evolves between versions (the repo skill
-is not guaranteed current). Before driving commands you haven't used this session,
-discover them:
+Read the request's leading tokens as parameters; don't match a fixed list:
+
+| token | meaning |
+|---|---|
+| `<kind>` | FIRST token = the agent kind to spawn. Strip a trailing `:` (`pi:` ≡ `pi`). Any kind the CLI supports — run `herdr agent` for the list. |
+| `[pane\|tab]` | Where to run it. **Default `pane`** (new sibling pane). `tab` opens a new tab instead. |
+| `<task>` | Everything after, minus a trailing `keep`. |
+| `[keep]` | Trailing `keep` / "keep open" / "interactive" leaves the container open for follow-ups; otherwise the run is **temp** — you close it after reading. |
+
+**A leading kind token ALWAYS means spawn a NEW pane/tab.** Never resolve `pi:` /
+`codex:` / … to an existing idle agent of that kind — the token names a kind, not a
+target. Reuse only when the user names a specific agent or pane.
+
+Default expansion (`pi: <task>` → new sibling pane):
 
 ```bash
-herdr --help           # top-level commands
-herdr agent            # agent subcommands: list get read send-keys prompt wait
-herdr pane             # pane subcommands: split run wait-output read close
-herdr --skill          # herdr's own canonical agent instructions
+P=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')
+herdr agent start pi1 --kind pi --pane "$P"
+herdr agent prompt pi1 "<task>" --wait --timeout 120000
+herdr agent read pi1 --source recent-unwrapped --lines 200 --format text
+herdr pane close "$P"
 ```
 
-Never run bare `herdr` for discovery — it launches/attaches the TUI. And never probe
-a mutating nested command by omitting arguments (`herdr workspace create` executes
-with defaults).
+`claude` is the one special kind: it defaults to `--permission-mode auto` at launch
+(`manual` when the user says to go carefully) — see **Claude** below.
 
-## Primitives and targeting
+## The canonical sequence
 
-- **Panes** = raw terminals (shells, tests, servers). **Agents** = the recognized
-  coding agent occupying a pane. A pane exists whether or not it contains an agent.
-- IDs: workspace `w1`, tab `w1:t1`, pane `w1:p1`. Closed IDs are never reused;
-  `pane move` re-qualifies the pane ID — continue with
-  `.result.move_result.pane.pane_id`, never the old value.
-- Agent commands accept a **unique live agent name** or the **pane ID** hosting it —
-  never terminal IDs, never bare kind labels. Names match `[a-z][a-z0-9_-]{0,31}`.
-- Prefer `--current` or your own `$HERDR_PANE_ID`; never assume the focused pane is
-  yours. Read IDs from JSON responses (`.result.pane.pane_id`), not sidebar order.
+Split → start → prompt → read → close. Every command returns JSON — read the new
+IDs from it, never guess.
 
-## Lifecycle states
-
-`idle` = ready for input (its tab seen); `done` = idle after unseen background work;
-`blocked` = approval/question UI; `working`; `unknown`. `agent prompt --wait` settles
-on idle/done/blocked. CLI reads do NOT mark a tab seen; `focus` does.
-
-## Core workflow: spawn → prompt → wait → read → close
-
-**Tabs vs panes.** A **tab** is a container (`w1:t1`); **panes** live inside it
-(`w1:p1`). Default to a sibling pane; create a NEW TAB only when the user
-explicitly asks for a tab/window (`tab create` returns `.result.tab` +
-`.result.root_pane` — start the agent in the root pane). For "use claude code"
-requests the kind is `claude`.
-
-1. **Split a pane** — sibling, preserve your cwd, keep user focus:
+1. **Split** — default sibling pane, your cwd, no focus:
 
    ```bash
    herdr pane split --current --direction right --cwd "$PWD" --no-focus
-   # -> new pane id in .result.pane.pane_id (read it; don't guess)
+   # new pane id → .result.pane.pane_id
    ```
 
-   Direction: honor the user's request; otherwise inspect your pane —
-   `herdr pane layout --pane "$HERDR_PANE_ID"` — and split a wide pane right, a
-   narrow/tall pane down. Avoid repeated same-direction splits (unusable columns).
+   Direction: honor the request; otherwise split a wide pane right, a narrow/tall
+   pane down. Avoid repeated same-direction splits. For a `tab` run:
+   `herdr tab create --cwd "$PWD" --no-focus` → `.result.tab` + `.result.root_pane`
+   (start the agent in the root pane).
 
-2. **Start an agent** in that pane (must be at an interactive shell prompt — `agent
-   start` never creates/splits/moves layout, it needs an existing pane):
+2. **Start the agent** — needs an existing pane at an interactive shell prompt
+   (`agent start` never creates layout):
 
    ```bash
-   herdr agent start <name> --kind pi --pane <pane-id> [-- <agent-args>]
+   herdr agent start <name> --kind <kind> --pane <pane-id> [-- <kind-specific args>]
    ```
 
-   Kinds: `pi`, `claude`, `codex`, `gemini`, … (run `herdr agent` for the list).
-   For `claude`, pass `--permission-mode auto` at start so it acts
-   autonomously — see *Auto claude* below; a bare `claude` may open in manual
-   mode and ask before every action. Returns only once the agent is detected
-   and ready for input. If the agent blocks
-   during startup it returns `agent_not_ready` immediately but keeps the name usable
-   for `agent read` / `agent send-keys` — wait for `idle` before prompting it.
-   Startup timeout is 30s by default.
+   Returns once the agent is detected and ready. Blocks during startup → returns
+   `agent_not_ready` but keeps the name usable — wait for `idle` before prompting.
+   Startup timeout is 30s by default. Add kind args after `--` (`claude` needs
+   `--permission-mode auto`; others may take `--model`/`--cwd` — run
+   `herdr agent start --help`).
 
-3. **Submit work**:
+3. **Prompt**:
 
    ```bash
    herdr agent prompt <target> "<task>" --wait --timeout 120000
    ```
 
-   `prompt` atomically submits text + Enter (honors bracketed paste). From a
-   non-working state it must observe a lifecycle change within 5s or returns
-   `agent_prompt_stalled`. `--wait` is enough for normal work — don't restate the
-   defaults with `--until`. A prompt to an agent already at an approval/question
-   dialog is rejected with `agent_blocked` BEFORE any input is sent — inspect the
-   blocked UI and ask the user before answering it.
+   Atomically submits text + Enter. From a non-working state it must see a
+   lifecycle change within 5s or returns `agent_prompt_stalled`. Prompting an
+   agent already at an approval dialog returns `agent_blocked` BEFORE any input —
+   inspect the UI and ask the user before answering it.
 
 4. **Read the result**:
 
@@ -116,136 +103,35 @@ requests the kind is `claude`.
    herdr agent read <target> --source recent-unwrapped --lines 200 --format text
    ```
 
-5. **Close what you created** (only panes you created):
+5. **Close what you created** (temp runs):
 
    ```bash
    herdr pane close <pane-id>
    ```
 
-## Inspect, wait, interact
+## Claude — the auto-mode special case
 
-- `herdr workspace list` / `herdr tab list --workspace "$HERDR_WORKSPACE_ID"` /
-  `herdr pane list --workspace "$HERDR_WORKSPACE_ID"` — map the layout around you.
-- `herdr pane current --current` — identify your own pane.
-- `herdr agent list` — all agents: names, pane IDs, states.
-- `herdr agent get <target>` — current state (add `--json` to parse).
-- `herdr agent wait <target> --until blocked --timeout 120000` — wait for a specific
-  state (blocked = needs input). Without `--until`, settles on idle/done/blocked.
-- `herdr agent send-keys <target> esc` — logical keys for interactive agent UIs.
-- On a failed wait or `blocked`: read the transcript (`agent get` / `agent read`)
-  BEFORE deciding what input to send.
-
-## Ordinary commands in a pane (no agent)
-
-```bash
-herdr pane run <pane-id> "just test"
-herdr pane wait-output <pane-id> --match "test result" --timeout 120000
-herdr pane read <pane-id> --source recent-unwrapped --lines 120
-```
-
-`pane run` sends text + Enter atomically. `--match` is a literal substring;
-`--regex` for a Rust regex. Omitting `--timeout` waits indefinitely.
-
-## Read sources
-
-`visible` (rendered viewport) · `recent` (rendered, soft-wrapped) ·
-`recent-unwrapped` (wraps joined — prefer for logs/transcripts) · `detection`
-(bottom-buffer, used for detection). Use `--format text`; `ansi` only when styling
-is evidence. If raising `--lines` reveals no more output, the agent is on the
-alternate screen — fallback: ask it to write the full response to a temp file and
-reply with only the path, then read that file. Don't request file output in the
-initial prompt.
-
-## Patterns
-
-### Auto claude — spawn Claude Code in auto mode (the common request)
-
-Users routinely ask to "open claude code in a new pane/tab" and expect it to work
-autonomously. A bare `claude` can start in manual mode and ask before every
-action, and toggling mode in-session (shift+tab) is unreliable in a background
-pane. **Fix the mode at launch**:
+`<kind>=claude` follows the same grammar, with launch defaults pinned. A bare
+`claude` can sit in manual mode and ask before every action, and in-session mode
+toggling is unreliable in a background pane — fix the mode at launch:
 
 ```bash
 herdr agent start <name> --kind claude --pane <pane-id> -- --permission-mode auto
 ```
 
-Terse request → what to do:
-
 | You say | You get |
 |---|---|
-| `claude <task>` / `auto claude <task>` | sibling pane · claude in **auto** mode · runs `<task>` · **closes pane when done** (temp) |
-| `claude tab <task>` / `auto claude tab <task>` | new tab · claude in auto mode · runs `<task>` · **closes tab when done** (temp) |
-| `… keep` / `… keep open` / `… interactive` | same, but **keeps** the pane/tab open for follow-ups |
-| `claude, careful` / `claude, ask me first` | claude with `--permission-mode manual` |
+| `claude <task>` / `auto claude <task>` | sibling pane · claude **auto** · runs `<task>` · closes when done (temp) |
+| `claude tab <task>` | new tab · claude auto · runs `<task>` · closes when done (temp) |
+| `… keep` / `… keep open` / `… interactive` | same, but keeps open for follow-ups |
+| `claude, careful` / `claude, ask me first` | claude manual (no auto) |
+| `open claude` (no task — work in it yourself) | auto, keep open, no prompt, no close |
 
-Defaults:
+`auto` is Claude Code's classifier mode — it still stops on genuinely risky
+things, so a `blocked` state mid-run is the classifier doing its job, not "auto
+failed to enable": read what it asks and tell the user before answering.
 
-- **`claude` ⇒ auto mode by default.** The word "auto" is optional — it names
-  the default. Only reach for `manual`/`acceptEdits` when the user says to go
-  carefully.
-- `auto` is Claude Code's classifier mode: it acts without asking on most
-  things but still stops on genuinely risky ones. A `blocked` state mid-run is
-  the classifier doing its job, **not** "auto failed to enable" — read what it
-  asks and tell the user before answering it.
-- **Temp by default.** A `<task>` request is a one-shot: spawn → prompt → wait →
-  read → **close the pane/tab you created**. Trailing `keep` (or "keep open" /
-  "interactive") leaves it running for follow-ups instead. Only ever close what
-  you created.
-- If the user wants an open claude to work in *themselves* (no task — "open
-  claude", "a pane to try things"), start it in auto mode and keep it — no
-  `agent prompt`, no close.
-
-### New tab — when the user explicitly asks for a tab/window
-
-```bash
-herdr tab create --cwd "$PWD" --no-focus          # -> .result.tab + .result.root_pane (read them)
-herdr agent start <name> --kind claude --pane <root-pane-id> -- --permission-mode auto   # claude defaults to auto mode
-herdr agent prompt <name> "<task>" --wait --timeout 120000
-herdr agent read <name> --source recent-unwrapped --lines 200 --format text
-# temp (a <task> was given): read the result, then close the tab. Persistent (user
-# wants the tab to work in themselves): leave it. Close only what you created.
-```
-
-### One-shot (spawn → prompt → wait → read → close)
-
-```bash
-P=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')
-herdr agent start reviewer --kind pi --pane "$P"
-herdr agent prompt reviewer "Review the last commit for bugs. Report only actionable findings." --wait --timeout 120000
-herdr agent read reviewer --source recent-unwrapped --lines 120 --format text
-herdr pane close "$P"
-```
-
-### Interactive (spawn → prompt → wait → read → follow up → … → close)
-
-Keep an agent alive across follow-ups based on earlier output:
-
-```bash
-herdr agent prompt worker "Analyze src/auth.ts for security issues." --wait --timeout 120000
-herdr agent read worker --source recent-unwrapped --lines 120 --format text
-herdr agent prompt worker "Now check whether those issues also exist in src/session.ts." --wait --timeout 120000
-herdr agent read worker --source recent-unwrapped --lines 120 --format text
-# ... then close
-```
-
-### Parallel workers (split N → start N → prompt all → wait all → read all → close all)
-
-Run several agents simultaneously, then gather:
-
-```bash
-for i in 1 2 3; do
-  P=$(herdr pane split --current --direction down --cwd "$PWD" --no-focus | jq -r '.result.pane.pane_id')
-  herdr agent start worker-$i --kind pi --pane "$P"
-done
-herdr agent prompt worker-1 "Add error handling to orders.ts" --wait --timeout 120000
-herdr agent prompt worker-2 "Add error handling to products.ts" --wait --timeout 120000
-herdr agent prompt worker-3 "Add error handling to users.ts" --wait --timeout 120000
-herdr agent read worker-1 --source recent-unwrapped --lines 120 --format text
-herdr agent read worker-2 --source recent-unwrapped --lines 120 --format text
-herdr agent read worker-3 --source recent-unwrapped --lines 120 --format text
-```
-
-## Rules
+## Operating rules
 
 1. **Default `--no-focus`.** Don't yank the user's view to another pane unless they
    explicitly ask.
@@ -253,9 +139,22 @@ herdr agent read worker-3 --source recent-unwrapped --lines 120 --format text
    Never rely on another client's focused pane.
 3. **Parse IDs from JSON responses**, never from sidebar order or examples.
 4. **Close only what you created.** Don't close panes/agents/workspaces the user or
-   another session owns. Never `herdr server stop` from an active session. Never kill
-   the main herdr process — for experiments use an isolated `herdr --session <name>`.
-5. **herdr = external agents/panes.** For in-process subagents use the `delegate`
-   skill; for wide deterministic sweeps use the Workflow tool — both are out of scope
-   here.
-6. **CLI errors:** server errors are JSON on stderr (exit 1); syntax errors exit 2.
+   another session owns. Never `herdr server stop` from an active session; never
+   kill the main herdr process — for experiments use `herdr --session <name>`.
+5. **herdr = external agents/panes.** In-process subagents → `delegate`; wide
+   deterministic sweeps → the Workflow tool.
+
+## Reference
+
+Operational detail lives in [references/herdr-ops.md](references/herdr-ops.md) —
+read it when you need:
+- mapping the layout / inspecting & driving a live agent (`list`/`get`/`wait`/
+  `send-keys`, lifecycle states),
+- `agent read` sources and the alternate-screen fallback,
+- ordinary (non-agent) pane commands — `run`/`wait-output`/`read`,
+- pattern recipes: new-tab, interactive follow-ups, parallel workers, open-an-
+  agent-for-the-user.
+
+The installed CLI is the authority on syntax — `herdr --help`, `herdr agent`,
+`herdr pane`, and `herdr --skill` discover the current commands. Never run bare
+`herdr` for discovery (it launches the TUI).
