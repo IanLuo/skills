@@ -34,10 +34,11 @@ INSTRUCTIONS=(
   "opencode|${HOME}/.config/opencode/AGENTS.md"
   "codex|${HOME}/.codex/AGENTS.md"
   "gemini|${HOME}/.gemini/GEMINI.md"
+  "pi|${HOME}/.pi/agent/AGENTS.md"
 )
 # Not yet wired (no clean global markdown-instruction file):
-#   pi (reads AGENTS.md from cwd) · cursor (.cursor/rules *.mdc) · hermes ·
-#   windsurf (~/.codeium) · zed (settings) · aider (.aider.conf.yml) · cline (settings)
+#   cursor (.cursor/rules *.mdc) · hermes · windsurf (~/.codeium) · zed (settings) ·
+#   aider (.aider.conf.yml) · cline (settings)
 
 DRY_RUN=0
 FORCE=0
