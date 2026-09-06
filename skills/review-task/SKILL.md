@@ -13,7 +13,8 @@ task goals. This is a correctness gate, not a code-quality review.
 
 ## Start
 
-1. Read `AGENTS.md` before inspecting changes.
+1. Read `AGENTS.md` once — invariants, commands, test/build commands. Reference it in
+   every check; don't re-read per check.
 2. Find locked docs on disk: `grep -rl '<!-- specs:locked:\|<!-- design:locked:' *.md`.
    If a defining doc the diff touches is absent, report "no locked doc for `<area>`;
    can't verify fidelity, only invariants." Don't guess a path.
@@ -23,12 +24,13 @@ task goals. This is a correctness gate, not a code-quality review.
 ### 1. Gather context
 
 Four inputs every review needs:
-- **Defining docs** — locked docs on disk (find with grep), plus `AGENTS.md` itself
-  (invariants, commands, architecture rules). If no task-specific docs, flag "no locked
-  defining doc — fidelity unverifiable."
+- **Defining docs** — locked docs (found at Start) plus the `AGENTS.md` you already
+  read. If no task-specific docs, flag "no locked defining doc — fidelity unverifiable."
 - **Actual changes** — `git diff` against the base. Capture file list, line-level diffs,
   untracked files.
-- **Verification evidence** — run test/build commands from `AGENTS.md`. Fresh output only.
+- **Verification evidence** — run `AGENTS.md`'s test/build commands **once**, fresh
+  output only. Its result is the Regressions row's answer. If the diff has no runtime
+  surface (docs/config-only), skip the run and say so.
 
 ### 2. Compare
 
@@ -37,7 +39,7 @@ Four inputs every review needs:
 | Goal vs diff | Does the diff implement what was intended? Missing pieces? Extras? |
 | Invariants | Did any change touch a hot-invariant boundary from `AGENTS.md`? Is it preserved? |
 | Docs fidelity | Design: does output match `design-system.md` tokens/typography/components/concepts? Dev: does the implementation follow the spec/ADR? |
-| Regressions | Run the project's test suite. Does anything break? |
+| Regressions | Did the evidence run (above) break anything new — vs. the task's own recorded run, when one exists? |
 
 ### 3. Classify
 
@@ -46,7 +48,12 @@ Four inputs every review needs:
 - **🔴 regression** — test broke, invariant violated, or build fails.
 - **❓ uncertain** — docs are silent, change is ambiguous, or can't verify without user.
 
-For multi-file reviews, spawn one subagent per review dimension (invariants, doc fidelity, evidence, regressions), then synthesize.
+Run all four checks in this one context over the gathered inputs — do not fan out per
+dimension. Every dimension needs the same full diff and docs, so subagents would only
+re-gather what you already hold. Only for a very large diff, delegate **file slices**
+(each slice runs all four checks on its files) to subagents; hand each slice its diff
+and doc paths — never let a subagent re-run the suite or re-discover docs. Synthesize
+the verdicts.
 
 ## Done
 
