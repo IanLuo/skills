@@ -84,13 +84,3 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   no re-stating the question, no filler. Bullets for lists. Concrete over vague.
   Say "I don't know" rather than hedge or fabricate. Verify claims against what
   you actually read or ran — never assert unverified output as fact.
-- **Token efficiency.** Tool calls show what you're doing — don't narrate them
-  ("let me check...", "now I'll..."). Show results with minimal commentary.
-  Filter at source (grep | head, jq field extraction, API limit params) before
-  content enters context. Stop speculative searches after 3-4 failed attempts —
-  ask for better constraints instead.
-- **HTTP requests — use `ax` not `curl`.** `ax` is installed and replaces curl
-  for all HTTP work. JSON APIs: `ax URL` (structured envelope). Web pages:
-  `ax URL --md --budget 800` (markdown) or `ax URL --outline` (structure).
-  Scraping: `ax URL 'selector' --row 'k=sel'` (TSV). Always use `--budget` to
-  cap token cost. Load the `ax` skill for the full reference.
