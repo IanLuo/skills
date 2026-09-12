@@ -488,6 +488,32 @@ def cmd_status(args):
     return 0
 
 
+def project_label(root, maxlen=20):
+    """A short, herdr-safe name for the project a canvas root belongs to.
+
+    herdr's agent namespace is GLOBAL across the workspace, so a fixed name like
+    "canvas-coordinator" meant only one project could have a coordinator at a time —
+    starting a second failed with `agent_name_taken`. The root is normally
+    <project>/.agents/canvas, so the project name is two levels up.
+    """
+    import re as _re
+    parts = list(Path(root).resolve().parts)
+    if len(parts) >= 2 and parts[-1] == "canvas" and parts[-2] == ".agents":
+        parts = parts[:-2]
+    label = _re.sub(r"[^a-z0-9]+", "-", (parts[-1] if parts else "canvas").lower()).strip("-")
+    return (label or "canvas")[:maxlen]
+
+
+def agent_name_for(root, kind, topic=None):
+    """Namespaced agent name. kind: "coord" or "round". Always keeps the -r<N> suffix."""
+    label = project_label(root)
+    if kind == "coord":
+        return ("canvas-coord-" + label)[:40]
+    suffix = "-r%d" % (int(time.time()) % 100000)
+    base = "canvas-%s-%s" % (label, topic or "topic")
+    return (base[:40 - len(suffix)] + suffix)[:40]
+
+
 def coordinator_path(root):
     return root / ".coordinator.json"
 
@@ -554,7 +580,7 @@ def cmd_coordinator(args):
 
     # start
     require_herdr()
-    name = (args.name or "canvas-coordinator")[:40]
+    name = args.name or agent_name_for(root, "coord")
     # Already running is SUCCESS, not an error: the caller asked for a coordinator to be up
     # and one is. This used to exit 1, so a second click on the dashboard's start button read
     # as a failure; when the record was missing it leaked herdr's raw `agent_name_taken` and
@@ -630,7 +656,7 @@ def cmd_round(args):
         raise SystemExit("canvas-worker: could not read the new pane id from: %s"
                          % json.dumps(split)[:300])
 
-    name = ("canvas-%s-r%d" % (topic, int(time.time()) % 100000))[:40]
+    name = agent_name_for(root, "round", topic)
     kind_args = ["--", "--permission-mode", "auto"] if args.kind == "claude" else []
     herdr("agent", "start", name, "--kind", args.kind, "--pane", pane, *kind_args)
     herdr("agent", "prompt", name,
