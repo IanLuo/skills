@@ -123,11 +123,11 @@ Locked: re-run design-task to change it, do not edit around it.
 | masthead | `#content > section:first-child` | centred as a group (eyebrow + title + meta row); bottom rule retained |
 | scheme switcher | `#schemes button` | rest, hover, active `.on`, `:focus-visible` |
 | Send | `#send` | rest, hover, `:disabled` (nothing unsent), "Sent ✓" |
-| Conversation | `#convo`, `#history` | **vertical** tab (`writing-mode: vertical-rl`) on the right edge, vertically centred; hidden while `#histpanel` is open (it follows the panel in the DOM so the sibling rule can fire); rest, hover |
+| Conversation | `#convo`, `#history` | **vertical** tab (`writing-mode: vertical-rl`) on the **left** edge, vertically centred; hidden while `#histpanel` is open (it follows the panel in the DOM so the sibling rule can fire); rest, hover |
 | listening pill | `#listening` | `agent away`, `.on` = `agent listening` |
 | bottom bar | `#bottombar` | one docked surface (--surface + 1px --line + 12px top radius, no new elevation); never overlaps at any width |
 | status group | `#statusrow` | `#listening` + `#status` adjacent, left; `#err` on its own line below; `#controls` right |
-| needs-your-decision | `#convo #convonotice`, `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the worker's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
+| needs-your-decision | `#convo #convonotice` (outer/left edge), `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the worker's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
 | state dots | `#statusrow ::before` | ONE vocabulary: hollow `○` idle, filled `●` active, `●` in `--crit` for a warning. Same glyph/size/margin for both pills — colour carries the meaning, not the shape (a triangle for warn was removed) |
 | status pill | `#status` | live / static / delivery-state strings; state dot `○` rest / `●` `.on` / `▲` `.warn` |
 | error line | `#err` | empty (`display:none`), error (crit border) |

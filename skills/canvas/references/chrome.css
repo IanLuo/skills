@@ -331,11 +331,13 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 #dash { text-decoration: none; }
 #history:hover, #dash:hover { background: var(--surface-2); }
 
-#histpanel { position: fixed; top: 0; right: 0; bottom: 0; width: 24rem; max-width: 92vw; z-index: 45;
+#histpanel { position: fixed; top: 0; left: 0; bottom: 0; width: 24rem; max-width: 92vw; z-index: 45;
              /* No bottom reserve: the panel covers the bar (z 45 > 40), so empty space below the
                 composer was just dead padding. */
              display: flex; flex-direction: column; background: var(--surface);
-             border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(11,16,28,.12); }
+             /* Left edge by request: on the right it collided with the page scrollbar,
+              so the tab and panel could sit under the thumb. */
+           border-right: 1px solid var(--line); box-shadow: 12px 0 32px rgba(11,16,28,.12); }
 #histpanel[hidden] { display: none; }
 #histpanel .head { display: flex; align-items: center; justify-content: space-between;
                    padding: .7rem .9rem; border-bottom: 1px solid var(--line); flex: none;
@@ -438,18 +440,18 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
    compete with Send, and a topic's conversation is something you reach for at any
    scroll position. Send stays in the bar — the primary action should not float.
    ══════════════════════════════════════════════════════════════════════════ */
-#convo { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 25; }
+#convo { position: fixed; left: 0; top: 50%; transform: translateY(-50%); z-index: 25; }
 #convo button { /* vertical: a thin edge tab, not a wide pill reaching into the page */
                 writing-mode: vertical-rl; text-orientation: mixed;
-                border: 1px solid var(--line); border-right: 0; background: var(--surface);
-                color: var(--ink-2); cursor: pointer; border-radius: 8px 0 0 8px;
+                border: 1px solid var(--line); border-left: 0; background: var(--surface);
+                color: var(--ink-2); cursor: pointer; border-radius: 0 8px 8px 0;
                 padding: .9rem .35rem; font-size: .74rem;
                 font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
                 letter-spacing: .08em; text-transform: uppercase;
                 box-shadow: 0 4px 12px rgba(11,16,28,.14); }
 #convo button:hover { color: var(--ink); background: var(--surface-2); }
 #convo button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-@media (max-width: 640px) { #convo { top: auto; bottom: 6.5rem; transform: none; } }
+@media (max-width: 640px) { #convo { left: 0; top: auto; bottom: 6.5rem; transform: none; } }
 
 /* The Conversation tab must never sit on top of its own panel: hide it while the drawer
    is open (it follows #histpanel in the DOM precisely so this rule can exist). */
@@ -481,7 +483,7 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
    this is a state, and the system spends one hue on critical. The badge is a sibling
    of the padded tab rather than a child, because the tab's text is rotated.
    ══════════════════════════════════════════════════════════════════════════ */
-#convo #convonotice { position: absolute; top: -.45rem; right: .2rem;
+#convo #convonotice { position: absolute; top: -.45rem; left: .2rem;
                       min-width: 1.15rem; padding: 0 .28rem; text-align: center;
                       font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
                       font-size: .62rem; line-height: 1.15rem; border-radius: 999px;
