@@ -559,6 +559,8 @@ function indicator(v) {
   st.classList.toggle('on', heard);
   st.classList.toggle('warn', unread > 0 && !listening);
   const clock = (iso) => (String(iso).match(/T(\d\d:\d\d)/) || [null, iso])[1];
+  const badge = $('convonotice');
+  if (badge) { badge.hidden = !flagged; badge.textContent = flagged ? String(flagged) : ''; }
   if (flagged) {
     // Flagged notes are waiting on the USER, not on an agent. Reporting them as work in
     // progress was a lie the page had no way to detect.
@@ -632,8 +634,18 @@ function rounds(events) {
 
 function evLine(e) {
   if (e.kind === 'user') {
-    return '<div class="ev user" data-jump="' + escapeHtml(e.anchor) + '"><span class="who">you</span>' +
+    // Flagged notes are questions for the reader, so the row that raised it says so.
+    const mine = ANNOTATIONS.find((a) => a.id === e.id);
+    const needs = !!(mine && mine.flagged && !mine.resolved);
+    return '<div class="ev user' + (needs ? ' needs' : '') + '" data-jump="' + escapeHtml(e.anchor) + '">' +
+      '<span class="who">' + (needs ? 'needs you' : 'you') + '</span>' +
       '<span class="txt"><b>' + escapeHtml(e.anchor) + '</b> — ' + escapeHtml(e.comment) + '</span></div>';
+  }
+  if (e.kind === 'flag') {
+    // The worker's own escalation text: the closest thing to "the message asking for input".
+    return '<div class="ev flag needs"><span class="who">needs you</span>' +
+      '<span class="txt"><b>decision required</b> — ' + escapeHtml(e.note || 'see the flagged note') +
+      '</span></div>';
   }
   if (e.kind === 'agent') {
     return '<div class="ev agent"><span class="who">agent</span><span class="txt">' +
@@ -671,6 +683,7 @@ function renderHistory() {
   const body = $('histbody');
   const groups = rounds(HISTORY);
   $('history').textContent = 'Conversation · ' + groups.length;
+  // The badge is driven from /v every second (see indicator), not from history load.
   if (!groups.length) { body.innerHTML = '<p class="empty">Nothing yet on this topic.</p>'; return; }
   body.innerHTML = groups.map((g, i) => {
     const n = i + 1;   // groups are oldest-first; .reverse() below puts the newest on top

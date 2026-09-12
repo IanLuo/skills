@@ -473,3 +473,22 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 #statusrow #listening.on::before,
 #statusrow #status.on::before { content: "●"; color: var(--accent); }
 #statusrow #status.warn::before { content: "●"; color: var(--crit); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   "Needs your decision". A flagged note is not work in progress — it is a question
+   waiting on the reader, so the Conversation entry point carries the count and the
+   question itself is highlighted in the panel. Colour only from --crit/--on-crit:
+   this is a state, and the system spends one hue on critical. The badge is a sibling
+   of the padded tab rather than a child, because the tab's text is rotated.
+   ══════════════════════════════════════════════════════════════════════════ */
+#convo #convonotice { position: absolute; top: -.45rem; right: .2rem;
+                      min-width: 1.15rem; padding: 0 .28rem; text-align: center;
+                      font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                      font-size: .62rem; line-height: 1.15rem; border-radius: 999px;
+                      background: var(--crit); color: var(--on-crit);
+                      box-shadow: 0 2px 6px rgba(11,16,28,.25); }
+#convo #convonotice[hidden] { display: none; }
+
+#histbody .ev.needs { background: color-mix(in srgb, var(--crit) 8%, transparent);
+                      border-left: 2px solid var(--crit); border-radius: 0 6px 6px 0; }
+#histbody .ev.needs .who { color: var(--crit); }
