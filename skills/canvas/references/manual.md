@@ -83,6 +83,9 @@
 - **Never ack a note you did not address**, and never leave one undecided — undecided notes are retried, then stuck.
 - **Flag, don't guess**: anything that changes what the canvas is *for*, or touches the chrome, belongs to the user or a locked doc.
 - **Chrome changes are not content changes**: `chrome.css`/`chrome.js` are shared by every canvas and locked in `design-system.md`.
+- **Nothing is global**: topics, the daemon, the coordinator record and the stop flag are all
+  per-root, and there is no index file. Name roots explicitly (`--root`); a root's own directory
+  is the source of truth.
 - **Keep the loop out of the user's session**: blocking waits belong to a pane agent, not the session the user is typing into.
 
 ## What this skill does not do

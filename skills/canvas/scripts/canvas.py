@@ -721,14 +721,6 @@ class Handler(BaseHTTPRequestHandler):
                 "pid": info.get("pid"),
                 "started": info.get("started"),
                 "topics": [topic_summary(self.root, t) for t in list_canvases(self.root)],
-                # Other roots on this machine, from ~/.agents/canvas/roots.json: read-only
-                # here, so the dashboard can say they exist (and whether their daemon is up)
-                # without becoming a second writer to them.
-                "roots": [{"root": e.get("root"), "port": e.get("port"),
-                           "up": bool(e.get("port") and is_up(e["port"])),
-                           "topics": len(list_canvases(Path(e.get("root") or "/nonexistent")))}
-                          for e in read_registry()
-                          if Path(e.get("root") or "/").resolve() != self.root.resolve()],
             })
 
         if parts and parts[0] == "t":
@@ -988,62 +980,12 @@ def daemon_file(root):
     return root / ".daemon.json"
 
 
-# ── registry: every canvas root on this machine ───────────────────────────
-#
-# A topic lives with the project it documents, so it can be archived, copied or deleted as
-# one unit. The cost of that choice is that nothing knows the OTHER roots exist, which is
-# how a second project's canvases stayed invisible to every agent and to the dashboard.
-# The registry is a per-user index of roots: files stay put, this only records where they
-# are, so any agent can find them and one dashboard can list them all.
-
-REGISTRY = Path(os.environ.get("CANVAS_REGISTRY")
-                or (Path.home() / ".agents" / "canvas" / "roots.json"))
-
-
-def read_registry():
-    try:
-        return json.loads(REGISTRY.read_text(encoding="utf-8")).get("roots") or []
-    except (OSError, ValueError):
-        return []
-
-
-def write_registry(roots):
-    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    REGISTRY.write_text(json.dumps({"roots": roots}, indent=2) + "\n", encoding="utf-8")
-
-
 def pid_alive(pid):
     try:
         os.kill(int(pid), 0)
         return True
     except (OSError, TypeError, ValueError):
         return False
-
-
-def register_root(root, port):
-    """Upsert this root; drop entries whose root is gone or whose daemon pid has died."""
-    me = str(Path(root).resolve())
-    keep = []
-    for e in read_registry():
-        other = str(e.get("root") or "")
-        if other == me or not Path(other).is_dir() or not pid_alive(e.get("pid")):
-            continue
-        keep.append(e)
-    keep.append({"root": me, "port": port, "pid": os.getpid(),
-                 "started": now_iso(), "last_seen": now_iso()})
-    write_registry(sorted(keep, key=lambda e: e.get("root") or ""))
-    return keep
-
-
-def unregister_daemon(root):
-    """Mark this root's daemon gone — the ROOT stays registered, because its topics are
-    still on disk and still worth finding."""
-    me = str(Path(root).resolve())
-    roots = read_registry()
-    for e in roots:
-        if str(e.get("root") or "") == me:
-            e.update({"port": None, "pid": None, "last_seen": now_iso()})
-    write_registry(roots)
 
 
 def read_daemon(root):
@@ -1075,7 +1017,6 @@ def cmd_serve(args):
     daemon_file(root).write_text(json.dumps(
         {"port": port, "pid": os.getpid(), "root": str(root.resolve()), "started": now_iso()},
         indent=2) + "\n")
-    register_root(root, port)
     print("canvas: serving %s on http://127.0.0.1:%d" % (root.resolve(), port), flush=True)
     try:
         server.serve_forever()
@@ -1127,7 +1068,6 @@ def cmd_stop(args):
         daemon_file(root).unlink()
     except OSError:
         pass
-    unregister_daemon(root)
     print("canvas: stopped (pid %s, port %s)" % (info.get("pid"), info.get("port")))
     return 0
 

@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from canvas import (DEFAULT_ROOT, DEFAULT_PORT, TOPIC_RE, read_daemon, is_up,  # noqa: E402
-                    load_history, pending_notes, read_parked, read_registry,
+                    load_history, pending_notes, read_parked,
                     read_send, unsent_notes)
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -308,7 +308,8 @@ def cmd_list(args):
     if args.root:
         roots = [Path(args.root)]
     else:
-        roots = [Path(e["root"]) for e in read_registry() if e.get("root")] or [Path(DEFAULT_ROOT)]
+        # No registry: a root is named explicitly, or it is this project's.
+        roots = [Path(r) for r in (args.root or [])] or [Path(DEFAULT_ROOT)]
 
     groups = []
     for root in roots:
@@ -748,8 +749,8 @@ def main(argv=None):
     sp.set_defaults(func=cmd_status)
 
     sp = sub.add_parser("list")
-    sp.add_argument("--root", default=None,
-                    help="one root (default: every root in the registry)")
+    sp.add_argument("--root", action="append", default=None, metavar="DIR",
+                    help="a root to include, repeatable (default: .agents/canvas here)")
     sp.add_argument("--port", type=int, default=None)
     sp.set_defaults(func=cmd_list)
 

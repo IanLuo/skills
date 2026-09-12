@@ -68,8 +68,10 @@ documents: `<project>/.agents/canvas/<topic>/`. That choice keeps a topic one ar
 copyable, deletable unit — and costs discoverability, because nothing then knows other roots
 exist. Two things fix that cheaply:
 
-- **The registry** `~/.agents/canvas/roots.json` (override with `CANVAS_REGISTRY`): `canvas.py
-  start` upserts `{root, port, pid, started}` and drops entries whose directory or daemon has
+- **Nothing is global.** Roots are named explicitly (`--root`); there is no index file
+  and no shared state. A root's own directory is the only source of truth, so two
+  projects can never see or break each other. `canvas-worker.py list --root A --root B`
+  shows several; with no `--root` it shows just the one here.
 gone. `canvas.py stop` marks the root's daemon gone but **keeps the root** — its topics are
   still on disk and still worth finding. `canvas-worker.py list` with no `--root` reads it, so
   one command shows every project's canvases; the dashboard shows the other roots too.
