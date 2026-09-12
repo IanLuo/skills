@@ -456,6 +456,7 @@ async function applySections(html, hashes) {
   });
 
   renderSpecs(content);
+  decorateSections(content);
   mark();
   await renderMermaid(touched);
   clearFail();   // fresh content: an earlier render error is no longer relevant
@@ -694,6 +695,35 @@ function evLine(e) {
   return '';
 }
 
+// ── section status: what is settled, what is new, what is still open ───────
+// A canvas accumulates every decision ever made, so it turns into a wall of text and the
+// live question gets lost in it. Content may mark a section data-status="settled|new|open";
+// settled sections FOLD (the reader can still open them), new ones are flagged, and the
+// reader can answer "what changed since I last looked?" by scanning the pills alone.
+// No attribute = untouched, so every existing canvas is unchanged.
+function decorateSections(scope) {
+  scope.querySelectorAll('[data-section][data-status]').forEach((sec) => {
+    if (sec.dataset.decorated === '1') return;
+    sec.dataset.decorated = '1';
+    const st = sec.dataset.status;
+    const pill = document.createElement('span');
+    pill.className = 'secpill ' + st;
+    pill.textContent = st;
+    sec.insertBefore(pill, sec.firstChild);
+    if (st !== 'settled') return;
+    const kids = Array.from(sec.children).filter((c) => c !== pill);
+    if (kids.length < 2) return;
+    const head = kids[0];
+    const det = document.createElement('details');
+    det.className = 'secfold';
+    const sum = document.createElement('summary');
+    sec.insertBefore(det, head);
+    det.appendChild(sum);
+    sum.appendChild(head);
+    kids.slice(1).forEach((c) => det.appendChild(c));
+  });
+}
+
 function renderHistory() {
   const body = $('histbody');
   const groups = rounds(HISTORY);
@@ -792,6 +822,7 @@ async function initMermaid() {
   await restore();
   applyScheme(currentScheme(), false);   // sync the switcher with what the head script applied
   renderSpecs(document);
+  decorateSections(document);
   mark();
   await initMermaid();
   if (!LIVE) {

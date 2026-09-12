@@ -69,6 +69,27 @@ Also available: `.tree` (file/call trees, `white-space: pre`), `.bars`/`.bar`/`.
 (magnitudes), `.note` (a callout), `figure` + `figcaption`, `.card`, `.meta-row`, `.kicker`,
 `.eyebrow`, `.mono`.
 
+
+## Readability contract (what keeps a canvas worth reading)
+
+A canvas accumulates: every round adds, nothing is removed, so by round ten it is a wall and
+the live question is lost in it. Three rules fix that, and the first is not optional.
+
+- **Mark every section's status**: `data-status="settled" | "new" | "open"` on the `<section>`.
+  `settled` **folds** (chrome does it — the reader can still open it), `new` is flagged in the
+  accent, `open` is the working state. The reader should be able to answer *"what changed since
+  I last looked?"* by scanning pills alone, without reading a word.
+- **Smallest view that makes the point** (this is show-me's principle, and it is the cure for
+  wall-of-text): pseudocode for logic, a tree for structure, mermaid for flow, a diff for what
+  changed, a table or cards for options. Prose is the last resort, not the default.
+- **One idea per section, and keep it short.** If a section answers two questions, split it. If
+  a settled section has grown long, fold it rather than trim it — the history has value, the
+  screen does not have room. Prefer `.key` (one per section) to mark the point and `.dim` to
+  push the rest back.
+
+Anti-pattern this exists to prevent: ten sections of prose, all the same weight, no way to tell
+a decision made in round 2 from the question you are being asked right now.
+
 ## Data-rendered shapes (optional, for repeated blocks)
 
 For shapes that repeat, write data instead of tags and let the chrome render it:

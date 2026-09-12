@@ -504,3 +504,23 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
                           border-radius: 5px; padding: .12rem .45rem; }
 #histbody .ev .answered:hover { background: var(--crit); color: var(--on-crit); }
 #histbody .ev .answered:disabled { opacity: .5; cursor: default; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Section status. A canvas accumulates decisions, so without this the live question
+   drowns in everything already settled. Three states: settled folds away, new is
+   flagged, open is the working state. Tokens only — accent for new, tone for the rest.
+   ══════════════════════════════════════════════════════════════════════════ */
+#content .secpill { display: inline-block; margin: 0 0 .55rem; padding: .1rem .5rem;
+                    border-radius: 999px; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                    font-size: .62rem; letter-spacing: .12em; text-transform: uppercase; }
+#content .secpill.settled { background: var(--surface-2); color: var(--ink-3); }
+#content .secpill.new { background: var(--accent); color: var(--on-accent); }
+#content .secpill.open { border: 1px solid var(--line); color: var(--ink-2); }
+#content .secfold > summary { cursor: pointer; list-style: none; }
+#content .secfold > summary::-webkit-details-marker { display: none; }
+#content .secfold > summary::after { content: " ▸"; color: var(--ink-3); font-size: .8em; }
+#content .secfold[open] > summary::after { content: " ▾"; }
+/* Folded means quiet, not unreadable: the tone drops, the contrast stays. */
+#content .secfold:not([open]) > *:not(summary) { display: none; }
+#content section[data-status="settled"] .secfold:not([open]) > summary h2,
+#content section[data-status="settled"] .secfold:not([open]) > summary h3 { color: var(--ink-2); }
