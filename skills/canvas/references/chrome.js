@@ -235,10 +235,18 @@ $('req').addEventListener('keydown', (e) => {
 });
 $('req').addEventListener('input', growReq);
 
+// Escape closes the innermost open surface, and is NEVER allowed to discard typed text.
+// The annotation dialog wins when it is open, because closing it drops the anchor the note
+// is attached to, so it refuses while the comment has text. The panel only hides, so its
+// draft (and the whole conversation) survives either way.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || $('form').hidden) return;
-  if ($('comment').value.trim() !== '') return;
-  closeDialog();
+  if (e.key !== 'Escape') return;
+  if (!$('form').hidden) {
+    if ($('comment').value.trim() !== '') return;   // would lose the comment
+    closeDialog();
+    return;
+  }
+  if (!$('histpanel').hidden) $('histpanel').hidden = true;
 });
 $('comment').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addAnnotation(); }

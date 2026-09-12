@@ -104,6 +104,16 @@ Locked: re-run design-task to change it, do not edit around it.
 - Elevation: exactly two — `0 4px 12px rgba(11,16,28,.14)` controls, `0 12px 32px rgba(11,16,28,.28)` panels/dialog. No elevation on content blocks.
 - N/A: motion tokens — only one transition exists (`.flash` 1.6s anchor highlight); no others are permitted without re-opening this doc.
 
+## Keybindings (chrome, shared by every topic)
+
+- `Enter` in the requirement composer — **newline**. Requirements are prose, usually more than one line.
+- `Cmd/Ctrl + Enter` in the composer — **add** the requirement.
+- `Escape` — closes the **innermost** open surface, in this precedence:
+  1. the annotation dialog (`#form`), but only while its comment is empty — closing it would drop the anchor the note is attached to;
+  2. otherwise the Conversation panel (`#histpanel`), whose draft and history survive a hide.
+- Rule: **no keybinding may discard typed text.** That is why (1) refuses and (2) does not.
+- N/A: vim-style or configurable bindings — deliberate, so one canvas behaves like every other.
+
 ## Component inventory and states
 
 | component | selector | states covered |
