@@ -55,6 +55,7 @@ skills/          — 14 skills (see README table)
   delegate/        in-process subagents — delegability gate + spawn→wait→read
   task-agent/       worktree-delegated tasks — start (dispatch) / end (merge back)
   annotate/         interactive HTML view of context + copy-paste annotation feedback
+  canvas/           one live page per topic — daemon hot-swaps changed sections, annotations POST to disk
   librarian/       personal research library
   skill-man/       create, validate, deploy skills
   skill-template/  starter skeleton

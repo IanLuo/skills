@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>canvas · dashboard</title>
+<!--
+  The control panel for every canvas on this machine: topics, the processes that serve
+  them, and the numbers that say whether anyone is actually listening.
+
+  It is a STATIC file — no build step, no dependencies, no inlined chrome. The daemon
+  serves it at / (and /dashboard) and answers /topics; opened straight from disk it says
+  so instead of pretending. Every action here runs one of the skill's own CLIs, and the
+  CLI equivalent is printed next to it, so the page never becomes the only way.
+
+  Palette mirrors references/chrome.css (slate) rather than inlining it, so this file
+  stays standalone.
+-->
+<style>
+  :root { color-scheme: light;
+    --bg:#eef1f4; --surface:#f8fafb; --surface-2:#e7ecf0; --line:#d3dae1;
+    --ink:#0f141a; --ink-2:#46505c; --ink-3:#606975; --accent:#0e6f8e;
+    --on-accent:#fff; --crit:#b3261e; --warn:#8a5a00; --ok:#0f6b45; }
+  * { box-sizing: border-box; }
+  body { margin:0 auto; padding:2.2rem 1.6rem 5rem; max-width:76rem; background:var(--bg); color:var(--ink);
+         font:15px/1.55 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  code, .mono, th, .chip, button { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; }
+  h1 { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:1.35rem;
+       margin:0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:var(--ink-3); font-size:.8rem; margin:0 0 1.3rem; }
+  .sub b { color:var(--ink-2); font-weight:500; }
+  table { width:100%; border-collapse:collapse; background:var(--surface);
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th { text-align:left; font-size:.63rem; letter-spacing:.14em; text-transform:uppercase;
+       color:var(--ink-3); padding:.55rem .7rem; border-bottom:1px solid var(--line); font-weight:500; }
+  td { padding:.6rem .7rem; border-bottom:1px solid var(--line); vertical-align:top; font-size:.85rem; }
+  tr:last-child td { border-bottom:0; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .topic { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight:600; }
+  .chip { display:inline-block; padding:.1rem .5rem; border-radius:999px; font-size:.68rem;
+          border:1px solid var(--line); background:var(--surface-2); color:var(--ink-2); white-space:nowrap; }
+  .chip.parked { background:color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color:var(--ok); color:var(--ok); }
+  .chip.unread, .chip.stopped { background:color-mix(in srgb, var(--crit) 10%, var(--surface)); border-color:var(--crit); color:var(--crit); }
+  .muted { color:var(--ink-3); }
+  .crit { color:var(--crit); }
+  .warn { color:var(--warn); }
+  .actions { display:flex; flex-wrap:wrap; gap:.3rem; }
+  button { font-size:.72rem; padding:.28rem .6rem; border-radius:6px; cursor:pointer;
+           border:1px solid var(--line); background:var(--surface); color:var(--ink-2); }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.danger:hover { border-color:var(--crit); color:var(--crit); }
+  .panel { margin-top:1.4rem; border:1px solid var(--line); background:var(--surface);
+           border-radius:10px; padding:.9rem 1rem; }
+  .panel h2 { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:.7rem;
+              letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); margin:0 0 .6rem; }
+  .row { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+  input { font:inherit; font-size:.85rem; padding:.35rem .55rem; border-radius:6px;
+          border:1px solid var(--line); background:var(--surface); color:var(--ink); }
+  pre { margin:.5rem 0 0; padding:.6rem .7rem; background:var(--surface-2); border-radius:6px;
+        font-size:.74rem; line-height:1.45; white-space:pre-wrap; word-break:break-word; max-height:16rem; overflow:auto; }
+  details summary { cursor:pointer; color:var(--ink-3); font-size:.78rem; }
+  .legend { color:var(--ink-3); font-size:.78rem; }
+  .legend b { color:var(--ink-2); font-weight:500; }
+</style>
+</head>
+<body>
+
+<h1>canvas · dashboard</h1>
+<p class="sub" id="head">connecting…</p>
+
+<div id="offline" class="panel" hidden>
+  <h2>no daemon</h2>
+  <p class="legend" id="offline-why"></p>
+  <pre id="offline-cmd"></pre>
+</div>
+
+<div id="main">
+  <table>
+    <thead><tr>
+      <th>topic</th><th>nobody / who is listening</th>
+      <th>notes</th><th>rounds</th><th>send → reply</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <div class="panel">
+    <h2>new topic</h2>
+    <div class="row">
+      <input id="newtopic" placeholder="slug — lowercase, digits, hyphens" size="34">
+      <button id="create">create</button>
+      <span class="legend">writes <code>content.html</code> and builds the shell</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>actions</h2>
+    <pre id="log">nothing yet — every action you press prints its command and output here.</pre>
+  </div>
+
+  <div class="panel">
+    <h2>coordinator</h2>
+    <div class="row">
+      <button id="coordstart">start</button>
+      <button id="coordstop">stop</button>
+      <span class="legend">one agent per root. It listens on <b>every</b> topic and dispatches each
+        batch to a disposable worker. One command each way — no per-topic plumbing.</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>daemon</h2>
+    <div class="row">
+      <button id="stopdaemon" class="danger">stop the daemon</button>
+      <span class="legend">this page reads from it — after this, start it again from a shell</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>cli equivalents — the page is never the only way</h2>
+    <details>
+      <summary>show the commands</summary>
+      <pre id="cli"></pre>
+    </details>
+  </div>
+
+  <div class="panel legend">
+    <h2>what the states mean</h2>
+    <b>parked</b> — a waiter is blocked in <code>canvas.py wait</code>; a Send reaches it now.
+    <b>idle</b> — a worker is recorded but not parked: mid-round, between rounds, or gone (only
+    herdr can tell which). <b>unread send</b> — notes were sent and nobody consumed them.
+    <b>stopped</b> — a STOP flag is set; the loop is over until someone starts a worker.
+    <b>no worker</b> — nothing is listening for this topic at all.
+    <p class="muted" style="margin:.6rem 0 0">
+      A parked waiter dies if the agent's turn is interrupted (a chat message does it), so
+      “no worker” on a topic you care about is the state to fix. Chrome/CSS changes only reach
+      an open canvas after a browser reload.</p>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let DATA = null, BUSY = false, FAILS = 0;
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function age(iso) {
+  if (!iso) return '—';
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (isNaN(s)) return '—';
+  if (s < 90) return Math.round(s) + 's';
+  if (s < 5400) return Math.round(s / 60) + 'm';
+  return Math.round(s / 3600) + 'h';
+}
+
+// The verdict the user actually needs: is anyone going to read a Send? Derived only from
+// what the daemon can prove (listener count, STOP flag, worker record, send state). There is
+// deliberately no "working" state: a set consumed_at means notes were collected, not that a
+// round is in flight now — the daemon cannot see the agent, so it does not claim to.
+function verdict(t) {
+  if (t.stop_requested) return ['stopped', 'STOP is set — the loop is over until a worker starts'];
+  if (t.listening > 0) return ['parked', t.listening + ' waiter(s) will get the next Send'];
+  if (!t.worker) return ['no worker', (t.pending ? t.pending + ' note(s) waiting with nothing to read them'
+                                                : 'nothing is listening for this topic')];
+  if (t.queued) return ['unread send', 'notes were sent and never consumed'];
+  return ['idle', 'worker recorded but not parked — mid-round, between rounds, or gone (only herdr knows which)'];
+}
+
+function render() {
+  if (!DATA) return;
+  const rows = DATA.topics.map((t) => {
+    const [state, why] = verdict(t);
+    const w = t.worker || {};
+    const notes = [];
+    if (t.pending) notes.push('<b>' + t.pending + ' pending</b>');
+    if (t.flagged) notes.push(t.flagged + ' flagged');
+    if (t.unsent) notes.push(t.unsent + ' unsent');
+    if (t.queued) notes.push('<span class="crit">queued, unread</span>');
+    return `<tr>
+      <td><a class="topic" href="${esc(t.url)}">${esc(t.topic)}</a><br>
+          <span class="muted">${t.sections} sections</span></td>
+      <td><span class="chip ${state}">${esc(state)}</span><br>
+          <span class="muted">${esc(why)}</span></td>
+      <td>${notes.length ? notes.join(' · ') : '<span class="muted">clear</span>'}</td>
+      <td>${t.rounds}${t.last_reply ? '<br><span class="muted">last ' + age(t.last_reply) + ' ago</span>' : ''}</td>
+      <td>${t.latency_s != null ? t.latency_s + 's' : '<span class="muted">—</span>'}
+          ${t.sent_at ? '<br><span class="muted">send ' + age(t.sent_at) + ' ago</span>' : ''}</td>
+    </tr>`;
+  }).join('');
+  $('rows').innerHTML = rows || `<tr><td colspan="5" class="muted">no canvases under ${esc(DATA.root)}</td></tr>`;
+  const up = DATA.topics.filter((t) => t.listening > 0).length;
+  const unread = DATA.topics.filter((t) => t.queued).length;
+  const noworker = DATA.topics.filter((t) => !t.worker && t.pending).length;
+  $('head').innerHTML = `daemon <b>up</b> · port <b>${DATA.port}</b> · pid <b>${DATA.pid}</b>`
+    + ` · rev <b>${esc((DATA.rev || '').slice(0, 8))}</b> · root <code>${esc(DATA.root)}</code><br>`
+    + `${DATA.topics.length} topic(s) · <b>${up}</b> with a parked waiter`
+    + (unread ? ` · <span class="crit">${unread} with an unread send</span>` : '')
+    + (noworker ? ` · <span class="crit">${noworker} with notes and no worker</span>` : '')
+    + ` · refreshed ${new Date().toLocaleTimeString()}`;
+  if (DATA.stale) {
+    $('head').innerHTML += '<br><span class="warn">the daemon is running an older revision of '
+      + 'canvas.py than the one on disk — restart it to pick up the changes</span>';
+  }
+  $('cli').textContent = [
+    `canvas-worker.py list --root ${DATA.root}`,
+    `canvas-worker.py ensure <topic> --root ${DATA.root}`,
+    `canvas-worker.py stop <topic> --root ${DATA.root} [--now] [--all]`,
+    `build-canvas.py <topic> --root ${DATA.root}`,
+    `canvas.py start --root ${DATA.root} --port ${DATA.port}`,
+    `canvas.py stop --root ${DATA.root}`,
+  ].join('\n');
+}
+
+async function refresh() {
+  if (BUSY) return;
+  try {
+    const r = await fetch('/topics', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    DATA = await r.json();
+    FAILS = 0;
+    $('offline').hidden = true; $('main').hidden = false;
+    render();
+  } catch (e) {
+    FAILS++;
+    if (FAILS === 1) log('lost /topics — ' + e.message);
+    $('offline').hidden = false; $('main').hidden = false;
+    $('offline-why').innerHTML = location.protocol === 'file:'
+      ? 'This file was opened from disk, so it cannot reach the daemon. Start one and use its URL:'
+      : 'No daemon answered at <code>/topics</code>. Start it:';
+    $('offline-cmd').textContent =
+      'python3 ' + '<skill>/scripts/canvas.py start --root ' + (DATA ? DATA.root : '.agents/canvas') + ' --port 8788\n'
+      + 'then open  http://127.0.0.1:8788/';
+    $('head').innerHTML = '<b class="crit">daemon not reachable</b>'
+      + (DATA ? ' — showing the last reading, which may be stale' : '');
+  }
+}
+
+function log(msg) { $('log').textContent = (msg + '\n\n' + $('log').textContent).slice(0, 6000); }
+
+// The coordinator is the only process worth two buttons: one start, one stop, at the root.
+async function coordinator(action, btn) {
+  BUSY = true; if (btn) btn.disabled = true;
+  const cmd = `canvas-worker.py coordinator ${action} --root ${DATA.root}`;
+  try {
+    const r = await fetch(`/coordinator/${action}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const j = await r.json();
+    log(`$ ${cmd}\n${j.ok ? 'ok' : 'FAILED'}${j.code != null ? ' (exit ' + j.code + ')' : ''}\n`
+        + (j.out || '') + (j.err ? '\n' + j.err : ''));
+  } catch (e) { log(`$ ${cmd}\nFAILED — ${e.message}`); }
+  BUSY = false; if (btn) btn.disabled = false;
+  await refresh();
+}
+document.getElementById('coordstart').onclick = (e) => coordinator('start', e.target);
+document.getElementById('coordstop').onclick = (e) => coordinator('stop', e.target);
+
+$('create').onclick = async () => {
+  const topic = $('newtopic').value.trim();
+  if (!topic) return;
+  BUSY = true;
+  try {
+    const r = await fetch('/topics', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ topic }) });
+    const j = await r.json();
+    log(`$ build-canvas.py ${topic} --root .agents/canvas --new\n${j.ok ? 'ok' : 'FAILED'}\n`
+        + (j.out || '') + (j.err ? '\n' + j.err : '') + (j.error ? '\n' + j.error : ''));
+    if (j.ok) $('newtopic').value = '';
+  } catch (err) { log('create failed — ' + err.message); }
+  BUSY = false; refresh();
+};
+
+$('stopdaemon').onclick = async () => {
+  if (!confirm('Stop the canvas daemon? Every open canvas page goes stale and this dashboard loses its data source.')) return;
+  try {
+    const r = await fetch('/daemon/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const j = await r.json();
+    log('daemon stopped.\n\nstart it again with:\n  ' + (j.cmd || 'canvas.py start --root .agents/canvas'));
+  } catch (e) { log('stop request failed — ' + e.message); }
+  setTimeout(refresh, 800);
+};
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

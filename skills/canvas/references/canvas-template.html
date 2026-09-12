@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>canvas</title>
+<!-- Chrome (css + js) is inlined by scripts/build-canvas.py — the agent writes only
+     the CONTENT that replaces the content slot below. Keep every placeholder verbatim. -->
+<style>
+/*__CHROME_CSS__*/
+</style>
+<script>
+// Runs before first paint: applies the saved scheme (or ?scheme=) so a non-default
+// choice never flashes the default. --quiet-friendly, no dependency on chrome.js.
+(function () {
+  try {
+    var q = new URLSearchParams(location.search).get('scheme');
+    var s = q || localStorage.getItem('canvas:scheme') || 'slate';
+    document.documentElement.setAttribute('data-scheme', s);
+    window.CANVAS_SCHEME_FROM = q ? 'query' : (localStorage.getItem('canvas:scheme') ? 'stored' : 'default');
+  } catch (e) {
+    document.documentElement.setAttribute('data-scheme', 'slate');
+  }
+})();
+</script>
+</head>
+<body>
+
+<!-- ============================================================
+     CONTENT CONTRACT — what the agent writes (see references/graphics.md):
+
+     - Top level is a list of <section data-section="sN"> blocks. The daemon
+       hashes each section and swaps ONLY the changed ones, so keep unrelated
+       sections untouched between rounds (this is the token win).
+     - Inside a section, every element the user might point at carries a STABLE
+       kebab-case data-anchor="<id>". Anchors must NOT change between rounds —
+       the user's annotations are keyed by them.
+     - A diagram is <pre class="mermaid" data-anchor="fig-1">…</pre>; mermaid
+       renders it in live mode and each node becomes anchorable as fig-1.<node>.
+     - Prefer graphics over prose: cards, compares, tables, trees, diagrams.
+     ============================================================ -->
+
+<div id="content" data-v="__CONTENT_V__"><!--__CONTENT__--></div>
+
+<!-- Required chrome markup — keep verbatim. -->
+<div id="schemes" role="group" aria-label="Colour scheme">
+  <button type="button" data-pick="slate" title="Slate — cold light">slate</button>
+  <button type="button" data-pick="graphite" title="Graphite — dark">graphite</button>
+  <button type="button" data-pick="paper" title="Newsprint — warm stock, ink black, press red">newsprint</button>
+</div>
+<div id="bottombar">
+  <div id="notices">
+    <div id="statusrow">
+      <span id="listening">agent away</span>
+      <div id="status"></div>
+    </div>
+    <div id="err"></div>
+  </div>
+  <div id="controls">
+    <a id="dash" href="/dashboard" title="every canvas on this machine, and what is running">dashboard</a>
+    <button id="send">Send</button>
+  </div>
+</div>
+
+
+<div id="histpanel" hidden>
+  <div class="head">Conversation <button id="histclose" title="close">×</button></div>
+  <div id="histbody"></div>
+  <div id="composer" data-anchor="composer">
+    <textarea id="req" rows="2" placeholder="Add a requirement for this topic…  (⌘/Ctrl+Enter to add)"></textarea>
+    <button id="reqadd" type="button">Add</button>
+  </div>
+</div>
+
+<!-- Conversation is pinned to the right edge, vertically centred: a persistent
+     affordance rather than one more control competing in the bar. -->
+<div id="convo">
+  <button id="history">Conversation</button>
+</div>
+<div id="form" hidden>
+  <div class="head">Feedback</div>
+  <div class="body">
+    <div id="list"></div>
+    <textarea id="comment" rows="3" placeholder="Feedback at this spot…"></textarea>
+    <div id="levels">
+      <button class="lvl active" data-sev="suggestion">suggestion</button>
+      <button class="lvl" data-sev="important">important</button>
+      <button class="lvl" data-sev="critical">critical</button>
+    </div>
+    <div class="actions"><button id="add">Add</button><button id="cancel">Cancel</button></div>
+  </div>
+</div>
+
+<script>
+//__LIVE_CONFIG__
+
+//__MERMAID_INLINE__
+
+//__CHROME_JS__
+</script>
+</body>
+</html>

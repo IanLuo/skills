@@ -1,0 +1,475 @@
+/* Canvas design system — IBM Plex pairing (mono for structure, sans for prose), a calm
+   neutral field, and exactly ONE saturated accent per scheme so a highlight is obvious
+   the moment it appears. Three schemes: slate (default), graphite (dark), paper (warm).
+   The scheme is explicit — NOT driven by OS dark mode — so the reader's choice wins and
+   every canvas looks the same for a given choice. `?scheme=` overrides for screenshots.
+   Every token pair below clears WCAG AA; see references/design-system.md for the table.
+   Self-contained: no webfonts, no CDN — Plex falls back to the system stack. */
+:root, :root[data-scheme="slate"] {
+  color-scheme: light;
+  --bg:        #eef1f4;
+  --surface:   #f8fafb;
+  --surface-2: #e7ecf0;
+  --line:      #d3dae1;
+  --ink:       #0f141a;
+  --ink-2:     #46505c;
+  --ink-3:     #606975;
+  --accent:    #0e6f8e;
+  --on-accent: #ffffff;
+  --crit:      #b3261e;
+  --on-crit:   #ffffff;
+}
+:root[data-scheme="graphite"] {
+  color-scheme: dark;
+  --bg:        #0d1014;
+  --surface:   #14181e;
+  --surface-2: #12161b;
+  --line:      #262d37;
+  --ink:       #e7ecf1;
+  --ink-2:     #a8b2bf;
+  --ink-3:     #77828f;
+  --accent:    #58c8e3;
+  --on-accent: #0b0e12;
+  --crit:      #ff6b5e;
+  --on-crit:   #160b09;
+}
+:root[data-scheme="paper"] {
+  /* Newsprint — adopted from the round worker's spec, independently re-measured 14/14 AA.
+     Warm paper-white stock, print-black ink, hairline rules, and a deep print-blue accent
+     with a press red reserved for critical (two hues, no collision). Key stays `paper` so a
+     saved preference does not silently fall back to slate. */
+  color-scheme: light;
+  --bg:        #f6f4ee;
+  --surface:   #fcfaf5;
+  --surface-2: #efece2;
+  --line:      #b8b1a0;
+  --ink:       #100e0a;
+  --ink-2:     #3a352d;
+  --ink-3:     #665f52;
+  --accent:    #1b3f6b;
+  --on-accent: #f8f6f1;
+  --crit:      #a3231a;
+  --on-crit:   #ffffff;
+}
+
+/* A newspaper masthead is half the look: serif headlines for the newsprint scheme only.
+   Body stays sans — serif body at 15px on a screen costs more readability than it buys. */
+:root[data-scheme="paper"] h1[data-anchor="title"],
+:root[data-scheme="paper"] h2 {
+  font-family: Georgia, "Iowan Old Style", "Times New Roman", Times, serif;
+  letter-spacing: -.005em;
+}
+
+/* Severity spends NO extra hue: suggestion is a tone step, important is the accent,
+   and only critical earns its own red. That is what keeps the page to one colour. */
+:root {
+  --sug: var(--ink-3);
+  --imp: var(--accent);
+}
+
+/* Emphasis utilities — the mechanism behind "make the point obvious, dim the rest".
+   .key marks the one thing that matters in a section (at most one per section) and is
+   the ONLY accent rule the system allows. .dim lowers tone WITHOUT lowering legibility:
+   every tone tier clears AA. */
+.key { border-left: 2px solid var(--accent); padding-left: .95rem; }
+.key > :first-child { margin-top: 0; }
+.key > :last-child { margin-bottom: 0; }
+.dim { color: var(--ink-3); }
+.dim b, .dim strong { color: var(--ink-2); }
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15.5px; line-height: 1.6; font-weight: 400;
+  max-width: 52rem; margin: 0 auto; padding: 3rem 2rem 6rem;
+  -webkit-font-smoothing: antialiased;
+}
+code, kbd, .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+.muted { color: var(--ink-3); }
+
+/* Decoration (blueprint style — the AI may use these): eyebrow/kicker above a
+   heading, .meta-row for a mono status line, .card for a boxed block. */
+.eyebrow, .kicker {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px; font-weight: 500; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 .7rem;
+}
+.meta-row {
+  display: flex; flex-wrap: wrap; gap: .45rem 1rem;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px; color: var(--ink-3); margin: 0 0 1.4rem;
+}
+.meta-row b { font-weight: 500; color: var(--ink-2); }
+.meta-row .sep { color: var(--line); }
+.card { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: .9rem 1.1rem; }
+
+/* Masthead — the artifact title as a clean blueprint hero. */
+/* Masthead, centred for every canvas. The eyebrow, title and meta row centre as a group:
+   a centred rule under a left-aligned eyebrow reads as a mistake rather than a masthead. */
+#content > section:first-child { text-align: center; }
+#content > section:first-child .meta-row { justify-content: center; }
+h1[data-anchor="title"] {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-weight: 600; font-size: 2rem; line-height: 1.12; letter-spacing: -.01em;
+  color: var(--ink); margin: 0 0 .6rem; text-wrap: balance;
+  border-bottom: 1px solid var(--line); padding-bottom: .9rem;
+}
+h2 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight: 600;
+     font-size: 1.3rem; line-height: 1.2; color: var(--ink);
+     margin: 2.1rem 0 .55rem; text-wrap: balance; }
+h3 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight: 500;
+     font-size: .9rem; letter-spacing: .06em; text-transform: uppercase;
+     color: var(--ink-2); margin: 1.5rem 0 .45rem; }
+
+p { margin: .6rem 0; color: var(--ink-2); }
+p b, li b { color: var(--ink); font-weight: 600; }
+ul, ol { margin: .5rem 0 .5rem 1.4rem; padding: 0; }
+li { margin: .3rem 0; color: var(--ink-2); }
+code { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .87em;
+       color: var(--accent); background: var(--surface-2); border-radius: 4px; padding: .1em .3em; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 2.6rem 0; }
+
+/* Anchors: clickable + annotated. Decorators stay barely-there — a soft tint,
+   no outlines that compete with the text. */
+[data-anchor] { cursor: pointer; border-radius: 4px; }
+[data-anchor]:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+[data-anchor].marked { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+[data-anchor].marked::after { content: "●"; color: var(--accent); margin-left: 6px; font-size: .7rem; }
+
+/* Annotation dialog — same surface + tokens as the page, so it looks native.
+   Elevation comes from the border + shadow only. RESIZABLE: drag the bottom-right
+   corner handle to expand the whole card; the input fills it. */
+#form { position: fixed; z-index: 50; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        width: min(34rem, 92vw); min-height: 11rem;
+        max-height: 80vh; resize: both; overflow: hidden;
+        background: var(--surface); color: var(--ink); display: flex; flex-direction: column;
+        border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(11,16,28,.28);
+        font-size: .95rem; }
+/* The `hidden` attribute must beat the flex display — otherwise the dialog is
+   always visible and Cancel/Add misbehave. */
+#form[hidden] { display: none; }
+#form .head { padding: .5rem .7rem; border-bottom: 1px solid var(--line);
+              font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+              font-size: .7rem; letter-spacing: .16em; text-transform: uppercase;
+              color: var(--accent); flex: none; }
+#form .body { padding: .7rem; flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+#form textarea { width: 100%; flex: 1; resize: none; box-sizing: border-box; min-height: 2.6rem;
+                 font-size: .92rem; font-family: inherit; padding: .45rem; border-radius: 6px;
+                 border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+                 margin-bottom: .5rem; }
+
+/* Existing annotations for the clicked element. Finished ones are folded away by
+   default — they are the record, not the work. */
+#list { display: none; margin-bottom: .5rem; }
+#list.show { display: block; }
+#list .item { border-top: 1px solid var(--line); padding: .35rem 0; font-size: .8rem; }
+#list .item .row { display: flex; align-items: baseline; gap: .4rem; }
+#list .item .dot { width: .5rem; height: .5rem; border-radius: 50%; flex: none; }
+#list .item .dot[data-sev="suggestion"] { background: var(--sug); }
+#list .item .dot[data-sev="important"] { background: var(--imp); }
+#list .item .dot[data-sev="critical"] { background: var(--crit); }
+#list .item .meta { flex: 1; word-break: break-word; }
+#list .item button { font-size: .68rem; background: transparent; border: 1px solid var(--line);
+                     border-radius: 5px; color: var(--ink); cursor: pointer; }
+#list details { margin-top: .4rem; }
+#list details + .item { border-top: 1px solid var(--line); }
+#list summary { cursor: pointer; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                font-size: .64rem; letter-spacing: .12em; text-transform: uppercase;
+                color: var(--ink-3); list-style: none; padding: .25rem 0; }
+#list summary::-webkit-details-marker { display: none; }
+#list summary::before { content: "▸ "; }
+#list details[open] summary::before { content: "▾ "; }
+
+/* Level buttons — blueprint style: a colored dot carries the severity, the selected
+   state is ink-filled (no big blue/amber/red fills). */
+#levels { display: flex; gap: .35rem; margin-bottom: .5rem; }
+#levels .lvl { flex: 1; display: flex; align-items: center; justify-content: center; gap: .3rem;
+               padding: .45rem 0; font-size: .72rem; border-radius: 7px;
+               border: 1px solid var(--line); background: transparent; color: var(--ink);
+               font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; cursor: pointer; }
+#levels .lvl::before { content: "●"; font-size: .55rem; }
+#levels .lvl[data-sev="suggestion"]::before { color: var(--sug); }
+#levels .lvl[data-sev="important"]::before { color: var(--imp); }
+#levels .lvl[data-sev="critical"]::before { color: var(--crit); }
+#levels .lvl.active { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+#levels .lvl.active::before { color: var(--surface); }
+
+#form .actions { display: flex; gap: .4rem; }
+#form .actions button { flex: 1; padding: .5rem 0; font-size: .85rem; border-radius: 8px; cursor: pointer; }
+#add { background: var(--ink); color: var(--surface); border: 0; }
+#cancel { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+
+#send { padding: .7rem 1.4rem; border: 0;
+        border-radius: 999px; background: var(--accent); color: var(--on-accent);
+        font-size: .92rem; font-weight: 500; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+        cursor: pointer; box-shadow: 0 6px 16px rgba(11,16,28,.28);
+        background: var(--accent); color: var(--on-accent); }
+/* Bottom bar — status and controls share ONE fixed row, aligned to the content column
+   rather than pinned to the window corners, so the group reads as a bar instead of two
+   floating clusters. The requirement input lives in the Conversation panel (see #composer). */
+#bottombar { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+             width: min(52rem, 100%); padding: .6rem 1.1rem .8rem; z-index: 40;
+             display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem;
+             /* A real surface, so the bar groups its controls instead of leaving them
+                looking like loose pills floating over the content. Top corners only —
+                the bar is docked to the window edge. No new elevation: border + surface
+                is enough separation and the system allows exactly two shadows. */
+             background: var(--surface); border: 1px solid var(--line);
+             border-bottom: 0; border-radius: 12px 12px 0 0; }
+#notices { display: flex; flex-direction: column; align-items: flex-start;
+           gap: .35rem; min-width: 0; }
+/* The two state indicators sit together on the left, as one group. */
+#statusrow { display: flex; align-items: center; gap: .4rem; min-width: 0; flex-wrap: wrap; }
+/* The status is a state, so it reads as one: a labelled pill with a dot, matching
+   #listening on the other side of the bar. Long delivery sentences wrap inside it. */
+#status { font-size: .8rem; color: var(--ink-2); max-width: 100%;
+          font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+          /* flat on the bar surface: the bar is the only container here */
+          background: transparent; border: 0; padding: .3rem 0; }
+#status:empty { display: none; }
+#err { max-width: 100%;
+       font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+       font-size: .74rem; color: var(--crit); background: var(--surface);
+       border: 1px solid var(--crit); border-radius: 6px; padding: .35rem .6rem; }
+#err:empty { display: none; }
+
+@media (max-width: 640px) {
+  body { padding: 1.8rem 1.2rem 6rem; }
+  #bottombar { padding: .5rem 1.2rem .8rem; }
+  h1[data-anchor="title"] { font-size: 1.6rem; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   canvas-specific chrome. Everything above is the shared blueprint look;
+   everything below is the canvas content contract (sections, badges) plus the
+   graphics primitives the agent may use instead of writing prose.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Sections are the hot-swap unit: the daemon replaces one at a time. */
+#content > section { margin: 0 0 2.4rem; }
+#content > section + section { border-top: 1px solid var(--line); padding-top: 1.7rem; }
+
+/* Annotation count badge. Chrome-owned: never counted in the snippet text. */
+.badge { display: inline-block; min-width: 1.1rem; margin-left: .35rem; padding: 0 .28rem;
+         font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .62rem;
+         line-height: 1.15rem; text-align: center; border-radius: 999px;
+         background: var(--accent); color: var(--on-accent); vertical-align: middle; }
+/* The badge replaces annotate's ::after dot — don't show both. */
+[data-anchor].marked::after, [data-anchor].marked-done::after { content: none; }
+[data-anchor].marked-done { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+[data-anchor].marked-done .badge { background: var(--ink-3); }
+
+/* Mermaid figures. Rendered only in live mode (or when mermaid is inlined). */
+.mermaid { background: transparent; border: 0; padding: 0; margin: .9rem 0; overflow-x: auto;
+           text-align: center; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+           font-size: .8rem; color: var(--ink-3); }
+.mermaid svg { max-width: 100%; height: auto; }
+g.node[data-anchor], g.actor[data-anchor], g.cluster[data-anchor] { cursor: pointer; }
+g.node[data-anchor]:hover rect, g.node[data-anchor]:hover polygon,
+g.actor[data-anchor]:hover rect { fill: color-mix(in srgb, var(--accent) 13%, var(--surface)); }
+g.node[data-anchor].marked rect, g.node[data-anchor].marked polygon,
+g.actor[data-anchor].marked rect { stroke: var(--accent); stroke-width: 2px; }
+
+/* Graphics primitives — cheap in tokens, far clearer than the same text as prose. */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+         gap: .9rem; margin: 1rem 0; }
+.cards .card { display: flex; flex-direction: column; }
+.card h3 { margin-top: 0; }
+.card .kicker { margin-bottom: .35rem; }
+.compare { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .92rem; }
+.compare th, .compare td { border-bottom: 1px solid var(--line); padding: .5rem .6rem;
+                           text-align: left; vertical-align: top; color: var(--ink-2); }
+.compare th { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .7rem;
+              letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.compare td:first-child { color: var(--ink); font-weight: 500; }
+figure { margin: 1.2rem 0; }
+figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .7rem;
+                      letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-top: .45rem; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin: 1rem 0; }
+.flow .step { border: 1px solid var(--line); background: var(--surface); border-radius: 7px;
+              padding: .45rem .7rem; font-size: .85rem; color: var(--ink); }
+.flow .step[data-anchor]:hover { background: var(--surface-2); }
+.flow .arr { color: var(--ink-3); font-size: .8rem; }
+/* A callout is a tone change, not a decoration: no left rule, no accent wash. */
+.note { background: var(--surface-2); padding: .7rem .9rem; border-radius: 6px; margin: 1rem 0; }
+.tree { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .83rem;
+        line-height: 1.5; white-space: pre; overflow-x: auto; color: var(--ink-2); margin: 1rem 0; }
+.bars { margin: 1rem 0; display: grid; gap: .4rem; }
+.bar { display: grid; grid-template-columns: minmax(6rem, 10rem) 1fr auto; align-items: center;
+       gap: .6rem; font-size: .85rem; color: var(--ink-2); }
+.bar .track { height: .7rem; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--accent); }
+
+/* Resolved feedback stays visible, greyed — so nothing is silently re-litigated. */
+#list .item.resolved .meta { color: var(--ink-3); text-decoration: line-through; }
+
+/* A malformed data-render spec or a diagram that will not parse must be loud,
+   not silently left as source text (the round-1 failure). */
+.spec-error { border: 1px dashed var(--crit); color: var(--crit); border-radius: 6px;
+              padding: .5rem .7rem; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+              font-size: .78rem; }
+.mermaid-failed { border: 1px dashed var(--crit); border-radius: 6px; padding: .5rem .7rem;
+                  text-align: left; }
+.mermaid-failed::before { content: "diagram failed to render — source shown below"; display: block;
+                          font-size: .62rem; letter-spacing: .12em; text-transform: uppercase;
+                          color: var(--crit); margin-bottom: .35rem; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   History panel — the record of this topic, rendered from history.jsonl.
+   Rounds are derived: the events since the agent's previous reply.
+   ══════════════════════════════════════════════════════════════════════════ */
+#history, #dash { padding: .55rem 1.1rem;
+           border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+           color: var(--ink); cursor: pointer; font-size: .8rem;
+           font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+           box-shadow: 0 4px 12px rgba(11,16,28,.14); }
+/* The dashboard is a link out of this canvas, so it carries no button chrome beyond the
+   pill — and it is hidden in static (file://) mode, where /dashboard does not resolve. */
+#dash { text-decoration: none; }
+#history:hover, #dash:hover { background: var(--surface-2); }
+
+#histpanel { position: fixed; top: 0; right: 0; bottom: 0; width: 24rem; max-width: 92vw; z-index: 45;
+             /* No bottom reserve: the panel covers the bar (z 45 > 40), so empty space below the
+                composer was just dead padding. */
+             display: flex; flex-direction: column; background: var(--surface);
+             border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(11,16,28,.12); }
+#histpanel[hidden] { display: none; }
+#histpanel .head { display: flex; align-items: center; justify-content: space-between;
+                   padding: .7rem .9rem; border-bottom: 1px solid var(--line); flex: none;
+                   font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                   font-size: .7rem; letter-spacing: .16em; text-transform: uppercase;
+                   color: var(--accent); }
+#histpanel .head button { border: 0; background: transparent; color: var(--ink-2); cursor: pointer;
+                          font-size: 1.1rem; line-height: 1; }
+/* The panel scrolls; the page behind it must not move when it does. */
+#histpanel { overscroll-behavior: contain; }
+#histbody { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+#histbody { flex: 1; min-height: 0; overflow-y: auto; padding: .5rem .9rem 1rem; }
+#histbody .empty { color: var(--ink-3); font-size: .85rem; }
+#histbody .round { border-top: 1px solid var(--line); padding: .6rem 0 .9rem; }
+#histbody .round:first-child { border-top: 0; }
+#histbody .round.open .rhead { color: var(--accent); }
+#histbody .rhead { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .64rem;
+                   letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3);
+                   margin-bottom: .45rem; }
+#histbody .ev { display: grid; grid-template-columns: 3.2rem 1fr; gap: .4rem; align-items: start;
+                padding: .28rem .4rem; border-radius: 6px; font-size: .82rem; }
+#histbody .ev .who { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .62rem;
+                     letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding-top: .18rem; }
+#histbody .ev.agent .who { color: var(--accent); }
+#histbody .ev.meta { color: var(--ink-3); font-size: .78rem; }
+#histbody .ev.user { cursor: pointer; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+#histbody .ev.user:hover { background: color-mix(in srgb, var(--accent) 13%, transparent); }
+#histbody .ev .txt { color: var(--ink-2); word-break: break-word; }
+#histbody .ev .txt b { color: var(--ink); }
+
+/* Where a history row points — a brief highlight, not a permanent mark. */
+.flash { animation: flashmark 1.6s ease-out; }
+@keyframes flashmark {
+  0%   { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+  100% { background: transparent; }
+}
+
+/* The listening indicator. Honest, not decorative: it is the difference between a
+   Send being read now and a Send sitting on disk until the agent looks. */
+#listening {
+             font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .68rem;
+             letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+             padding: .2rem 0; border: 0; background: transparent; pointer-events: none; }
+#listening.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+
+/* Nothing to send = nothing to click. An empty Send still pings the agent. */
+#send:disabled { background: var(--surface-2); color: var(--ink-3); box-shadow: none; cursor: default; }
+
+/* Errors get their own line: the status line is overwritten every second by the
+   listening indicator, which is how a failing diagram stayed invisible. */
+#err:empty { display: none; }
+
+/* The controls are one right-aligned row inside #bottombar — the bar carries the
+   grouping, so the pills cannot collide however the labels grow. */
+#controls { display: flex; align-items: center; flex: none; gap: .45rem; }
+#controls button, #controls span, #controls a { position: static; }
+
+/* Composer — a requirement with no element to point at. Every other note is keyed to an
+   element, but a new requirement usually has none yet. It is docked at the foot of the
+   Conversation panel, so a requirement is written where the conversation is read, and
+   the textarea grows with the text (up to six lines) instead of scrolling a one-line box.
+   Existing tokens only: no new colour, no new elevation. */
+#composer { flex: none; display: flex; align-items: flex-end; gap: .4rem;
+            padding: .6rem .9rem; border-top: 1px solid var(--line); }
+#composer textarea { flex: 1; resize: none; font: inherit; font-size: .85rem;
+                     min-height: 2.5rem; max-height: 40vh; overflow-y: auto;
+                     /* grows with the text (JS sets the height); field-sizing is the same
+                        behaviour natively where it is supported */
+                     field-sizing: content;
+                     padding: .55rem .7rem; border-radius: 8px;
+                     border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+#composer button { padding: .7rem 1.1rem; border: 0; border-radius: 999px;
+                   background: var(--accent); color: var(--on-accent); cursor: pointer;
+                   font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .8rem; }
+/* It carries an anchor so a requirement note has somewhere to resolve, but it is an input,
+   not a thing to annotate: no tint, no hover wash, no mark. */
+#composer[data-anchor], #composer[data-anchor]:hover, #composer[data-anchor].marked {
+  background: transparent; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Colour scheme switcher — top of the page, so the reader's choice is one click
+   away wherever they are in a long canvas. A segmented pill group; the active
+   choice is the only fill, which is the same rule as everywhere else here.
+   ══════════════════════════════════════════════════════════════════════════ */
+#schemes { position: fixed; top: 1rem; right: 1rem; z-index: 20; display: flex;
+           background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+           overflow: hidden; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+           font-size: .68rem; letter-spacing: .06em; }
+#schemes button { border: 0; background: transparent; color: var(--ink-3); cursor: pointer;
+                  padding: .35rem .7rem; font: inherit; letter-spacing: inherit; }
+#schemes button:hover { color: var(--ink); background: var(--surface-2); }
+#schemes button.on { background: var(--accent); color: var(--on-accent); cursor: default; }
+#schemes button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+@media (max-width: 640px) { #schemes { top: .6rem; right: .6rem; font-size: .62rem; } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Conversation — pinned to the right edge and vertically centred, always visible.
+   It is a persistent entry point, not a bar control: putting it in the bar made it
+   compete with Send, and a topic's conversation is something you reach for at any
+   scroll position. Send stays in the bar — the primary action should not float.
+   ══════════════════════════════════════════════════════════════════════════ */
+#convo { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 25; }
+#convo button { /* vertical: a thin edge tab, not a wide pill reaching into the page */
+                writing-mode: vertical-rl; text-orientation: mixed;
+                border: 1px solid var(--line); border-right: 0; background: var(--surface);
+                color: var(--ink-2); cursor: pointer; border-radius: 8px 0 0 8px;
+                padding: .9rem .35rem; font-size: .74rem;
+                font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                letter-spacing: .08em; text-transform: uppercase;
+                box-shadow: 0 4px 12px rgba(11,16,28,.14); }
+#convo button:hover { color: var(--ink); background: var(--surface-2); }
+#convo button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 640px) { #convo { top: auto; bottom: 6.5rem; transform: none; } }
+
+/* The Conversation tab must never sit on top of its own panel: hide it while the drawer
+   is open (it follows #histpanel in the DOM precisely so this rule can exist). */
+#histpanel:not([hidden]) + #convo { display: none; }
+
+/* Inside the bar the items are flat — the bar is the only container. Send keeps its accent
+   fill because it is the one primary action on the page. */
+#bottombar #status, #bottombar #listening { background: transparent; border: 0; }
+#bottombar #dash { border: 0; background: transparent; box-shadow: none; color: var(--ink-3); }
+#bottombar #dash:hover { color: var(--ink); }
+
+/* ONE dot vocabulary for both state indicators. The two pills used to draw their own:
+   #status had a triangle for warnings, #listening only circles, at different sizes — so
+   the pair read as two unrelated widgets. Now: hollow circle = idle, filled = active, and a
+   warning is the SAME filled circle in --crit. Shape carries no meaning; colour does. */
+#statusrow #status::before,
+#statusrow #listening::before {
+  content: "○"; color: var(--ink-3); font-size: .62rem; line-height: 1; margin-right: .35rem;
+  display: inline-block; vertical-align: middle;
+}
+#statusrow #listening.on::before,
+#statusrow #status.on::before { content: "●"; color: var(--accent); }
+#statusrow #status.warn::before { content: "●"; color: var(--crit); }
