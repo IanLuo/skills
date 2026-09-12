@@ -553,11 +553,18 @@ function indicator(v) {
   send.textContent = unsent ? 'Send · ' + unsent : (pending ? 'Sent ✓' : 'Send');
 
   const unread = (v && v.unread) || 0;
+  const flagged = (v && v.flagged) || 0;
   // The status pill carries the state as a dot too, so it is legible at a glance.
   const st = $('status');
   st.classList.toggle('on', heard);
   st.classList.toggle('warn', unread > 0 && !listening);
   const clock = (iso) => (String(iso).match(/T(\d\d:\d\d)/) || [null, iso])[1];
+  if (flagged) {
+    // Flagged notes are waiting on the USER, not on an agent. Reporting them as work in
+    // progress was a lie the page had no way to detect.
+    status('⚠ ' + flagged + ' note(s) need your decision — flagged, not being worked');
+    return;
+  }
   if (unread && !listening) {
     // Sent, never handled, and nobody is on it — say so plainly instead of implying work
     // is happening. This is the state that used to be silent.
@@ -576,7 +583,10 @@ function indicator(v) {
     status('sent · waiting for the agent to look');
   } else if (pending && consumedAt) {
     // the agent has them; this is the line that stops the user re-sending
-    status('collected ' + clock(consumedAt) + ' · agent working on ' + pending + ' note(s)');
+    // "a waiter took the batch" is knowable; "an agent is working on it" is not.
+    status(listening
+      ? 'collected ' + clock(consumedAt) + ' · ' + pending + ' waiting for a round'
+      : 'collected ' + clock(consumedAt) + ' · ' + pending + ' unresolved — nothing is listening');
   } else if (pending) {
     status('live · ' + pending + ' note(s) unresolved');
   } else if (lastSend) {

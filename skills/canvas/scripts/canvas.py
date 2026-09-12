@@ -752,6 +752,9 @@ class Handler(BaseHTTPRequestHandler):
                 "unsent": len(unsent_notes(self.root, topic)),
                 "unread": len(unread_notes(self.root, topic)),
                 "stuck": len(stuck_notes(self.root, topic)),
+                # flagged notes await a HUMAN decision and are never dispatched, so the
+                # page must not report them as work in progress.
+                "flagged": len([a for a in pending_notes(self.root, topic) if a.get("flagged")]),
                 "sent": bool(send and not send.get("consumed_at")),
                 # Delivery state, so the page can say the notes were COLLECTED. Without
                 # this the user presses Send again because nothing appears to happen.

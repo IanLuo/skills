@@ -511,13 +511,18 @@ def project_label(root, maxlen=20):
 
 
 def agent_name_for(root, kind, topic=None):
-    """Namespaced agent name. kind: "coord" or "round". Always keeps the -r<N> suffix."""
+    """Namespaced agent name. kind: "coord" or "round". Always keeps the -r<N> suffix.
+
+    32 is herdr's hard cap (``invalid_agent_name`` above it), and it counts the suffix —
+    truncating to 40 made every topic longer than ~18 chars undispatchable.
+    """
+    limit = 32
     label = project_label(root)
     if kind == "coord":
-        return ("canvas-coord-" + label)[:40]
+        return ("canvas-coord-" + label)[:limit]
     suffix = "-r%d" % (int(time.time()) % 100000)
     base = "canvas-%s-%s" % (label, topic or "topic")
-    return (base[:40 - len(suffix)] + suffix)[:40]
+    return (base[:limit - len(suffix)] + suffix)[:limit]
 
 
 def coordinator_path(root):
