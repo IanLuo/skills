@@ -280,9 +280,13 @@ def check(dom, topic):
             % (d.counts["svg"], d.counts["mermaid_pre"], d.counts["mermaid_node"],
                len(set(d.node_anchors))))
 
-    add("data-render specs rendered",
-        d.counts["render"] > 0 and d.counts["rendered"] >= d.counts["render"],
-        "%d of %d" % (d.counts["rendered"], d.counts["render"]))
+    # 0 of 0 is not a failure: a canvas of prose, or one whose blocks are hand-written
+    # HTML, has no specs to render. Same trap as demanding a diagram on every page.
+    if d.counts["render"] == 0:
+        add("data-render specs rendered", True, "no data-render specs in this canvas")
+    else:
+        add("data-render specs rendered", d.counts["rendered"] >= d.counts["render"],
+            "%d of %d" % (d.counts["rendered"], d.counts["render"]))
 
     add("sections present", d.counts["section"] >= 1,
         "%d sections, %d anchors" % (d.counts["section"], d.counts["anchor"]))
