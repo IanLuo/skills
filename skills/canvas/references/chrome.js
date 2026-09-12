@@ -228,10 +228,14 @@ function growReq() {
 }
 
 $('reqadd').onclick = submitRequirement;
-// Enter inserts a newline — a requirement is usually more than one line, and Enter
-// stealing it made multi-line text impossible to type. Add with the button or Cmd/Ctrl+Enter.
+// Enter adds the requirement; Shift+Enter inserts a newline. The earlier version made
+// plain Enter a newline to protect multi-line input, which cost the convention everyone
+// expects — the modifier keeps both, so neither has to be given up. Cmd/Ctrl+Enter still
+// works (it is an Enter without Shift), so muscle memory from either version holds.
 $('req').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitRequirement(); }
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  e.preventDefault();
+  submitRequirement();
 });
 $('req').addEventListener('input', growReq);
 

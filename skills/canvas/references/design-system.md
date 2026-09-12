@@ -106,8 +106,10 @@ Locked: re-run design-task to change it, do not edit around it.
 
 ## Keybindings (chrome, shared by every topic)
 
-- `Enter` in the requirement composer — **newline**. Requirements are prose, usually more than one line.
-- `Cmd/Ctrl + Enter` in the composer — **add** the requirement.
+- `Enter` in the requirement composer — **add** the requirement (the convention; a composer that
+  swallows Enter reads as broken).
+- `Shift + Enter` in the composer — **newline**, so multi-line requirements still work.
+- `Cmd/Ctrl + Enter` — also adds (an Enter without Shift), so both habits work.
 - `Escape` — closes the **innermost** open surface, in this precedence:
   1. the annotation dialog (`#form`), but only while its comment is empty — closing it would drop the anchor the note is attached to;
   2. otherwise the Conversation panel (`#histpanel`), whose draft and history survive a hide.
