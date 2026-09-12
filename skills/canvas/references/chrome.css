@@ -494,3 +494,13 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 #histbody .ev.needs { background: color-mix(in srgb, var(--crit) 8%, transparent);
                       border-left: 2px solid var(--crit); border-radius: 0 6px 6px 0; }
 #histbody .ev.needs .who { color: var(--crit); }
+
+/* The reader's way out of a flagged state: resolve the note (what the badge counts) without
+   waiting for an agent. Critical colour, because it belongs to the needs-your-decision row. */
+#histbody .ev .answered { margin-left: .45rem; flex: none; font-size: .66rem; cursor: pointer;
+                          font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                          letter-spacing: .06em; text-transform: uppercase;
+                          border: 1px solid var(--crit); background: transparent; color: var(--crit);
+                          border-radius: 5px; padding: .12rem .45rem; }
+#histbody .ev .answered:hover { background: var(--crit); color: var(--on-crit); }
+#histbody .ev .answered:disabled { opacity: .5; cursor: default; }

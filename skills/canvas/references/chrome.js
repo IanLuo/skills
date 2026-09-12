@@ -651,13 +651,16 @@ function evLine(e) {
     const needs = !!(mine && mine.flagged && !mine.resolved);
     return '<div class="ev user' + (needs ? ' needs' : '') + '" data-jump="' + escapeHtml(e.anchor) + '">' +
       '<span class="who">' + (needs ? 'needs you' : 'you') + '</span>' +
-      '<span class="txt"><b>' + escapeHtml(e.anchor) + '</b> — ' + escapeHtml(e.comment) + '</span></div>';
+      '<span class="txt"><b>' + escapeHtml(e.anchor) + '</b> — ' + escapeHtml(e.comment) + '</span>' +
+      (needs ? '<button class="answered" data-ack="' + escapeHtml(e.id) + '" title="mark this answered">answered</button>' : '') +
+      '</div>';
   }
   if (e.kind === 'flag') {
     // The worker's own escalation text: the closest thing to "the message asking for input".
     return '<div class="ev flag needs"><span class="who">needs you</span>' +
       '<span class="txt"><b>decision required</b> — ' + escapeHtml(e.note || 'see the flagged note') +
-      '</span></div>';
+      '</span><button class="answered" data-ack="' + escapeHtml((e.ids || []).join(',')) +
+      '" title="mark this answered">answered</button></div>';
   }
   if (e.kind === 'agent') {
     return '<div class="ev agent"><span class="who">agent</span><span class="txt">' +
@@ -703,6 +706,29 @@ function renderHistory() {
     return '<div class="round' + (g.open ? ' open' : '') + '">' +
       '<div class="rhead">round ' + n + (g.open ? ' · current' : '') + '</div>' + lines + '</div>';
   }).reverse().join('');
+  // Marking a decision answered resolves the note, which is what the badge counts — this
+  // is the reader's own way out of a flagged state, without waiting for an agent to ack it.
+  body.querySelectorAll('[data-ack]').forEach((el) => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
+      const ids = String(el.dataset.ack || '').split(',').filter(Boolean);
+      if (!ids.length) return;
+      el.disabled = true;
+      try {
+        await fetch('/a/' + TOPIC + '/ack', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      } catch (e) {
+        el.disabled = false;
+        status('could not reach the daemon — nothing was cleared');
+        return;
+      }
+      await restore();       // refresh ANNOTATIONS so the rows and badge agree
+      await loadHistory();
+      mark();
+      status('marked answered');
+    };
+  });
+
   body.querySelectorAll('[data-jump]').forEach((el) => {
     el.onclick = () => {
       const t = document.querySelector('[data-anchor="' + CSS_ESCAPE(el.dataset.jump) + '"]');

@@ -127,7 +127,7 @@ Locked: re-run design-task to change it, do not edit around it.
 | listening pill | `#listening` | `agent away`, `.on` = `agent listening` |
 | bottom bar | `#bottombar` | one docked surface (--surface + 1px --line + 12px top radius, no new elevation); never overlaps at any width |
 | status group | `#statusrow` | `#listening` + `#status` adjacent, left; `#err` on its own line below; `#controls` right |
-| needs-your-decision | `#convo #convonotice` (outer/left edge), `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the worker's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
+| needs-your-decision | `#convo #convonotice` (outer/left edge), `#histbody .ev .answered` button |, `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the worker's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
 | state dots | `#statusrow ::before` | ONE vocabulary: hollow `○` idle, filled `●` active, `●` in `--crit` for a warning. Same glyph/size/margin for both pills — colour carries the meaning, not the shape (a triangle for warn was removed) |
 | status pill | `#status` | live / static / delivery-state strings; state dot `○` rest / `●` `.on` / `▲` `.warn` |
 | error line | `#err` | empty (`display:none`), error (crit border) |
