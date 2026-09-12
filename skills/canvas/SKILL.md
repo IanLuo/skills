@@ -172,6 +172,9 @@ when the running daemon is an older revision of `canvas.py` than the file on dis
   paragraphs for anything structural. For repeated shapes you may write data instead of
   markup (`data-render`) — but that is a correctness win, not a token win; do not go
   hunting for token savings in markup, they are not there.
+- Read **[references/manual.md](references/manual.md)** when running any canvas command, when
+  something is wrong (nothing listening, a note ignored, a page not updating), or when handing a
+  canvas to another agent. It has the command map, the lifecycle, and symptom→cause→fix playbooks.
 - Read **[references/design-system.md](references/design-system.md)** before changing any canvas
   visual: the palette (3 schemes), type scale, spacing, radii and component states are locked
   there, with computed contrast evidence. Changing a token means re-running the contrast check.
