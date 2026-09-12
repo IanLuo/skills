@@ -305,11 +305,16 @@ def cmd_list(args):
     The point is that `ps` and `kill` are never needed to answer "is anyone listening, and
     how do I close this" — state that lives in a process nobody can see is the failure this
     reports on."""
-    if args.root:
-        roots = [Path(args.root)]
+    # Tolerate both parser shapes: --root may arrive as one string or as a list
+    # (repeatable). Two agents edited this function concurrently and the mismatch
+    # surfaced as a TypeError rather than a wrong listing.
+    raw = args.root
+    if raw is None:
+        roots = [Path(DEFAULT_ROOT)]
+    elif isinstance(raw, (list, tuple)):
+        roots = [Path(r) for r in raw]
     else:
-        # No registry: a root is named explicitly, or it is this project's.
-        roots = [Path(r) for r in (args.root or [])] or [Path(DEFAULT_ROOT)]
+        roots = [Path(raw)]
 
     groups = []
     for root in roots:
