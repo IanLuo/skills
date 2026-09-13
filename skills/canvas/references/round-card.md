@@ -39,6 +39,8 @@ schemes ship, so **never hardcode a colour**.
 - **resolve notes; do not expand the canvas.** No sections, diagrams or explanation the note
   did not ask for. A nearly-empty canvas is normal.
 - emphasis is `.key` (at most one per section) and `.dim` — not new styling
+- pick the view from show-me's ladder in `graphics.md` — the *smallest* view that makes the
+  point. A table of options or a paragraph is the last resort, not the default.
 
 **4. Build and verify. Do not skip the verify.**
 
@@ -50,14 +52,22 @@ python3 {{skill}}/scripts/verify-canvas.py {{topic}} --root {{root}}    # must e
 A broken page with a confident summary is worse than no round. If verification fails, fix it
 before you reply.
 
-**5. Reply on the page, then mark what you addressed resolved.**
+**5. Close the round with a conclusion and the next move.**
 
 ```bash
-python3 {{skill}}/scripts/canvas.py say {{topic}} "<one line: what changed>" --root {{root}}
+python3 {{skill}}/scripts/canvas.py say {{topic}} "<conclusion> — next: <one move>" --root {{root}}
 python3 {{skill}}/scripts/canvas.py ack {{topic}} --ids <id,id> --root {{root}}
 ```
 
-One line. The user reads it in the page's History panel. Do not ack a note you did not address.
+One line, two parts: **what is now true**, then **one suggested next move**. `"§3 rewritten"`
+is a progress note, not a conclusion — the user can already see which sections changed.
+
+**Show it on the page, not only in the panel.** Write the same line into the conclusion
+block — the `data-anchor="run-conclusion"` element in the first section — so the round's
+outcome is readable on the topic page itself, without opening Conversation. Keep the two
+in sync; the `say` line is the history record.
+
+Do not ack a note you did not address.
 
 **Every note you were handed must end in one of two states** — `ack`ed (you addressed it) or
 `flag`ged (it needs a decision you may not make). A note left pending is retried by a fresh

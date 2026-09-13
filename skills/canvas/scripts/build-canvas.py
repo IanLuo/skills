@@ -32,6 +32,7 @@ STARTER = """\
   <p class="eyebrow">canvas</p>
   <h1 data-anchor="title">%s</h1>
   <div class="meta-row"><span><b>1</b> section</span><span class="sep">·</span><span>edit <code>%s/content.html</code> to change this</span></div>
+  <p class="note" data-anchor="run-conclusion">Nothing has run yet — the first round rewrites this line with its conclusion.</p>
 </section>
 """
 

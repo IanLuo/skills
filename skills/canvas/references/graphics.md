@@ -70,6 +70,38 @@ Also available: `.tree` (file/call trees, `white-space: pre`), `.bars`/`.bar`/`.
 `.eyebrow`, `.mono`.
 
 
+## Pick the view by the question shape (borrowed from `show-me`)
+
+`show-me` answers "what is the *smallest* view that makes this point clear". A canvas page is
+the same problem with more room, so borrow its ladder instead of defaulting to another table.
+Ask what the reader is trying to understand, then take the first rung that fits:
+
+| the reader's question | the view | in a canvas |
+|---|---|---|
+| what happens, in what order | pseudocode | `<pre data-anchor="…">` |
+| what calls what | call tree | `.tree` |
+| what is inside what, where state lives | component tree | `.tree`, ownership in a trailing comment |
+| where a thing lives / how a refactor lands | file tree | `.tree` |
+| who says what, in what order | mermaid `sequenceDiagram` | `<pre class="mermaid">` |
+| what leads to what, which branch | mermaid `flowchart` | `<pre class="mermaid">` |
+| what changed | shape-matched `diff` | `.tree` / `<pre>` with `+`/`-` markers |
+| which option, on what terms | `.compare` / `.cards` | the habit — use **last**, not first |
+| how big, how many | `.bars` | |
+| a layout, a look, a whole state comparison | a page section that *is* the mockup | |
+
+Two rules that matter more than the table:
+
+- **Match the diff to the shape.** A component change diffs the component tree, a file move
+diffs the file tree, a control-flow change diffs the pseudocode. A generic `+`/`-` on prose
+explains nothing.
+- **Omit what the reader already has.** `show-me`'s example call tree shows three calls, not
+thirty. Every line you emit is re-read every round, and a canvas that shows everything shows
+nothing.
+
+A canvas worker runs in a pane and cannot invoke `/show-me`; the ladder is here so it does not
+need to. Same principle as the readability contract below, applied at authoring time rather
+than at review time.
+
 ## Readability contract (what keeps a canvas worth reading)
 
 A canvas accumulates: every round adds, nothing is removed, so by round ten it is a wall and
@@ -81,7 +113,8 @@ the live question is lost in it. Three rules fix that, and the first is not opti
   I last looked?"* by scanning pills alone, without reading a word.
 - **Smallest view that makes the point** (this is show-me's principle, and it is the cure for
   wall-of-text): pseudocode for logic, a tree for structure, mermaid for flow, a diff for what
-  changed, a table or cards for options. Prose is the last resort, not the default.
+  changed, a table or cards for options. Prose is the last resort, not the default. The full
+  ladder is above — reach for `.compare`/`.cards` **last**, after the smaller views.
 - **One idea per section, and keep it short.** If a section answers two questions, split it. If
   a settled section has grown long, fold it rather than trim it — the history has value, the
   screen does not have room. Prefer `.key` (one per section) to mark the point and `.dim` to

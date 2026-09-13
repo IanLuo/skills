@@ -36,7 +36,7 @@
 | hear every topic at once (the coordinator's park) | `canvas.py wait --any --root .agents/canvas --timeout 300 --quiet` |
 | hear one topic only | `canvas.py wait <topic>` (add `--eager` to return on a note without a Send) |
 | see what is waiting without blocking | `canvas.py pending <topic>` |
-| reply on the page | `canvas.py say <topic> "<one line>"` |
+| close the round on the page | `canvas.py say <topic> "<conclusion> — next: <one move>"` |
 | mark notes done | `canvas.py ack <topic> --ids id,id` · `--all` |
 | escalate a decision I may not make | `canvas.py flag <topic> --ids id --note "why"` |
 | rebuild the shell after editing content by hand | `build-canvas.py <topic>` |
@@ -55,7 +55,7 @@
 1. **Create** — `build-canvas.py <topic> --new`, then write `content.html` (sections, stable anchors).
 2. **Open** — `canvas.py start` (once per root) then `canvas.py open <topic>`; say the URL once.
 3. **Hand off** — `canvas-worker.py coordinator start --root .agents/canvas`. From here the user annotates and Sends; you stay free.
-4. **Work a batch** — the coordinator dispatches `round`; the worker edits only the affected sections, runs `build-canvas.py` **and** `verify-canvas.py`, then `say` + `ack`.
+4. **Work a batch** — the coordinator dispatches `round`; the worker edits only the affected sections, runs `build-canvas.py` **and** `verify-canvas.py`, then closes the round with `say` (a conclusion + one suggested next move, mirrored into the page's `run-conclusion` block) + `ack`.
 5. **End** — topic changed → new slug, the old directory freezes (still reopenable). Session over → `coordinator stop`, then `canvas.py stop`.
 
 ## Recovery playbooks

@@ -170,10 +170,19 @@ when the running daemon is an older revision of `canvas.py` than the file on dis
   changed ones within ~1s. Touch only what changed — that is the whole token saving.
 - **Every element the user might disagree with gets a stable `data-anchor`.** Anchors never
   change between rounds: the user's annotations are keyed by them.
-- **Graphics before prose.** Cards, compares, flows, trees, tables, and diagrams beat
-  paragraphs for anything structural. For repeated shapes you may write data instead of
-  markup (`data-render`) — but that is a correctness win, not a token win; do not go
-  hunting for token savings in markup, they are not there.
+- **The first section carries the run conclusion** — a `data-anchor="run-conclusion"` element
+  rewritten at the end of every round with one conclusion line and one `next:` move. So the
+  round's outcome sits on the page itself; the Conversation panel is the record, not the only
+  place to read it.
+- **Pick the smallest view that makes the point** (show-me's ladder, in
+  [references/graphics.md](references/graphics.md)): pseudocode for logic, a call/component
+  tree for structure, a file tree for layout, a shape-matched diff for what changed, mermaid
+  for flow — and `.compare`/`.cards` for options **last**, not first. Prose is the last resort.
+  For repeated shapes you may write data instead of markup (`data-render`) — but that is a
+  correctness win, not a token win; do not go hunting for token savings in markup.
+- Read **[references/architecture.md](references/architecture.md)** before changing how delivery,
+  liveness or ownership works. It is locked (`specs:locked:`) and records why the one server, the
+  2 s sweep, the lease and the wake target are the way they are — with the rejected alternatives.
 - Read **[references/manual.md](references/manual.md)** when running any canvas command, when
   something is wrong (nothing listening, a note ignored, a page not updating), or when handing a
   canvas to another agent. It has the command map, the lifecycle, and symptom→cause→fix playbooks.
@@ -233,12 +242,15 @@ This is the loop the **worker** runs (and the one you run when working inline).
    Non-zero exit means do not report success. Needs the daemon running and Chrome
    (`--chrome PATH` if it is somewhere unusual). A canvas can look perfect in source and be
    broken in the browser — three separate bugs shipped that way.
-5. Put your reply ON the page, then say it in chat:
+5. Close the round with a conclusion and the next move:
    ```bash
-   python3 $S/scripts/canvas.py say <topic> "§3 rewritten — 2 of 3 notes resolved"
+   python3 $S/scripts/canvas.py say <topic> "queue is sound, liveness is the hole — next: R1 wake target"
    ```
-   `say` appends one line to the topic's history, where the user reads it as a round entry.
-   Keep the chat message to the same one line — the page is the reply, chat is the nudge.
+   Every round ends with **what is now true** plus **one suggested next move**; "§3 rewritten"
+   is a progress note, not a conclusion. Write the same line into the page's conclusion block
+   (`data-anchor="run-conclusion"`, in the first section) so it is visible on the topic page
+   without opening Conversation, and keep the chat message to that same one line — the page is
+   the reply, chat is the nudge.
 
 ## History
 
