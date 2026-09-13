@@ -73,6 +73,18 @@ python3 {{skill}}/scripts/canvas-worker.py round <the TOPIC from step 1> --root 
 
 **3. Back to step 1.**
 
+## When the daemon wakes you instead of your wait returning
+
+The daemon sweeps every topic every ~2 s. If work arrives while you are not parked, it prompts
+you directly with the topic name. Treat that prompt **exactly like exit 0 from your wait**:
+
+```bash
+python3 {{skill}}/scripts/canvas-worker.py round <the topic it named> --root {{root}} --wait
+```
+
+Then park again with `wait --any`. A prompt is not permission to work the round yourself — your
+job is still to dispatch and go back to listening. Two wake paths, one behaviour.
+
 ## Stopping
 
 - `{{root}}/.COORDINATOR_STOP` existing, or exit code 3 from `wait --any`, means: finish the

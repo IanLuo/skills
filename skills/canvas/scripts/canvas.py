@@ -461,6 +461,80 @@ def wake_and_log(root, topic, count):
     return res
 
 
+# ── the sweep: the daemon, not a parked waiter, is what notices work ──────
+#
+# A park is a blocking call inside an agent turn, so any interruption ends the turn and
+# nothing re-parks. The daemon is the only always-on component and already holds the state
+# this decision needs, so it sweeps for unread work and wakes the coordinator. The park is
+# not removed yet — it stays as the low-latency path, and the sweep is the guarantee behind it.
+# Locked: architecture.md, load-bearing structure (2) and (3).
+
+SWEEP_LAST = {}            # (root, topic) -> last wake ts, so one nudge per interval
+SWEEP_WAKES = []           # wake ts, for the global cap
+SWEEP_MIN_INTERVAL = 60    # seconds between wakes for one topic
+SWEEP_MAX_WAKES = 5        # wakes per SWEEP_WINDOW, however many topics are waiting
+SWEEP_WINDOW = 600         # seconds
+SWEEP_SECONDS = 0          # the interval this daemon was started with; 0 = off
+
+
+def work_by_topic(root):
+    """Every topic with a batch the daemon should dispatch: a raised Send, or notes that were
+    sent and never resolved. Oldest first, so a busy topic cannot starve a quiet one."""
+    out = []
+    for topic in list_canvases(root):
+        unread = unread_notes(root, topic)
+        send = read_send(root, topic) or {}
+        raised = bool(send and not send.get("consumed_at"))
+        if unread:
+            out.append((topic, len(unread)))
+        elif raised:
+            out.append((topic, send.get("count") or 0))
+    return out
+
+
+def sweep_once(root, now=None, interval=None):
+    """One pass. Returns the wakes it made; silent when a park already has the work or when
+    the rate limits hold, because this runs every few seconds and an unanswered Wake must not
+    write a failure line each time."""
+    now = time.time() if now is None else now
+    interval = SWEEP_MIN_INTERVAL if interval is None else interval
+    global SWEEP_WAKES
+    SWEEP_WAKES = [t for t in SWEEP_WAKES if now - t < SWEEP_WINDOW]
+    woken = []
+    for topic, count in work_by_topic(root):
+        key = (str(root.resolve()), topic)
+        if LISTENERS.get(topic, 0) or LISTENERS_ANY[0] or read_parked(root, topic):
+            continue                       # somebody is already on it; that is the fast path
+        if now - SWEEP_LAST.get(key, 0) < interval:
+            continue
+        if len(SWEEP_WAKES) >= SWEEP_MAX_WAKES:
+            break                          # cap the noise: five unanswered wakes is enough
+        SWEEP_LAST[key] = now
+        SWEEP_WAKES.append(now)
+        woken.append(wake_and_log(root, topic, count))
+    return woken
+
+
+def sweep_loop(root, seconds):
+    while True:
+        try:
+            sweep_once(root)
+        except Exception:
+            pass                           # a sweep must never take the server down
+        time.sleep(max(0.5, seconds))
+
+
+def start_sweep(root, seconds):
+    """Start the sweep thread and make its interval observable on /health."""
+    global SWEEP_SECONDS
+    SWEEP_SECONDS = float(seconds or 0)
+    if SWEEP_SECONDS <= 0:
+        return None
+    t = threading.Thread(target=sweep_loop, args=(Path(root), SWEEP_SECONDS), daemon=True)
+    t.start()
+    return t
+
+
 def next_topic_with_work(root):
     """The oldest unhandled batch across EVERY topic, or None.
 
@@ -702,6 +776,8 @@ class Handler(BaseHTTPRequestHandler):
                 "root": str(self.root.resolve()), "mermaid": MERMAID_ASSET.is_file(),
                 "canvases": list_canvases(self.root), "time": now_iso(),
                 "rev": script_rev(),
+                # 0 = the sweep is off (tests, or a deliberate parked-only daemon).
+                "sweep": SWEEP_SECONDS,
             })
 
         if path == "/mermaid.js":
@@ -1032,6 +1108,7 @@ def cmd_serve(args):
     daemon_file(root).write_text(json.dumps(
         {"port": port, "pid": os.getpid(), "root": str(root.resolve()), "started": now_iso()},
         indent=2) + "\n")
+    start_sweep(root, args.sweep)
     print("canvas: serving %s on http://127.0.0.1:%d" % (root.resolve(), port), flush=True)
     try:
         server.serve_forever()
@@ -1364,6 +1441,8 @@ def main(argv=None):
     sp = common(sub.add_parser("serve"))
     sp.add_argument("--port", type=int, default=DEFAULT_PORT)
     sp.add_argument("--strict-port", action="store_true")
+    sp.add_argument("--sweep", type=float, default=2.0,
+                    help="seconds between sweeps for unread work; 0 disables (default 2)")
     sp.set_defaults(func=cmd_serve)
 
     sp = common(sub.add_parser("start"))

@@ -11,7 +11,10 @@
 
 - The **page is the reply**: the user annotates, the page writes to disk, chat stays near-silent.
 - **Delivery is push-free**: notes POST to `feedback.json` the moment they are typed; **Send** is only the signal that the batch is ready.
-- **An agent cannot be pushed to**, so someone must be *parked* in `wait`. That is the only reason the "agent listening" indicator exists.
+- **An agent cannot be pushed to** — but the daemon can sweep. It scans every topic every
+  `--sweep` seconds (default 2) and wakes the coordinator for any raised Send or unresolved sent
+  note, so "nothing is listening" costs one sweep, not an outage. A parked waiter only makes
+  delivery faster; it is no longer what correctness rests on.
 - **One coordinator per root** parks on `wait --any`, hears every topic, and dispatches each batch to a **disposable worker** whose context dies with its pane.
 - N/A: there is no merge, no lock file, and no conflict resolution — see Invariants.
 
@@ -62,7 +65,7 @@
 
 | symptom | cause | fix |
 |---|---|---|
-| page says **agent away**, or notes pile up unread | nobody is parked | `canvas-worker.py coordinator status` → `coordinator start` |
+| page says **agent away**, or notes pile up unread | nobody is parked — the sweep should already be waking an existing coordinator | `canvas-worker.py coordinator status` → `coordinator start`. The sweep can wake a coordinator, but it cannot conjure one where no pane exists |
 | `wait` returns **exit 4** | the daemon runs an older `canvas.py` than the file on disk | restart the daemon; a parked waiter keeps running the code it started with |
 | the coordinator **parks once, then dies** | its `wait` was wrapped in a shell `while` inside ONE tool call; the harness aborts long calls (~1150s) and an aborted call ends the turn | one `wait` **per turn**, `--timeout 300`, loop by running it again — never a shell loop |
 | status pill shows **⚠ N sent note(s) not handled** | a send was consumed and the waiter died before resolving it | park a coordinator; the `unread` re-trigger hands that batch over again |
