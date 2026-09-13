@@ -259,6 +259,26 @@ This is the loop the **round worker** runs; you only run the steps by hand when 
    without opening Conversation, and keep the chat message to that same one line — the page is
    the reply, chat is the nudge.
 
+## A canvas decides; a worker acts
+
+A round produces a **decision**, not a change. That boundary is the point of this skill: the
+page is where you and the user agree on what is true and what to do, and the agreement is
+worth reading before any code moves. So a round records, and nothing else.
+
+- **In a round, the only file that changes is `<topic>/content.html`** (plus the shell
+  `build-canvas.py` regenerates) and the topic's own history. No project code, no skill files,
+  no other topic, and **no `git commit`**.
+- **A note that asks for a code change is recorded as a decision, not implemented.** Write what
+  should change, why, and the acceptance test — then `ack` it. The change itself belongs to the
+  handoff, not the round.
+- **Implementation starts only after the user reviews the conclusion.** Hand it to a worker with
+  its own checkout: `/task-agent start` for a worktree-backed task (the path for anything
+  non-trivial), or `/dev-task` for a small in-repo change. The canvas conclusion is the task
+  card: problem, decision, acceptance criteria, and what must not change.
+- **Never let a round "just fix it".** The eager version — a round that edits the repo and
+  commits while the page still says *proposed* — is the failure this rule removes: the user
+  reviews a decision, not a fait accompli.
+
 ## History
 
 `<topic>/history.jsonl` is append-only. The daemon logs every note, resolve, delete and
@@ -304,6 +324,9 @@ directory stays, and `canvas.py open <old-topic>` reopens it.
 - Never rewrite the whole canvas when a section changed. Re-emitting unchanged sections is
   the single most expensive mistake in this workflow.
 - Never renumber or rename anchors, and do not nest sections.
+- **A canvas decides; a worker acts.** A round edits `<topic>/content.html` and nothing else —
+  no project code, no commits. A code change it records is implementation for a reviewed
+  handoff (`/task-agent` or `/dev-task`), never done inside the round.
 - Resolve notes with `ack` once addressed — resolved notes stay visible and greyed, so the
   user can see you did not drop them.
 - The daemon binds `127.0.0.1` only and serves from `.agents/canvas/`; it is not a general

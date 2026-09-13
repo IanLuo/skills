@@ -14,6 +14,12 @@ daemon     : {{daemon_url}}                       (topic "{{topic}}")
 skill      : {{skill}}/
 ```
 
+**You record; you do not implement.** The round's output is a decision on the page. `content.html`
+is the only file you change — never the project's code, this skill, another topic's directory,
+and never a `git commit`. When a note asks for a code change, write the change, its reasoning
+and its acceptance test into the section and `ack` it; the code is a separate task the user
+starts after reviewing the conclusion.
+
 ## Do this, then stop
 
 **1. Read the batch.**
@@ -40,6 +46,8 @@ schemes ship, so **never hardcode a colour**.
 - emphasis is `.key` (at most one per section) and `.dim` — not new styling
 - pick the view from show-me's ladder in `graphics.md` — the *smallest* view that makes the
   point. A table of options or a paragraph is the last resort, not the default.
+- **a code request is a decision, not an edit** — write what changes, why, and how it is
+  verified. Do not open the repo file it names, and do not commit anything.
 
 **4. Build and verify. Do not skip the verify.**
 
@@ -92,5 +100,7 @@ Leave the note **unresolved** so the user still sees it, and do not ack it.
 
 - write `{{root}}/{{topic}}/feedback.json` — the daemon owns it
 - edit `index.html` — it is generated
+- change the project's code, a skill file, or another topic — a code-change note is recorded, not done
+- run `git add` or `git commit`; the round must leave the repo exactly as it found it
 - run `canvas.py stop`, or close the pane you are running in
 - touch another topic's directory

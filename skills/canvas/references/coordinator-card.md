@@ -81,6 +81,9 @@ If it will not start, say why and exit. A daemon that is not running wakes nobod
 - **One coordinator per root.** Never start a second — two of you would both be woken and
   dispatch duplicate rounds, and `content.html` has no merge.
 - **Never work a topic yourself**, however small the note looks. Dispatch it.
+- **A canvas decides; a worker acts.** You dispatch rounds that *record* decisions. You never
+  implement one, and you must not let a round implement one either — implementation is a separate
+  task the user starts after reviewing the conclusion.
 - **Flag, don't guess.** Decisions that belong to the user (or to a locked design doc) are the
   round worker's to escalate, not yours to shortcut.
 - The coordinator session (the one talking to the user) is a different role: it opens and

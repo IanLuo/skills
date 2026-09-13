@@ -25,8 +25,8 @@
 | who | runs what | never does |
 |---|---|---|
 | **coordinator session** (the one talking to the user) | opens/archives canvases, authors content, `coordinator start/stop`, answers in chat | runs rounds, reads the DOM |
-| **coordinator agent** (one per root, in a pane) | `round <topic> --wait` per wake from the daemon | edits content, builds, verifies, polls |
-| **round worker** (disposable, one batch) | edits the affected sections, builds, verifies, `say`s, `ack`s | waits for more work, starts another round |
+| **coordinator agent** (one per root, in a pane) | `round <topic> --wait` per wake from the daemon | edits content, builds, verifies, polls, implements a decision |
+| **round worker** (disposable, one batch) | edits the affected sections, builds, verifies, `say`s, `ack`s | waits for more work, starts another round, touches repo code |
 
 - Deadlock rule: the coordinator session must not run a round. If you are the session the user is typing into, delegate.
 - **Claiming the role:** `coordinator start`, and only that. Live coordinator for the root → it reports who it is and starts nothing (relay it; never a second). None → it becomes one (new pane + `.coordinator.json`). Never hand-write the record: it skips that check, and two wakers dispatch two rounds for one note.
@@ -49,6 +49,7 @@
 | undo a round | `canvas.py versions <topic>` · `canvas.py restore <topic> --to last` |
 | start / stop the coordinator | `canvas-worker.py coordinator start\|stop\|status --root .agents/canvas` |
 | run one round by hand | `canvas-worker.py round <topic> --root .agents/canvas --wait` |
+| hand a reviewed conclusion to a worker | `/task-agent start` (worktree, recommended) · `/dev-task` (small in-repo change) |
 | see every topic and what is running | `canvas-worker.py list` · `canvas.py open` the `/dashboard` page |
 
 - The daemon's sweep is the only wake path: `POST /a/<topic>/send` writes state and wakes nobody, so a Send cannot produce two rounds. A successful wake logs `{kind: wake, ok: true, agent}` to `history.jsonl`.
@@ -59,8 +60,9 @@
 1. **Create** — `build-canvas.py <topic> --new`, then write `content.html` (sections, stable anchors).
 2. **Open** — `canvas.py start` (once per root) then `canvas.py open <topic>`; say the URL once.
 3. **Hand off** — `canvas-worker.py coordinator start --root .agents/canvas`. From here the user annotates and Sends; you stay free.
-4. **Work a batch** — the coordinator dispatches `round`; the worker edits only the affected sections, runs `build-canvas.py` **and** `verify-canvas.py`, then closes the round with `say` (a conclusion + one suggested next move, mirrored into the page's `run-conclusion` block) + `ack`.
-5. **End** — topic changed → new slug, the old directory freezes (still reopenable). Session over → `coordinator stop`, then `canvas.py stop`.
+4. **Work a batch** — the coordinator dispatches `round`; the worker edits only the affected sections, runs `build-canvas.py` **and** `verify-canvas.py`, then closes the round with `say` (a conclusion + one suggested next move, mirrored into the page's `run-conclusion` block) + `ack`. A round **records a decision** — it never changes repo code and never commits.
+5. **Review → handoff** — the user reads the conclusion; you do not act on it before that. Once approved, hand the conclusion to a worker with its own checkout: `/task-agent start` (worktree) for anything non-trivial, `/dev-task` for a small change. Use `/task-agent end` to merge it back. The canvas stays the decision record; the worker's diff is the implementation.
+6. **End** — topic changed → new slug, the old directory freezes (still reopenable). Session over → `coordinator stop`, then `canvas.py stop`.
 
 ## Recovery playbooks
 
@@ -86,6 +88,7 @@
 - **Never re-emit unchanged sections**: sections are swapped by hash, which is the whole token saving.
 - **Never ack a note you did not address**, and never leave one undecided — undecided notes are retried, then stuck.
 - **Flag, don't guess**: anything that changes what the canvas is *for*, or touches the chrome, belongs to the user or a locked doc.
+- **A canvas decides; a worker acts**: a round edits `<topic>/content.html` and nothing else — no project code, no commits. A recorded code change is implemented by a separate worker (`/task-agent` or `/dev-task`) only after the user reviews the conclusion.
 - **Chrome changes are not content changes**: `chrome.css`/`chrome.js` are shared by every canvas and locked in `design-system.md`.
 - **Nothing is global**: topics, the daemon, the coordinator record and the stop flag are all
   per-root, and there is no index file. Name roots explicitly (`--root`); a root's own directory
