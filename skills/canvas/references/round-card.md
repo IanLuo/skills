@@ -1,4 +1,4 @@
-<!-- Round card — handed to a TEMP worker by the watcher, one round per agent.
+<!-- Round card — handed to a TEMP worker by the coordinator, one round per agent.
      The temp worker does its round and exits; its context is discarded with the pane.
      Keep it self-sufficient: this agent has no memory of anything before it. -->
 

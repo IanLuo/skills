@@ -1,33 +1,27 @@
 #!/usr/bin/env python3
-"""canvas-worker.py — run the canvas feedback loop on a WORKER agent in a herdr pane.
+"""canvas-worker.py — dispatch canvas rounds to an agent in a herdr pane, and own the
+coordinator that the daemon wakes.
 
 Why this exists
 ---------------
-`canvas.py wait` used to block whoever ran it, and reading notes, editing sections, building,
-verifying and replying costs a lot of context. Run that in the main session and the user
-blocks for minutes while their context is spent on the loop. So a round runs in its own pane,
-on a disposable agent the daemon wakes — and the main session stays free to
-talk to the user.
+Reading notes, editing sections, building, verifying and replying costs a lot of context. Run
+that in the main session and the user blocks for minutes while their context is spent on the
+loop. So a round runs in its own pane, on a disposable agent — and the main session stays free
+to talk to the user.
 
 Usage
 -----
-    canvas-worker.py start  <topic> [--root DIR] [--kind pi] [--port N] [--name NAME]
-    canvas-worker.py ensure <topic> [--root DIR] [--kind pi] [--port N] [--name NAME]
-    canvas-worker.py stop   <topic> [--root DIR] [--now] [--wait SECONDS]
-    canvas-worker.py stop   --all [--root DIR] [--now]
-    canvas-worker.py list   [--root DIR]
-    canvas-worker.py status <topic> [--root DIR]
-    canvas-worker.py card   <topic> [--root DIR] [--print]
+    canvas-worker.py coordinator start|stop|status [--root DIR] [--kind pi] [--name NAME]
+    canvas-worker.py round <topic> [--root DIR] [--wait] [--kind pi] [--timeout SECONDS]
+    canvas-worker.py list  [--root DIR ...]
 
-`stop` is graceful by default: it writes <topic>/STOP, which the worker checks before
-each wait, so an in-flight round finishes instead of being killed mid-edit. It then waits
-for that round to end (bounded by `--wait`, default 60s) and closes the pane, so a stop
-leaves nothing behind. `--now` closes the pane immediately — only do that when nothing is
-in flight. A stop that was left half-done (pane open, STOP set, no agent) is
-recovered by `ensure`, which starts a worker only when none is recorded.
+`round` splits a pane, hands the new agent <topic>/ROUND.md, waits for the round to finish and
+closes the pane, so its context dies with it. `coordinator start` is idempotent: a live
+coordinator is reported, and a root with none gets one — the daemon then wakes that agent (see
+references/architecture.md, decisions 3 and 4).
 
-Requires herdr: HERDR_ENV=1 and the herdr CLI. Outside herdr, this exits with the
-instruction to work the loop inline instead.
+Requires herdr: HERDR_ENV=1 and the herdr CLI. Outside herdr it exits with the instruction to
+work the loop inline instead.
 """
 
 import argparse
@@ -46,10 +40,8 @@ from canvas import (DEFAULT_ROOT, DEFAULT_PORT, TOPIC_RE, IDLE_STATES, read_daem
                     is_up, load_history, pending_notes, read_send, unsent_notes)
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-CARD_TEMPLATE = SKILL_DIR / "references" / "worker-card.md"
 ROUND_TEMPLATE = SKILL_DIR / "references" / "round-card.md"
 COORDINATOR_TEMPLATE = SKILL_DIR / "references" / "coordinator-card.md"
-WORKER_FILE = "worker.json"
 
 
 def require_topic(topic):
@@ -67,23 +59,6 @@ def require_topic(topic):
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def worker_path(root, topic):
-    return root / topic / WORKER_FILE
-
-
-def load_worker(root, topic):
-    try:
-        return json.loads(worker_path(root, topic).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def save_worker(root, topic, data):
-    p = worker_path(root, topic)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def herdr(*args, check=True):
@@ -118,12 +93,6 @@ def agent_record(agent_name):
     return (herdr("agent", "get", agent_name, check=False).get("result") or {}).get("agent")
 
 
-def agent_state(root, topic):
-    """(worker.json, herdr status) for the recorded worker; (None, None) if never started."""
-    info = load_worker(root, topic)
-    return (info, agent_status(info.get("agent_name", ""))) if info else (None, None)
-
-
 def wait_for_idle(agent_name, timeout):
     """Poll until the agent's turn ends; return the last status seen.
 
@@ -145,22 +114,6 @@ def require_herdr():
             "canvas-worker: not inside a herdr session (HERDR_ENV != 1).\n"
             "Run one round inline instead: canvas.py pending <topic> --root <root>, then edit,\n"
             "build-canvas.py, verify-canvas.py, say, ack.")
-
-
-def write_card(root, topic, port):
-    daemon_url = "http://127.0.0.1:%d" % port
-    text = CARD_TEMPLATE.read_text(encoding="utf-8")
-    for key, value in (
-        ("topic", topic),
-        ("root", str(root.resolve())),
-        ("skill", str(SKILL_DIR)),
-        ("port", str(port)),
-        ("daemon_url", daemon_url),
-    ):
-        text = text.replace("{{%s}}" % key, value)
-    path = root / topic / "WORKER.md"
-    path.write_text(text, encoding="utf-8")
-    return path
 
 
 def write_round_card(root, topic, port):
@@ -189,102 +142,17 @@ def daemon_port(root, override):
     return DEFAULT_PORT, False
 
 
-def cmd_card(args):
-    root = Path(args.root)
-    port, up = daemon_port(root, args.port)
-    path = write_card(root, topic=args.topic, port=port)
-    print(path)
-    if args.print_card:
-        print(path.read_text(encoding="utf-8"))
-    return 0
-
-
-def cmd_start(args):
-    require_herdr()
-    root = Path(args.root)
-    if not TOPIC_RE.match(args.topic):
-        raise SystemExit("canvas-worker: bad topic %r" % args.topic)
-    if not (root / args.topic / "content.html").is_file():
-        raise SystemExit("canvas-worker: no canvas at %s/%s (build it first)"
-                         % (args.root, args.topic))
-
-    existing, status = agent_state(root, args.topic)
-    if existing:
-        if status not in IDLE_STATES:
-            raise SystemExit(
-                "canvas-worker: a worker is live for %s (%s, pane %s, status=%s).\n"
-                "Stop it first: canvas-worker.py stop %s --now"
-                % (args.topic, existing.get("agent_name"), existing.get("pane_id"), status,
-                   args.topic))
-        # A gracefully stopped worker leaves an idle agent in the pane it created, so close
-        # that pane and carry on rather than forcing the caller to run --now as well.
-        if existing.get("pane_id"):
-            herdr("pane", "close", existing["pane_id"], check=False)
-        worker_path(root, args.topic).unlink(missing_ok=True)
-
-    port, up = daemon_port(root, args.port)
-    if not up:
-        raise SystemExit("canvas-worker: daemon is not running. Start it first:\n"
-                         "  python3 %s/scripts/canvas.py start --root %s --port %d"
-                         % (SKILL_DIR, args.root, port))
-
-    # One watcher per topic. worker.json only records the LAST one, so a differently-named
-    # second watcher could park on the same topic: each Send then wakes one of them (the
-    # daemon consumes it once), the other starves, and a re-triggered batch makes both work.
-    live = []
-    for a in (herdr("agent", "list", check=False).get("result") or {}).get("agents", []):
-        n = a.get("name") or ""
-        if n == "canvas-" + args.topic and a.get("agent_status") not in IDLE_STATES:
-            live.append(n)
-    if live:
-        raise SystemExit("canvas-worker: %s is already watching %s (status=%s). One watcher "
-                         "per topic — stop it first, or use `round` for a single round."
-                         % (", ".join(live), args.topic, agent_status(live[0])))
-
-    card = write_card(root, args.topic, port)
-    (root / args.topic / "STOP").unlink(missing_ok=True)
-
-    # split → start → prompt. Parse ids from the JSON, never guess.
-    split = herdr("pane", "split", "--current", "--direction", "right",
-                  "--cwd", os.getcwd(), "--no-focus")
-    pane = (split.get("result", {}).get("pane", {}) or {}).get("pane_id")
-    if not pane:
-        raise SystemExit("canvas-worker: could not read the new pane id from: %s"
-                         % json.dumps(split)[:300])
-
-    name = args.name or ("canvas-" + args.topic)[:40]
-    kind_args = [] if args.kind == "pi" else ["--"]
-    if args.kind == "claude":
-        kind_args = ["--", "--permission-mode", "auto"]
-    elif args.kind == "pi":
-        kind_args = []
-    started = herdr("agent", "start", name, "--kind", args.kind, "--pane", pane, *kind_args)
-
-    prompt = ("Read %s and follow it exactly. You own the feedback loop for canvas "
-              "\"%s\" from now on." % (card, args.topic))
-    herdr("agent", "prompt", name, prompt, check=False)
-
-    save_worker(root, args.topic, {
-        "topic": args.topic, "pane_id": pane, "agent_name": name, "kind": args.kind,
-        "card": str(card), "port": port, "started": now_iso(),
-        "url": "http://127.0.0.1:%d/t/%s" % (port, args.topic),
-    })
-    print("worker   %s (%s) in pane %s" % (name, args.kind, pane))
-    print("card     %s" % card)
-    print("canvas   http://127.0.0.1:%d/t/%s" % (port, args.topic))
-    print("check    python3 %s/scripts/canvas-worker.py status %s --root %s"
-          % (SKILL_DIR, args.topic, args.root))
-    return 0
-
-
 def cmd_list(args):
-    """One table for every topic on this machine: the root you name, or every root in the
-    registry (~/.agents/canvas/roots.json) when you name none. Topics live with the project
-    they document, so each group says which project that is.
+    """One table for every topic of the roots you name: topic, what is waiting, rounds.
+    Topics live with the project they document, so each group says which project that is.
+
+    `--root` is repeatable; with none, it lists the root here. *Locked, not yet built:*
+    `references/architecture.md` decision 1 replaces this with one daemon serving every
+    registered project, which would let the no-argument form list all of them.
 
     The point is that `ps` and `kill` are never needed to answer "is a coordinator recorded,
-    and how do I close this" — state that lives in a process nobody can see is the failure
-    this reports on."""
+    and what is waiting" — state that lives in a process nobody can see is the failure this
+    reports on."""
     # Tolerate both parser shapes: --root may arrive as one string or as a list
     # (repeatable). Two agents edited this function concurrently and the mismatch
     # surfaced as a TypeError rather than a wrong listing.
@@ -308,40 +176,29 @@ def cmd_list(args):
                             if p.is_dir() and TOPIC_RE.match(p.name)
                             and not p.name.endswith("-verify"))
             for t in topics:
-                info, status = agent_state(root, t)
-                stop = (root / t / "STOP").exists()
                 pending = len(pending_notes(root, t))
                 unsent = len(unsent_notes(root, t))
                 send = read_send(root, t) or {}
                 rounds = sum(1 for e in load_history(root, t) if e.get("kind") == "agent")
-                # STOP outranks everything, then what herdr says about the recorded agent.
-                # There is no "listening" state any more: the daemon sweeps and wakes, so
-                # nobody has to be parked for a topic to be served.
-                if stop:
-                    state = "stopped"
-                elif not info:
-                    state = "no worker"
-                elif status in IDLE_STATES:
-                    state = "idle"
-                else:
-                    state = status
                 notes = "%d pending" % pending if pending else "clear"
                 if unsent:
                     notes += " · %d unsent" % unsent
                 if send.get("ts") and not send.get("consumed_at"):
                     notes += " · queued, unread"
-                rows.append((t, (info or {}).get("agent_name", "—"), state,
-                             (info or {}).get("pane_id", "—"), notes,
+                rows.append((t, notes,
                              (send.get("ts") or "—")[11:16] if send.get("ts") else "—",
                              str(rounds)))
         groups.append((root, port, up, rows))
 
-    head = ("topic", "worker", "state", "pane", "notes", "send", "rounds")
+    head = ("topic", "notes", "send", "rounds")
     all_rows = [r for _, _, _, rows in groups for r in rows]
     width = [max(len(str(r[i])) for r in [head] + all_rows) for i in range(len(head))]
     line = lambda cells: "  ".join(str(c).ljust(width[i]) for i, c in enumerate(cells)).rstrip()
     for root, port, up, rows in groups:
-        print("root     %s  %s" % (root, ("daemon up port=%d" % port) if up else "no daemon"))
+        coord = (load_coordinator(root) or {}).get("agent_name")
+        print("root     %s  %s  %s" % (root,
+                                       ("daemon up port=%d" % port) if up else "no daemon",
+                                       "coordinator %s" % coord if coord else "no coordinator"))
         if not root.is_dir():
             print("         registered, but that directory is gone")
             continue
@@ -352,110 +209,10 @@ def cmd_list(args):
         for r in rows:
             print(line(r))
 
-    print("\nstate    what herdr reports for the agent recorded in the topic's worker.json")
+    print("\narmed    the sweep wakes the agent in .coordinator.json when a topic has unread notes")
     close = "python3 %s/scripts/canvas-worker.py" % SKILL_DIR
-    print("close one   %s stop <topic> --root <root>" % close)
-    print("close all   %s stop --all --root <root>" % close)
+    print("coordinator %s coordinator status --root <root>" % close)
     print("daemon      python3 %s/scripts/canvas.py stop --root <root>" % SKILL_DIR)
-    return 0
-
-
-def cmd_stop(args):
-    root = Path(args.root)
-    if getattr(args, "all", False):
-        return stop_all(args, root)
-    if not args.topic:
-        raise SystemExit("canvas-worker: give a topic, or --all to stop every worker")
-    if not TOPIC_RE.match(args.topic):
-        raise SystemExit("canvas-worker: bad topic %r" % args.topic)
-    return stop_one(args, root, args.topic)
-
-
-def stop_all(args, root):
-    """Close every topic that has a worker recorded, reporting each one so a slow --wait on a
-    mid-round worker reads as progress rather than a hang."""
-    topics = [p.name for p in sorted(root.iterdir())
-              if p.is_dir() and TOPIC_RE.match(p.name) and load_worker(root, p.name)]
-    if not topics:
-        print("canvas-worker: no workers recorded under %s" % root)
-        return 0
-    rc = 0
-    for t in topics:
-        print("-- %s" % t)
-        sub = argparse.Namespace(topic=t, root=args.root, now=args.now, wait=args.wait, all=False)
-        rc = stop_one(sub, root, t) or rc
-    return rc
-
-
-def stop_one(args, root, topic):
-    info = load_worker(root, topic)
-    if not info:
-        print("canvas-worker: no worker recorded for %s" % topic)
-        return 0
-    pane = info.get("pane_id")
-    if args.now:
-        if pane:
-            herdr("pane", "close", pane, check=False)
-        (root / topic / "STOP").unlink(missing_ok=True)
-        worker_path(root, topic).unlink(missing_ok=True)
-        print("canvas-worker: closed pane %s immediately (an in-flight round may be half done)" % pane)
-        return 0
-    stop = root / topic / "STOP"
-    stop.write_text("stop\n", encoding="utf-8")
-    print("canvas-worker: stop requested — %s exits at the end of its current round" % info.get("agent_name"))
-
-    # Requesting a stop is only half the job: the worker exits, but the pane, the record and
-    # the STOP flag stay behind — and a later worker is blocked by a flag nobody remembers
-    # writing. Finish it here.
-    status = wait_for_idle(info.get("agent_name", ""), args.wait)
-    if status not in IDLE_STATES:
-        print("canvas-worker: %s is still %s after %ds — pane %s left open, STOP set" %
-              (info.get("agent_name"), status, args.wait, pane))
-        print("             re-run with --now to close it now (kills a live round)")
-        return 1
-    if pane:
-        herdr("pane", "close", pane, check=False)
-    stop.unlink(missing_ok=True)
-    worker_path(root, topic).unlink(missing_ok=True)
-    print("canvas-worker: round finished — closed pane %s, cleared STOP and worker.json" % pane)
-    return 0
-
-
-def cmd_ensure(args):
-    """Make sure ONE worker exists for the topic — the recovery command.
-
-    `start` refuses while a live worker exists: right for a human making a choice, wrong for
-    recovery, because the caller cannot tell "already running" from "stopped and nobody
-    noticed". ensure is safe to run at any time and repeatedly: recorded → no-op; dead,
-    stopped or half-stopped → clear the leftovers and start one.
-    """
-    root = Path(args.root)
-    info, status = agent_state(root, args.topic)
-    if info and not (root / args.topic / "STOP").exists():
-        # An idle agent is the desired state now: the daemon wakes it when work lands. Only
-        # a missing record or a pending STOP means nothing is left to serve the topic.
-        print("canvas-worker: %s already recorded (pane %s, status=%s) — nothing to do"
-              % (info.get("agent_name"), info.get("pane_id"), status))
-        return 0
-    return cmd_start(args)
-
-
-def cmd_status(args):
-    root = Path(args.root)
-    info = load_worker(root, args.topic)
-    if not info:
-        print("no worker recorded for %s" % args.topic)
-        return 1
-    stop = (root / args.topic / "STOP").exists()
-    status = agent_status(info.get("agent_name", ""))
-    print("worker   %s (%s) pane %s" % (info.get("agent_name"), info.get("kind"), info.get("pane_id")))
-    print("status   %s%s" % (status, "  (stop requested)" if stop else ""))
-    print("wakes    the daemon sweeps and wakes the root's coordinator (.coordinator.json)")
-    print("since    %s" % info.get("started"))
-    if status in IDLE_STATES:
-        # The recovery path, printed where someone looking at a dead canvas will see it.
-        print("recover  python3 %s/scripts/canvas-worker.py ensure %s --root %s"
-              % (SKILL_DIR, args.topic, args.root))
     return 0
 
 
@@ -680,11 +437,6 @@ def main(argv=None):
         sp.add_argument("--port", type=int, default=None)
         return sp
 
-    sp = common(sub.add_parser("start"))
-    sp.add_argument("--kind", default="pi", help="agent kind (pi, claude, codex, …)")
-    sp.add_argument("--name", default=None, help="herdr agent name (default canvas-<topic>)")
-    sp.set_defaults(func=cmd_start)
-
     sp = sub.add_parser("coordinator")
     sp.add_argument("action", choices=("start", "stop", "status"))
     sp.add_argument("--root", default=DEFAULT_ROOT)
@@ -705,33 +457,11 @@ def main(argv=None):
     sp.add_argument("--timeout", type=int, default=900, help="seconds to wait for the round")
     sp.set_defaults(func=cmd_round)
 
-    sp = sub.add_parser("stop")
-    sp.add_argument("topic", nargs="?", default=None)
-    sp.add_argument("--root", default=DEFAULT_ROOT)
-    sp.add_argument("--port", type=int, default=None)
-    sp.add_argument("--now", action="store_true", help="close the pane now instead of next round")
-    sp.add_argument("--all", action="store_true", help="stop every topic that has a worker")
-    sp.add_argument("--wait", type=float, default=60.0,
-                    help="seconds to let an in-flight round finish before reporting (default 60)")
-    sp.set_defaults(func=cmd_stop)
-
-    sp = common(sub.add_parser("ensure"))
-    sp.add_argument("--kind", default="pi", help="agent kind (pi, claude, codex, …)")
-    sp.add_argument("--name", default=None, help="herdr agent name (default canvas-<topic>)")
-    sp.set_defaults(func=cmd_ensure)
-
-    sp = common(sub.add_parser("status"))
-    sp.set_defaults(func=cmd_status)
-
     sp = sub.add_parser("list")
     sp.add_argument("--root", action="append", default=None, metavar="DIR",
                     help="a root to include, repeatable (default: .agents/canvas here)")
     sp.add_argument("--port", type=int, default=None)
     sp.set_defaults(func=cmd_list)
-
-    sp = common(sub.add_parser("card"))
-    sp.add_argument("--print", dest="print_card", action="store_true")
-    sp.set_defaults(func=cmd_card)
 
     args = p.parse_args(argv)
     require_topic(getattr(args, "topic", None))

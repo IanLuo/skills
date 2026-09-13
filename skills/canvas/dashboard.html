@@ -173,7 +173,6 @@ function render() {
   if (!DATA) return;
   const rows = DATA.topics.map((t) => {
     const [cls, label, why] = verdict(t);
-    const w = t.worker || {};
     const notes = [];
     if (t.pending) notes.push('<b>' + t.pending + ' pending</b>');
     if (t.flagged) notes.push(t.flagged + ' flagged');
@@ -206,8 +205,8 @@ function render() {
   }
   $('cli').textContent = [
     `canvas-worker.py list --root ${DATA.root}`,
-    `canvas-worker.py ensure <topic> --root ${DATA.root}`,
-    `canvas-worker.py stop <topic> --root ${DATA.root} [--now] [--all]`,
+    `canvas-worker.py coordinator status --root ${DATA.root}`,
+    `canvas-worker.py round <topic> --root ${DATA.root} --wait`,
     `build-canvas.py <topic> --root ${DATA.root}`,
     `canvas.py start --root ${DATA.root} --port ${DATA.port}`,
     `canvas.py stop --root ${DATA.root}`,

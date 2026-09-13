@@ -50,6 +50,15 @@ again when there is more work.
 Finish the round you are in. The notes are on disk; the next sweep will hand them over after
 you are idle. Never dispatch two rounds on the same topic at once.
 
+## You are this root's only coordinator — claim the role properly
+
+- `.coordinator.json` names you as the wake target because `coordinator start` wrote it; that
+  command is the only sanctioned way to claim the role.
+- `start` is idempotent: a live coordinator is reported, not duplicated; a root with none becomes
+  one. If you find another coordinator live for this root, report who it is and stop.
+- Never re-write `.coordinator.json` by hand: it skips that check, and two wakers dispatch two
+  rounds for one note — `content.html` has no merge.
+
 ## Stopping
 
 - `{{root}}/.COORDINATOR_STOP` existing means: finish the round in flight if any, then exit.

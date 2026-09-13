@@ -288,16 +288,6 @@ def unread_notes(root, topic):
 
 # ── dashboard: one view of every topic, from files ───────────────────────
 
-def read_worker_record(root, topic):
-    """worker.json, written by canvas-worker.py. The daemon repeats it verbatim and does not
-    guess liveness: whether that pane still exists is herdr's answer, not this process's.
-    Display only — the WAKE path never reads this (see read_coordinator_record)."""
-    try:
-        return json.loads((topic_paths(root, topic)["dir"] / "worker.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
 def read_coordinator_record(root):
     """`.coordinator.json`, written by canvas-worker.py `coordinator start`. This is the only
     wake target: it is the record the live architecture actually produces. Repeating it
@@ -337,7 +327,6 @@ def topic_summary(root, topic):
     history = load_history(root, topic)
     notes = load_feedback(root, topic)["annotations"]
     send = read_send(root, topic) or {}
-    worker = read_worker_record(root, topic)
     replies = [e for e in history if e.get("kind") == "agent"]
     return {
         "topic": topic,
@@ -358,9 +347,6 @@ def topic_summary(root, topic):
         "rounds": len(replies),
         "last_reply": replies[-1].get("ts") if replies else None,
         "latency_s": send_latency(history),
-        # Normalized for the page: worker.json spells these agent_name / pane_id.
-        "worker": worker and {"name": worker.get("agent_name"), "pane": worker.get("pane_id"),
-                              "kind": worker.get("kind"), "started": worker.get("started")},
     }
 
 
@@ -794,12 +780,6 @@ class Handler(BaseHTTPRequestHandler):
         if not topic_paths(root, topic)["content"].is_file():
             return self.send_json(404, {"error": "no canvas called %s" % topic})
         action = "/".join(parts[2:])
-        if action == "worker/ensure":
-            return self.send_json(200, run_action(
-                [scripts / "canvas-worker.py", "ensure", topic, "--root", root], 180))
-        if action == "worker/stop":
-            return self.send_json(200, run_action(
-                [scripts / "canvas-worker.py", "stop", topic, "--root", root, "--wait", "5"], 120))
         if action == "rebuild":
             return self.send_json(200, run_action(
                 [scripts / "build-canvas.py", topic, "--root", root], 120))

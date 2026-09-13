@@ -1,10 +1,10 @@
 ---
 name: canvas
-description: Co-edit one live page with the user — a canvas on 127.0.0.1 where every element is clickable to annotate, and the agent keeps appending graphics-first content to the same page until the topic changes. Use ONLY when the user explicitly asks for a canvas — "/canvas", "open a canvas", "let's work on this on a canvas", "keep it in the canvas", "co-edit this with me" — or explicitly asks to continue on a canvas that already exists under .agents/canvas/. Never auto-trigger. Do NOT use for a one-shot annotatable page that is not edited across rounds (that is annotate), for a visual answer inside chat (show-me), for charts or dashboards (dataviz), for writing specs (specs), or for design files (design-task).
+description: Co-edit one live page with the user — a canvas on 127.0.0.1 where every element is clickable to annotate, and the agent keeps appending graphics-first content to the same page until the topic changes. Use ONLY when the user explicitly asks for a canvas — "/canvas", "open a canvas", "let's work on this on a canvas", "keep it in the canvas", "co-edit this with me" — or explicitly asks to continue on a canvas that already exists under .agents/canvas/. Never auto-trigger. Do NOT use for a one-shot annotatable page that is not edited across rounds (that is annotate), for a visual answer inside chat (show-me), for charts or dashboards, for writing specs (specs), or for design files (design-task).
 metadata:
   audience: personal
   domain: agent-orchestration
-compatibility: Needs python3 3.9+ for the local daemon (binds 127.0.0.1 only, no external network). The built .html still opens from file:// without the daemon, with reload-to-update and copy-to-clipboard feedback instead of Send.
+compatibility: Needs python3 3.9+ for the local daemon (binds 127.0.0.1 only, no external network) and herdr for the coordinator and round panes (without it, run a round inline by hand). The built .html still opens from file:// without the daemon, with reload-to-update and copy-to-clipboard feedback instead of Send.
 ---
 
 # canvas
@@ -45,14 +45,24 @@ python3 $S/scripts/canvas-worker.py coordinator stop   --root .agents/canvas   #
 card is self-sufficient — the agent has no memory of your conversation, so put anything it needs
 to know in the card (or in the content).
 
+**Claiming the role — no coordinator → become one, one already there → report it.** `start` is
+idempotent, and it is the only sanctioned claim:
+
+- a coordinator herdr still knows → reports it (`already running — canvas-coord-<label> (pi) in
+  pane <id>`) and starts nothing; relay that, do not dispatch a second
+- the name taken by another root → reports the holder, starts nothing
+- no coordinator (record missing, or its pane gone) → **becomes one**: new pane, new agent,
+  `.coordinator.json` rewritten to name it
+
+Never hand-write `.coordinator.json`: it skips the check above, and two wakers on one root
+dispatch two rounds for one note (`content.html` has no merge). One per root is locked —
+`references/architecture.md`, load-bearing structure 4.
+
 **There is nothing to park and nothing to listen for.** The daemon sweeps every 2 s; when a
 topic has unread notes **and the coordinator is idle**, it prompts the coordinator, which
 dispatches a round. If no coordinator exists, or the daemon is down, the notes sit on disk and
 the page says so (`no coordinator`). `coordinator stop` sets `<root>/.COORDINATOR_STOP`, which
 stops the sweep from waking it, and closes the pane once the round in flight is done.
-
-For a single topic you can still run a bound watcher (`start`/`ensure`/`status`/`stop <topic>`,
-card `references/worker-card.md`); it is the same wake-driven loop, bound to one topic.
 
 **Working inline** is the fallback when there is no herdr session (`HERDR_ENV` unset): run one
 round by hand from the section below. Do not try to park your main session — nothing needs to be
@@ -68,13 +78,17 @@ documents: `<project>/.agents/canvas/<topic>/`. That choice keeps a topic one ar
 copyable, deletable unit — and costs discoverability, because nothing then knows other roots
 exist. Two things fix that cheaply:
 
-- **Nothing is global.** Roots are named explicitly (`--root`); there is no index file
-  and no shared state. A root's own directory is the only source of truth, so two
-  projects can never see or break each other. `canvas-worker.py list --root A --root B`
-  shows several; with no `--root` it shows just the one here.
-gone. `canvas.py stop` marks the root's daemon gone but **keeps the root** — its topics are
-  still on disk and still worth finding. `canvas-worker.py list` with no `--root` reads it, so
-  one command shows every project's canvases; the dashboard shows the other roots too.
+- **Nothing is global — today.** Roots are named explicitly (`--root`); there is no index file,
+  no registry and no shared state, and each root runs its own daemon. A root's own directory is
+  the only source of truth, so two projects cannot see or break each other.
+  `canvas-worker.py list` with no `--root` lists just the root here; `list --root A --root B`
+  lists several.
+  *Locked, not yet built:* `references/architecture.md` decision 1 makes one daemon serve every
+  project with explicit registration — until that lands, two projects means two daemons and two
+  ports.
+- **A root outlives its daemon.** `canvas.py stop` marks the root's daemon gone but **keeps the
+  root** — its topics are still on disk and still worth finding, so a later `canvas.py start`
+  brings them back.
 - **Files are the contract.** `say`, `ack`, `pending`, `flag`, `versions`, `restore` are pure
   file operations — **no daemon needed** — and a round is just edits to `content.html`. So any
   agent that knows the path can take a topic over cold, with no setup and no shared memory.
@@ -90,13 +104,14 @@ is recorded) and the note counts — so the page can say honestly whether a Send
 
 ```
 .agents/canvas/<topic>/
-├── content.html     the worker and coordinator edit this — the section-keyed content
+├── content.html     the round worker edits this — the section-keyed content
 ├── index.html       build-canvas.py writes it — shell + chrome, the file:// fallback
+├── ROUND.md         canvas-worker.py writes it — the round worker's task card
 ├── feedback.json    the daemon writes it — the user's annotations
+├── send.json        the daemon writes it — the Send state (ts, count, consumed_at)
 ├── history.jsonl    the daemon writes it — append-only record of the conversation
-├── WORKER.md        canvas-worker.py writes it — the worker's task card
-├── worker.json      canvas-worker.py writes it — pane id, agent name, kind
-└── STOP             written by `canvas-worker.py stop` to end the worker's loop; cleared when the pane closes
+├── rounds.jsonl     canvas-worker.py writes it — one line per dispatched round
+└── versions/        canvas.py snapshots content.html in here, so a round can be undone
 ```
 
 Everything a session produced lives in that one directory, so a topic can be archived,
@@ -138,10 +153,12 @@ open http://127.0.0.1:<port>/                                   # the daemon pri
 python3 $S/scripts/canvas-worker.py list --root .agents/canvas  # the same view in a terminal
 ```
 
-Actions: **rebuild** a canvas, **start worker** (`canvas-worker.py ensure`), **stop worker**
-(`stop --wait 5`), **create** a topic, **stop the daemon**. Two states mean "fix me": *no
-worker* with notes waiting, and *unread send* — those are exactly when the user's notes are
-sitting unread.
+Buttons: **create** a topic (`POST /topics`) · **start** / **stop** the coordinator
+(`POST /coordinator/start|stop`) · **stop the daemon** (`POST /daemon/stop`). A topic's rebuild
+route exists on the daemon but has no button — run `build-canvas.py <topic>`.
+
+One state means "fix me": **no coordinator** while notes are waiting, and the legend says so
+(`armed` / `no coordinator`). The counts come from files, so a restart cannot change them.
 
 It only claims what it can prove: the sweep state, the coordinator record and the STOP flag. It has
 **no "working" state** on purpose — a consumed send means notes were collected, not that a
@@ -270,7 +287,7 @@ directory stays, and `canvas.py open <old-topic>` reopens it.
   python3 $S/scripts/build-canvas.py <topic> --inline-mermaid
   python3 $S/scripts/canvas.py stop
   ```
-- **Session over** → stop the worker, then the daemon:
+- **Session over** → stop the coordinator, then the daemon:
   ```bash
   python3 $S/scripts/canvas-worker.py coordinator stop --root .agents/canvas   # round finishes, pane closes
   python3 $S/scripts/canvas.py stop

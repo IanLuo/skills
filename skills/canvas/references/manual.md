@@ -29,6 +29,7 @@
 | **round worker** (disposable, one batch) | edits the affected sections, builds, verifies, `say`s, `ack`s | waits for more work, starts another round |
 
 - Deadlock rule: the coordinator session must not run a round. If you are the session the user is typing into, delegate.
+- **Claiming the role:** `coordinator start`, and only that. Live coordinator for the root → it reports who it is and starts nothing (relay it; never a second). None → it becomes one (new pane + `.coordinator.json`). Never hand-write the record: it skips that check, and two wakers dispatch two rounds for one note.
 - One writer per topic at a time. `content.html` is a single file with no merge; two writers means last-write-wins.
 
 ## Command map
@@ -39,7 +40,7 @@
 | start / stop the daemon | `canvas.py start --root .agents/canvas --port 8788` · `canvas.py stop` |
 | open a topic in a browser | `canvas.py open <topic>` (prints the authoritative URL) |
 | see what is waiting | `canvas.py pending <topic>` (never blocks) |
-| wake a coordinator by hand | `canvas-worker.py coordinator start --root .agents/canvas` (then the sweep does it) |
+| get a coordinator — become one, or report the live one | `canvas-worker.py coordinator start --root .agents/canvas` (idempotent; then the sweep does the waking) |
 | close the round on the page | `canvas.py say <topic> "<conclusion> — next: <one move>"` |
 | mark notes done | `canvas.py ack <topic> --ids id,id` · `--all` |
 | escalate a decision I may not make | `canvas.py flag <topic> --ids id --note "why"` |
@@ -49,7 +50,6 @@
 | start / stop the coordinator | `canvas-worker.py coordinator start\|stop\|status --root .agents/canvas` |
 | run one round by hand | `canvas-worker.py round <topic> --root .agents/canvas --wait` |
 | see every topic and what is running | `canvas-worker.py list` · `canvas.py open` the `/dashboard` page |
-| **legacy, single-topic only** | `canvas-worker.py start\|ensure\|stop <topic>` — do not mix with a coordinator |
 
 - The daemon's sweep is the only wake path: `POST /a/<topic>/send` writes state and wakes nobody, so a Send cannot produce two rounds. A successful wake logs `{kind: wake, ok: true, agent}` to `history.jsonl`.
 - Daemon routes, if you need them directly: `/t/<topic>` page · `/c` content · `/v` version+state · `/h` history · `/a` annotations · `/topics` · `/dashboard` · `/coordinator/start|stop` · `/daemon/stop`.
@@ -66,13 +66,13 @@
 
 | symptom | cause | fix |
 |---|---|---|
-| page says **no coordinator**, or notes pile up unread | the sweep has nobody to wake | `canvas-worker.py coordinator status` → `coordinator start`. The sweep can wake a coordinator, but it cannot conjure one where no pane exists |
+| page says **no coordinator**, or notes pile up unread | the sweep has nobody to wake | `canvas-worker.py coordinator status` → `coordinator start` (idempotent — reports a live one instead of starting a second). The sweep can wake a coordinator, but it cannot conjure one where no pane exists |
 | the page says **no sweep** | the daemon was started with `--sweep 0`, or no daemon is running | `canvas.py status`; restart with the default sweep |
 | the coordinator is woken but **does not dispatch** | it is mid-round, or `.COORDINATOR_STOP` exists | `coordinator status`; clear STOP, or wait out the round in flight |
 | status pill shows **⚠ N sent note(s) not handled** | the wake failed (no herdr, no coordinator), so the send is still unread | `coordinator start`; the next sweep hands that batch over |
 | notes marked **stuck** | two rounds failed to ack or flag them | decide them yourself, or `flag` them so they stop re-triggering |
-| **duplicate rounds** for one note | two coordinators on one root, or a legacy per-topic watcher alongside the coordinator | one coordinator per root; stop the legacy watcher |
-| an **orphan pane** `canvas-<topic>-rNNNN` | `stop --now` killed a watcher mid-round and orphaned the worker it spawned | find it with `herdr agent list`, close its pane |
+| **duplicate rounds** for one note | two coordinators on one root | one coordinator per root (`coordinator status`); `start` refuses to make a second |
+| an **orphan pane** `canvas-<topic>-rNNNN` | a dispatcher was killed mid-round, so its pane outlived it | find it with `herdr agent list`, close its pane |
 | **page not updating** | daemon down, or you edited the wrong file | `canvas.py status`; content must be `<root>/<topic>/content.html` |
 | `verify-canvas.py` says **diagrams not rendered** | `assets/mermaid.min.js` not vendored, or bad mermaid syntax (the error names the anchor) | fetch it with the curl in `SKILL.md`, or fix the diagram |
 | verify warns **viewport not honoured** | headless Chrome will not lay out below ~500px | width-sensitive checks are **unverified**, not passing — do not claim a phone layout works |
