@@ -61,7 +61,7 @@ fi
 normalize_list() {
   local raw="${1:-}"
   [ -z "$raw" ] && { printf 'none'; return; }
-  printf '%s' "$raw" | sed 's/|/,/g' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | paste -sd ', ' -
+  printf '%s' "$raw" | sed 's/|/,/g' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | paste -sd, - | sed 's/,/, /g'
 }
 
 UPSTREAM_NORM="$(normalize_list "$UPSTREAM")"
