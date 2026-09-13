@@ -3,7 +3,7 @@
 ## Read this when
 
 - You are about to run any canvas command and want the right one first try.
-- Something is wrong: nothing is listening, a note was ignored, a page will not update.
+- Something is wrong: no coordinator, a note was ignored, a page will not update.
 - You are handing a canvas to another agent, or taking one over.
 - N/A: the content contract (sections, anchors, primitives) is in `SKILL.md` and `graphics.md`; the palette/type/component rules are locked in `design-system.md`.
 
@@ -11,22 +11,24 @@
 
 - The **page is the reply**: the user annotates, the page writes to disk, chat stays near-silent.
 - **Delivery is push-free**: notes POST to `feedback.json` the moment they are typed; **Send** is only the signal that the batch is ready.
-- **An agent cannot be pushed to** — but the daemon can sweep. It scans every topic every
-  `--sweep` seconds (default 2) and wakes the coordinator for any raised Send or unresolved sent
-  note, so "nothing is listening" costs one sweep, not an outage. A parked waiter only makes
-  delivery faster; it is no longer what correctness rests on.
-- **One coordinator per root** parks on `wait --any`, hears every topic, and dispatches each batch to a **disposable worker** whose context dies with its pane.
+- **An agent cannot be pushed to** — the daemon sweeps instead. It scans every topic every
+  `--sweep` seconds (default 2) and wakes the coordinator when a topic has unread notes and the
+  coordinator is idle. Nothing has to be parked for a note to be read; a Send is served by the
+  next sweep, not by a listener.
+- **One coordinator per root** hears every topic and dispatches each batch to a **disposable
+  worker** whose context dies with its pane. One Send wakes it at most once: a successful wake
+  consumes the send and counts the attempt, and the sweep skips a coordinator that is mid-round.
 - N/A: there is no merge, no lock file, and no conflict resolution — see Invariants.
 
 ## Roles — decide this before you type anything
 
 | who | runs what | never does |
 |---|---|---|
-| **coordinator session** (the one talking to the user) | opens/archives canvases, authors content, `coordinator start/stop`, answers in chat | parks, runs rounds, reads the DOM |
-| **coordinator agent** (one per root, in a pane) | `wait --any`, then `round <topic> --wait` per batch | edits content, builds, verifies |
+| **coordinator session** (the one talking to the user) | opens/archives canvases, authors content, `coordinator start/stop`, answers in chat | runs rounds, reads the DOM |
+| **coordinator agent** (one per root, in a pane) | `round <topic> --wait` per wake from the daemon | edits content, builds, verifies, polls |
 | **round worker** (disposable, one batch) | edits the affected sections, builds, verifies, `say`s, `ack`s | waits for more work, starts another round |
 
-- Deadlock rule: the coordinator session must not park. If you are the session the user is typing into, delegate.
+- Deadlock rule: the coordinator session must not run a round. If you are the session the user is typing into, delegate.
 - One writer per topic at a time. `content.html` is a single file with no merge; two writers means last-write-wins.
 
 ## Command map
@@ -36,9 +38,8 @@
 | create a topic | `build-canvas.py <topic> --new --root .agents/canvas` |
 | start / stop the daemon | `canvas.py start --root .agents/canvas --port 8788` · `canvas.py stop` |
 | open a topic in a browser | `canvas.py open <topic>` (prints the authoritative URL) |
-| hear every topic at once (the coordinator's park) | `canvas.py wait --any --root .agents/canvas --timeout 300 --quiet` |
-| hear one topic only | `canvas.py wait <topic>` (add `--eager` to return on a note without a Send) |
-| see what is waiting without blocking | `canvas.py pending <topic>` |
+| see what is waiting | `canvas.py pending <topic>` (never blocks) |
+| wake a coordinator by hand | `canvas-worker.py coordinator start --root .agents/canvas` (then the sweep does it) |
 | close the round on the page | `canvas.py say <topic> "<conclusion> — next: <one move>"` |
 | mark notes done | `canvas.py ack <topic> --ids id,id` · `--all` |
 | escalate a decision I may not make | `canvas.py flag <topic> --ids id --note "why"` |
@@ -50,8 +51,8 @@
 | see every topic and what is running | `canvas-worker.py list` · `canvas.py open` the `/dashboard` page |
 | **legacy, single-topic only** | `canvas-worker.py start\|ensure\|stop <topic>` — do not mix with a coordinator |
 
-- Exit codes from `wait`: `0` batch → work it · `1` idle timeout, normal · `3` stop requested · `4` daemon runs a different revision, re-run it.
-- Daemon routes, if you need them directly: `/t/<topic>` page · `/c` content · `/v` version+state · `/h` history · `/a` annotations · `/wait`, `/wait-all` · `/topics` · `/dashboard` · `/coordinator/start|stop` · `/daemon/stop`.
+- The daemon's sweep is the only wake path: `POST /a/<topic>/send` writes state and wakes nobody, so a Send cannot produce two rounds. A successful wake logs `{kind: wake, ok: true, agent}` to `history.jsonl`.
+- Daemon routes, if you need them directly: `/t/<topic>` page · `/c` content · `/v` version+state · `/h` history · `/a` annotations · `/topics` · `/dashboard` · `/coordinator/start|stop` · `/daemon/stop`.
 
 ## Lifecycle
 
@@ -65,12 +66,12 @@
 
 | symptom | cause | fix |
 |---|---|---|
-| page says **agent away**, or notes pile up unread | nobody is parked — the sweep should already be waking an existing coordinator | `canvas-worker.py coordinator status` → `coordinator start`. The sweep can wake a coordinator, but it cannot conjure one where no pane exists |
-| `wait` returns **exit 4** | the daemon runs an older `canvas.py` than the file on disk | restart the daemon; a parked waiter keeps running the code it started with |
-| the coordinator **parks once, then dies** | its `wait` was wrapped in a shell `while` inside ONE tool call; the harness aborts long calls (~1150s) and an aborted call ends the turn | one `wait` **per turn**, `--timeout 300`, loop by running it again — never a shell loop |
-| status pill shows **⚠ N sent note(s) not handled** | a send was consumed and the waiter died before resolving it | park a coordinator; the `unread` re-trigger hands that batch over again |
+| page says **no coordinator**, or notes pile up unread | the sweep has nobody to wake | `canvas-worker.py coordinator status` → `coordinator start`. The sweep can wake a coordinator, but it cannot conjure one where no pane exists |
+| the page says **no sweep** | the daemon was started with `--sweep 0`, or no daemon is running | `canvas.py status`; restart with the default sweep |
+| the coordinator is woken but **does not dispatch** | it is mid-round, or `.COORDINATOR_STOP` exists | `coordinator status`; clear STOP, or wait out the round in flight |
+| status pill shows **⚠ N sent note(s) not handled** | the wake failed (no herdr, no coordinator), so the send is still unread | `coordinator start`; the next sweep hands that batch over |
 | notes marked **stuck** | two rounds failed to ack or flag them | decide them yourself, or `flag` them so they stop re-triggering |
-| **two listeners** on one topic → duplicate rounds | a per-topic watcher running alongside the coordinator | one coordinator per root; stop the legacy watcher |
+| **duplicate rounds** for one note | two coordinators on one root, or a legacy per-topic watcher alongside the coordinator | one coordinator per root; stop the legacy watcher |
 | an **orphan pane** `canvas-<topic>-rNNNN` | `stop --now` killed a watcher mid-round and orphaned the worker it spawned | find it with `herdr agent list`, close its pane |
 | **page not updating** | daemon down, or you edited the wrong file | `canvas.py status`; content must be `<root>/<topic>/content.html` |
 | `verify-canvas.py` says **diagrams not rendered** | `assets/mermaid.min.js` not vendored, or bad mermaid syntax (the error names the anchor) | fetch it with the curl in `SKILL.md`, or fix the diagram |
@@ -89,7 +90,7 @@
 - **Nothing is global**: topics, the daemon, the coordinator record and the stop flag are all
   per-root, and there is no index file. Name roots explicitly (`--root`); a root's own directory
   is the source of truth.
-- **Keep the loop out of the user's session**: blocking waits belong to a pane agent, not the session the user is typing into.
+- **Keep the loop out of the user's session**: rounds belong to a pane agent, not the session the user is typing into. Nothing needs to be parked for a Send to be read.
 
 ## What this skill does not do
 
@@ -98,4 +99,4 @@
 - N/A: recovery of a deleted topic — snapshots cover `content.html` only.
 - N/A: phone-viewport verification (see above).
 
-Last reviewed: 2026-09-12 · canvas skill
+Last reviewed: 2026-09-13 · canvas skill

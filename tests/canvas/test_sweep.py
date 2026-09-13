@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """The sweep — the daemon, not a parked waiter, is what notices work.
 
-Locked decision: `skills/canvas/references/architecture.md` § Load-bearing structure (2) and (3):
-the daemon sweeps every 2 s and wakes the coordinator when unread work exists; the park stays
-only as a latency optimisation. This test pins the three properties that matter:
+Locked decision: `skills/canvas/references/architecture.md` § Load-bearing structure (2), (3)
+and (5): there is no park any more; the daemon sweeps every 2 s and wakes the coordinator,
+only when the coordinator is idle, and one Send can only ever produce one round. This test
+pins the properties that matter:
 
-  * it wakes when work is waiting and nobody is parked
-  * it stays silent when a park already has the work (or nothing is waiting)
+  * a Send writes state and wakes nobody — the sweep is the single wake path
+  * it wakes when work is waiting and the coordinator is idle
+  * it stays silent while a round is in flight, or when nothing is waiting
+  * a successful wake consumes the send and counts the attempt
   * it is rate-limited, so an unanswered wake cannot fill history.jsonl
 
 Run: python3 tests/canvas/test_sweep.py
@@ -36,104 +39,159 @@ def check(name, cond, detail=""):
         FAILED.append(name)
 
 
-def fake_herdr(tmp):
-    bindir = tmp / "bin"
-    bindir.mkdir()
-    log = tmp / "herdr-argv.jsonl"
-    exe = bindir / "herdr"
-    exe.write_text(
-        "#!%s\nimport json, sys\nopen(%r, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
-        % (sys.executable, str(log)),
-        encoding="utf-8",
-    )
-    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
-    os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
-    return log
+class Herdr:
+    """A herdr that answers `agent get` with a status we control, and records every
+    `agent prompt` so the test can assert WHO was woken and how many times."""
+
+    def __init__(self, tmp, status="idle"):
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        self.log = tmp / "herdr-argv.jsonl"
+        self.status = tmp / "herdr-status"
+        self.status.write_text(status, encoding="utf-8")
+        exe = bindir / "herdr"
+        exe.write_text(
+            "#!%s\n"
+            "import json, sys\n"
+            "argv = sys.argv[1:]\n"
+            "if argv[:2] == ['agent', 'get']:\n"
+            "    st = open(%r).read().strip() or 'idle'\n"
+            "    print(json.dumps({'result': {'agent': {'agent_status': st}}}))\n"
+            "else:\n"
+            "    open(%r, 'a').write(json.dumps(argv) + '\\n')\n"
+            % (sys.executable, str(self.status), str(self.log)),
+            encoding="utf-8",
+        )
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
+
+    def busy(self, status="working"):
+        self.status.write_text(status, encoding="utf-8")
+
+    def prompts(self):
+        if not self.log.exists():
+            return []
+        return [json.loads(l) for l in self.log.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
-def prompts(log):
-    if not log.exists():
-        return 0
-    return len([l for l in log.read_text(encoding="utf-8").splitlines() if l.strip()])
-
-
-def topic_with_send(root, topic, *, consumed=False, notes=1):
-    d = root / topic
+def topic(root, name, notes=1, resolved=False, ts="2026-09-12T10:00:00Z"):
+    """A topic with content and `notes` unresolved annotations, but no Send yet."""
+    d = root / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "content.html").write_text('<section data-section="s1">x</section>', encoding="utf-8")
     (d / "feedback.json").write_text(json.dumps({"annotations": [
         {"id": "c%d" % i, "anchor": "s1", "comment": "change this", "severity": "suggestion",
-         "resolved": False, "ts": "2026-09-12T10:00:00Z", "attempts": 0}
+         "resolved": resolved, "ts": ts, "attempts": 0}
         for i in range(notes)
     ]}), encoding="utf-8")
-    canvas.write_send(root, topic, {
-        "ts": "2026-09-12T10:00:00Z", "count": notes,
-        "consumed_at": "2026-09-12T10:00:05Z" if consumed else None,
-    })
     return d
+
+
+def coordinator(root, name="canvas-coord-probe"):
+    (root / ".coordinator.json").write_text(json.dumps(
+        {"agent_name": name, "pane_id": "w1:p9"}), encoding="utf-8")
+
+
+def wakes(root, name):
+    return [e for e in canvas.load_history(root, name) if e.get("kind") == "wake"]
 
 
 def main():
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        log = fake_herdr(tmp)
+        herdr = Herdr(tmp)
         root = tmp / "root"
         root.mkdir()
-        (root / ".coordinator.json").write_text(json.dumps(
-            {"agent_name": "canvas-coord-probe", "pane_id": "w1:p9"}), encoding="utf-8")
-        topic_with_send(root, "probe")
+        coordinator(root)
+        topic(root, "probe")
 
-        # 1 · work waiting, nobody parked → wake, once
+        # 1 · the Send path wakes nobody: the daemon's sweep is the single wake path, so one
+        #     Send can never produce two rounds.
         canvas.SWEEP_LAST.clear()
         canvas.SWEEP_WAKES.clear()
-        woken = canvas.sweep_once(root, now=1000.0)
-        check("sweep wakes when work is waiting", len(woken) == 1 and woken[0].get("ok") is True, woken)
-        check("herdr was prompted once", prompts(log) == 1, prompts(log))
-        check("the wake is logged on the page",
-              any(e.get("kind") == "wake" and e.get("ok") for e in canvas.load_history(root, "probe")),
-              canvas.load_history(root, "probe"))
+        count = canvas.record_send(root, "probe")
+        check("the Send carries the note", count == 1, count)
+        check("a Send alone prompts nobody", herdr.prompts() == [], herdr.prompts())
+        check("a Send alone writes no wake line", wakes(root, "probe") == [], wakes(root, "probe"))
 
-        # 2 · rate limit: a second sweep a moment later is silent, but one a minute later is not
+        # 2 · one sweep wakes the coordinator, once
+        woken = canvas.sweep_once(root, now=1000.0)
+        check("the sweep wakes when work is waiting", len(woken) == 1 and woken[0].get("ok") is True, woken)
+        check("the coordinator was prompted once", len(herdr.prompts()) == 1, herdr.prompts())
+        check("the prompt says dispatch a round",
+              bool(herdr.prompts()) and " round " in " " + " ".join(herdr.prompts()[0]) + " ",
+              herdr.prompts())
+
+        # 3 · the wake hands the batch over: consume the send, count the attempt. Without this
+        #     a resolved topic keeps looking like unread work and wakes forever.
+        send = canvas.read_send(root, "probe") or {}
+        check("a successful wake consumes the send", bool(send.get("consumed_at")), send)
+        attempts = [a.get("attempts", 0) for a in canvas.load_feedback(root, "probe")["annotations"]]
+        check("a successful wake counts the attempt", attempts and min(attempts) >= 1, attempts)
+
+        # 4 · rate limit: a second sweep a moment later is silent, but one a minute later is not
         check("second sweep within the minute is silent", canvas.sweep_once(root, now=1001.0) == [])
         check("still silent at 59s", canvas.sweep_once(root, now=1059.0) == [])
         check("wakes again after the interval", len(canvas.sweep_once(root, now=1061.0)) == 1)
 
-        # 3 · a park already has the work → the sweep must stay out of the way
+        # 5 · resolved work is not work: the sweep stops
         canvas.SWEEP_LAST.clear()
         canvas.SWEEP_WAKES.clear()
-        (root / "probe" / "parked.json").write_text(
-            json.dumps({"ts": "2026-09-12T10:00:00Z", "pid": os.getpid()}), encoding="utf-8")
-        import datetime
-        fresh = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        (root / "probe" / "parked.json").write_text(
-            json.dumps({"ts": fresh, "pid": os.getpid()}), encoding="utf-8")
-        before = prompts(log)
-        check("a parked waiter suppresses the sweep", canvas.sweep_once(root, now=2000.0) == [])
-        check("and no prompt was sent", prompts(log) == before)
-        (root / "probe" / "parked.json").unlink()
+        done = tmp / "done"
+        done.mkdir()
+        coordinator(done)
+        topic(done, "wrapped", resolved=True)
+        canvas.record_send(done, "wrapped")
+        check("resolved notes do not wake", canvas.sweep_once(done, now=2000.0) == [])
 
-        # 4 · nothing waiting → no wake, no log line
+        # 6 · a coordinator mid-round must not be woken — a prompt sent into a running round
+        #     queues, and dispatching twice for one note is the storm this design prevents.
+        busy = tmp / "busy"
+        busy.mkdir()
+        coordinator(busy)
+        topic(busy, "waiting")
+        canvas.record_send(busy, "waiting")
+        canvas.SWEEP_LAST.clear()
+        canvas.SWEEP_WAKES.clear()
+        herdr.busy("working")
+        before = len(herdr.prompts())
+        check("a busy coordinator is not woken", canvas.sweep_once(busy, now=3000.0) == [])
+        check("and no prompt went out while it was busy", len(herdr.prompts()) == before)
+        herdr.busy("idle")
+        check("it is woken once it is idle", len(canvas.sweep_once(busy, now=3001.0)) == 1)
+
+        # 7 · a stop request suppresses the sweep instead of fighting it
+        canvas.SWEEP_LAST.clear()
+        canvas.SWEEP_WAKES.clear()
+        (busy / ".COORDINATOR_STOP").write_text("stop\n", encoding="utf-8")
+        topic(busy, "second")
+        canvas.record_send(busy, "second")
+        check("a stop request suppresses the sweep", canvas.sweep_once(busy, now=4000.0) == [])
+        (busy / ".COORDINATOR_STOP").unlink()
+
+        # 8 · nothing waiting → no wake, no log line
         canvas.SWEEP_LAST.clear()
         canvas.SWEEP_WAKES.clear()
         empty = tmp / "empty"
         empty.mkdir()
-        topic_with_send(empty, "quiet", consumed=True)
-        (empty / "quiet" / "feedback.json").write_text(json.dumps({"annotations": []}), encoding="utf-8")
-        check("no work → no wake", canvas.sweep_once(empty, now=3000.0) == [])
-        check("no work → no history line",
-              not [e for e in canvas.load_history(empty, "quiet") if e.get("kind") == "wake"])
+        coordinator(empty)
+        topic(empty, "quiet", notes=0)
+        check("no work → no wake", canvas.sweep_once(empty, now=5000.0) == [])
+        check("no work → no history line", wakes(empty, "quiet") == [])
 
-        # 5 · global cap: an unanswered wake cannot fill the log forever
+        # 9 · global cap: an unanswered wake cannot fill the log forever
         canvas.SWEEP_LAST.clear()
         canvas.SWEEP_WAKES.clear()
+        herdr.busy("idle")
         scattered = tmp / "scattered"
         scattered.mkdir()
-        (scattered / ".coordinator.json").write_text(json.dumps({"pane_id": "w9:p1"}), encoding="utf-8")
+        coordinator(scattered)
         for i in range(8):
-            topic_with_send(scattered, "t%d" % i)
+            topic(scattered, "t%d" % i)
+            canvas.record_send(scattered, "t%d" % i)
         total = 0
         for step in range(8):
-            total += len(canvas.sweep_once(scattered, now=5000.0 + step * 61))
+            total += len(canvas.sweep_once(scattered, now=6000.0 + step * 61))
         check("the global cap holds wakes to %d per 10 min" % canvas.SWEEP_MAX_WAKES,
               total <= canvas.SWEEP_MAX_WAKES, total)
 

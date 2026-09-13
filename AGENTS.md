@@ -12,7 +12,7 @@ non-negotiable.
 # Validate all skills against the spec
 python3 skills/skill-man/scripts/validate.py
 
-# Run test suite (10 fixtures + upstream-conformance cross-check)
+# Run test suite (10 fixtures + upstream-conformance + canvas sweep/wake)
 bash tests/run.sh
 
 # Deploy
@@ -60,7 +60,7 @@ skills/          — 14 skills (see README table)
   skill-man/       create, validate, deploy skills
   skill-template/  starter skeleton
 bin/             — deploy-skills.sh (symlinks skills into each detected agent's global skills dir)
-tests/           — validation fixture tests + upstream-conformance cross-check
+tests/           — validation fixture tests + upstream-conformance cross-check + canvas daemon tests
 ```
 
 The core pipeline is: init-context → specs → design-task → dev-task → review-task.

@@ -289,9 +289,7 @@ $('send').onclick = async () => {
   try {
     const r = await fetch('/a/' + TOPIC + '/send', { method: 'POST' });
     const res = await r.json();
-    status(res.listening
-      ? 'sent · the agent is reading them now'
-      : 'sent · stored — the agent picks them up when it looks');
+    status('sent · the sweep wakes the coordinator within ~2s');
     $('send').textContent = 'Sent ✓';
   } catch (e) {
     $('send').disabled = false;
@@ -541,22 +539,28 @@ document.querySelectorAll('#schemes button').forEach((b) => {
   b.onclick = () => applyScheme(b.dataset.pick, true);
 });
 
-// "agent listening" is not decoration: it is the difference between a Send being read
-// now and a Send waiting on disk.
+// Liveness is the daemon's job now: nobody parks, so the useful question is not "is anyone
+// listening" but "will anything be woken". The dot is filled when the sweep is armed and a
+// coordinator exists to wake it; red when there is no coordinator and notes are waiting.
 function indicator(v) {
-  const listening = (v && v.listening) > 0;
-  const parked = (v && v.parked) || null;      // durable heartbeat written by a parked waiter
-  const heard = listening || !!parked;          // is anything going to read a Send?
   const stopped = !!(v && v.stop_requested);
   const unsent = (v && v.unsent) || 0;
   const pending = (v && v.pending) || 0;
   const consumedAt = (v && v.send_consumed_at) || null;
   const lastSend = (v && v.last_send_ts) || null;
   const el = $('listening');
-  el.textContent = listening ? 'agent listening'
-                 : (parked ? 'agent parked (' + (parked.age_s || 0) + 's)'
-                           : (stopped ? 'no worker' : 'agent away'));
-  el.classList.toggle('on', heard);
+  const sweeping = Number((v && v.sweep) || 0) > 0;
+  const coordinator = !!(v && v.coordinator);
+  const waiting = (v && ((v.unread || 0) + (v.unsent || 0) + (v.pending || 0))) || 0;
+  const armed = sweeping && coordinator;        // the daemon will wake the coordinator
+  const noWake = sweeping && !coordinator && waiting > 0;
+  let label = 'no sweep';
+  if (stopped) { label = 'stopped'; }
+  else if (armed) { label = 'auto-wake'; }
+  else if (noWake) { label = 'no coordinator'; }
+  el.textContent = label;
+  el.classList.toggle('on', armed);
+  el.classList.toggle('warn', noWake || stopped);
 
   // An empty Send is a no-op that still pings the agent, so the button turns itself
   // off once everything has been sent. (Found by the user pressing it with nothing
@@ -569,8 +573,8 @@ function indicator(v) {
   const flagged = (v && v.flagged) || 0;
   // The status pill carries the state as a dot too, so it is legible at a glance.
   const st = $('status');
-  st.classList.toggle('on', heard);
-  st.classList.toggle('warn', unread > 0 && !listening);
+  st.classList.toggle('on', armed);
+  st.classList.toggle('warn', (unread > 0 && !armed) || stopped);
   const clock = (iso) => (String(iso).match(/T(\d\d:\d\d)/) || [null, iso])[1];
   const badge = $('convonotice');
   if (badge) { badge.hidden = !flagged; badge.textContent = flagged ? String(flagged) : ''; }
@@ -580,35 +584,30 @@ function indicator(v) {
     status('⚠ ' + flagged + ' note(s) need your decision — flagged, not being worked');
     return;
   }
-  if (unread && !listening) {
-    // Sent, never handled, and nobody is on it — say so plainly instead of implying work
-    // is happening. This is the state that used to be silent.
-    status('⚠ ' + unread + ' sent note(s) not handled · no agent is listening');
+  if (unread && !coordinator) {
+    // Sent, never handled, and no coordinator to wake — say so plainly instead of implying
+    // work is happening. This is the state that used to be silent.
+    status('⚠ ' + unread + ' sent note(s) not handled · no coordinator to wake');
     return;
   }
   if (unsent) {
     status(unsent + ' note(s) not sent yet — press Send');
-  } else if (v && v.sent && !heard) {
-    // The queue is NOT a promise. With nobody parked the notes sit on disk until a worker
-    // starts, and saying "waiting for the agent to look" told the user a reader was coming
-    // that did not exist. (That line is how a Send went unread for 20 minutes today.)
-    status('sent · nobody is listening — stored, but nothing will read them until a worker starts');
+  } else if (v && v.sent && !coordinator) {
+    // The queue is NOT a promise. With nobody to wake the notes sit on disk until a
+    // coordinator starts, and saying "waiting for the agent to look" told the user a reader
+    // was coming that did not exist.
+    status('sent · stored — nothing will read them until a coordinator starts');
   } else if (v && v.sent) {
-    // queued and someone is there
-    status('sent · waiting for the agent to look');
+    status('sent · the sweep wakes the coordinator within ~2s');
   } else if (pending && consumedAt) {
     // the agent has them; this is the line that stops the user re-sending
-    // "a waiter took the batch" is knowable; "an agent is working on it" is not.
-    status(listening
-      ? 'collected ' + clock(consumedAt) + ' · ' + pending + ' waiting for a round'
-      : 'collected ' + clock(consumedAt) + ' · ' + pending + ' unresolved — nothing is listening');
+    status('collected ' + clock(consumedAt) + ' · ' + pending + ' waiting for a round');
   } else if (pending) {
     status('live · ' + pending + ' note(s) unresolved');
   } else if (lastSend) {
     status('all notes resolved · last send ' + clock(lastSend));
   } else {
-    status('live · ' + (heard ? (listening ? 'agent listening' : 'agent parked')
-                              : 'agent away — write a note to begin'));
+    status('live · ' + (armed ? 'auto-wake armed' : 'write a note to begin'));
   }
 }
 
@@ -683,8 +682,8 @@ function evLine(e) {
     // Whether anyone was woken is the question this whole mechanism exists to answer, so it
     // gets a line rather than being invisible.
     return '<div class="ev meta"><span class="who"></span><span class="txt">' +
-      (e.ok ? 'agent woken to read them'
-            : 'nobody was woken — ' + escapeHtml(e.why || 'no worker') +
+      (e.ok ? 'coordinator woken to read them'
+            : 'nobody was woken — ' + escapeHtml(e.why || 'no coordinator') +
               ' (start one from the dashboard)') +
       '</span></div>';
   }

@@ -4,9 +4,8 @@
 
 # Round worker — `{{topic}}` (one round only)
 
-You handle **exactly one round** of feedback for the canvas `{{topic}}`, then **exit**. A
-watcher is parked behind you and will spawn a fresh worker for the next round; do not wait
-for more work.
+You handle **exactly one round** of feedback for the canvas `{{topic}}`, then **exit**. The
+daemon wakes the coordinator for the next round; do not wait for more work.
 
 ```
 canvas dir : {{root}}/{{topic}}/
@@ -74,7 +73,7 @@ Do not ack a note you did not address.
 round, and after two tries it is marked **stuck** on the page. That endless retry is worse
 than the silence it replaced, so never end a round with an undecided note.
 
-**6. Exit.** Do not run `wait`. Do not start another round. The watcher owns that.
+**6. Exit.** Do not wait for more work. Do not start another round. The coordinator owns that.
 
 ## Escalate instead of inventing an answer
 

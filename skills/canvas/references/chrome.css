@@ -474,7 +474,8 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 }
 #statusrow #listening.on::before,
 #statusrow #status.on::before { content: "●"; color: var(--accent); }
-#statusrow #status.warn::before { content: "●"; color: var(--crit); }
+#statusrow #status.warn::before,
+#statusrow #listening.warn::before { content: "●"; color: var(--crit); }
 
 /* ══════════════════════════════════════════════════════════════════════════
    "Needs your decision". A flagged note is not work in progress — it is a question

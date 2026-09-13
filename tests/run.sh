@@ -92,6 +92,22 @@ else
   fi
 fi
 
+# ── 3. Canvas daemon behaviour ────────────────────────────────────────────
+echo ""
+echo "── Canvas (sweep + wake target) ───────────────────────────────────────"
+for t in "$SCRIPT_DIR"/canvas/test_*.py; do
+  name="$(basename "$t")"
+  if python3 "$t" >/dev/null 2>&1; then
+    printf '  ✓ %-28s pass\n' "$name"
+    PASS=$((PASS + 1))
+  else
+    printf '  ✗ %-28s FAIL\n' "$name"
+    python3 "$t" 2>&1 | grep -E '^FAIL' | sed 's/^/      /' || true
+    FAIL=$((FAIL + 1))
+    FAILED_NAMES+=("canvas:$name")
+  fi
+done
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────────────────────────────────────"

@@ -3,10 +3,10 @@
 
 Why this exists
 ---------------
-`canvas.py wait` blocks whoever runs it, and reading notes, editing sections, building,
+`canvas.py wait` used to block whoever ran it, and reading notes, editing sections, building,
 verifying and replying costs a lot of context. Run that in the main session and the user
-is blocked for minutes while their context is spent on the loop. So the loop runs in its
-own pane, on its own agent, with its own context — and the main session stays free to
+blocks for minutes while their context is spent on the loop. So a round runs in its own pane,
+on a disposable agent the daemon wakes — and the main session stays free to
 talk to the user.
 
 Usage
@@ -23,8 +23,8 @@ Usage
 each wait, so an in-flight round finishes instead of being killed mid-edit. It then waits
 for that round to end (bounded by `--wait`, default 60s) and closes the pane, so a stop
 leaves nothing behind. `--now` closes the pane immediately — only do that when nothing is
-in flight. A stop that was left half-done (pane open, STOP set, nobody listening) is
-recovered by `ensure`, which starts a worker only when none is parked.
+in flight. A stop that was left half-done (pane open, STOP set, no agent) is
+recovered by `ensure`, which starts a worker only when none is recorded.
 
 Requires herdr: HERDR_ENV=1 and the herdr CLI. Outside herdr, this exits with the
 instruction to work the loop inline instead.
@@ -42,9 +42,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from canvas import (DEFAULT_ROOT, DEFAULT_PORT, TOPIC_RE, read_daemon, is_up,  # noqa: E402
-                    load_history, pending_notes, read_parked,
-                    read_send, unsent_notes)
+from canvas import (DEFAULT_ROOT, DEFAULT_PORT, TOPIC_RE, IDLE_STATES, read_daemon,  # noqa: E402
+                    is_up, load_history, pending_notes, read_send, unsent_notes)
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 CARD_TEMPLATE = SKILL_DIR / "references" / "worker-card.md"
@@ -102,13 +101,6 @@ def herdr(*args, check=True):
         return {"raw": p.stdout.strip()}
 
 
-# Agent states that mean no round is in flight. start/stop/ensure must agree on this, or
-# one of them replaces a worker another one is still counting on.
-# "done" is a real terminal state: an agent that finished its turn but is not idle.
-# Without it, `stop` waits out its whole grace period and leaves the pane open.
-IDLE_STATES = (None, "idle", "done", "exited", "unknown", "stopped")
-
-
 def agent_status(agent_name):
     """herdr's status for an agent name — 'unknown' when it cannot be read at all."""
     res = herdr("agent", "get", agent_name, check=False).get("result") or {}
@@ -135,9 +127,9 @@ def agent_state(root, topic):
 def wait_for_idle(agent_name, timeout):
     """Poll until the agent's turn ends; return the last status seen.
 
-    A worker parked in `wait` reads as 'working' (a tool call is in flight) — STOP makes
-    the daemon return that call immediately, so the turn ends within a second or two. A
-    worker mid-round is also 'working' until it finishes, which is what grace has to mean.
+    A worker mid-round reads as 'working' until the round finishes, which is what grace has
+    to mean; an idle agent has ended its turn and can be closed. A stop request cannot
+    interrupt a round already running — it only stops the next one.
     """
     deadline = time.time() + max(0, timeout)
     while True:
@@ -147,23 +139,11 @@ def wait_for_idle(agent_name, timeout):
         time.sleep(1.0)
 
 
-def listening_count(root, topic, port):
-    """Waiters parked in `canvas.py wait` right now — the page's 'agent listening' signal."""
-    if not port:
-        return 0
-    try:
-        import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:%d/v/%s" % (port, topic), timeout=5) as r:
-            return json.loads(r.read().decode("utf-8")).get("listening") or 0
-    except Exception:
-        return 0
-
-
 def require_herdr():
     if os.environ.get("HERDR_ENV") != "1":
         raise SystemExit(
             "canvas-worker: not inside a herdr session (HERDR_ENV != 1).\n"
-            "Work the loop inline instead: canvas.py wait <topic> --root <root>, then edit,\n"
+            "Run one round inline instead: canvas.py pending <topic> --root <root>, then edit,\n"
             "build-canvas.py, verify-canvas.py, say, ack.")
 
 
@@ -302,9 +282,9 @@ def cmd_list(args):
     registry (~/.agents/canvas/roots.json) when you name none. Topics live with the project
     they document, so each group says which project that is.
 
-    The point is that `ps` and `kill` are never needed to answer "is anyone listening, and
-    how do I close this" — state that lives in a process nobody can see is the failure this
-    reports on."""
+    The point is that `ps` and `kill` are never needed to answer "is a coordinator recorded,
+    and how do I close this" — state that lives in a process nobody can see is the failure
+    this reports on."""
     # Tolerate both parser shapes: --root may arrive as one string or as a list
     # (repeatable). Two agents edited this function concurrently and the mismatch
     # surfaced as a TypeError rather than a wrong listing.
@@ -330,21 +310,15 @@ def cmd_list(args):
             for t in topics:
                 info, status = agent_state(root, t)
                 stop = (root / t / "STOP").exists()
-                listening = listening_count(root, t, port) if up else 0
-                parked = read_parked(root, t)
                 pending = len(pending_notes(root, t))
                 unsent = len(unsent_notes(root, t))
                 send = read_send(root, t) or {}
                 rounds = sum(1 for e in load_history(root, t) if e.get("kind") == "agent")
-                # A durable marker beats memory: STOP outranks everything, then a connected
-                # waiter, then the heartbeat that outlives a killed waiter and a restarted
-                # daemon (shown as parked* so the weaker claim is visible).
+                # STOP outranks everything, then what herdr says about the recorded agent.
+                # There is no "listening" state any more: the daemon sweeps and wakes, so
+                # nobody has to be parked for a topic to be served.
                 if stop:
                     state = "stopped"
-                elif listening:
-                    state = "parked"
-                elif parked:
-                    state = "parked*"
                 elif not info:
                     state = "no worker"
                 elif status in IDLE_STATES:
@@ -378,7 +352,7 @@ def cmd_list(args):
         for r in rows:
             print(line(r))
 
-    print("\nstate    parked = a waiter is connected now · parked* = a heartbeat on disk")
+    print("\nstate    what herdr reports for the agent recorded in the topic's worker.json")
     close = "python3 %s/scripts/canvas-worker.py" % SKILL_DIR
     print("close one   %s stop <topic> --root <root>" % close)
     print("close all   %s stop --all --root <root>" % close)
@@ -431,8 +405,8 @@ def stop_one(args, root, topic):
     print("canvas-worker: stop requested — %s exits at the end of its current round" % info.get("agent_name"))
 
     # Requesting a stop is only half the job: the worker exits, but the pane, the record and
-    # the STOP flag stay behind. That is exactly how a canvas ends up with nobody listening —
-    # and how a later worker is blocked by a flag nobody remembers writing. Finish it here.
+    # the STOP flag stay behind — and a later worker is blocked by a flag nobody remembers
+    # writing. Finish it here.
     status = wait_for_idle(info.get("agent_name", ""), args.wait)
     if status not in IDLE_STATES:
         print("canvas-worker: %s is still %s after %ds — pane %s left open, STOP set" %
@@ -448,28 +422,21 @@ def stop_one(args, root, topic):
 
 
 def cmd_ensure(args):
-    """Make sure ONE worker is parked for the topic — the recovery command.
+    """Make sure ONE worker exists for the topic — the recovery command.
 
     `start` refuses while a live worker exists: right for a human making a choice, wrong for
-    recovery, because the caller cannot tell "already parked" from "stopped and nobody
-    noticed". ensure is safe to run at any time and repeatedly: parked → no-op; dead,
+    recovery, because the caller cannot tell "already running" from "stopped and nobody
+    noticed". ensure is safe to run at any time and repeatedly: recorded → no-op; dead,
     stopped or half-stopped → clear the leftovers and start one.
     """
     root = Path(args.root)
     info, status = agent_state(root, args.topic)
     if info and not (root / args.topic / "STOP").exists():
-        port, up = daemon_port(root, info.get("port"))
-        if up and listening_count(root, args.topic, port):
-            print("canvas-worker: already parked (%s, pane %s) — nothing to do"
-                  % (info.get("agent_name"), info.get("pane_id")))
-            return 0
-        if status not in IDLE_STATES:
-            print("canvas-worker: %s is alive (pane %s, status=%s) but not parked — mid-round"
-                  % (info.get("agent_name"), info.get("pane_id"), status))
-            print("             or between rounds. Not starting a second worker; if it stays")
-            print("             that way: canvas-worker.py stop %s --now, then ensure again"
-                  % args.topic)
-            return 0
+        # An idle agent is the desired state now: the daemon wakes it when work lands. Only
+        # a missing record or a pending STOP means nothing is left to serve the topic.
+        print("canvas-worker: %s already recorded (pane %s, status=%s) — nothing to do"
+              % (info.get("agent_name"), info.get("pane_id"), status))
+        return 0
     return cmd_start(args)
 
 
@@ -481,13 +448,11 @@ def cmd_status(args):
         return 1
     stop = (root / args.topic / "STOP").exists()
     status = agent_status(info.get("agent_name", ""))
-    port, up = daemon_port(root, info.get("port"))
-    listening = listening_count(root, args.topic, port) if up else None
     print("worker   %s (%s) pane %s" % (info.get("agent_name"), info.get("kind"), info.get("pane_id")))
     print("status   %s%s" % (status, "  (stop requested)" if stop else ""))
-    print("parked   %s" % ("yes — waiting for a Send" if listening else "no (idle, between rounds, or starting up)"))
+    print("wakes    the daemon sweeps and wakes the root's coordinator (.coordinator.json)")
     print("since    %s" % info.get("started"))
-    if not listening:
+    if status in IDLE_STATES:
         # The recovery path, printed where someone looking at a dead canvas will see it.
         print("recover  python3 %s/scripts/canvas-worker.py ensure %s --root %s"
               % (SKILL_DIR, args.topic, args.root))

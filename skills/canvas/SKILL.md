@@ -14,52 +14,52 @@ reads it and annotates anything on it; you append graphics-first content to the 
 until the topic changes.
 
 The page is the reply. **Delivery is push-free**: the user annotates and presses **Send** on the
-page; whoever is parked in `canvas.py wait` gets the notes as a tool result. Nobody copies
-anything into a chat box, and the user never has to say "go".
+page; the daemon notices the Send on its sweep and wakes the coordinator, which dispatches a
+round. Nobody copies anything into a chat box, and the user never has to say "go".
 
 Below, `$S` is this skill's directory (the parent of `SKILL.md`). Run the commands from
 the project root.
 
-## Who does what — do not park the main session
+## Who does what — keep the loop out of the user's session
 
-The feedback loop **blocks** while it waits, and running it costs a lot of context (file
-reads, build output, headless DOM dumps). Run it in the session the user is talking to and
-you block them for minutes and spend their context on the loop. So:
+A round costs a lot of context (file reads, build output, headless DOM dumps). Run it in the
+session the user is talking to and you spend their context on the loop. So:
 
 | role | who | does |
 |---|---|---|
-| **coordinator** | the session talking to the user | opens/archives canvases, authors content, starts/stops the worker, answers in chat. **Never parks, never runs the loop.** |
-| **worker** | a separate agent in a herdr pane | **woken by the daemon** when notes arrive, then per round: reads the notes, edits the sections, builds, verifies, `say`s, `ack`s, ends its turn. Parks in `wait` only as the fallback (no herdr, or inline). |
+| **coordinator session** | the session talking to the user | opens/archives canvases, authors content, starts/stops the coordinator agent, answers in chat. **Never runs a round.** |
+| **coordinator agent** | ONE persistent agent per root, in a herdr pane | **woken by the daemon** when a topic has unread notes; dispatches one round per wake, then ends its turn |
+| **round worker** | a disposable agent, one per round | reads the notes, edits the sections, builds, verifies, `say`s, `ack`s, exits |
 
-The user only ever watches the page. The worker's context absorbs the loop, and your
+The user only ever watches the page. The round worker's context absorbs the loop, and your
 session stays free.
 
 ```bash
-python3 $S/scripts/canvas-worker.py start  <topic> --root .agents/canvas --kind pi
-python3 $S/scripts/canvas-worker.py status <topic> --root .agents/canvas
-python3 $S/scripts/canvas-worker.py stop   <topic> --root .agents/canvas          # graceful: round finishes, then the pane closes
-python3 $S/scripts/canvas-worker.py stop   <topic> --root .agents/canvas --now    # close the pane now (kills a live round)
-python3 $S/scripts/canvas-worker.py ensure <topic> --root .agents/canvas          # start a worker ONLY if none is parked
+python3 $S/scripts/canvas-worker.py coordinator start  --root .agents/canvas   # ONE per root
+python3 $S/scripts/canvas-worker.py coordinator status --root .agents/canvas
+python3 $S/scripts/canvas-worker.py coordinator stop   --root .agents/canvas   # graceful: round finishes, pane closes
 ```
 
-`start` writes `<topic>/WORKER.md` (the task card), splits a pane with herdr, launches the
-worker and hands it the card. The card is self-sufficient — the worker has no memory of your
-conversation, so put anything it needs to know in the card (or in the content).
+`coordinator start` writes `<root>/COORDINATOR.md` (the task card, from
+`references/coordinator-card.md`), splits a pane with herdr and hands the card to one agent. The
+card is self-sufficient — the agent has no memory of your conversation, so put anything it needs
+to know in the card (or in the content).
 
-**Nobody listening is a state to repair, not wait out.** A worker counts as listening only
-while its `wait` call is parked. If it exits — STOP, a crash, a context cut, an ended turn —
-the canvas is unowned, and a Send queues with no reader while the page still says "waiting
-for the agent to look". `stop` leaves nothing behind (it lets the round finish, bounded by
-`--wait`, then closes the pane and clears STOP); `status` prints the recovery command; and
-`ensure` is idempotent — parked → no-op, otherwise it clears the leftovers and starts one. If
-the page shows nobody listening, `ensure` is the fix, and it is safe to run blind.
+**There is nothing to park and nothing to listen for.** The daemon sweeps every 2 s; when a
+topic has unread notes **and the coordinator is idle**, it prompts the coordinator, which
+dispatches a round. If no coordinator exists, or the daemon is down, the notes sit on disk and
+the page says so (`no coordinator`). `coordinator stop` sets `<root>/.COORDINATOR_STOP`, which
+stops the sweep from waking it, and closes the pane once the round in flight is done.
 
-**Working inline** is the fallback when there is no herdr session (`HERDR_ENV` unset), or for
-a single quick round the user is waiting on. Then you run the loop yourself from the section
-below — knowing you are blocking until the next Send.
+For a single topic you can still run a bound watcher (`start`/`ensure`/`status`/`stop <topic>`,
+card `references/worker-card.md`); it is the same wake-driven loop, bound to one topic.
 
-**One writer at a time.** While a worker is running, it owns `content.html`. If you need to
-author content, `stop` the worker first (graceful), make your change, then `start` it again.
+**Working inline** is the fallback when there is no herdr session (`HERDR_ENV` unset): run one
+round by hand from the section below. Do not try to park your main session — nothing needs to be
+parked for the page to work.
+
+**One writer at a time.** While a round is running, that worker owns `content.html`. If you need
+to author content, `stop` the coordinator (graceful) first, make your change, then start it again.
 
 ## Where topics live, and how other agents find them
 
@@ -76,16 +76,15 @@ gone. `canvas.py stop` marks the root's daemon gone but **keeps the root** — i
   still on disk and still worth finding. `canvas-worker.py list` with no `--root` reads it, so
   one command shows every project's canvases; the dashboard shows the other roots too.
 - **Files are the contract.** `say`, `ack`, `pending`, `flag`, `versions`, `restore` are pure
-  file operations — **no daemon needed** — and `wait` falls back to watching files. So any
+  file operations — **no daemon needed** — and a round is just edits to `content.html`. So any
   agent that knows the path can take a topic over cold, with no setup and no shared memory.
   `.agents/canvas/` is gitignored: these files persist on this disk, they do not travel with
   the repo.
 
-**Liveness is a file, not a memory.** A parked waiter heartbeats to `<topic>/parked.json`
-while it waits, and readers treat a heartbeat older than `PARKED_TTL` (45s) as absent. So "is
-anyone listening" survives a daemon restart, is readable by another agent, and expires by
-itself when the waiter is killed. `/v` reports both: `listening` (waiters connected to this
-daemon right now) and `parked` (the durable heartbeat).
+**Liveness is the daemon's sweep.** Nobody parks and nothing heartbeats: the daemon scans every
+registered root every 2 s, and wakes the coordinator when a topic has unread notes and the
+coordinator is idle. `/v` reports `sweep` (the interval, 0 when off), `coordinator` (whether one
+is recorded) and the note counts — so the page can say honestly whether a Send will be read.
 
 ## Files (root: `.agents/canvas/`, one DIRECTORY per topic)
 
@@ -129,9 +128,9 @@ curl -sL -o $S/assets/mermaid.min.js https://cdn.jsdelivr.net/npm/mermaid@11/dis
 The daemon serves `dashboard.html` (this skill's folder, static, no build step) at `/`, and
 every canvas page links to it — `dashboard` sits in the bottom-right controls row,
 beside Conversation and Send (hidden when the page is opened from `file://`, where `/dashboard`
-does not resolve). It lists every topic with the state that matters — is anyone listening, how
-many notes are pending / unsent / queued-unread, rounds, and Send → reply latency — and every
-button runs one of the skill's own CLIs and prints its real output. The CLI equivalent is on
+does not resolve). It lists every topic with the state that matters — whether a coordinator is
+recorded, how many notes are pending / unsent / queued-unread, rounds, and Send → reply latency —
+and every button runs one of the skill's own CLIs and prints its real output. The CLI equivalent is on
 the page, because the page is never the only way.
 
 ```bash
@@ -144,7 +143,7 @@ Actions: **rebuild** a canvas, **start worker** (`canvas-worker.py ensure`), **s
 worker* with notes waiting, and *unread send* — those are exactly when the user's notes are
 sitting unread.
 
-It only claims what it can prove: listener count, the STOP flag and the worker record. It has
+It only claims what it can prove: the sweep state, the coordinator record and the STOP flag. It has
 **no "working" state** on purpose — a consumed send means notes were collected, not that a
 round is in flight; the daemon cannot see the agent, so it does not pretend to. It also warns
 when the running daemon is an older revision of `canvas.py` than the file on disk.
@@ -184,7 +183,7 @@ when the running daemon is an older revision of `canvas.py` than the file on dis
   liveness or ownership works. It is locked (`specs:locked:`) and records why the one server, the
   2 s sweep, the lease and the wake target are the way they are — with the rejected alternatives.
 - Read **[references/manual.md](references/manual.md)** when running any canvas command, when
-  something is wrong (nothing listening, a note ignored, a page not updating), or when handing a
+  something is wrong (no coordinator, a note ignored, a page not updating), or when handing a
   canvas to another agent. It has the command map, the lifecycle, and symptom→cause→fix playbooks.
 - Read **[references/design-system.md](references/design-system.md)** before changing any canvas
   visual: the palette (3 schemes), type scale, spacing, radii and component states are locked
@@ -195,38 +194,29 @@ when the running daemon is an older revision of `canvas.py` than the file on dis
 
 ## The round loop
 
-One round is the unit of work. **Who holds the wait** is the only thing that changes between
-modes: the daemon holds it and prompts the worker (default), or the agent blocks in `wait`
-itself (fallback: no herdr, or working inline from the main session).
+One round is the unit of work, and the daemon is the only thing that decides when one starts.
 
-**The push.** When a Send lands, the daemon prompts the topic's recorded worker via
-`herdr agent prompt` — unless somebody is already parked, in which case the parked waiter
-picks the notes up by itself. Either way the outcome is logged to `history.jsonl` as a `wake`
-event ("agent woken" / "nobody was woken — no worker recorded"), so a silent failure is
-visible on the page. Design note: a parked waiter is a **blocking shell inside an agent
-turn**, so any interruption kills it — that is what the wake path exists to replace, and why
-`ensure` exists to repair it.
+**The wake.** The daemon sweeps every 2 s. When a topic has unread notes **and the recorded
+coordinator is idle**, it prompts that coordinator via `herdr agent prompt`; the coordinator
+dispatches one round and ends its turn. The outcome is logged to `history.jsonl` as a `wake`
+event ("coordinator woken" / "nobody was woken — no coordinator recorded"), so a silent failure
+is visible on the page. A successful wake also counts the attempt and consumes the Send, so one
+Send produces one round; notes nobody resolves are retried at most `MAX_ROUND_ATTEMPTS` times
+before the page marks them **stuck**.
 
-This is the loop the **worker** runs (and the one you run when working inline).
+There is no park and no `wait`: a park was a blocking call inside an agent turn, so any
+interruption ended it and nothing re-parked. Keep the loop in a herdr pane — the coordinator
+agent — and your own session out of it.
 
-1. **Park (fallback), or be woken.** Parked:
+This is the loop the **round worker** runs; you only run the steps by hand when working inline.
+
+1. **Be woken (or start a round yourself).** A round begins when the daemon wakes the
+   coordinator, which runs:
    ```bash
-   python3 $S/scripts/canvas.py wait <topic> --timeout 600
+   python3 $S/scripts/canvas-worker.py round <topic> --root .agents/canvas --wait
    ```
-   Run it as the LAST thing in your turn so the click lands while you are listening. The page
-   shows the user an honest `agent listening` / `agent away` indicator, driven by whether
-   this call is actually parked.
-
-   - A Send is **sticky**: if it arrives while you are away, your next `wait` returns
-     immediately rather than losing it. A consumed Send is never delivered twice.
-   - `--eager` returns as soon as a note is written, without waiting for Send. Use it only
-     when the user asks for immediate reaction; it splits their batches.
-   - `pending` returns whatever is unresolved without blocking — for when the user tells you
-     in chat that they annotated.
-   - **Exit codes matter:** `3` = a stop was requested, exit the loop; `4` = the daemon is
-     running a different revision of this script, just run `wait` again to pick it up.
-   - A parked `wait` ignores later edits to this script — it runs the code it started with.
-     That is why the revision check exists; never leave a stale waiter parked.
+   That splits a pane, hands the new agent `<topic>/ROUND.md`, waits, and closes the pane.
+   Inline, you do the round's steps yourself, starting from `canvas.py pending <topic>`.
 2. Edit **only** the affected sections of `.agents/canvas/<topic>/content.html`.
 3. Refresh the fallback shell and mark the notes you addressed:
    ```bash
@@ -282,7 +272,7 @@ directory stays, and `canvas.py open <old-topic>` reopens it.
   ```
 - **Session over** → stop the worker, then the daemon:
   ```bash
-  python3 $S/scripts/canvas-worker.py stop <topic> --root .agents/canvas   # round finishes, pane closes
+  python3 $S/scripts/canvas-worker.py coordinator stop --root .agents/canvas   # round finishes, pane closes
   python3 $S/scripts/canvas.py stop
   ```
   Nothing is left running, and the pane is closed.
@@ -290,8 +280,8 @@ directory stays, and `canvas.py open <old-topic>` reopens it.
 ## Rules
 
 - **Never ask the user to paste their notes into chat.** That is the friction this skill
-  exists to remove. If you are not parked in `wait`, their Send is stored and waiting —
-  just read it.
+  exists to remove. A Send is stored on disk and the sweep will wake the coordinator — just
+  read it with `canvas.py pending <topic>`.
 - Keep chat near-silent. The page is the reply; a paragraph in chat duplicating it is paid
   for twice.
 - Never rewrite the whole canvas when a section changed. Re-emitting unchanged sections is

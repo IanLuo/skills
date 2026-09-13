@@ -6,7 +6,7 @@
 <title>canvas · dashboard</title>
 <!--
   The control panel for every canvas on this machine: topics, the processes that serve
-  them, and the numbers that say whether anyone is actually listening.
+  them, and the numbers that say whether a coordinator will be woken.
 
   It is a STATIC file — no build step, no dependencies, no inlined chrome. The daemon
   serves it at / (and /dashboard) and answers /topics; opened straight from disk it says
@@ -40,7 +40,7 @@
   .topic { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight:600; }
   .chip { display:inline-block; padding:.1rem .5rem; border-radius:999px; font-size:.68rem;
           border:1px solid var(--line); background:var(--surface-2); color:var(--ink-2); white-space:nowrap; }
-  .chip.parked { background:color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color:var(--ok); color:var(--ok); }
+  .chip.armed { background:color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color:var(--ok); color:var(--ok); }
   .chip.unread, .chip.stopped { background:color-mix(in srgb, var(--crit) 10%, var(--surface)); border-color:var(--crit); color:var(--crit); }
   .muted { color:var(--ink-3); }
   .crit { color:var(--crit); }
@@ -79,7 +79,7 @@
 <div id="main">
   <table>
     <thead><tr>
-      <th>topic</th><th>nobody / who is listening</th>
+      <th>topic</th><th>who will be woken</th>
       <th>notes</th><th>rounds</th><th>send → reply</th>
     </tr></thead>
     <tbody id="rows"></tbody>
@@ -104,8 +104,8 @@
     <div class="row">
       <button id="coordstart">start</button>
       <button id="coordstop">stop</button>
-      <span class="legend">one agent per root. It listens on <b>every</b> topic and dispatches each
-        batch to a disposable worker. One command each way — no per-topic plumbing.</span>
+      <span class="legend">one agent per root. The daemon sweeps every 2 s and wakes it on
+        <b>every</b> topic; it dispatches each batch to a disposable worker.</span>
     </div>
   </div>
 
@@ -127,15 +127,15 @@
 
   <div class="panel legend">
     <h2>what the states mean</h2>
-    <b>parked</b> — a waiter is blocked in <code>canvas.py wait</code>; a Send reaches it now.
-    <b>idle</b> — a worker is recorded but not parked: mid-round, between rounds, or gone (only
-    herdr can tell which). <b>unread send</b> — notes were sent and nobody consumed them.
-    <b>stopped</b> — a STOP flag is set; the loop is over until someone starts a worker.
-    <b>no worker</b> — nothing is listening for this topic at all.
+    <b>armed</b> — the sweep is on and a coordinator is recorded, so a Send is woken and read.
+    <b>no coordinator</b> — the sweep has nobody to wake; start one above.
+    <b>unread send</b> — notes were sent and the wake has not consumed them yet.
+    <b>no sweep</b> — the daemon was started with <code>--sweep 0</code>.
+    <b>stopped</b> — a STOP flag is set; the loop is over until someone clears it.
     <p class="muted" style="margin:.6rem 0 0">
-      A parked waiter dies if the agent's turn is interrupted (a chat message does it), so
-      “no worker” on a topic you care about is the state to fix. Chrome/CSS changes only reach
-      an open canvas after a browser reload.</p>
+      Nothing has to be parked any more: the daemon notices work itself. A topic with notes and
+      no coordinator is the state to fix. Chrome/CSS changes only reach an open canvas after a
+      browser reload.</p>
   </div>
 </div>
 
@@ -155,23 +155,24 @@ function age(iso) {
   return Math.round(s / 3600) + 'h';
 }
 
-// The verdict the user actually needs: is anyone going to read a Send? Derived only from
-// what the daemon can prove (listener count, STOP flag, worker record, send state). There is
-// deliberately no "working" state: a set consumed_at means notes were collected, not that a
+// The verdict the user actually needs: will a Send be woken and read? Derived only from what
+// the daemon can prove (sweep interval, coordinator record, STOP flag, send state). There is
+// deliberately no "working" state: a set consumed_at means notes were handed over, not that a
 // round is in flight now — the daemon cannot see the agent, so it does not claim to.
 function verdict(t) {
-  if (t.stop_requested) return ['stopped', 'STOP is set — the loop is over until a worker starts'];
-  if (t.listening > 0) return ['parked', t.listening + ' waiter(s) will get the next Send'];
-  if (!t.worker) return ['no worker', (t.pending ? t.pending + ' note(s) waiting with nothing to read them'
-                                                : 'nothing is listening for this topic')];
-  if (t.queued) return ['unread send', 'notes were sent and never consumed'];
-  return ['idle', 'worker recorded but not parked — mid-round, between rounds, or gone (only herdr knows which)'];
+  if (t.stop_requested) return ['stopped', 'stopped', 'STOP is set — the loop is over until it is cleared'];
+  if (!t.sweep) return ['unread', 'no sweep', 'the daemon was started with --sweep 0 — nothing will be woken'];
+  if (!t.coordinator) return ['unread', 'no coordinator',
+    t.pending ? t.pending + ' note(s) waiting with nobody to wake'
+              : 'nothing will read a Send until a coordinator starts'];
+  if (t.queued) return ['unread', 'unread send', 'sent, and the wake has not consumed it yet'];
+  return ['armed', 'armed', 'the sweep wakes the coordinator, which dispatches a round'];
 }
 
 function render() {
   if (!DATA) return;
   const rows = DATA.topics.map((t) => {
-    const [state, why] = verdict(t);
+    const [cls, label, why] = verdict(t);
     const w = t.worker || {};
     const notes = [];
     if (t.pending) notes.push('<b>' + t.pending + ' pending</b>');
@@ -181,7 +182,7 @@ function render() {
     return `<tr>
       <td><a class="topic" href="${esc(t.url)}">${esc(t.topic)}</a><br>
           <span class="muted">${t.sections} sections</span></td>
-      <td><span class="chip ${state}">${esc(state)}</span><br>
+      <td><span class="chip ${cls}">${esc(label)}</span><br>
           <span class="muted">${esc(why)}</span></td>
       <td>${notes.length ? notes.join(' · ') : '<span class="muted">clear</span>'}</td>
       <td>${t.rounds}${t.last_reply ? '<br><span class="muted">last ' + age(t.last_reply) + ' ago</span>' : ''}</td>
@@ -190,14 +191,14 @@ function render() {
     </tr>`;
   }).join('');
   $('rows').innerHTML = rows || `<tr><td colspan="5" class="muted">no canvases under ${esc(DATA.root)}</td></tr>`;
-  const up = DATA.topics.filter((t) => t.listening > 0).length;
+  const up = DATA.topics.filter((t) => t.sweep && t.coordinator).length;
   const unread = DATA.topics.filter((t) => t.queued).length;
-  const noworker = DATA.topics.filter((t) => !t.worker && t.pending).length;
+  const noc = DATA.topics.filter((t) => t.sweep && !t.coordinator && t.pending).length;
   $('head').innerHTML = `daemon <b>up</b> · port <b>${DATA.port}</b> · pid <b>${DATA.pid}</b>`
     + ` · rev <b>${esc((DATA.rev || '').slice(0, 8))}</b> · root <code>${esc(DATA.root)}</code><br>`
-    + `${DATA.topics.length} topic(s) · <b>${up}</b> with a parked waiter`
+    + `${DATA.topics.length} topic(s) · <b>${up}</b> armed (the sweep will wake the coordinator)`
     + (unread ? ` · <span class="crit">${unread} with an unread send</span>` : '')
-    + (noworker ? ` · <span class="crit">${noworker} with notes and no worker</span>` : '')
+    + (noc ? ` · <span class="crit">${noc} with notes and no coordinator</span>` : '')
     + ` · refreshed ${new Date().toLocaleTimeString()}`;
   if (DATA.stale) {
     $('head').innerHTML += '<br><span class="warn">the daemon is running an older revision of '
