@@ -327,9 +327,20 @@ def unread_notes(root, topic):
 
 def read_worker_record(root, topic):
     """worker.json, written by canvas-worker.py. The daemon repeats it verbatim and does not
-    guess liveness: whether that pane still exists is herdr's answer, not this process's."""
+    guess liveness: whether that pane still exists is herdr's answer, not this process's.
+    Display only — the WAKE path never reads this (see read_coordinator_record)."""
     try:
         return json.loads((topic_paths(root, topic)["dir"] / "worker.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def read_coordinator_record(root):
+    """`.coordinator.json`, written by canvas-worker.py `coordinator start`. This is the only
+    wake target: it is the record the live architecture actually produces. Repeating it
+    verbatim, not guessing liveness — whether the pane still exists is herdr's answer."""
+    try:
+        return json.loads((root / ".coordinator.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -414,18 +425,19 @@ def run_action(argv, timeout=120):
 def notify_worker(root, topic, count):
     if LISTENERS.get(topic, 0) or read_parked(root, topic):
         return {"ok": False, "why": "already parked"}      # it will pick this up itself
-    worker = read_worker_record(root, topic) or {}
-    name = worker.get("agent_name")
+    coord = read_coordinator_record(root) or {}
+    # The target is the root's COORDINATOR. It used to be a per-topic worker.json — a record
+    # only the rejected per-topic watcher ever wrote, so the push read a file nothing produced
+    # and 18 of 21 wakes reached nobody. Locked: architecture.md, load-bearing structure 4.
+    name = coord.get("agent_name") or coord.get("pane_id")
     if not name:
-        return {"ok": False, "why": "no worker recorded"}
+        return {"ok": False, "why": "no coordinator recorded"}
     exe = shutil.which("herdr")
     if not exe:
         return {"ok": False, "why": "herdr not on PATH"}
-    card = topic_paths(root, topic)["dir"] / "WORKER.md"
-    prompt = ("Notes arrived on canvas %r (%d). Read %s and work exactly one round: "
-              "canvas.py pending %s — edit only the affected sections — build-canvas.py — "
-              "verify-canvas.py — canvas.py say — canvas.py ack --all. Then end your turn; "
-              "the next Send wakes you again." % (topic, count, card, topic))
+    prompt = ("Notes arrived on canvas %r (%d). Dispatch one round, then resume your wait --any: "
+              "canvas-worker.py round %s --root %s --wait. Do not edit content yourself."
+              % (topic, count, topic, root))
     try:
         p = subprocess.run([exe, "agent", "prompt", name, prompt],
                            capture_output=True, text=True, timeout=20)
