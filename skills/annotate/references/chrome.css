@@ -11,7 +11,7 @@
   --surface-2: #e9ecf2;
   --ink:     #16203a;
   --ink-2:   #46536f;
-  --ink-3:   #717e9b;
+  --ink-3:   #5e6b87;
   --line:    #d6dbe4;
   --accent:  #d8731f;
   --accent-ink: #9c4a0c;
@@ -46,9 +46,9 @@ code, kbd, .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, M
 }
 .meta-row b { font-weight: 500; color: var(--ink-2); }
 .meta-row .sep { color: var(--line); }
-.card { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: .9rem 1.1rem; }
+.card { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); padding: .9rem 1.1rem; }
 
-/* Masthead — the page title as a clean blueprint hero. */
+/* Masthead — the artifact title as a clean blueprint hero. */
 h1[data-anchor="title"] {
   font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   font-weight: 600; font-size: 2rem; line-height: 1.12; letter-spacing: -.01em;
@@ -62,10 +62,10 @@ h3 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight: 
      font-size: .9rem; letter-spacing: .06em; text-transform: uppercase;
      color: var(--ink-2); margin: 1.5rem 0 .45rem; }
 
-p { margin: .6rem 0; color: var(--ink-2); }
-p b, li b { color: var(--ink); font-weight: 600; }
+p { margin: .6rem 0; color: var(--ink); }
+p b, li b { font-weight: 600; }
 ul, ol { margin: .5rem 0 .5rem 1.4rem; padding: 0; }
-li { margin: .3rem 0; color: var(--ink-2); }
+li { margin: .3rem 0; color: var(--ink); }
 code { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .87em;
        color: var(--accent-ink); background: var(--surface-2); border-radius: 4px; padding: .1em .3em; }
 a { color: var(--blue); text-decoration: none; }

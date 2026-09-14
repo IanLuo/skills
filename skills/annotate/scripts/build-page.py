@@ -14,6 +14,7 @@ Reads:  this skill's references/page-template.html, chrome.css, chrome.js
 Writes: .agents/pages/<name>.html  (single self-contained file)
 """
 
+import re
 import sys
 import pathlib
 
@@ -24,7 +25,7 @@ skill_dir = pathlib.Path(__file__).resolve().parent.parent
 css = (skill_dir / "references" / "chrome.css").read_text()
 js = (skill_dir / "references" / "chrome.js").read_text()
 template = (skill_dir / "references" / "page-template.html").read_text()
-content = content_file.read_text()
+content = re.sub(r'\s+style="[^"]*"', '', content_file.read_text())
 
 html = (
     template.replace("/*__CHROME_CSS__*/", css)

@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>artifact</title>
+<!-- Chrome is inlined at build time (scripts/build-artifact.py) — the AI writes only
+     the content. Keep __CHROME_CSS__ / __CHROME_JS__ placeholders exactly as-is. -->
+<style>
+/*__CHROME_CSS__*/
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     AI: render the data below. Every element the user might
+     comment on gets a STABLE, kebab-case data-anchor id, e.g.
+     data-anchor="section-goals". Clicking an element opens an
+     inline feedback box right there. Do not change anchor ids
+     between iterations — the pasted feedback resolves by id.
+
+     DO NOT add inline style attributes — the build script strips them.
+     Use ONLY the CSS classes below for styling:
+     <p class="kicker">Figure 1 · the mechanism</p> above a heading,
+     <p class="eyebrow">…</p> above the title, a mono status line as
+     <div class="meta-row"><span><b>N</b> items</span><span class="sep">·</span>…</div>,
+     and .card for a boxed block.
+     ============================================================ -->
+
+<h1 data-anchor="title">…</h1>
+
+<!-- Required chrome markup — keep verbatim. -->
+<button id="done">Done · <span id="count">0</span></button>
+<div id="status"></div>
+
+<div id="form" hidden>
+  <div class="head">Feedback</div>
+  <div class="body">
+    <div id="list"></div>
+    <textarea id="comment" rows="3" placeholder="Feedback at this spot…"></textarea>
+    <div id="levels">
+      <button class="lvl active" data-sev="suggestion">suggestion</button>
+      <button class="lvl" data-sev="important">important</button>
+      <button class="lvl" data-sev="critical">critical</button>
+    </div>
+    <div class="actions"><button id="add">Add</button><button id="cancel">Cancel</button></div>
+  </div>
+</div>
+
+<script>
+//__CHROME_JS__
+</script>
+</body>
+</html>
