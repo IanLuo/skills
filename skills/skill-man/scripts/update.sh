@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # update.sh — search the authorized source (anthropics/skills) for skill-related
-# updates since the pinned ref, and report them. This is skill-man's `update` mode.
+# updates since the pinned ref, and report them. This is skill-man's `upstream update`
+# mode (SKILL.md §6).
 #
 # Reports:
 #   1. Spec drift — is validate.py's pin behind upstream HEAD?

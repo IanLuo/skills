@@ -54,7 +54,7 @@ the diff to it.
 | **[canvas](skills/canvas/SKILL.md)** | One live page per topic the user and the agent edit together — a localhost daemon hot-swaps only the sections that changed and writes the user's click-to-annotate feedback straight to disk. Graphics-first; the page is the reply, chat stays near-silent. The feedback loop runs on a worker agent in a herdr pane, so the main session never blocks on it. |
 | **[annotate](skills/annotate/SKILL.md)** | Render context/AI response as a self-contained interactive HTML page the user can annotate; feedback is copy-pasted back and resolved to the exact `data-anchor` it points at. No server. |
 | **[librarian](skills/librarian/SKILL.md)** | Personal research library — fan out self-scoring subagents, then curate verified results into `~/Documents/librarian/library/`. Query-first, research on cache miss. |
-| **[skill-man](skills/skill-man/SKILL.md)** | Meta-skill — create, validate, and deploy skills. Carries the spec, best-practices reference, popular-skills catalog, and upstream-sync check. |
+| **[skill-man](skills/skill-man/SKILL.md)** | Meta-skill with explicit modes — create/revise, validate (spec), evaluate (ranked quality audit), deploy, sync, upstream update, study. Carries the spec, the evaluation rubric, best-practices, and the popular-skills catalog. |
 | **[skill-template](skills/skill-template/SKILL.md)** | Minimal valid skill skeleton — use as a starting point for new skills. |
 
 ## Layout

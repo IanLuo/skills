@@ -1,6 +1,6 @@
 ---
 name: skill-man
-description: Create, validate, deploy, and update personal skills in this repo, and decide what makes a good skill. Use when scaffolding a new skill, checking a skill's frontmatter against the spec, deploying skills to agents' global folders, checking whether the repo's spec is in sync with upstream, or running the periodic skill update search against the authorized source (anthropics/skills). Also use when you want best practices or popular-skill inspiration before authoring. Do NOT use for writing ordinary application code — only for managing skills themselves.
+description: Create, revise, validate, audit, deploy, and sync personal skills in this repo, and decide what makes a good skill. Use when scaffolding a new skill; evaluating an existing skill or asking whether one is any good (triggers, reference integrity, structure, token economy, single source of truth); checking a skill against the frontmatter spec; deploying skills to agents' global folders; checking whether the repo's spec is in sync with upstream; or wanting best practices and popular-skill inspiration before authoring. Do NOT use for writing ordinary application code — only for managing skills themselves.
 metadata:
   audience: personal
   domain: tooling
@@ -12,9 +12,31 @@ This repo is a personal-skills manager. Skills live in `skills/<name>/` and are
 symlinked into agents' global folders by `bin/deploy-skills.sh`. This skill teaches how to
 author good skills and ship them.
 
-The end-to-end loop is **create → validate → deploy**, plus **study** for ideas.
+## Modes
 
-## 1. Create a skill
+Name the mode before you act, then take only that path. The point of the table is the last
+column — each mode has something it must **not** do.
+
+| Mode | Fires on | Action | Won't do |
+|---|---|---|---|
+| **create** | "new skill", "scaffold a skill", "make a skill for X" | §1 scaffold, fill the body | evaluate the draft it just wrote |
+| **revise** | "tighten this skill", "the body is stale", "fix its description" | §1 edit in place → validate + audit | change the spec to fit the edit |
+| **validate** | "is this valid", "check the frontmatter", "about to deploy" | §2 `validate.py` | judge quality — that's evaluate |
+| **evaluate** | "is this skill any good", "audit/review this skill", "what's wrong with it" | §3 `audit.py` + [evaluation.md](references/evaluation.md), ranked by tier | edit anything |
+| **deploy** | "deploy", "ship to agents", "install" | §4 `deploy-skills.sh` | deploy a skill that failed validate |
+| **sync** | "are we behind upstream", "spec drift" | §5 `sync-check.sh` | re-pin without review |
+| **upstream update** | "what's new upstream", "new official skills" | §6 `update.sh` | auto-apply |
+| **study** | "how do good skills do X", "inspiration" | [popular-skills.md](references/popular-skills.md) | copy a skill wholesale |
+
+Rules that cross modes:
+
+- **validate and evaluate report; they never edit.** Fixing is `revise`.
+- **evaluate ranks by failure impact.** A Tier A finding ends the audit — fix it before
+discussing anything downstream. See [evaluation.md](references/evaluation.md).
+- **deploy requires validate to pass** — nothing ships unvalidated.
+- Two modes in one request → do them in pipeline order (create → validate → deploy).
+
+## 1. Create or revise a skill
 
 Scaffold a valid skill directory from the repo root:
 
@@ -40,6 +62,17 @@ While authoring the body, read these (each loaded only when you need it):
 - **[popular-skills.md](references/popular-skills.md)** — read when you want
   inspiration or want to study how well-known skills are structured.
 
+### Revising an existing skill
+
+Edit `SKILL.md` in place — deploy uses symlinks, so the change is live immediately with no
+redeploy. Don't edit while evaluating: if the request is really "is this good?" or "is this
+valid?", stop and report instead (§2, §3).
+
+After editing, re-run `validate.py` (§2) then `audit.py` (§3). If you changed the
+description, re-test the triggers ([evaluation.md](references/evaluation.md) A1). If you
+added or moved a resource, re-audit so no reference or orphan is left behind. Renaming a
+skill means renaming its folder too — `validate.py` enforces name == folder.
+
 ## 2. Validate before deploying
 
 ```bash
@@ -53,7 +86,31 @@ non-zero on any failure. Fix everything before deploying — an invalid skill ma
 silently ignored by agents. (`validate.py` is the repo's source of truth for the spec;
 see [references/skill-spec.md](references/skill-spec.md).)
 
-## 3. Deploy
+Spec conformance only. For quality — triggers, reference integrity, structure, token
+economy — that is the next section.
+
+## 3. Evaluate a skill
+
+Spec-valid is not good. Audit quality separately, and report it **ranked by failure
+impact**: a Tier A failure means the skill does not load or fires on the wrong requests,
+which makes every other finding moot.
+
+```bash
+python3 skills/skill-man/scripts/audit.py                 # all skills
+python3 skills/skill-man/scripts/audit.py skills/<name>   # one skill
+```
+
+`audit.py` covers the deterministic half — Tier A2 reference integrity (broken,
+ambiguous, orphaned paths) and Tier C1 body size. Then read
+[evaluation.md](references/evaluation.md) for the full ranked rubric: Tier A trigger and
+claim accuracy, Tier B contract / degrees-of-freedom / boundaries, Tier C clarity, Tier D
+single-source-of-truth and provenance. Report in tier order; a Tier A failure ends the
+audit.
+
+**Evaluate never edits.** It reports each finding as observation + `file:line` + concrete
+fix. Applying them is `revise`.
+
+## 4. Deploy
 
 ```bash
 bash bin/deploy-skills.sh               # all skills → all detected agents
@@ -71,7 +128,7 @@ so it discovers the new skill. `--doctor` reports dangling links (e.g. if the re
 moved) and real-dir divergence — run it after moving the repo or if an agent stops
 seeing a skill.
 
-## 4. Stay in sync with upstream
+## 5. Stay in sync with upstream
 
 ```bash
 bash skills/skill-man/scripts/sync-check.sh   # are we behind anthropics/skills?
@@ -81,7 +138,7 @@ The spec is pinned to a commit of `anthropics/skills` (see `.upstream`). Run
 sync-check to detect drift; if behind, diff the upstream `quick_validate.py` against
 `validate.py`, update `SPEC_PINNED_REF` + `.upstream`, and re-run `tests/run.sh`.
 
-## 5. Update — search the authorized source for skill-related updates
+## 6. Upstream update — search the authorized source
 
 Run periodically to check what's new from the authorized source (`anthropics/skills`):
 

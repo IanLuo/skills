@@ -8,6 +8,8 @@
 #   2. Upstream conformance: downloads the official anthropics/skills
 #      quick_validate.py (pinned commit) and confirms skill-man's validate.py
 #      agrees with it on every fixture, so skill-man cannot silently diverge.
+#   3. Script behaviour: every tests/<dir>/test_*.py (audit.py, canvas daemon).
+#      Each prints FAIL lines and exits non-zero on failure.
 #
 # Usage: bash tests/run.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -92,11 +94,13 @@ else
   fi
 fi
 
-# ── 3. Canvas daemon behaviour ────────────────────────────────────────────
+# ── 3. Script behaviour (any tests/<dir>/test_*.py) ───────────────────────
 echo ""
-echo "── Canvas (sweep + wake target) ───────────────────────────────────────"
-for t in "$SCRIPT_DIR"/canvas/test_*.py; do
+echo "── Script behaviour ───────────────────────────────────────────────────"
+for t in "$SCRIPT_DIR"/*/test_*.py; do
+  [ -f "$t" ] || continue
   name="$(basename "$t")"
+  kind="$(basename "$(dirname "$t")")"
   if python3 "$t" >/dev/null 2>&1; then
     printf '  ✓ %-28s pass\n' "$name"
     PASS=$((PASS + 1))
@@ -104,7 +108,7 @@ for t in "$SCRIPT_DIR"/canvas/test_*.py; do
     printf '  ✗ %-28s FAIL\n' "$name"
     python3 "$t" 2>&1 | grep -E '^FAIL' | sed 's/^/      /' || true
     FAIL=$((FAIL + 1))
-    FAILED_NAMES+=("canvas:$name")
+    FAILED_NAMES+=("$kind:$name")
   fi
 done
 

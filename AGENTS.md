@@ -12,7 +12,11 @@ non-negotiable.
 # Validate all skills against the spec
 python3 skills/skill-man/scripts/validate.py
 
-# Run test suite (10 fixtures + upstream-conformance + canvas sweep/wake)
+# Audit skill quality — reference integrity, orphans, body size (mechanized half of
+# evaluation.md: `audit.py [skill] [--skills-dir PATH]`)
+python3 skills/skill-man/scripts/audit.py
+
+# Run test suite (10 fixtures + upstream-conformance + audit + canvas sweep/wake)
 bash tests/run.sh
 
 # Deploy
@@ -37,7 +41,8 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 - Skill name = `^[a-z0-9-]+$`, no leading/trailing/double `-`, ≤64 chars; equals folder name.
 - `description` is the primary trigger — enumerate literal triggers + negative trigger there, not in the body.
 - One skill per folder: required `SKILL.md`; optional `scripts/`, `references/`, `assets/`. No README/CHANGELOG.
-- Validate before deploying (`validate.py` is the source of truth for the spec, pinned to `anthropics/skills` `5754626`).
+- Validate before deploying (`validate.py` is the source of truth for the spec, pinned to `anthropics/skills` `5754626`). Audit quality with `audit.py` — it is the mechanized half of skill-man's evaluation rubric.
+- References resolve **against the skill's own dir** (the harness rule), never the skills root: use `references/x.md` for your own files, `../other-skill/references/x.md` for a sibling. The bare `other-skill/references/x.md` form is ambiguous and `audit.py` fails it.
 - Forward-test new skills with a fresh subagent (baseline-then-write: watch it fail without the skill first).
 
 ## Architecture elevator
@@ -57,7 +62,7 @@ skills/          — 14 skills (see README table)
   annotate/         interactive HTML view of context + copy-paste annotation feedback
   canvas/           one live page per topic — daemon hot-swaps changed sections, annotations POST to disk
   librarian/       personal research library
-  skill-man/       create, validate, deploy skills
+  skill-man/       create, revise, validate, audit, deploy skills
   skill-template/  starter skeleton
 bin/             — deploy-skills.sh (symlinks skills into each detected agent's global skills dir)
 tests/           — validation fixture tests + upstream-conformance cross-check + canvas daemon tests
