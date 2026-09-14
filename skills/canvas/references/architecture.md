@@ -9,7 +9,7 @@ Scope: the `canvas` skill and its runtime — the server, the CLI, the agents, a
 files. Not the skills repo. The decisions below are what the code cannot tell you: the
 constraint that forced each choice and the alternative that lost.
 
-Obeys `skill-man/references/doc-format.md`: bullets, fixed headers, explicit `N/A`.
+Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit `N/A`.
 
 ## Load-bearing structure
 

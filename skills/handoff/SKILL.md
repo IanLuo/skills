@@ -23,7 +23,7 @@ deleted. Not a permanent record — no chain, no archive, no SESSION log.
 
 1. Verify repo state: `git status --short`, `git log --oneline -5`.
 2. Capture ONLY what a fresh session can't derive from code — terse, facts-only,
-   following the house doc format (`skill-man/references/doc-format.md`):
+   following the house doc format (`../skill-man/references/doc-format.md`):
    - **Goal** — one line
    - **Done** — concrete outcomes, `[V]` verified against the repo / `[?]` from memory
    - **Dead ends** — don't repeat these (name the exact failure)

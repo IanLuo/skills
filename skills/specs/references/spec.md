@@ -94,4 +94,4 @@ The locked doc follows the house agent-oriented format — bullets only, complet
 via checklist (each rung above becomes a required non-empty section header; explicit
 `N/A:` beats absence), stable machine-greppable anchors, explicit states, freshness
 stamp. See the canonical standard:
-[`skill-man/references/doc-format.md`](../../skill-man/references/doc-format.md).
+[`../skill-man/references/doc-format.md`](../skill-man/references/doc-format.md).

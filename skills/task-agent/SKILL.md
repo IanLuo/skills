@@ -29,7 +29,7 @@ Two modes, both invoked by you in the main checkout:
    git worktree add .worktrees/<task> -b <task>
    ```
 2. **Write the task card** at `<worktree>/TASK.md` — the durable state `end` reads.
-   Follow the house doc format (`skill-man/references/doc-format.md`): bullets, no
+   Follow the house doc format (`../skill-man/references/doc-format.md`): bullets, no
    padding, explicit N/A:
    - **Goal** — one line, the deliverable
    - **Acceptance criteria** — testable bullets; this is the review gate

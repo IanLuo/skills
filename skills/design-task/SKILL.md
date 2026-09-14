@@ -50,7 +50,7 @@ For multi-screen/component tasks, fan out subagents in parallel, then integrate 
   for it before implementing. Re-run design-task to update (overwrite the old marker).
 - The design artifact follows the house agent-oriented doc format — bullets only,
   completeness via checklist, explicit `N/A:`, freshness stamp. See
-  `skill-man/references/doc-format.md`.
+  `../skill-man/references/doc-format.md`.
 
 ### Verification evidence
 

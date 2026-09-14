@@ -92,4 +92,4 @@ Safe to run again as the project matures:
 - Add only what a fresh agent can't derive. Prefer concrete over prose.
 - AGENTS.md is an index, not a manifest. Route everything through the embed/point/drop gate.
 - AGENTS.md follows the house agent-oriented doc format — bullets, concrete,
-  checklist-complete, freshness date (see `skill-man/references/doc-format.md`).
+  checklist-complete, freshness date (see `../skill-man/references/doc-format.md`).
