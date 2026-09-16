@@ -1,4 +1,4 @@
-<!-- specs:locked:06a1f37 2026-09-16 type=architecture -->
+<!-- specs:locked:bab56f0 2026-09-16 type=architecture -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -126,7 +126,8 @@ Scope is the skill, not the repo. One line per part:
 
 - `references/communication-contract.md` — what the page must achieve (locked).
 - `references/manual.md` — operating rules and recovery playbooks.
-- `references/design-system.md` — locked visuals; `design:locked:4d7d5ab`.
+- `references/design-system.md` — locked visuals (grep `design:locked:` on disk for its rev; do
+  not restate the sha here — a duplicated sha is a cross-reference that drifts).
 - `references/graphics.md` — content vocabulary and the view ladder.
 - **N/A:** no ADRs, no `CONVENTIONS.md` in this repo.
 
