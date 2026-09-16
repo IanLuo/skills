@@ -33,7 +33,7 @@ Routes:
 CLI:
 
     canvas.py serve [--root DIR] [--port N]      run in the foreground
-    canvas.py start [--root DIR] [--port N] [--open TOPIC]
+    canvas.py start [--root DIR] [--port N]
     canvas.py stop  [--root DIR]
     canvas.py status [--root DIR]
     canvas.py list [--root DIR] [--root DIR ...]   every topic and what is waiting
@@ -70,6 +70,7 @@ DEFAULT_ROOT = ".agents/canvas"
 DEFAULT_PORT = 7391  # 8787/8080/5173/3000 are routinely taken by dev servers
 TOPIC_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 SECTION_RE = re.compile(r'<section\b[^>]*\bdata-section="([^"]+)"', re.I)
+SLUG_RE = re.compile(r"[^a-z0-9]+")
 SEVERITIES = ("suggestion", "important", "critical")
 
 
@@ -156,6 +157,66 @@ def section_hashes(content):
         end = marks[i + 1][0] if i + 1 < len(marks) else len(content)
         out[sid] = sha(content[start:end])
     return out
+
+
+def anchor_sections(content):
+    """{anchor: section id} for the anchors written in the markup.
+
+    Not every anchor a note can sit on is in the markup: a `data-render` shape and a mermaid
+    diagram build theirs in the browser (`<container>.<slug of the item>`), so those are resolved
+    by `section_for`'s prefix rule instead of by re-implementing chrome.js's slug here. The rule
+    used to be duplicated in Python; it is not worth two implementations that can drift.
+    """
+    out = {}
+    for m in re.finditer(r'<section\b[^>]*\bdata-section="([^"]+)"(.*?)(?=<section\b|$)',
+                         content, re.S | re.I):
+        sec, body = m.group(1), m.group(2)
+        for a in re.findall(r'data-anchor="([^"]+)"', body):
+            out.setdefault(a, sec)
+    return out
+
+
+def section_for(anchor, index):
+    """The section a note lives in, or None when the anchor is nowhere in the page.
+
+    `vs-annotate.the-artifact` and `fig-owners.D` are not in the markup — they are built in the
+    browser from the container's own data — so a miss falls back to the container before the
+    first dot. Anything that resolves to neither is an orphan: the element is gone.
+    """
+    if anchor in index:
+        return index[anchor]
+    head = anchor.split(".", 1)[0]
+    return index.get(head)
+
+
+def batch_notes(root, topic):
+    """(batch, held): the notes a round may work, and the ones held back.
+
+    A Send is the batch boundary. Notes written after it are the user still typing, and a round
+    that answers them gets un-answered by their next keystroke (an edit re-posts the note with
+    `resolved: false`). A topic with no Send has nothing to gate against, so everything
+    unresolved is the batch — otherwise a fresh canvas would look empty until the first Send.
+    """
+    unresolved = pending_notes(root, topic)
+    sent_at = (read_send(root, topic) or {}).get("ts") or ""
+    if not sent_at:
+        return unresolved, []
+    return ([a for a in unresolved if a.get("ts", "") <= sent_at],
+            [a for a in unresolved if a.get("ts", "") > sent_at])
+
+
+def norm(text):
+    """Lowercase, punctuation to hyphens — for comparing a snippet against its anchor only.
+    Deliberately NOT chrome.js's slug(): the derivation rule is not duplicated in this file."""
+    return "-".join(w for w in re.split(r"[^a-z0-9]+", str(text).lower()) if w)
+
+
+def needs_snippet(note):
+    """The snippet earns its place only when it tells you something the anchor does not — it
+    exists to identify an opaque element, not to restate `claim-a` as "Claim A."."""
+    snip = norm(note.get("snippet") or "")
+    last = note["anchor"].split(".")[-1]
+    return bool(snip) and last not in snip and snip not in last
 
 
 def load_feedback(root, topic):
@@ -657,10 +718,11 @@ def cmd_start(args):
     else:
         print("canvas: daemon did not come up on port %d" % port, file=sys.stderr)
         return 1
-    url = "http://127.0.0.1:%d/%s" % (port, ("t/" + args.open_topic) if args.open_topic else "")
-    print(url.rstrip("/"))
-    if args.open_topic and opener():
-        subprocess.run([opener(), url], check=False)
+    # Deliberately opens nothing: starting the daemon must not spawn a browser tab. The page
+    # is live and hot-swaps its own sections, so a tab opened once stays correct — including
+    # across a restart, because `stop` keeps the port. `canvas.py open <topic>` is the one
+    # place that opens, and it is the user's call.
+    print("http://127.0.0.1:%d/" % port)
     return 0
 
 
@@ -785,11 +847,13 @@ def cmd_say(args):
 
 
 def cmd_open(args):
+    """The one place a browser tab is opened. Call it once per topic: the page is live and
+    hot-swaps, so opening again is a second tab showing the same thing."""
     root = Path(args.root)
     info = read_daemon(root)
     if not info or not is_up(info.get("port", 0)):
-        print("canvas: daemon is down — run: canvas.py start --root %s --open %s"
-              % (args.root, args.topic), file=sys.stderr)
+        print("canvas: daemon is down — run: canvas.py start --root %s" % args.root,
+              file=sys.stderr)
         return 1
     url = "http://127.0.0.1:%d/t/%s" % (info["port"], args.topic)
     print(url)
@@ -827,18 +891,56 @@ def cmd_list(args):
 
 
 def cmd_pending(args):
+    """The round's whole input: one line per note with its id (so `ack`/`flag` can act), the
+    section it lives in (so only that section is read), and its state."""
     root = Path(args.root)
-    data = load_feedback(root, args.topic)
-    pending = [a for a in data["annotations"] if not a.get("resolved")]
+    content = read_text(topic_paths(root, args.topic)["content"])
+    index = anchor_sections(content)
+    batch, held = batch_notes(root, args.topic)
+
+    def rec(a):
+        r = {k: v for k, v in a.items() if k != "resolved"}   # always False here
+        r["section"] = section_for(a["anchor"], index)
+        r["state"] = ("flagged" if a.get("flagged") else
+                      "content" if section_for(a["anchor"], index) else "orphan")
+        r["in_batch"] = a in batch
+        return r
+
     if args.json:
-        print(json.dumps(pending, indent=2, ensure_ascii=False))
+        print(json.dumps([rec(a) for a in batch + held], indent=2, ensure_ascii=False))
         return 0
-    if not pending:
-        print("canvas: no pending annotations on %s" % args.topic)
+
+    if not batch and not held:
+        print("canvas: nothing pending on %s" % args.topic)
         return 0
-    for a in pending:
-        print("%s (%s): %s — \"%s\"" % (a["anchor"], a["severity"], a["comment"], a.get("snippet", "")))
-    print("--- %d pending" % len(pending))
+
+    def line(a, held=False):
+        sec = section_for(a["anchor"], index)
+        state = []
+        if not sec:
+            state.append("ORPHAN")
+        if a.get("flagged"):
+            state.append("FLAGGED")
+        if held:
+            state.append("HELD")
+        tag = "%s·%s" % (a["id"], a["severity"]) + (" " + " ".join(state) if state else "")
+        snip = '  — "%s"' % (a.get("snippet") or "")[:60] if needs_snippet(a) else ""
+        return "%-6s %-30s %-24s %s%s" % (sec or "(gone)", a["anchor"], tag, a["comment"], snip)
+
+    for a in sorted(batch, key=lambda a: (section_for(a["anchor"], index) or "~", a["anchor"])):
+        print(line(a))
+    flagged = [a for a in batch if a.get("flagged")]
+    orphan = [a for a in batch if not section_for(a["anchor"], index)]
+    print("--- %d in this batch · %d flagged (yours to decide) · %d orphan"
+          % (len(batch), len(flagged), len(orphan)))
+    if held:
+        print("--- %d held back — typed after the last Send; press Send to include them:"
+              % len(held))
+        for a in held:
+            print(line(a, held=True))
+    sections = sorted({section_for(a["anchor"], index) for a in batch} - {None})
+    if sections:
+        print("--- sections to touch: %s" % ", ".join(sections))
     return 0
 
 
@@ -857,7 +959,6 @@ def main(argv=None):
 
     sp = common(sub.add_parser("start"))
     sp.add_argument("--port", type=int, default=DEFAULT_PORT)
-    sp.add_argument("--open", dest="open_topic", default=None, metavar="TOPIC")
     sp.set_defaults(func=cmd_start)
 
     common(sub.add_parser("stop")).set_defaults(func=cmd_stop)

@@ -35,7 +35,7 @@
 | start / stop the page server | `canvas.py start --root .agents/canvas` · `canvas.py stop` |
 | open a topic in a browser | `canvas.py open <topic>` (prints the authoritative URL) |
 | see every topic and what is waiting | `canvas.py list --root .agents/canvas` (no daemon needed) |
-| see what is waiting on one topic | `canvas.py pending <topic>` (never blocks) |
+| see the round's batch (section · id · state · comment) | `canvas.py pending <topic>` (never blocks; `--json` for fields) |
 | create a topic | `build-canvas.py <topic> --new --root .agents/canvas` |
 | rebuild the shell after editing content | `build-canvas.py <topic>` |
 | check the page actually renders | `verify-canvas.py <topic> [--viewport 1280x900]` |
@@ -46,8 +46,12 @@
 | undo a round | `canvas.py versions <topic>` · `canvas.py restore <topic> --to last` |
 | hand a reviewed conclusion to a worker | `/task-agent start` (worktree, recommended) · `/dev-task` (small in-repo change) |
 
-- Nothing consumes a Send, so `send.json` is a marker, not a queue: the notes were already on
-  disk when they were typed, and `pending` returns them whether or not anyone pressed Send.
+- **A Send is the batch boundary.** `pending` returns the notes written up to the last Send;
+  anything typed after it is held back and listed as `HELD`, because resolving a note the user is
+  still writing gets un-done by their next keystroke (an edit re-posts it as unresolved). With no
+  Send at all there is nothing to gate against, so every unresolved note is the batch.
+- The notes are on disk from the moment they are typed — a Send decides *what is in play*, never
+  whether a note is stored.
 - Daemon routes, if you need them directly: `/` topic index · `/t/<topic>` page · `/c` content
   · `/v` version+state · `/h` history · `/a` annotations · `/health` · `POST /daemon/stop`.
   There is no dashboard and no `/topics`: `canvas.py list` and `build-canvas.py <topic> --new`
@@ -57,7 +61,8 @@
 
 1. **Create** — `build-canvas.py <topic> --new`, then write `content.html` (sections, stable anchors).
 2. **Open** — `canvas.py start` (once per root) then `canvas.py open <topic>`; say the URL once.
-3. **Wait** — the user annotates and Sends. You say nothing. There is nothing to poll and nothing to park.
+3. **Wait** — the user annotates and Sends. You say nothing. There is nothing to poll and nothing
+to park, and the page needs no reopening: it hot-swaps itself.
 4. **Round** *(when the user asks)* — `canvas.py pending` → edit only the affected sections →
    `build-canvas.py` **and** `verify-canvas.py` → `say` (a conclusion + one suggested next move,
    mirrored into the page's `run-conclusion` block) → `ack` or `flag` every note. A round

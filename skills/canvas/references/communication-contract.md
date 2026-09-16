@@ -1,4 +1,4 @@
-<!-- specs:locked:06a1f37 2026-09-16 type=spec -->
+<!-- specs:locked:b06512b 2026-09-16 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -84,6 +84,14 @@ Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit 
 - **The shape holds.** The first section opens with a ~3-line abstract and is never folded; every
   claim that can carry a view has one; each section has at most one `.key`; no section is a wall of
   prose. A section that is prose from top to bottom fails its own contract.
+- **A note is never invisible.** `pending` reports every unresolved note with the section it lives
+  in and its state. An anchor that resolves to no section is reported as an **orphan**, never
+  skipped — an element can be deleted (a chrome control removed, a section rewritten) and the note
+  written on it must still surface, because nothing else knows it exists.
+- **A Send is the batch boundary.** A round works the notes written up to the last Send; notes
+  typed after it are listed as **held**, not silently included. Resolving a note the user is still
+  writing is worse than waiting — an edit re-posts the note as unresolved, so the round's own
+  claim gets undone by the next keystroke. No Send at all means no boundary to apply.
 - **Smallest input that must succeed:** one note on one anchor → that section re-rendered, the
   note greyed, the conclusion updated.
 - **Smallest that must be refused:** a note whose anchor no longer exists → flagged and kept,

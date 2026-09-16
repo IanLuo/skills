@@ -160,15 +160,19 @@ copied, or deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens
 
 ```bash
 python3 $S/scripts/build-canvas.py <topic> --new        # first time: creates content + shell
-python3 $S/scripts/canvas.py start --root .agents/canvas --open <topic>
-python3 $S/scripts/canvas.py open <topic>               # reopen an existing one
+python3 $S/scripts/canvas.py start --root .agents/canvas
+python3 $S/scripts/canvas.py open <topic>               # opens a browser tab — do this ONCE
 python3 $S/scripts/canvas.py stop                       # when the session ends
 ```
 
-`start` prints the URL and opens the browser. The port is picked at start time (7391 by
-default, next free one if taken — `start`/`open` always print the authoritative URL, so
-trust those and never guess a port). Say the URL to the user once, then stop mentioning
-it — the tab stays open.
+`start` starts the daemon and **opens nothing**; it prints the origin. `open <topic>` is the one
+command that opens a tab, and it is a one-time action per topic: the page is live and hot-swaps
+its own sections, so it never needs reopening or reloading. A daemon restart keeps the port
+(`stop` records it), so the tab you already have stays valid — **do not open it again after a
+restart**, and never on every round. Two tabs on one URL is the failure this avoids.
+
+The port is picked at start time (7391 by default, next free one if taken). `start`/`open` always
+print the authoritative URL — trust those and never guess a port. Show the URL to the user once.
 
 Add mermaid to the repo once to get rendered diagrams:
 
@@ -189,12 +193,30 @@ flight.
 One round is the unit of work. **Nothing starts one but you** — a round begins when the user
 asks, or when you see notes waiting and say what you are doing.
 
-1. **Read what is waiting.** The anchors name the sections, so you know what to open:
+1. **Read the batch.** One line per note — section, id, state, comment — which is everything
+   the round needs and nothing else:
    ```bash
    python3 $S/scripts/canvas.py pending <topic> --root .agents/canvas
    ```
-   Notes marked `flagged` need a decision you must not make — leave them (step 6). If nothing is
-   unresolved, say so and stop.
+   ```
+   s1     claim-a     c1·important           the ordering is reversed in step 3
+   s1     claim-b     c2·critical FLAGGED    needs a product decision
+   s3     cmp.its-shape  c5·important         this row is wrong
+   --- 3 in this batch · 1 flagged (yours to decide) · 0 orphan
+   --- sections to touch: s1, s3
+   ```
+   - **The `sN` is where the note lives** — read and edit that section only. Anchors that a
+     `data-render` table or a mermaid diagram builds in the browser resolve to their container, so
+     they map too.
+   - **`FLAGGED`** needs a decision you must not make — leave it, and `flag` it if it is not
+     flagged yet (step 6).
+   - **`ORPHAN`** means the anchor is in no section: the element it was written on is gone (a
+     chrome control that was removed, say). Say so in the conclusion and `flag` it — never let a
+     note disappear without a word.
+   - **`HELD`** lines are notes typed after the last Send. They are *not* in this batch: the user
+     is still writing them, and resolving one now gets un-done by their next keystroke. Leave
+     them and say how many are waiting.
+   - Nothing listed at all → say so and stop.
 2. **Read what they actually meant**, then edit **only** the affected sections of
    `.agents/canvas/<topic>/content.html`. Fix notes landing on the same section together, and
    bring in the views from [references/graphics.md](references/graphics.md) — the smallest view
