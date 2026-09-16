@@ -1,4 +1,4 @@
-<!-- design:locked:8352a90 2026-09-16 -->
+<!-- design:locked:1e463ba 2026-09-16 -->
 # Design system — canvas chrome
 
 Read this before changing `chrome.css`, `chrome.js` chrome markup, or any canvas visual token.
