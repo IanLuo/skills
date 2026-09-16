@@ -45,6 +45,7 @@ CLI:
     canvas.py flag <topic> --ids c1,c2 [--note "why"]    escalate notes the user must decide
     canvas.py versions <topic>                   list content snapshots (undo points)
     canvas.py restore <topic> --to last|<fragment>       put a snapshot back
+    canvas.py drop <topic> [--force]                     end a topic and remove it
     canvas.py open <topic>
 """
 
@@ -78,7 +79,7 @@ SEVERITIES = ("suggestion", "important", "critical")
 # Commands that WRITE into a topic. For these, a topic that has no directory is almost
 # always a typo — `say start worker hi` parses as topic="start" + text "worker hi", so the
 # tool must not silently create and write to a topic nobody meant.
-WRITE_COMMANDS = ("say", "flag", "ack", "restore")
+WRITE_COMMANDS = ("say", "flag", "ack", "restore", "drop")
 
 
 def require_known_topic(root, topic, cmd):
@@ -915,6 +916,60 @@ def cmd_show(args):
     return 0
 
 
+def age_of(path):
+    """How long since anything in this topic was written. A temp topic gone quiet is the one to
+    drop — this is the number that says so."""
+    try:
+        newest = max((f.stat().st_mtime for f in Path(path).rglob("*") if f.is_file()),
+                     default=None)
+    except OSError:
+        return "-"
+    if newest is None:
+        return "-"
+    secs = max(0, time.time() - newest)
+    for unit, div in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= div:
+            return "%d%s" % (secs // div, unit)
+    return "%ds" % int(secs)
+
+
+def cmd_drop(args):
+    """End a topic and remove it.
+
+    A canvas is one problem, small and short-lived: it exists to make that problem clear, not to
+    be kept. Dropping is therefore the ordinary ending, not a destructive exception — but it
+    still refuses while notes are unresolved, because those are the user's own words and nothing
+    else holds a copy.
+    """
+    root = Path(args.root)
+    d = topic_paths(root, args.topic)["dir"]
+    notes = load_feedback(root, args.topic)["annotations"]
+    pending = [a for a in notes if not a.get("resolved")]
+    if pending and not args.force:
+        raise SystemExit(
+            "canvas: %s has %d unresolved note(s) — resolve them, or drop --force to discard:\n"
+            "        %s" % (args.topic, len(pending),
+                          ", ".join(sorted({a["anchor"] for a in pending})[:8])))
+    content = read_text(topic_paths(root, args.topic)["content"])
+    rounds = len([e for e in load_history(root, args.topic) if e.get("kind") == "agent"])
+    size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+    # MOVED, not deleted. Dropping is meant to be ordinary — a topic per problem, generated and
+    # dropped all day — and an ordinary action must not be able to destroy the user's own words.
+    # `--purge` is the only thing that deletes. (Learned by deleting a live topic with this
+    # command while "testing" it: the guard below only fires on unresolved notes.)
+    if args.purge:
+        shutil.rmtree(d)
+        where = "purged"
+    else:
+        trash = root / ".dropped" / ("%s-%s" % (args.topic, time.strftime("%Y%m%dT%H%M%S")))
+        trash.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(d), str(trash))
+        where = "recoverable at %s  (mv it back to resume)" % trash
+    print("canvas: dropped %s — %d section(s), %d note(s), %d round(s), %.1f KB · %s"
+          % (args.topic, len(split_sections(content)), len(notes), rounds, size / 1024.0, where))
+    return 0
+
+
 def cmd_list(args):
     """Every topic under each root, and what is waiting there. Read straight from files,
     so it works with no daemon running."""
@@ -923,16 +978,38 @@ def cmd_list(args):
         topics = list_canvases(root)
         if not topics:
             print("%s: no topics" % root)
-            continue
-        print("%s" % root)
+        else:
+            print("%s" % root)
+        trash = root / ".dropped" / ("%s-%s" % (args.topic, time.strftime("%Y%m%dT%H%M%S")))
+        trash.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(d), str(trash))
+        where = "recoverable at %s  (mv it back to resume)" % trash
+    print("canvas: dropped %s — %d section(s), %d note(s), %d round(s), %.1f KB · %s"
+          % (args.topic, len(split_sections(content)), len(notes), rounds, size / 1024.0, where))
+    return 0
+
+
+def cmd_list(args):
+    """Every topic under each root, and what is waiting there. Read straight from files,
+    so it works with no daemon running."""
+    for raw in (args.root or [DEFAULT_ROOT]):
+        root = Path(raw)
+        topics = list_canvases(root)
+        if not topics:
+            print("%s: no topics" % root)
+        else:
+            print("%s" % root)
         for topic in topics:
             notes = load_feedback(root, topic)["annotations"]
             pending = [a for a in notes if not a.get("resolved")]
             flagged = [a for a in pending if a.get("flagged")]
             send = read_send(root, topic) or {}
-            print("  %-24s pending=%d unsent=%d flagged=%d sent=%s"
+            print("  %-24s pending=%d unsent=%d flagged=%d idle=%-4s"
                   % (topic, len(pending), len(unsent_notes(root, topic)), len(flagged),
-                     send.get("ts") or "-"))
+                     age_of(root / topic)))
+        trash = root / ".dropped"
+        if trash.is_dir() and any(trash.iterdir()):
+            print("  (%d dropped topic(s) recoverable under %s)" % (len(list(trash.iterdir())), trash))
     return 0
 
 
@@ -1055,6 +1132,14 @@ def main(argv=None):
     sp.add_argument("topic")
     sp.add_argument("sections", nargs="*", help="section ids; omit to list them")
     sp.set_defaults(func=cmd_show)
+
+    sp = common(sub.add_parser("drop"))
+    sp.add_argument("topic")
+    sp.add_argument("--force", action="store_true",
+                    help="discard unresolved notes too")
+    sp.add_argument("--purge", action="store_true",
+                    help="delete instead of moving to .dropped/")
+    sp.set_defaults(func=cmd_drop)
 
     sp = sub.add_parser("list", help="every topic and what is waiting (no daemon needed)")
     sp.add_argument("--root", action="append", default=None,

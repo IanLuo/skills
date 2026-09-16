@@ -265,6 +265,11 @@ what it reports. Detail in [references/manual.md](references/manual.md).
 - **Order by subject, not by round.** Do not number rounds in the content or write “changed this
   round” into a section — that is what the Conversation panel is for. The page must read correctly
   to someone who never saw an earlier version of it.
+- **A topic is one problem, and it is temporary.** It exists to make that problem clear and to
+  raise the bandwidth between you and the user — a fragment of a conversation, not a record of one.
+  When the problem changes, start a new topic. When it is clear, `canvas.py drop <topic>` — that is
+  the ordinary ending, and a topic kept just in case is the failure. Anything worth keeping leaves
+  first, as a document or a task committed with `/task-agent` or `/dev-task`; nothing survives a drop.
 - The daemon binds `127.0.0.1` only and serves from `.agents/canvas/`; it is not a general
   web server. Do not point it at a repo the user has not asked you to expose.
 - Never overwrite `.agents/canvas/<topic>.feedback.json` — the daemon owns it, and clobbering

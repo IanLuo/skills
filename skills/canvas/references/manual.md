@@ -60,6 +60,7 @@ deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens (`^[a-z0-9][a
 | escalate a decision I may not make | `canvas.py flag <topic> --ids id --note "why"` |
 | simulate the page's Send button | `canvas.py send <topic>` |
 | undo a round | `canvas.py versions <topic>` · `canvas.py restore <topic> --to last` |
+| end a topic | `canvas.py drop <topic>` (refuses on unresolved notes; `--force` discards them) |
 | hand a reviewed conclusion to a worker | `/task-agent start` (worktree, recommended) · `/dev-task` (small in-repo change) |
 
 - **A Send is the batch boundary.** `pending` returns the notes written up to the last Send;
@@ -87,8 +88,9 @@ to park, and the page needs no reopening: it hot-swaps itself.
    approved, hand the conclusion to a worker with its own checkout: `/task-agent start` (worktree)
    for anything non-trivial, `/dev-task` for a small change. Use `/task-agent end` to merge it back.
    The canvas stays the record; the worker's diff is the implementation.
-6. **End** — topic changed → new slug, the old directory freezes (still reopenable). Session over →
-   `canvas.py stop`. The topics stay on disk.
+6. **End** — the problem is clear, so `canvas.py drop <topic>`. It refuses while notes are
+   unresolved; anything worth keeping leaves as a document or a task first. Session over →
+   `canvas.py stop`.
 
 ## History
 
@@ -102,10 +104,17 @@ curl -s http://127.0.0.1:<port>/h/<topic>          # JSON events, oldest first
 
 ## Ending a topic
 
-- **Topic changed** → new slug. The old one freezes; its directory stays, and `canvas.py open
-  <old-topic>` reopens it.
-- **User wants the file** → `build-canvas.py <topic> --inline-mermaid`, hand over the path, stop.
-- **Session over** → `canvas.py stop`. Topics stay on disk; `start` brings the page back.
+A topic is meant to be dropped — that is the normal end of its life, not a destructive exception.
+
+- **Problem solved** → `canvas.py drop <topic>`. It **moves** the topic to `<root>/.dropped/<topic>-<ts>/`
+  and prints the path, so a drop is recoverable and `list` shows how many are waiting there.
+  `--purge` deletes. Refuses while notes are unresolved; `--force` discards those too.
+- **Something is worth keeping** → get it out first: `build-canvas.py <topic> --inline-mermaid`
+  and hand over the file, or record the outcome as a task (`/task-agent`, `/dev-task`). Nothing
+  survives a drop.
+- **Problem changed** → new topic. Do not grow this one.
+- **Session over** → `canvas.py stop`. Topics stay on disk until they are dropped; `start` brings
+  the pages back.
 
 ## Recovery playbooks
 

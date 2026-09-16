@@ -130,8 +130,10 @@ the readability contract below, applied at authoring time rather than at review 
 Why these are required and what counts as failure: [communication-contract.md](communication-contract.md).
 Read it before weakening a rule here.
 
-A canvas accumulates: every round adds, nothing is removed, so by round ten it is a wall and
-the live question is lost in it. Three rules fix that, and the first is not optional.
+A canvas collects rounds, so it heads for a wall of text — but the cure is not to keep folding it
+into shape. A topic is **one small problem, and it is temporary**: if a page needs folding to stay
+readable, the problem has outgrown the topic, and the answer is a new topic, not another section.
+Within that limit, three rules keep it worth reading.
 
 - **Mark every section's status**: `data-status="settled" | "new" | "open"` on the `<section>`.
   `settled` **folds** (chrome does it — the reader can still open it), `new` is flagged in the

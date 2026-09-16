@@ -1,4 +1,4 @@
-<!-- specs:locked:a2de6ec 2026-09-16 type=spec -->
+<!-- specs:locked:e3b909f 2026-09-16 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -57,13 +57,22 @@ Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit 
 
 - **In:** the page is the reply; smallest-view rendering; stable anchors; the run conclusion;
   lossless capture of a note (on disk, keyed to an anchor, kept after resolution); the article shape.
+- **A topic is one problem, small and short-lived.** It exists to make *that* problem clear and to
+  raise the bandwidth between the user and the agent — a fragment of a conversation, not a record
+  of one. Topics are meant to be created and **dropped** repeatedly; a directory that is kept
+  forever is the failure, not the default. When the problem changes, that is a new topic, not a
+  new section.
+- **Out — persistence.** Not an archive, not a second memory, not a place to accumulate. Anything
+  worth keeping after the problem is solved has to leave as a document or a task before the topic
+  is dropped.
 - **Out — non-goals:** the chrome (→ `design-system.md`); liveness and dispatch (→ `architecture.md`);
   implementing a change (→ `/task-agent`, `/dev-task`); being a chat client (→ chat, but terse).
 - **Out — the sibling boundary:** this is **not `/annotate`**. Both produce an annotatable page, so
   "has a server" and "can be annotated" do not separate them. What separates them is what the user
   is doing: `/annotate` **answers a question** and the artifact *is* the response, produced once;
-  `/canvas` **explains a response** the user has to understand, and accumulates it across rounds.
-  Depth is the differentiator — annotate delivers the answer, canvas delivers the detail behind it.
+  `/canvas` **explains a response** the user has to understand, in depth, across as many rounds as
+  the problem takes. Depth is the differentiator — annotate delivers the answer, canvas delivers
+  the detail behind it.
 - **Primary flow:** the agent writes content → the user reads → annotates one element → Send →
   the round answers **in that section** → the conclusion is readable on the page.
 
