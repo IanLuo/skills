@@ -26,6 +26,25 @@ change**. A 5-section canvas rewritten wholesale is ~1000 tokens; editing one se
 quotes and keys cost nearly what the tags cost. Do not spend effort there — spend it on
 emitting fewer sections.
 
+## Section skeleton
+
+```html
+<section data-section="s1">
+  <p class="eyebrow">topic · round 2</p>
+  <h1 data-anchor="title">Where we are</h1>
+  <p data-anchor="run-conclusion">…what is now true · next: the one move</p>
+</section>
+<section data-section="s2">
+  <h2 data-anchor="s2-title">The choice</h2>
+  <pre class="mermaid" data-anchor="fig-1">flowchart LR
+  A[Option A] --> C{Pick}
+  B[Option B] --> C</pre>
+</section>
+```
+
+Flat top-level sections, never nested — the daemon hashes each one and hot-swaps only what
+changed. Read one with `canvas.py show <topic> s2`.
+
 ## Primitives (HTML/CSS — cheap, and what the user can point at)
 
 Options side by side. ~2× prose tokens, but the user compares instead of parsing:

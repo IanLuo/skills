@@ -38,6 +38,7 @@ CLI:
     canvas.py status [--root DIR]
     canvas.py list [--root DIR] [--root DIR ...]   every topic and what is waiting
     canvas.py pending <topic> [--root DIR] [--json]
+    canvas.py show <topic> [sN ...]               one section, or the section index
     canvas.py send <topic>                       simulate the page's Send button
     canvas.py ack <topic> [--ids c1,c2 | --all]
     canvas.py say <topic> "<one line>"           record the agent's reply on the topic
@@ -187,6 +188,17 @@ def section_for(anchor, index):
         return index[anchor]
     head = anchor.split(".", 1)[0]
     return index.get(head)
+
+
+def split_sections(content):
+    """[(section id, raw html)] in document order. A section is the hot-swap unit and the unit a
+    note points at, so this is how a round reads one section instead of the whole file."""
+    out = []
+    for m in re.finditer(r'<section\b(?=[^>]*\bdata-section="([^"]+)")[^>]*>', content, re.I):
+        nxt = re.search(r'<section\b', content[m.end():], re.I)
+        end = m.end() + nxt.start() if nxt else len(content)
+        out.append((m.group(1), content[m.start():end].rstrip() + "\n"))
+    return out
 
 
 def batch_notes(root, topic):
@@ -869,6 +881,40 @@ def cmd_send(args):
     return 0
 
 
+def cmd_show(args):
+    """The read side of a round. `pending` names the sections a batch touches; this reads just
+    those, so a note in one section costs that section instead of the whole page. With no section
+    named it prints the index — id, size, anchors — which is enough to choose without reading."""
+    root = Path(args.root)
+    content = read_text(topic_paths(root, args.topic)["content"])
+    sections = split_sections(content)
+
+    if not args.sections:
+        if not sections:
+            print("canvas: %s has no sections" % args.topic)
+            return 0
+        per = {}
+        for a, sec in anchor_sections(content).items():
+            per.setdefault(sec, []).append(a)
+        for sid, text in sections:
+            anchors = per.get(sid, [])
+            print("%-6s %5d chars  %2d anchors  %s"
+                  % (sid, len(text), len(anchors), ", ".join(anchors[:3])
+                     + (" …" if len(anchors) > 3 else "")))
+        print("--- read one or more: canvas.py show %s %s"
+              % (args.topic, " ".join(s for s, _ in sections[:2])))
+        return 0
+
+    by_id = dict(sections)
+    missing = [s for s in args.sections if s not in by_id]
+    if missing:
+        raise SystemExit("canvas: no section %s on %s (have: %s)"
+                         % (", ".join(missing), args.topic, ", ".join(by_id) or "none"))
+    for s in args.sections:
+        print(by_id[s])
+    return 0
+
+
 def cmd_list(args):
     """Every topic under each root, and what is waiting there. Read straight from files,
     so it works with no daemon running."""
@@ -1004,6 +1050,11 @@ def main(argv=None):
     sp = common(sub.add_parser("send"))
     sp.add_argument("topic")
     sp.set_defaults(func=cmd_send)
+
+    sp = common(sub.add_parser("show"))
+    sp.add_argument("topic")
+    sp.add_argument("sections", nargs="*", help="section ids; omit to list them")
+    sp.set_defaults(func=cmd_show)
 
     sp = sub.add_parser("list", help="every topic and what is waiting (no daemon needed)")
     sp.add_argument("--root", action="append", default=None,

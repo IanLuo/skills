@@ -61,18 +61,9 @@ an article.
 row, a bar, a diagram box — so a note never has to say “somewhere in this section”. Fewer words,
 more diagram: prose carries the abstract, the lead and the takeaway; everything else gets a view.
 
-```html
-<section data-section="s1">
-  <p class="eyebrow">topic · round 2</p>
-  <h1 data-anchor="title">Where we are</h1>
-</section>
-<section data-section="s2">
-  <h2 data-anchor="s2-title">The choice</h2>
-  <pre class="mermaid" data-anchor="fig-1">flowchart LR
-  A[Option A] --> C{Pick}
-  B[Option B] --> C</pre>
-</section>
-```
+A section is `<section data-section="sN">` with a `data-anchor` on everything the user might
+disagree with; `show` prints them and [references/graphics.md](references/graphics.md) has the
+markup for each view.
 
 - **Sections are the update unit.** The daemon hashes each one and hot-swaps only the
   changed ones within ~1s. Touch only what changed — that is the whole token saving.
@@ -88,18 +79,14 @@ more diagram: prose carries the abstract, the lead and the takeaway; everything 
   for flow — and `.compare`/`.cards` for options **last**, not first. Prose is the last resort.
   For repeated shapes you may write data instead of markup (`data-render`) — but that is a
   correctness win, not a token win; do not go hunting for token savings in markup.
-- Read **[references/architecture.md](references/architecture.md)** before changing how the daemon
-  serves, stores or hot-swaps. It is locked (`specs:locked:`) and records what the daemon is for
-  and what it deliberately is not — with the rejected alternatives.
-- Read **[references/manual.md](references/manual.md)** when running any canvas command, when
-  something is wrong (a note ignored, a page not updating), or when handing a
-  canvas to another agent. It has the command map, the lifecycle, and symptom→cause→fix playbooks.
-- Read **[references/design-system.md](references/design-system.md)** before changing any canvas
-  visual: the palette (3 schemes), type scale, spacing, radii and component states are locked
-  there, with computed contrast evidence. Changing a token means re-running the contrast check.
-- Read **[references/graphics.md](references/graphics.md)** when rendering content, choosing
-  a diagram, when a block does not show up, or when the user questions a cost claim. It has
-  the primitives, the mermaid picker, the measured token costs, and the failure modes.
+- **[graphics.md](references/graphics.md)** — the section skeleton, views, mermaid, measured
+  costs, failure modes. Read before rendering content.
+- **[manual.md](references/manual.md)** — command map, lifecycle, topic files, symptom→cause→fix
+  playbooks. Read when running a command or when something is wrong.
+- **[architecture.md](references/architecture.md)** — locked (`specs:locked:`): what the daemon is
+  for and what it deliberately is not. Read before changing how it serves or stores.
+- **[design-system.md](references/design-system.md)** — locked visuals: palette, type, spacing,
+  component states, with contrast evidence. Read before changing any canvas visual.
 
 ## Who does what — you run the round
 
@@ -111,82 +98,43 @@ Two roles, and only one of them authors anything:
 | **the daemon** | `canvas.py serve` | serves the page, stores every note on disk the moment it is typed, hot-swaps changed sections. **Never edits content.** |
 
 There is no coordinator and no worker: **the round runs in your session, when the user asks.**
-Delivery is still push-free — the notes are on disk, not in a chat box — but nothing wakes you.
-The delivery step is one sentence from the user ("check the canvas"), and until then the notes
-wait on disk and the page says so.
+Nothing wakes you, so there is no delivery step but the user saying "check the canvas". A round
+costs *your* context, which is why `pending` names the sections and `show` reads only those.
 
-That means a round costs *your* context (file reads, build output, headless DOM dumps). Keep it
-to the sections the notes point at: `pending` names the anchors, and nothing else needs reading.
-
-**One writer at a time is now just a rule about you.** Nothing else writes `content.html`; do not
-run a second session on one topic while a round is in flight, and do not hand the same topic to a
-subagent at the same time as yourself.
+**One writer at a time is just a rule about you.** Nothing else writes `content.html`, so do not
+run a second session on one topic, or hand it to a subagent while a round is in flight.
 
 ## Where topics live
 
-`DEFAULT_ROOT` is the **relative** path `.agents/canvas`, so a topic lives with the project it
-documents: `<project>/.agents/canvas/<topic>/` — one archivable, copyable, deletable unit.
+A topic is `<project>/.agents/canvas/<topic>/` — `DEFAULT_ROOT` is the **relative** `.agents/canvas`,
+so it lives with the project it documents and is one archivable, copyable, deletable unit. Roots
+are named explicitly (`--root`); there is no index file and no shared state, so two projects cannot
+see or break each other (two roots means two daemons and two ports). `.agents/canvas/` is gitignored.
 
-- **Nothing is global.** Roots are named explicitly (`--root`); there is no index file and no
-  shared state, and each root runs its own daemon. A root's own directory is the only source of
-  truth, so two projects cannot see or break each other. `list --root A --root B` lists several.
-  Two projects means two daemons and two ports; that is the whole cost of the choice.
-- **Files are the contract.** `say`, `ack`, `pending`, `flag`, `versions`, `restore` are pure
-  file operations — **no daemon needed** — and a round is just edits to `content.html`, so any
-  agent that knows the path can take a topic over cold. `canvas.py stop` marks the daemon gone
-  but **keeps the root** — its topics are still on disk. `.agents/canvas/` is gitignored: these
-  files persist on this disk, they do not travel with the repo.
-
-The daemon is a **page server**, nothing more: it serves, stores and hot-swaps. Why it is shaped
-that way — and what was rejected — is locked in [references/architecture.md](references/architecture.md).
-
-## Files (root: `.agents/canvas/`, one DIRECTORY per topic)
-
-```
-.agents/canvas/<topic>/
-├── content.html     you edit this — the section-keyed content
-├── index.html       build-canvas.py writes it — shell + chrome, the file:// fallback
-├── feedback.json    the daemon writes it — the user's annotations
-├── send.json        the daemon writes it — the Send state (ts, count)
-├── history.jsonl    the daemon writes it — append-only record of the conversation
-└── versions/        canvas.py snapshots content.html in here, so a round can be undone
-```
-
-Everything a session produced lives in that one directory, so a topic can be archived,
-copied, or deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens
-(`^[a-z0-9][a-z0-9-]{0,63}$`).
+**Files are the contract.** `say`, `ack`, `pending`, `flag`, `versions`, `restore` need no daemon,
+so any agent that knows the path can take a topic over cold. The daemon is a page server and
+nothing more — why is locked in [references/architecture.md](references/architecture.md).
 
 ## Open a canvas
 
 ```bash
 python3 $S/scripts/build-canvas.py <topic> --new        # first time: creates content + shell
 python3 $S/scripts/canvas.py start --root .agents/canvas
-python3 $S/scripts/canvas.py open <topic>               # opens a browser tab — do this ONCE
+python3 $S/scripts/canvas.py open <topic>               # opens a browser tab — ONCE per topic
 python3 $S/scripts/canvas.py stop                       # when the session ends
 ```
 
-`start` starts the daemon and **opens nothing**; it prints the origin. `open <topic>` is the one
-command that opens a tab, and it is a one-time action per topic: the page is live and hot-swaps
-its own sections, so it never needs reopening or reloading. A daemon restart keeps the port
-(`stop` records it), so the tab you already have stays valid — **do not open it again after a
-restart**, and never on every round. Two tabs on one URL is the failure this avoids.
-
-The port is picked at start time (7391 by default, next free one if taken). `start`/`open` always
-print the authoritative URL — trust those and never guess a port. Show the URL to the user once.
-
-Add mermaid to the repo once to get rendered diagrams:
-
-```bash
-curl -sL -o $S/assets/mermaid.min.js https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
-```
+`start` opens nothing; it prints the origin, and the port is picked once and kept across restarts.
+`open` is the only command that opens a tab, and one per topic is enough: the page hot-swaps its
+own sections, so it never needs reopening or reloading — **never re-open after a restart or on a
+round**. Show the URL to the user once. Rendered diagrams need mermaid vendored once:
+`curl -sL -o $S/assets/mermaid.min.js https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js`
 
 ## Seeing what is waiting
 
-`python3 $S/scripts/canvas.py list --root .agents/canvas` is the whole view: every topic, and
-notes pending / unsent / flagged. The daemon's origin (`/`) serves a plain index of topic links
-and nothing else — no dashboard, no controls. It reads only files, so a restart cannot change
-what it says, and it has no "working" state: notes waiting on disk is not the same as a round in
-flight.
+`python3 $S/scripts/canvas.py list --root .agents/canvas` — every topic, and notes pending /
+unsent / flagged. The daemon's origin serves a plain topic index and nothing else. Both read only
+files, so neither changes on a restart and neither has a "working" state.
 
 ## The round loop
 
@@ -217,10 +165,15 @@ asks, or when you see notes waiting and say what you are doing.
      is still writing them, and resolving one now gets un-done by their next keystroke. Leave
      them and say how many are waiting.
    - Nothing listed at all → say so and stop.
-2. **Read what they actually meant**, then edit **only** the affected sections of
-   `.agents/canvas/<topic>/content.html`. Fix notes landing on the same section together, and
-   bring in the views from [references/graphics.md](references/graphics.md) — the smallest view
-   that makes the point.
+2. **Read what they actually meant** — and **only the sections in play**, because the whole file
+   is the expensive thing to read:
+   ```bash
+   python3 $S/scripts/canvas.py show <topic> s3 s7 --root .agents/canvas   # just those sections
+   python3 $S/scripts/canvas.py show <topic> --root .agents/canvas         # or the index
+   ```
+   Then edit those sections of `.agents/canvas/<topic>/content.html`. Fix notes landing on the
+   same section together, and bring in the views from
+   [references/graphics.md](references/graphics.md) — the smallest view that makes the point.
 3. Refresh the fallback shell and mark the notes you addressed:
    ```bash
    python3 $S/scripts/build-canvas.py <topic>
@@ -278,38 +231,13 @@ the work. Editing the project is not.
 - **Never let a round "just fix it".** A round that edits the repo and commits while the page
   still says *proposed* shows the user a fait accompli instead of a decision to review.
 
-## History
+## The record
 
-`<topic>/history.jsonl` is append-only. The daemon logs every note, resolve, delete and
-content change by itself; `say` adds your line. **Rounds are derived, not stored** — a round
-is the events since your previous `say` — so nothing is renumbered and a lost write cannot
-corrupt the past. The page renders it behind the **Conversation** button, and clicking a user
-row scrolls to the element that note was about.
-
-Read it directly when you need the session's shape:
-
-```bash
-curl -s http://127.0.0.1:<port>/h/<topic>          # JSON events, oldest first
-```
-
-`build-canvas.py` refuses to build content with duplicate anchors, nested sections,
-malformed spec JSON, or an unknown `data-render` kind. Fix what it reports rather than
-shipping a broken page.
-
-## Ending a topic
-
-- **Topic changed** → start a new canvas with a new slug. The old one freezes; its whole
-directory stays, and `canvas.py open <old-topic>` reopens it.
-- **User wants the file** → rebuild with diagrams embedded, hand them the path, stop:
-  ```bash
-  python3 $S/scripts/build-canvas.py <topic> --inline-mermaid
-  python3 $S/scripts/canvas.py stop
-  ```
-- **Session over** → stop the daemon:
-  ```bash
-  python3 $S/scripts/canvas.py stop
-  ```
-  The topics stay on disk; `canvas.py start` brings the page back. Nothing else is left running.
+`history.jsonl` is append-only: every note, resolve, delete and content change, plus your `say`
+lines. **Rounds are derived, not stored** — a round is the events since your previous `say` — so
+nothing is renumbered and a lost write cannot corrupt the past. `build-canvas.py` refuses
+duplicate anchors, nested sections, malformed spec JSON and unknown `data-render` kinds; fix
+what it reports. Detail in [references/manual.md](references/manual.md).
 
 ## Rules
 

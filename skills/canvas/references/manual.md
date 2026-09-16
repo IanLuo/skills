@@ -28,6 +28,21 @@
 - There is no third role. Any command that used to need one — `coordinator start`, `round` — is
   gone; if you find yourself wanting it, you want to run the round steps yourself.
 
+## Topic files
+
+```
+.agents/canvas/<topic>/
+├── content.html     the session edits this — the section-keyed content
+├── index.html       build-canvas.py writes it — shell + chrome, the file:// fallback
+├── feedback.json    the daemon writes it — the user's annotations
+├── send.json        the daemon writes it — the Send state (ts, count)
+├── history.jsonl    the daemon writes it — append-only record of the conversation
+└── versions/        canvas.py snapshots content.html in here, so a round can be undone
+```
+
+Everything a session produced lives in that one directory, so a topic can be archived, copied or
+deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens (`^[a-z0-9][a-z0-9-]{0,63}$`).
+
 ## Command map
 
 | I want to… | command |
@@ -36,6 +51,7 @@
 | open a topic in a browser | `canvas.py open <topic>` (prints the authoritative URL) |
 | see every topic and what is waiting | `canvas.py list --root .agents/canvas` (no daemon needed) |
 | see the round's batch (section · id · state · comment) | `canvas.py pending <topic>` (never blocks; `--json` for fields) |
+| read one section, or the section index | `canvas.py show <topic> [sN …]` (no daemon needed) |
 | create a topic | `build-canvas.py <topic> --new --root .agents/canvas` |
 | rebuild the shell after editing content | `build-canvas.py <topic>` |
 | check the page actually renders | `verify-canvas.py <topic> [--viewport 1280x900]` |
@@ -73,6 +89,23 @@ to park, and the page needs no reopening: it hot-swaps itself.
    The canvas stays the record; the worker's diff is the implementation.
 6. **End** — topic changed → new slug, the old directory freezes (still reopenable). Session over →
    `canvas.py stop`. The topics stay on disk.
+
+## History
+
+`history.jsonl` is append-only, and the page renders it behind the **Conversation** button —
+clicking a user row scrolls to the element that note was about. Read it directly when you need the
+session's shape:
+
+```bash
+curl -s http://127.0.0.1:<port>/h/<topic>          # JSON events, oldest first
+```
+
+## Ending a topic
+
+- **Topic changed** → new slug. The old one freezes; its directory stays, and `canvas.py open
+  <old-topic>` reopens it.
+- **User wants the file** → `build-canvas.py <topic> --inline-mermaid`, hand over the path, stop.
+- **Session over** → `canvas.py stop`. Topics stay on disk; `start` brings the page back.
 
 ## Recovery playbooks
 
