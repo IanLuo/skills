@@ -72,7 +72,6 @@ DEFAULT_ROOT = ".agents/canvas"
 DEFAULT_PORT = 7391  # 8787/8080/5173/3000 are routinely taken by dev servers
 TOPIC_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 SECTION_RE = re.compile(r'<section\b[^>]*\bdata-section="([^"]+)"', re.I)
-SLUG_RE = re.compile(r"[^a-z0-9]+")
 SEVERITIES = ("suggestion", "important", "critical")
 
 
@@ -114,9 +113,9 @@ def sha(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-# The daemon runs whatever code it was started with, so a daemon left running after an
-# upgrade silently lacks the routes this file has. The revision is reported on /health and
-# /health so a daemon left running after an upgrade is loud instead of mysterious.
+# The daemon runs whatever code it was started with, so a daemon left running after an upgrade
+# silently lacks the routes this file has. /health reports the revision, so a mismatch is loud
+# instead of mysterious.
 SCRIPT_REV = None  # set below, once Path is imported
 
 
@@ -233,13 +232,28 @@ def needs_snippet(note):
 
 
 def load_feedback(root, topic):
-    raw = read_text(topic_paths(root, topic)["feedback"])
+    """The notes. Fails CLOSED on a corrupt file.
+
+    This returns the user's own words, and every caller that writes goes through
+    `save_feedback`, which replaces the file whole. Treating an unparseable file as "no notes"
+    was therefore the one path in the skill that could discard every note silently — a single
+    truncated write and the next ack would make it true. The contract's R9 says a note is never
+    discarded, so a corrupt file stops the command instead.
+    """
+    path = topic_paths(root, topic)["feedback"]
+    raw = read_text(path)
     if not raw:
         return {"topic": topic, "updated": now_iso(), "annotations": []}
     try:
         data = json.loads(raw)
-    except ValueError:
-        return {"topic": topic, "updated": now_iso(), "annotations": []}
+    except ValueError as e:
+        raise SystemExit(
+            "canvas: %s is not valid JSON (%s).\n"
+            "        Refusing to continue: reading it as empty and saving would discard every "
+            "note in it.\n"
+            "        Inspect or move it aside, then retry." % (path, e))
+    if not isinstance(data, dict):
+        raise SystemExit("canvas: %s is not an object — refusing to overwrite it" % path)
     data.setdefault("topic", topic)
     data.setdefault("annotations", [])
     return data
@@ -669,14 +683,32 @@ def read_daemon(root):
 
 
 def stop_record(root, info):
-    """Keep the daemon record with `pid` cleared. The user's tab is bound to that origin, and
-    a deliberate restart is exactly when it must not move — `start` prefers the recorded port,
-    so dropping the file here made the port jump and orphaned the open page."""
+    """Keep the daemon record, with `pid` cleared once the process is actually gone.
+
+    The record is kept because the user's tab is bound to that origin and a deliberate restart is
+    exactly when it must not move — `start` prefers the recorded port, so dropping the file here
+    made the port jump and orphan the open page.
+
+    Called only once the process is gone — `cmd_stop` waits for it and refuses to clear the pid
+    otherwise, because a daemon that survives the signal (a refused kill, or one wedged
+    mid-request) would hold the port with no record naming it: `stop` could never kill it and
+    `start` reported "already running" for a process it could not identify. Seen for real after
+    macOS revoked filesystem access under a running daemon.
+    """
     info["pid"] = None
     try:
         daemon_file(root).write_text(json.dumps(info, indent=2) + "\n")
     except OSError:
         pass
+
+
+def wait_gone(pid, seconds=2.0):
+    """SIGTERM is asynchronous: the process is still alive microseconds later, so asking once
+    right after the signal always says "still running". Wait for it, briefly."""
+    deadline = time.time() + seconds
+    while time.time() < deadline and pid_alive(pid):
+        time.sleep(0.05)
+    return not pid_alive(pid)
 
 
 def is_up(port):
@@ -745,14 +777,19 @@ def cmd_stop(args):
     if not info:
         print("canvas: no daemon recorded for %s" % root)
         return 0
-    if info.get("pid"):
+    pid = info.get("pid")
+    if pid:
         try:
-            os.kill(info["pid"], 15)
+            os.kill(pid, 15)
         except (ProcessLookupError, PermissionError, KeyError, OSError):
             pass
+        if not wait_gone(pid):
+            print("canvas: pid %s did not exit — it is still holding port %s.\n"
+                  "        Kill it by hand, then retry; the record still names it."
+                  % (pid, info.get("port")), file=sys.stderr)
+            return 1
     stop_record(root, info)
-    print("canvas: stopped (pid %s, port %s) — port kept for the next start"
-          % (info.get("pid"), info.get("port")))
+    print("canvas: stopped (port %s kept for the next start)" % info.get("port"))
     return 0
 
 
@@ -961,25 +998,6 @@ def cmd_drop(args):
         shutil.rmtree(d)
         where = "purged"
     else:
-        trash = root / ".dropped" / ("%s-%s" % (args.topic, time.strftime("%Y%m%dT%H%M%S")))
-        trash.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(d), str(trash))
-        where = "recoverable at %s  (mv it back to resume)" % trash
-    print("canvas: dropped %s — %d section(s), %d note(s), %d round(s), %.1f KB · %s"
-          % (args.topic, len(split_sections(content)), len(notes), rounds, size / 1024.0, where))
-    return 0
-
-
-def cmd_list(args):
-    """Every topic under each root, and what is waiting there. Read straight from files,
-    so it works with no daemon running."""
-    for raw in (args.root or [DEFAULT_ROOT]):
-        root = Path(raw)
-        topics = list_canvases(root)
-        if not topics:
-            print("%s: no topics" % root)
-        else:
-            print("%s" % root)
         trash = root / ".dropped" / ("%s-%s" % (args.topic, time.strftime("%Y%m%dT%H%M%S")))
         trash.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(d), str(trash))

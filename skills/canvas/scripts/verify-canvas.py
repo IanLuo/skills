@@ -242,6 +242,14 @@ class DomCheck(HTMLParser):
 
 LONG_SENTENCE = 45      # words; readable technical prose runs 15–25
 WALL = 200              # words of prose in one section
+MAX_PER_SECTION = 3     # long sentences reported per section, so one bad block is not 20 lines
+
+# Every view in graphics.md's ladder. This list is the contract's vocabulary, so it has to match
+# it: leaving .cards / .flow / .bars / figure out made the check report a cards-only section as
+# "a wall of prose", which is the kind of false positive that gets a checker ignored.
+VIEW = re.compile(r'data-render=|class="(?:mermaid|tree)"|<pre|<table|<figure|<svg', re.I)
+BLOCK_END = re.compile(r"</(p|li|h[1-6]|td|th|tr|div|figcaption|blockquote|dt|dd|section)>", re.I)
+WORDISH = re.compile(r"\w")
 
 
 def readability(content):
@@ -252,32 +260,37 @@ def readability(content):
     sentence, and a checker that cries wolf gets ignored. Printed with every run so a round cannot
     pass them without seeing them.
     """
-    block_end = re.compile(r"</(p|li|h[1-6]|td|th|tr|div|figcaption|blockquote|dt|dd|section)>",
-                           re.I)
-
     def prose(body):
         """Only the sentences. A block boundary ends one, so a heading is not glued to the
-        paragraph under it and a table row is not one 85-word run-on — without this the check
-        reports sentences nobody wrote, and a checker that cries wolf gets ignored."""
-        body = re.sub(r"<(script|style|pre|svg)\b.*?</\1>", " ", body, flags=re.S | re.I)
-        body = block_end.sub(". ", body)
+        paragraph under it and a table row is not one long run-on. Views are dropped: a diagram
+        is not prose, and its labels are not sentences."""
+        body = re.sub(r"<(script|style|pre|svg|table|figure)\b.*?</\1>", " ", body,
+                      flags=re.S | re.I)
+        body = BLOCK_END.sub(". ", body)
         return " ".join(re.sub(r"<[^>]+>", " ", body).split())
 
+    def words_of(text):
+        # split() counts a bare "." as a word; the block separators above create those, and the
+        # leftover ">" of a section tag used to be counted too. Neither is a word.
+        return len([w for w in text.split() if WORDISH.search(w)])
+
     warns, stats = [], []
-    for m in re.finditer(r'<section\b[^>]*\bdata-section="([^"]+)"(.*?)(?=<section\b|$)',
+    for m in re.finditer(r'<section\b[^>]*\bdata-section="([^"]+)"[^>]*>(.*?)(?=<section\b|$)',
                          content, re.S | re.I):
         sid, body = m.group(1), m.group(2)
         text = prose(body)
-        words = len(text.split())
-        views = len(re.findall(r'data-render=|class="mermaid"|class="tree"|<table|<ul|<ol', body))
+        words = words_of(text)
+        views = len(VIEW.findall(body))
         if words >= WALL and views == 0:
             warns.append("%s: %d words of prose and no view — that is a wall, not a section"
                          % (sid, words))
-        for s in re.split(r"(?<=[.!?])\s+", text):
-            n = len(s.split())
-            if n > LONG_SENTENCE:
-                warns.append("%s: a %d-word sentence — %s…" % (sid, n, " ".join(s.split()[:9])))
-                break
+        long_sents = [s for s in re.split(r"(?<=[.!?])\s+", text) if words_of(s) > LONG_SENTENCE]
+        for s in long_sents[:MAX_PER_SECTION]:
+            warns.append("%s: a %d-word sentence — %s…"
+                         % (sid, words_of(s), " ".join(s.split()[:9])))
+        if len(long_sents) > MAX_PER_SECTION:
+            warns.append("%s: and %d more over-long sentence(s)"
+                         % (sid, len(long_sents) - MAX_PER_SECTION))
         stats.append((sid, words, views))
     return warns, stats
 
