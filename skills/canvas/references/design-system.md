@@ -124,7 +124,7 @@ Locked: re-run design-task to change it, do not edit around it.
 | Conversation | `#convo`, `#history` | **vertical** tab (`writing-mode: vertical-rl`) on the **left** edge, vertically centred; hidden while `#histpanel` is open (it follows the panel in the DOM so the sibling rule can fire); rest, hover |
 | listening pill | `#listening` | `agent away`, `.on` = `agent listening` |
 | bottom bar | `#bottombar` | one docked surface (--surface + 1px --line + 12px top radius, no new elevation); never overlaps at any width |
-| status group | `#statusrow` | `#listening` + `#status` adjacent, left; `#err` on its own line below; `#controls` right |
+| status group | `#statusrow` | `#listening` + `#status` adjacent, left; `#err` on its own line below; `#controls` right (Conversation + Send only — the `#dash` link was removed in Rev 7) |
 | section status | `#content .secpill.settled|.new|.open`, `.secfold` | every section may carry `data-status`; `settled` folds (heading becomes the summary, anchors preserved), `new` wears the accent, `open` is hairline-only. Tone-only styling: no new tokens |
 | needs-your-decision | `#convo #convonotice` (outer/left edge), `#histbody .ev .answered` button |, `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the session's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
 | state dots | `#statusrow ::before` | ONE vocabulary: hollow `○` idle, filled `●` active, `●` in `--crit` for a warning. Same glyph/size/margin for both pills — colour carries the meaning, not the shape (a triangle for warn was removed) |
@@ -167,6 +167,11 @@ Locked: re-run design-task to change it, do not edit around it.
 - The accent-as-`code`-colour choice means a code chip is accent-coloured on `--surface-2`; it passes at 4.67:1 (slate) with the least margin of any pair. Darkening `--surface-2` further will break it.
 
 Last reviewed: 2026-09-16 · canvas design task
+Rev 7 (2026-09-16): **the dashboard is removed** on the user's direction. It existed to start and
+stop a coordinator and to show a dispatch loop's state; both were deleted, leaving two buttons whose
+jobs are `canvas.py list` and `build-canvas.py <topic> --new`. Removed: `dashboard.html`, the `/` and
+`/topics` routes, `#dash` from `#controls` and its rules. The origin now serves a plain index of topic
+links. No token changed, so the contrast table is unchanged.
 Rev 6 (2026-09-16): **the composer is removed**, on the user's direction. A canvas is read-and-point,
 so a requirement becomes a note on the element it concerns — the same mechanism as every other note.
 The free-text box was the one affordance that made a canvas feel like a chat client, and so like

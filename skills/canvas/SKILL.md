@@ -176,16 +176,13 @@ Add mermaid to the repo once to get rendered diagrams:
 curl -sL -o $S/assets/mermaid.min.js https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
 ```
 
-## The dashboard — what is waiting, and how to stop the daemon
+## Seeing what is waiting
 
-The daemon serves `dashboard.html` at `/`, and every page links to it. It lists each topic with
-the state that matters — notes pending / unsent / flagged, rounds, send → reply latency — and
-every button runs one of this skill's own CLIs and prints the real output. Same view in a
-terminal: `python3 $S/scripts/canvas.py list --root .agents/canvas`.
-
-It claims only what it can prove from files, so it has **no "working" state**: notes waiting on
-disk is not the same as a round in flight, and the page does not pretend otherwise. Counts come
-from files, so a daemon restart cannot change them.
+`python3 $S/scripts/canvas.py list --root .agents/canvas` is the whole view: every topic, and
+notes pending / unsent / flagged. The daemon's origin (`/`) serves a plain index of topic links
+and nothing else — no dashboard, no controls. It reads only files, so a restart cannot change
+what it says, and it has no "working" state: notes waiting on disk is not the same as a round in
+flight.
 
 ## The round loop
 

@@ -17,7 +17,7 @@ session produced lives together:
 
 Routes:
 
-    GET    /                     index of topics
+    GET    /                     a plain index of topic links — not the dashboard
     GET    /health               {ok, port, root, mermaid, canvases}
     GET    /t/<topic>            built shell
     GET    /c/<topic>            content partial (hot-swap source)
@@ -113,7 +113,7 @@ def sha(text):
 
 # The daemon runs whatever code it was started with, so a daemon left running after an
 # upgrade silently lacks the routes this file has. The revision is reported on /health and
-# /topics so that mismatch is loud instead of mysterious.
+# /health so a daemon left running after an upgrade is loud instead of mysterious.
 SCRIPT_REV = None  # set below, once Path is imported
 
 
@@ -257,66 +257,6 @@ def unsent_notes(root, topic):
     return [a for a in pending_notes(root, topic) if a.get("ts", "") > sent_at]
 
 
-def parse_ts(s):
-    try:
-        return datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
-    except (ValueError, TypeError):
-        return None
-
-
-def send_latency(events):
-    """Seconds from a Send to the next agent reply — the interval that stayed invisible while
-    a canvas was unowned. Most recent one, or None if a round has not been answered yet."""
-    last, waiting = None, None
-    for e in events:
-        if e.get("kind") == "send":
-            waiting = parse_ts(e.get("ts"))
-        elif e.get("kind") == "agent" and waiting:
-            done = parse_ts(e.get("ts"))
-            if done:
-                last = int(done - waiting)
-            waiting = None
-    return last
-
-
-def topic_summary(root, topic):
-    """Everything the dashboard shows about one topic, derived from files — the daemon adds
-    no memory of its own, so a restart cannot change what the page says."""
-    content = read_text(topic_paths(root, topic)["content"])
-    history = load_history(root, topic)
-    notes = load_feedback(root, topic)["annotations"]
-    send = read_send(root, topic) or {}
-    replies = [e for e in history if e.get("kind") == "agent"]
-    return {
-        "topic": topic,
-        "url": "/t/" + topic,
-        "has_content": bool(content),
-        "sections": len(section_hashes(content)) if content else 0,
-        "notes": len(notes),
-        "pending": len([a for a in notes if not a.get("resolved")]),
-        "flagged": len([a for a in notes if a.get("flagged") and not a.get("resolved")]),
-        "unsent": len(unsent_notes(root, topic)),
-        "sent_at": send.get("ts"),
-        "rounds": len(replies),
-        "last_reply": replies[-1].get("ts") if replies else None,
-        "latency_s": send_latency(history),
-    }
-
-
-def run_action(argv, timeout=120):
-    """Run one of the skill's own CLIs and hand back its real result. Paths go through as a
-    list, never a shell string; the caller sees the exit code and both streams."""
-    try:
-        p = subprocess.run([sys.executable] + [str(a) for a in argv],
-                           capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "code": None, "out": "", "err": "timed out after %ss" % timeout}
-    except OSError as e:
-        return {"ok": False, "code": None, "out": "", "err": str(e)}
-    return {"ok": p.returncode == 0, "code": p.returncode,
-            "out": (p.stdout or "").strip()[-4000:], "err": (p.stderr or "").strip()[-2000:]}
-
-
 # ── content changes: the hot-swap source, and what can be undone ──────────
 
 def note_content_change(root, topic, content):
@@ -440,29 +380,19 @@ class Handler(BaseHTTPRequestHandler):
                              cache="public, max-age=31536000, immutable")
 
         if path in ("/", "/dashboard"):
-            body = read_text(SKILL_DIR / "dashboard.html")
-            if not body:
-                body = ("<!doctype html><meta charset=utf-8><h1>canvas</h1>"
-                        "<p>dashboard.html is missing from %s</p>" % SKILL_DIR)
-            return self.send(200, body, "text/html; charset=utf-8")
-
-        if path == "/topics":
-            info = read_daemon(self.root) or {}
-            try:
-                disk = sha(Path(__file__).read_text(encoding="utf-8"))
-            except OSError:
-                disk = None
-            return self.send_json(200, {
-                "rev": script_rev(),
-                # The daemon was started from an older canvas.py: every route this page uses
-                # may be missing. Worth saying out loud — it cost a debugging round today.
-                "stale": bool(disk and disk != script_rev()),
-                "root": str(self.root.resolve()),
-                "port": self.server.server_address[1],
-                "pid": info.get("pid"),
-                "started": info.get("started"),
-                "topics": [topic_summary(self.root, t) for t in list_canvases(self.root)],
-            })
+            # No dashboard. It existed to start and stop a coordinator and to show the state of a
+            # dispatch loop; neither exists. Its two remaining jobs are `canvas.py list` and
+            # `build-canvas.py <topic> --new`, so all that is worth serving at the origin is where
+            # the topics are.
+            links = "".join('<li><a href="/t/%s">%s</a></li>' % (t, t)
+                            for t in list_canvases(self.root)) \
+                or "<li>(no topics yet)</li>"
+            return self.send(200,
+                             "<!doctype html><meta charset=utf-8><title>canvas</title>"
+                             "<h1>canvas</h1><ul>%s</ul>"
+                             "<p><small>every topic and what is waiting: "
+                             "<code>canvas.py list</code></small></p>" % links,
+                             "text/html; charset=utf-8")
 
         if parts and parts[0] == "t":
             topic = self.topic(parts)
@@ -514,32 +444,6 @@ class Handler(BaseHTTPRequestHandler):
 
         return self.send_json(404, {"error": "not found"})
 
-    # -- dashboard actions: manage topics and processes ----------------------
-    def post_topics(self, parts, body):
-        """Manage a topic from the dashboard. Every branch runs one of the skill's own CLIs
-        and hands back its real output — no shell strings, nothing the CLI cannot do."""
-        root = self.root
-        scripts = SKILL_DIR / "scripts"
-        if len(parts) == 1:                        # POST /topics {topic: slug} → create
-            new = str(body.get("topic") or "").strip()
-            if not TOPIC_RE.match(new):
-                return self.send_json(400, {"error": "topic must match ^[a-z0-9][a-z0-9-]{0,63}$"})
-            if topic_paths(root, new)["content"].is_file():
-                return self.send_json(409, {"error": "%s already exists" % new})
-            return self.send_json(200, run_action(
-                [scripts / "build-canvas.py", new, "--root", root, "--new"], 60))
-
-        topic = self.topic(parts)
-        if not topic:
-            return self.send_json(404, {"error": "bad topic"})
-        if not topic_paths(root, topic)["content"].is_file():
-            return self.send_json(404, {"error": "no canvas called %s" % topic})
-        action = "/".join(parts[2:])
-        if action == "rebuild":
-            return self.send_json(200, run_action(
-                [scripts / "build-canvas.py", topic, "--root", root], 120))
-        return self.send_json(404, {"error": "unknown action %r" % action})
-
     def post_daemon_stop(self):
         """Stop the daemon itself. Answer first, then leave: the reply has to get out before
         the socket goes, or the page reports a failure for a stop that worked."""
@@ -559,8 +463,6 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in u.path.split("/") if p]
         body = self.read_json()
 
-        if parts and parts[0] == "topics":
-            return self.post_topics(parts, body)
         if parts[:2] == ["daemon", "stop"]:
             return self.post_daemon_stop()
         if not parts or parts[0] != "a":

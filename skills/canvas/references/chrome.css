@@ -321,15 +321,12 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
    History panel — the record of this topic, rendered from history.jsonl.
    Rounds are derived: the events since the agent's previous reply.
    ══════════════════════════════════════════════════════════════════════════ */
-#history, #dash { padding: .55rem 1.1rem;
+#history { padding: .55rem 1.1rem;
            border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
            color: var(--ink); cursor: pointer; font-size: .8rem;
            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
            box-shadow: 0 4px 12px rgba(11,16,28,.14); }
-/* The dashboard is a link out of this canvas, so it carries no button chrome beyond the
-   pill — and it is hidden in static (file://) mode, where /dashboard does not resolve. */
-#dash { text-decoration: none; }
-#history:hover, #dash:hover { background: var(--surface-2); }
+#history:hover { background: var(--surface-2); }
 
 #histpanel { position: fixed; top: 0; left: 0; bottom: 0; width: 24rem; max-width: 92vw; z-index: 45;
              /* No bottom reserve: the panel covers the bar (z 45 > 40). */
@@ -437,8 +434,6 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 /* Inside the bar the items are flat — the bar is the only container. Send keeps its accent
    fill because it is the one primary action on the page. */
 #bottombar #status, #bottombar #listening { background: transparent; border: 0; }
-#bottombar #dash { border: 0; background: transparent; box-shadow: none; color: var(--ink-3); }
-#bottombar #dash:hover { color: var(--ink); }
 
 /* ONE dot vocabulary for both state indicators. The two pills used to draw their own:
    #status had a triangle for warnings, #listening only circles, at different sizes — so

@@ -48,9 +48,10 @@
 
 - Nothing consumes a Send, so `send.json` is a marker, not a queue: the notes were already on
   disk when they were typed, and `pending` returns them whether or not anyone pressed Send.
-- Daemon routes, if you need them directly: `/t/<topic>` page · `/c` content · `/v` version+state
-  · `/h` history · `/a` annotations · `/topics` · `/health` · `/post` daemon control.
-  A POST to `/topics` creates a topic; `POST /daemon/stop` stops the server.
+- Daemon routes, if you need them directly: `/` topic index · `/t/<topic>` page · `/c` content
+  · `/v` version+state · `/h` history · `/a` annotations · `/health` · `POST /daemon/stop`.
+  There is no dashboard and no `/topics`: `canvas.py list` and `build-canvas.py <topic> --new`
+  are the interface.
 
 ## Lifecycle
 

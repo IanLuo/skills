@@ -768,7 +768,6 @@ async function initMermaid() {
   mark();
   await initMermaid();
   if (!LIVE) {
-    $('dash').hidden = true;   // /dashboard is a daemon route; a file:// page cannot reach it
     status('static file — Done copies your feedback for pasting');
     return;
   }
