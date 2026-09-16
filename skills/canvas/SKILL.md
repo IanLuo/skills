@@ -166,6 +166,9 @@ asks, or when you see notes waiting and say what you are doing.
    - **`ORPHAN`** means the anchor is in no section: the element it was written on is gone (a
      chrome control that was removed, say). Say so in the conclusion and `flag` it — never let a
      note disappear without a word.
+   - **`DERIVED`** means the anchor is built in the browser from a container's data (a table row, a
+     diagram node), so only the container is confirmed — find the row in the JSON payload, not by
+     grepping for the anchor, and check it is still there.
    - **`HELD`** lines are notes typed after the last Send. They are *not* in this batch: the user
      is still writing them, and resolving one now gets un-done by their next keystroke. Leave
      them and say how many are waiting.

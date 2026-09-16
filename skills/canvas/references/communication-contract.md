@@ -1,4 +1,4 @@
-<!-- specs:locked:5907b3f 2026-09-16 type=spec -->
+<!-- specs:locked:e071755 2026-09-17 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -103,10 +103,15 @@ Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit 
 - **The shape holds.** The first section opens with a ~3-line abstract and is never folded; every
   claim that can carry a view has one; each section has at most one `.key`; no section is a wall of
   prose. A section that is prose from top to bottom fails its own contract.
-- **A note is never invisible.** `pending` reports every unresolved note with the section it lives
-  in and its state. An anchor that resolves to no section is reported as an **orphan**, never
-  skipped — an element can be deleted (a chrome control removed, a section rewritten) and the note
-  written on it must still surface, because nothing else knows it exists.
+- **A note is never invisible, and its state is never a guess.** `pending` reports every unresolved
+  note with the section it lives in and a state that says only what is actually known:
+  - **orphan** — the anchor is nowhere in the page. The element it was written on is gone (a chrome
+    control removed, a section rewritten). Reported, never skipped: nothing else knows it exists.
+  - **derived** — the anchor is built in the browser from a container's own data (a `data-render`
+    row, a mermaid node), so only the *container* can be confirmed. The exact element may have been
+    deleted since. Calling that live content is a claim the resolver cannot make, so it does not.
+  - **flagged** — awaits the user. A note can be flagged *and* orphaned; the states are a list, not
+    a choice, because collapsing them hides the orphan.
 - **A Send is the batch boundary.** A round works the notes written up to the last Send; notes
   typed after it are listed as **held**, not silently included. Resolving a note the user is still
   writing is worse than waiting — an edit re-posts the note as unresolved, so the round's own

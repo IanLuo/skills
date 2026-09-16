@@ -177,6 +177,24 @@ def anchor_sections(content):
     return out
 
 
+def states_of(note, index):
+    """Every state a note is in — a note can be both flagged and an orphan.
+
+    `resolved` (the exact anchor is in the markup), `derived` (only its container is: a
+    `data-render` row or a mermaid node, which the browser builds and which may since have been
+    deleted), `orphan` (neither — the element is gone), `flagged` (awaits the user). Returning a
+    list is why `--json` no longer has to pick one: collapsing FLAGGED+ORPHAN into "flagged" hid
+    the orphan.
+    """
+    anchor = note["anchor"]
+    out = []
+    if anchor not in index:
+        out.append("derived" if anchor.split(".", 1)[0] in index else "orphan")
+    if note.get("flagged"):
+        out.append("flagged")
+    return out
+
+
 def section_for(anchor, index):
     """The section a note lives in, or None when the anchor is nowhere in the page.
 
@@ -999,6 +1017,10 @@ def cmd_drop(args):
         where = "purged"
     else:
         trash = root / ".dropped" / ("%s-%s" % (args.topic, time.strftime("%Y%m%dT%H%M%S")))
+        n = 2
+        while trash.exists():          # two drops in the same second used to nest one inside the
+            trash = trash.with_name("%s-%d" % (trash.name, n))   # other, so the printed path was wrong
+            n += 1
         trash.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(d), str(trash))
         where = "recoverable at %s  (mv it back to resume)" % trash
@@ -1042,8 +1064,7 @@ def cmd_pending(args):
     def rec(a):
         r = {k: v for k, v in a.items() if k != "resolved"}   # always False here
         r["section"] = section_for(a["anchor"], index)
-        r["state"] = ("flagged" if a.get("flagged") else
-                      "content" if section_for(a["anchor"], index) else "orphan")
+        r["state"] = states_of(a, index)
         r["in_batch"] = a in batch
         return r
 
@@ -1057,11 +1078,7 @@ def cmd_pending(args):
 
     def line(a, held=False):
         sec = section_for(a["anchor"], index)
-        state = []
-        if not sec:
-            state.append("ORPHAN")
-        if a.get("flagged"):
-            state.append("FLAGGED")
+        state = [s.upper() for s in states_of(a, index)]
         if held:
             state.append("HELD")
         tag = "%s·%s" % (a["id"], a["severity"]) + (" " + " ".join(state) if state else "")
