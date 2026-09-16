@@ -102,9 +102,9 @@ explains nothing.
 thirty. Every line you emit is re-read every round, and a canvas that shows everything shows
 nothing.
 
-A canvas worker runs in a pane and cannot invoke `/show-me`; the ladder is here so it does not
-need to. Same principle as the readability contract below, applied at authoring time rather
-than at review time.
+The session that writes a canvas may also invoke `/show-me`, but a canvas has to carry the view
+itself — the ladder is here so the choice is made while writing the section. Same principle as
+the readability contract below, applied at authoring time rather than at review time.
 
 ## Readability contract (what keeps a canvas worth reading)
 

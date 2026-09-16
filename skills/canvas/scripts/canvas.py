@@ -545,10 +545,9 @@ class Handler(BaseHTTPRequestHandler):
         the socket goes, or the page reports a failure for a stop that worked."""
         def bye():
             time.sleep(0.25)
-            try:
-                daemon_file(self.root).unlink()
-            except OSError:
-                pass
+            info = read_daemon(self.root)
+            if info:
+                stop_record(self.root, info)
             self.server.shutdown()
         threading.Thread(target=bye, daemon=True).start()
         return self.send_json(200, {
@@ -693,6 +692,17 @@ def read_daemon(root):
         return None
 
 
+def stop_record(root, info):
+    """Keep the daemon record with `pid` cleared. The user's tab is bound to that origin, and
+    a deliberate restart is exactly when it must not move — `start` prefers the recorded port,
+    so dropping the file here made the port jump and orphaned the open page."""
+    info["pid"] = None
+    try:
+        daemon_file(root).write_text(json.dumps(info, indent=2) + "\n")
+    except OSError:
+        pass
+
+
 def is_up(port):
     with socket.socket() as s:
         s.settimeout(0.3)
@@ -763,15 +773,7 @@ def cmd_stop(args):
             os.kill(info["pid"], 15)
         except (ProcessLookupError, PermissionError, KeyError, OSError):
             pass
-    # Keep the record: the user's tab is bound to that origin, and a deliberate restart is
-    # exactly when it must not move. `start` prefers the recorded port, so dropping the file here
-    # made the port jump (8788 -> 7392) and orphan the open page.
-    info["pid"] = None
-    info["stopped"] = now_iso()
-    try:
-        daemon_file(root).write_text(json.dumps(info, indent=2) + "\n")
-    except OSError:
-        pass
+    stop_record(root, info)
     print("canvas: stopped (pid %s, port %s) — port kept for the next start"
           % (info.get("pid"), info.get("port")))
     return 0
@@ -802,10 +804,10 @@ def cmd_ack(args):
 
 
 def cmd_flag(args):
-    """Mark notes as needing a decision the worker must not make itself.
+    """Mark notes as needing a decision the session must not make itself.
 
-    Without this a fresh worker cannot tell an escalated note from an unhandled one, and
-    re-attempts work its predecessor correctly refused.
+    Without this a later round cannot tell an escalated note from an unhandled one, and
+    re-attempts work an earlier round correctly refused.
     """
     root = Path(args.root)
     data = load_feedback(root, args.topic)

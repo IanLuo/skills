@@ -563,9 +563,9 @@ let HISTORY = [];
 
 async function loadHistory() {
   if (!LIVE) {
-    // Static (file://): no daemon, so no round history — but the panel now holds the
-    // and its button must stay reachable.
-    $('histbody').innerHTML = '<p class="empty">No history without the daemon — the requirement box below still works.</p>';
+    // Static (file://): no daemon, so no round history — render the empty state rather
+    // than leave the panel blank when it is opened.
+    $('histbody').innerHTML = '<p class="empty">No history without the daemon — your notes still copy for pasting into chat.</p>';
     return;
   }
   try {

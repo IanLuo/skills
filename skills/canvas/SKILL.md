@@ -1,6 +1,6 @@
 ---
 name: canvas
-description: Canvas exists so the agent's answers are understandable and the user's feedback keeps its meaning: an article-shaped live page on 127.0.0.1 — abstract, then detail, evidence under each claim, one marked key per section — which the user reads and annotates element by element, and which the agent keeps updating until the topic changes. A round is not done until the page is understood on its own. Use ONLY when the user explicitly asks for a canvas — "/canvas", "open a canvas", "let's work on this on a canvas", "keep it in the canvas", "co-edit this with me" — or explicitly asks to continue on a canvas that already exists under .agents/canvas/. Never auto-trigger. Do NOT use to answer a question with a one-shot page (that is annotate: annotate answers a question, canvas explains a response in depth); nor for a visual answer inside chat (show-me), for charts or dashboards, for writing specs (specs), or for design files (design-task).
+description: "Canvas exists so the agent's answers are understandable and the user's feedback keeps its meaning: an article-shaped live page on 127.0.0.1 — abstract, then detail, evidence under each claim, one marked key per section — which the user reads and annotates element by element, and which the agent keeps updating until the topic changes. A round is not done until the page is understood on its own. Use ONLY when the user explicitly asks for a canvas — \"/canvas\", \"open a canvas\", \"let's work on this on a canvas\", \"keep it in the canvas\", \"co-edit this with me\" — or explicitly asks to continue on a canvas that already exists under .agents/canvas/. Never auto-trigger. Do NOT use to answer a question with a one-shot page (that is annotate: annotate answers a question, canvas explains a response in depth); nor for a visual answer inside chat (show-me), for charts or dashboards, for writing specs (specs), or for design files (design-task)."
 metadata:
   audience: personal
   domain: agent-orchestration
@@ -218,7 +218,7 @@ asks, or when you see notes waiting and say what you are doing.
    broken in the browser — three separate bugs shipped that way.
 5. Close the round with a conclusion and the next move:
    ```bash
-   python3 $S/scripts/canvas.py say <topic> "queue is sound, liveness is the hole — next: R1 wake target"
+   python3 $S/scripts/canvas.py say <topic> "the section now shows the real data flow — next: the failure path when the daemon is down"
    ```
    Every round ends with **what is now true** plus **one suggested next move**; "§3 rewritten"
    is a progress note, not a conclusion. Write the same line into the page's conclusion block

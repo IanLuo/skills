@@ -16,7 +16,7 @@ python3 skills/skill-man/scripts/validate.py
 # evaluation.md: `audit.py [skill] [--skills-dir PATH]`)
 python3 skills/skill-man/scripts/audit.py
 
-# Run test suite (10 fixtures + upstream-conformance + audit + canvas sweep/wake)
+# Run test suite (10 fixtures + upstream-conformance + audit)
 bash tests/run.sh
 
 # Deploy
@@ -65,7 +65,7 @@ skills/          — 14 skills (see README table)
   skill-man/       create, revise, validate, audit, deploy skills
   skill-template/  starter skeleton
 bin/             — deploy-skills.sh (symlinks skills into each detected agent's global skills dir)
-tests/           — validation fixture tests + upstream-conformance cross-check + canvas daemon tests
+tests/           — validation fixture tests + upstream-conformance cross-check + audit.py behaviour tests
 ```
 
 The core pipeline is: init-context → specs → design-task → dev-task → review-task.

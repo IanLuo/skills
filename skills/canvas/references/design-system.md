@@ -1,4 +1,4 @@
-<!-- design:locked:06a1f37 2026-09-16 -->
+<!-- design:locked:8352a90 2026-09-16 -->
 # Design system — canvas chrome
 
 Read this before changing `chrome.css`, `chrome.js` chrome markup, or any canvas visual token.
@@ -7,7 +7,7 @@ Locked: re-run design-task to change it, do not edit around it.
 ## Scope
 
 - Applies to: the canvas chrome — tokens, chrome controls, content primitives (`chrome.css`), and the shell markup.
-- Does NOT govern: canvas *content* (nodes/sections the worker writes), mermaid diagram internals beyond the theme variables below, or the `annotate` skill's own copy of the old palette.
+- Does NOT govern: canvas *content* (nodes/sections the session writes), mermaid diagram internals beyond the theme variables below, or the `annotate` skill's own copy of the old palette.
 - Consumers: `canvas` skill (build + chrome), any dev-task touching canvas visuals.
 - N/A: product/PRD inputs — the brief came from the user directly (see Goals).
 
@@ -126,7 +126,7 @@ Locked: re-run design-task to change it, do not edit around it.
 | bottom bar | `#bottombar` | one docked surface (--surface + 1px --line + 12px top radius, no new elevation); never overlaps at any width |
 | status group | `#statusrow` | `#listening` + `#status` adjacent, left; `#err` on its own line below; `#controls` right |
 | section status | `#content .secpill.settled|.new|.open`, `.secfold` | every section may carry `data-status`; `settled` folds (heading becomes the summary, anchors preserved), `new` wears the accent, `open` is hairline-only. Tone-only styling: no new tokens |
-| needs-your-decision | `#convo #convonotice` (outer/left edge), `#histbody .ev .answered` button |, `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the worker's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
+| needs-your-decision | `#convo #convonotice` (outer/left edge), `#histbody .ev .answered` button |, `#histbody .ev.needs`, `.ev.flag` | badge on the Conversation tab driven by `/v.flagged`; the flagged note row AND the session's escalation text highlighted in `--crit`. Sibling of the rotated tab, so the count is never sideways |
 | state dots | `#statusrow ::before` | ONE vocabulary: hollow `○` idle, filled `●` active, `●` in `--crit` for a warning. Same glyph/size/margin for both pills — colour carries the meaning, not the shape (a triangle for warn was removed) |
 | status pill | `#status` | live / static / delivery-state strings; state dot `○` rest / `●` `.on` / `▲` `.warn` |
 | error line | `#err` | empty (`display:none`), error (crit border) |

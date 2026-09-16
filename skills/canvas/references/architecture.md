@@ -1,4 +1,4 @@
-<!-- specs:locked:bab56f0 2026-09-16 type=architecture -->
+<!-- specs:locked:8352a90 2026-09-16 type=architecture -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -131,4 +131,4 @@ Scope is the skill, not the repo. One line per part:
 - `references/graphics.md` — content vocabulary and the view ladder.
 - **N/A:** no ADRs, no `CONVENTIONS.md` in this repo.
 
-Last reviewed: 2026-09-15 · canvas /specs
+Last reviewed: 2026-09-16 · canvas /specs
