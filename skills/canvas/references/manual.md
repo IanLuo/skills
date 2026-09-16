@@ -126,6 +126,7 @@ A topic is meant to be dropped — that is the normal end of its life, not a des
 | **notes pile up unresolved** | no session has read them | ask the user to look, then run the round |
 | notes marked **stuck** *(legacy)* | a topic from before the loop was removed; the flag no longer updates | ignore it — read `pending` and resolve or flag every note |
 | `verify-canvas.py` says **diagrams not rendered** | `assets/mermaid.min.js` not vendored, or bad mermaid syntax (the error names the anchor) | fetch it with the curl in `SKILL.md`, or fix the diagram |
+| verify warns **readability** | a sentence over 45 words, or 200+ words of prose with no view | rewrite it in short sentences, or put a view under the claim — not a threshold to argue with |
 | verify warns **viewport not honoured** | headless Chrome will not lay out below ~500px | width-sensitive checks are **unverified**, not passing — do not claim a phone layout works |
 | a note cannot be executed here | it is chrome/design, not content | `flag --ids … --note …`, leave it unresolved; a chrome change is a `/design-task` pass on the locked doc |
 | content drifted from `design-system.md` | the doc is locked and chrome changed | re-run design-task, bump the rev, re-lock — never hand-edit a lock marker |

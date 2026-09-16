@@ -18,7 +18,6 @@ Requires the canvas daemon to be running. Exit 0 = all checks passed.
 """
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -30,7 +29,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from canvas import DEFAULT_ROOT, TOPIC_RE, read_daemon, is_up  # noqa: E402
+from canvas import (DEFAULT_ROOT, TOPIC_RE, read_daemon, is_up,  # noqa: E402
+                    read_text, topic_paths)
 
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -240,6 +240,48 @@ class DomCheck(HTMLParser):
         self.comments.append(data)
 
 
+LONG_SENTENCE = 45      # words; readable technical prose runs 15–25
+WALL = 200              # words of prose in one section
+
+
+def readability(content):
+    """The readability contract, as far as it can be counted.
+
+    Two failure shapes are countable: a sentence that has to be re-read, and a section that is a
+    wall of prose with no view under it. Warnings, not failures — a long sentence can be the right
+    sentence, and a checker that cries wolf gets ignored. Printed with every run so a round cannot
+    pass them without seeing them.
+    """
+    block_end = re.compile(r"</(p|li|h[1-6]|td|th|tr|div|figcaption|blockquote|dt|dd|section)>",
+                           re.I)
+
+    def prose(body):
+        """Only the sentences. A block boundary ends one, so a heading is not glued to the
+        paragraph under it and a table row is not one 85-word run-on — without this the check
+        reports sentences nobody wrote, and a checker that cries wolf gets ignored."""
+        body = re.sub(r"<(script|style|pre|svg)\b.*?</\1>", " ", body, flags=re.S | re.I)
+        body = block_end.sub(". ", body)
+        return " ".join(re.sub(r"<[^>]+>", " ", body).split())
+
+    warns, stats = [], []
+    for m in re.finditer(r'<section\b[^>]*\bdata-section="([^"]+)"(.*?)(?=<section\b|$)',
+                         content, re.S | re.I):
+        sid, body = m.group(1), m.group(2)
+        text = prose(body)
+        words = len(text.split())
+        views = len(re.findall(r'data-render=|class="mermaid"|class="tree"|<table|<ul|<ol', body))
+        if words >= WALL and views == 0:
+            warns.append("%s: %d words of prose and no view — that is a wall, not a section"
+                         % (sid, words))
+        for s in re.split(r"(?<=[.!?])\s+", text):
+            n = len(s.split())
+            if n > LONG_SENTENCE:
+                warns.append("%s: a %d-word sentence — %s…" % (sid, n, " ".join(s.split()[:9])))
+                break
+        stats.append((sid, words, views))
+    return warns, stats
+
+
 def check(dom, topic):
     """Return (results, failures). Each result is (name, ok, detail)."""
     d = DomCheck()
@@ -376,6 +418,19 @@ def main(argv=None):
                       % (args.viewport, got, want))
         for name, ok, detail in results:
             print("  %s %-26s %s" % ("✓" if ok else "✗", name, detail))
+        print()
+        # Readability is what the page is FOR, so it is reported on every run — as warnings,
+        # because a long sentence can be the right sentence and a checker that cries wolf is
+        # worse than none.
+        content = read_text(topic_paths(root, args.topic)["content"])
+        warns, stats = readability(content)
+        print("  readability  %s" % ("; ".join(stats and ["%s %dw/%dv" % s for s in stats])
+                                     if stats else "no sections"))
+        if warns:
+            for w in warns:
+                print("  ! %s" % w)
+            print("  ! %d readability warning(s) — short sentences, one idea each, "
+                  "a view under every claim" % len(warns))
         print()
         if failures:
             print("verify-canvas: %d check(s) FAILED" % len(failures))

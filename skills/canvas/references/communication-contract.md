@@ -1,4 +1,4 @@
-<!-- specs:locked:c903a5f 2026-09-16 type=spec -->
+<!-- specs:locked:f91c65f 2026-09-16 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -27,6 +27,16 @@ Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit 
   true, and what is being decided** by scanning it — no prose wall, nothing to ask, chat not opened.
 - Falsifiable: a fresh agent is given the page and nothing else, and must produce those three
   answers. It either can or it cannot.
+- **Readability is the test, and it outranks every other rule in this document.** Where a rule
+  below and the reader's comprehension disagree, comprehension wins. Two shapes do most of the work:
+  - **A diagram over prose.** Anything with parts, order, state or flow is a view, not a paragraph.
+    A concept explained in a wall of text was not explained.
+  - **Short sentences in plain words.** One idea per sentence. No clause stacking, no jargon the
+    user has not used, no sentence that has to be read twice. A sentence you must re-read fails,
+    however accurate it is.
+- **It is checked, not assumed.** `verify-canvas.py` reports every section's prose and view count
+  on each run, and warns on a sentence over 45 words and on a section of 200+ words with no view.
+  The threshold is a view, not a word count: the same words with a diagram under them are fine.
 - **The page is an article, not a chat.** It answers in this order, every round: **abstract** (the
   point in ~3 lines, first, never folded) → **detail** → **evidence** (a view under every claim that
   can carry one) → **key** (one marked takeaway per section). Accurate, concrete, short.

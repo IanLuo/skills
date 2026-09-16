@@ -73,6 +73,11 @@ markup for each view.
   rewritten at the end of every round with one conclusion line and one `next:` move. So the
   round's outcome sits on the page itself; the Conversation panel is the record, not the only
   place to read it.
+- **A diagram over prose, always** — anything with parts, order, state or flow. Which diagram is
+  decided by resolution, not by cost: **mermaid** when you would point at a part (each node has its
+  own anchor), **`.tree`** when you would only point at the whole thing (a tree, a diff,
+  pseudocode). Measured alongside the other primitives in
+  [references/graphics.md](references/graphics.md).
 - **Pick the smallest view that makes the point** (show-me's ladder, in
   [references/graphics.md](references/graphics.md)): pseudocode for logic, a call/component
   tree for structure, a file tree for layout, a shape-matched diff for what changed, mermaid
@@ -188,6 +193,8 @@ asks, or when you see notes waiting and say what you are doing.
    Non-zero exit means do not report success. Needs the daemon running and Chrome
    (`--chrome PATH` if it is somewhere unusual). A canvas can look perfect in source and be
    broken in the browser — three separate bugs shipped that way.
+   The same run prints a **readability** line per section and warns on long sentences and on
+   prose with no view. Those warnings are the point of the page; fix them in the round.
 5. Close the round with a conclusion and the next move:
    ```bash
    python3 $S/scripts/canvas.py say <topic> "the section now shows the real data flow — next: the failure path when the daemon is down"

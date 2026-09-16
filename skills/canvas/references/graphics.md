@@ -201,6 +201,24 @@ Pick by question shape:
 Do **not** use mermaid for side-by-side options, layout mockups, or numeric comparison —
 that is what `.cards`, plain HTML, and `.compare`/`.bars` are for.
 
+### mermaid or ASCII? (measured)
+
+Same four shapes, written both ways:
+
+| shape | mermaid | `.tree`/ASCII | pointable |
+|---|---|---|---|
+| linear flow, 3 hops | 96c | **59c** | mermaid: every node · ascii: 1 |
+| branch / decision | 86c | **68c** | " |
+| sequence, 5 messages | **113c** | 164c | " |
+| file tree, 7 entries | 147c | **94c** | " |
+| total | 442c | **385c (−12%)** | " |
+
+So it is close, and ASCII is usually cheaper — its cost is mostly alignment spaces. Decide on
+**resolution, not tokens**: a mermaid node carries its own anchor (`fig-owners.D` is the daemon box),
+so the user can point inside the picture; an ASCII block is one anchor and can only be rejected
+whole. Mermaid when you would want to point at a part; `.tree` when you would not (trees, diffs,
+pseudocode, ordered shapes). Sequences are the one shape where mermaid is also the cheaper one.
+
 Mermaid renders only in live mode, or when the shell was built with `--inline-mermaid`.
 No `assets/mermaid.min.js` vendored means diagrams display as their source text — check
 with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/mermaid.js` (200 = ok).
