@@ -1,4 +1,4 @@
-<!-- design:locked:4d7d5ab 2026-09-12 -->
+<!-- design:locked:44e7439 2026-09-16 -->
 # Design system — canvas chrome
 
 Read this before changing `chrome.css`, `chrome.js` chrome markup, or any canvas visual token.
@@ -106,10 +106,8 @@ Locked: re-run design-task to change it, do not edit around it.
 
 ## Keybindings (chrome, shared by every topic)
 
-- `Enter` in the requirement composer — **add** the requirement (the convention; a composer that
-  swallows Enter reads as broken).
-- `Shift + Enter` in the composer — **newline**, so multi-line requirements still work.
-- `Cmd/Ctrl + Enter` — also adds (an Enter without Shift), so both habits work.
+- N/A: no composer keybindings — the composer was removed in Rev 6. The only text input left in
+  the chrome is the annotation dialog's textarea, where Enter saves the note.
 - `Escape` — closes the **innermost** open surface, in this precedence:
   1. the annotation dialog (`#form`), but only while its comment is empty — closing it would drop the anchor the note is attached to;
   2. otherwise the Conversation panel (`#histpanel`), whose draft and history survive a hide.
@@ -137,7 +135,7 @@ Locked: re-run design-task to change it, do not edit around it.
 | severity dot + level buttons | `#list .dot`, `#levels .lvl` | suggestion, important, critical, `.active` |
 | anchor marks | `[data-anchor]` | rest, hover, `.marked`, `.marked-done` |
 | count badge | `.badge` | pending count; suppressed inside `<pre>` and `<svg>` |
-| composer | `#composer` | docked at the foot of the Conversation panel; textarea grows to 6rem then scrolls; Enter adds (Shift+Enter = newline), empty input = no-op |
+| ~~composer~~ | — | **removed in Rev 6. `#composer`, `#req`, `#reqadd` no longer exist.** Read-and-point: a requirement is a note on the element it concerns |
 | emphasis | `.key`, `.dim` | static |
 | cards | `.cards`, `.card`, `.kicker` | static, hover (anchor) |
 | compare table | `.compare` | static; header row uppercase mono |
@@ -148,7 +146,7 @@ Locked: re-run design-task to change it, do not edit around it.
 | figure/caption | `figure`, `.figcap` | static |
 | diagram block | `.mermaid`, `.mermaid-failed` | rendered, failed (crit dashed + reason line) |
 | spec error | `.spec-error` | bad JSON / unknown `data-render` kind |
-| Conversation panel | `#histpanel`, `.round`, `.rhead`, `.ev` | hidden/open, closes on outside tap, `overscroll-behavior: contain` so its scroll never moves the page; composer pinned at its foot; current round, user/agent/meta rows, resolved rows |
+| Conversation panel | `#histpanel`, `.round`, `.rhead`, `.ev` | hidden/open, closes on outside tap, `overscroll-behavior: contain` so its scroll never moves the page; current round, user/agent/meta rows, resolved rows |
 | content text | `h1–h3`, `p`, `ul/ol`, `a`, `code`, `hr` | rest, hover (`a`), focus (`a`) |
 | N/A | — | no form inputs beyond the annotation textarea; no tables beyond `.compare` |
 
@@ -168,7 +166,15 @@ Locked: re-run design-task to change it, do not edit around it.
 - `annotate` still carries the pre-lock palette (`#d8731f` accent, `#2f63c9` blue). Two chrome stylesheets now exist; folding annotate into this system is **not** done and is not covered by this lock.
 - The accent-as-`code`-colour choice means a code chip is accent-coloured on `--surface-2`; it passes at 4.67:1 (slate) with the least margin of any pair. Darkening `--surface-2` further will break it.
 
-Last reviewed: 2026-09-12 · canvas design task
+Last reviewed: 2026-09-16 · canvas design task
+Rev 6 (2026-09-16): **the composer is removed**, on the user's direction. A canvas is read-and-point,
+so a requirement becomes a note on the element it concerns — the same mechanism as every other note.
+The free-text box was the one affordance that made a canvas feel like a chat client, and so like
+`/annotate`. Chrome loses `#composer` / `#req` / `#reqadd` and their keybindings; `snippetOf()` also
+stops reading mermaid's injected `<style>` element as a note's snippet (a note on a diagram box stored
+CSS instead of the box label). No token changed, so the contrast table is unchanged. Applied in
+`references/canvas-template.html` + `chrome.css` + `chrome.js`, then the topic rebuilt and
+`verify-canvas.py` re-run.
 Rev 5 (same day): bottom chrome reorganised on the user's direction — one `#bottombar` (fixed, aligned to the 52rem content column) holding `#status` as a state pill (dot ○/●/▲) on the left and `#controls` as a single right-aligned row (dashboard · listening · Conversation · Send); the requirement composer moved from the bottom-left corner into the foot of the Conversation panel, its textarea growing to 6rem then scrolling; the panel reserves a bottom strip so the bar stays clickable under an open drawer; `History` renamed `Conversation` in the button, the panel head and the jump-to-composer row. No token changed, so the contrast table is unchanged; `verify-canvas.py` re-run on both topics (no overlap, all chrome in viewport — headless laid out at 756x469, see Known gaps) and the file:// fallback probed (composer reachable, no JS errors). Applied in `references/canvas-template.html` + `chrome.css` + `chrome.js`, then every topic rebuilt.
 Rev 4 (same day): `paper` finalised from the round worker's own spec (#f6f4ee stock, #100e0a print-black, #1b3f6b print-blue, #b8b1a0 rules) after independent re-measurement matched its reported ratios; `--crit` set to press red #a3231a; newsprint masthead (h1/h2 serif) adopted from the worker's open question. Rev 3 (superseded) had made the accent ink-black.
 Rev 3 (same day): `paper` re-specced as **newsprint** on user feedback ("news paper, not notebook paper"; background should feel like plain paper). Warm stock #f8f6f1, near-black warm ink, accent becomes ink black so the scheme contains ONE hue — the press red, reserved for critical. Key stays `paper` so saved preferences do not fall back to slate.

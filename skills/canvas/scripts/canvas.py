@@ -21,13 +21,13 @@ Routes:
     GET    /health               {ok, port, root, mermaid, canvases}
     GET    /t/<topic>            built shell
     GET    /c/<topic>            content partial (hot-swap source)
-    GET    /v/<topic>            {v, sections, pending, unsent, sent, sweep} — poll this
+    GET    /v/<topic>            {v, sections, pending, unsent} — poll this
     GET    /a/<topic>            annotations
     GET    /h/<topic>            history events, oldest first
     POST   /a/<topic>            upsert one annotation
     POST   /a/<topic>/ack        {"ids":[...]} → mark resolved
     DELETE /a/<topic>?id=<id>    delete one annotation
-    POST   /a/<topic>/send       the user pressed Send — the sweep wakes the coordinator
+    POST   /a/<topic>/send       the user pressed Send — the batch is ready to collect
     GET    /mermaid.js           vendored mermaid (404 if not vendored)
 
 CLI:
@@ -36,11 +36,12 @@ CLI:
     canvas.py start [--root DIR] [--port N] [--open TOPIC]
     canvas.py stop  [--root DIR]
     canvas.py status [--root DIR]
+    canvas.py list [--root DIR] [--root DIR ...]   every topic and what is waiting
     canvas.py pending <topic> [--root DIR] [--json]
     canvas.py send <topic>                       simulate the page's Send button
     canvas.py ack <topic> [--ids c1,c2 | --all]
     canvas.py say <topic> "<one line>"           record the agent's reply on the topic
-    canvas.py flag <topic> --ids c1,c2 [--note "why"]    escalate notes to the coordinator
+    canvas.py flag <topic> --ids c1,c2 [--note "why"]    escalate notes the user must decide
     canvas.py versions <topic>                   list content snapshots (undo points)
     canvas.py restore <topic> --to last|<fragment>       put a snapshot back
     canvas.py open <topic>
@@ -215,21 +216,11 @@ def load_history(root, topic):
 # ── delivery: the send signal ─────────────────────────────────────────────
 #
 # The user should never have to retype their notes into a chat box. The page raises a
-# send signal instead, and the daemon's sweep notices it and wakes the coordinator. The
-# signal is sticky: a send that arrives while no agent can be woken stays on disk and is
-# served by the next sweep, so it is never lost.
-
-# herdr states that mean "not in a round", so the sweep may wake this agent. Kept next to
-# the wake path and imported by canvas-worker.py so the two cannot drift.
-IDLE_STATES = (None, "idle", "done", "exited", "unknown", "stopped")
-
+# send signal instead; the notes themselves are already on disk, written the moment they
+# were typed, so a send only means "this batch is ready" and can never be lost.
 
 def send_path(root, topic):
     return topic_paths(root, topic)["dir"] / "send.json"
-
-
-def stop_path(root, topic):
-    return topic_paths(root, topic)["dir"] / "STOP"
 
 
 def read_send(root, topic):
@@ -247,10 +238,10 @@ def write_send(root, topic, data):
 
 def record_send(root, topic):
     """The page's Send button, as state: mark the batch sent and say how many notes it
-    carries. It deliberately does NOT wake anyone — the daemon's sweep is the single wake
-    path, so one Send can never become two rounds. Returns the count."""
+    carries. Send writes state and nothing else — a session reading `pending` collects it,
+    so one Send can never start two rounds. Returns the count."""
     notes = unsent_notes(root, topic) or pending_notes(root, topic)
-    write_send(root, topic, {"ts": now_iso(), "count": len(notes), "consumed_at": None})
+    write_send(root, topic, {"ts": now_iso(), "count": len(notes)})
     append_history(root, topic, {"kind": "send", "count": len(notes)})
     return len(notes)
 
@@ -264,38 +255,6 @@ def unsent_notes(root, topic):
     send = read_send(root, topic)
     sent_at = (send or {}).get("ts") or ""
     return [a for a in pending_notes(root, topic) if a.get("ts", "") > sent_at]
-
-
-def unread_notes(root, topic):
-    """Unresolved notes that were already sent but never handled.
-
-    The message a missing or short-lived watcher drops. A send used to be consumed on
-    DELIVERY, so if the waiter then died the note was stranded forever with nothing to
-    re-trigger anyone. These re-trigger a waiter instead, which is what makes feedback
-    survive a dead worker, a restart, or a topic with no watcher at all.
-
-    Flagged notes are excluded: they await a decision no worker may make, so including
-    them would re-trigger a round every time and never resolve.
-    """
-    send = read_send(root, topic)
-    sent_at = (send or {}).get("ts") or ""
-    if not sent_at:
-        return []
-    return [a for a in pending_notes(root, topic)
-            if not a.get("flagged") and a.get("ts", "") <= sent_at
-            and a.get("attempts", 0) < MAX_ROUND_ATTEMPTS]
-
-
-# ── dashboard: one view of every topic, from files ───────────────────────
-
-def read_coordinator_record(root):
-    """`.coordinator.json`, written by canvas-worker.py `coordinator start`. This is the only
-    wake target: it is the record the live architecture actually produces. Repeating it
-    verbatim, not guessing liveness — whether the pane still exists is herdr's answer."""
-    try:
-        return json.loads((root / ".coordinator.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
 
 
 def parse_ts(s):
@@ -338,12 +297,6 @@ def topic_summary(root, topic):
         "flagged": len([a for a in notes if a.get("flagged") and not a.get("resolved")]),
         "unsent": len(unsent_notes(root, topic)),
         "sent_at": send.get("ts"),
-        "consumed_at": send.get("consumed_at"),
-        "queued": bool(send.get("ts") and not send.get("consumed_at")),
-        "stop_requested": stop_path(root, topic).exists(),
-        # Liveness, derived from files: is there a coordinator to wake, and is the sweep on?
-        "coordinator": bool(read_coordinator_record(root)),
-        "sweep": SWEEP_SECONDS,
         "rounds": len(replies),
         "last_reply": replies[-1].get("ts") if replies else None,
         "latency_s": send_latency(history),
@@ -364,179 +317,7 @@ def run_action(argv, timeout=120):
             "out": (p.stdout or "").strip()[-4000:], "err": (p.stderr or "").strip()[-2000:]}
 
 
-# ── waking the coordinator ────────────────────────────────────────────────
-#
-# Who does the work is decided by file state, not by who is parked. The daemon already
-# knows which topics have unread work, so it wakes the root's coordinator with herdr. Best
-# effort on purpose: no coordinator or no herdr leaves the Send on disk, which the sweep
-# retries and the page says out loud.
-
-def coordinator_is_idle(root):
-    """True unless herdr says the recorded coordinator is mid-round.
-
-    Locked decision: wake only when work is unread AND the coordinator is idle — a prompt
-    sent into a running round queues, and dispatching twice for one note is the storm this
-    design exists to prevent (architecture.md, load-bearing structure 3). An unreadable
-    status counts as idle on purpose: refusing to wake on a status we cannot read would be a
-    silent outage, the worse failure.
-    """
-    coord = read_coordinator_record(root) or {}
-    name = coord.get("agent_name")
-    exe = shutil.which("herdr")
-    if not name or not exe:
-        return True                       # notify_worker reports the missing coordinator
-    try:
-        p = subprocess.run([exe, "agent", "get", name], capture_output=True, text=True,
-                           timeout=15)
-        if p.returncode != 0:
-            return True
-        res = json.loads(p.stdout).get("result") or {}
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        return True
-    agent = res.get("agent") or {}
-    return (agent.get("agent_status") or res.get("agent_status")) in IDLE_STATES
-
-
-def notify_worker(root, topic, count):
-    coord = read_coordinator_record(root) or {}
-    # The target is the root's COORDINATOR. It used to be a per-topic worker.json — a record
-    # only the rejected per-topic watcher ever wrote, so the push read a file nothing produced
-    # and 18 of 21 wakes reached nobody. Locked: architecture.md, load-bearing structure 4.
-    name = coord.get("agent_name") or coord.get("pane_id")
-    if not name:
-        return {"ok": False, "why": "no coordinator recorded"}
-    exe = shutil.which("herdr")
-    if not exe:
-        return {"ok": False, "why": "herdr not on PATH"}
-    prompt = ("Notes arrived on canvas %r (%d). Dispatch one round: "
-              "canvas-worker.py round %s --root %s --wait. Do not edit content yourself."
-              % (topic, count, topic, root))
-    try:
-        p = subprocess.run([exe, "agent", "prompt", name, prompt],
-                           capture_output=True, text=True, timeout=20)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "why": "herdr prompt timed out"}
-    except OSError as e:
-        return {"ok": False, "why": str(e)}
-    return {"ok": p.returncode == 0, "agent": name,
-            "why": None if p.returncode == 0 else (p.stderr or p.stdout).strip()[:200]}
-
-
-def wake_and_log(root, topic, count):
-    """Wake in the background so a Send never waits on herdr, and log the outcome either way."""
-    res = notify_worker(root, topic, count)
-    try:
-        append_history(root, topic, {"kind": "wake", "ok": bool(res.get("ok")),
-                                     "why": res.get("why") or "",
-                                     "agent": res.get("agent") or ""})
-    except OSError:
-        pass
-    return res
-
-
-# ── the sweep: the daemon is what notices work ────────────────
-#
-# There is no waiter and no park. The daemon is the only always-on component and already
-# holds the state this decision needs (work unread, coordinator idle, target known), so it
-# sweeps for unread work and wakes the coordinator. This is the single wake path: the Send
-# route writes state and nothing else.
-# Locked: architecture.md, load-bearing structure (2), (3) and (4).
-
-SWEEP_LAST = {}            # (root, topic) -> last wake ts, so one nudge per interval
-SWEEP_WAKES = []           # wake ts, for the global cap
-SWEEP_MIN_INTERVAL = 60    # seconds between wakes for one topic
-SWEEP_MAX_WAKES = 5        # wakes per SWEEP_WINDOW, however many topics are waiting
-SWEEP_WINDOW = 600         # seconds
-SWEEP_SECONDS = 0          # the interval this daemon was started with; 0 = off
-
-
-def work_by_topic(root):
-    """Every topic with work the daemon should dispatch: notes that were sent and never
-    resolved (the retry path), or a freshly raised Send — which re-arms even notes that hit
-    the retry cap, because pressing Send again is the user's way to say "try once more"."""
-    out = []
-    for topic in list_canvases(root):
-        unread = unread_notes(root, topic)
-        send = read_send(root, topic) or {}
-        raised = bool(send and not send.get("consumed_at"))
-        pending = [a for a in pending_notes(root, topic) if not a.get("flagged")]
-        if unread:
-            out.append((topic, len(unread)))
-        elif raised and pending:
-            out.append((topic, send.get("count") or len(pending)))
-    return out
-
-
-def sweep_once(root, now=None, interval=None):
-    """One pass. Returns the wakes it made; silent when the rate limits hold or the
-    coordinator is busy, because this runs every few seconds and an unanswered wake must not
-    write a failure line each time.
-
-    A successful wake counts the attempt and consumes the send (`take_work`), so a note that
-    was handed over is not handed over again, and one nobody resolved retries exactly
-    MAX_ROUND_ATTEMPTS times before it is `stuck`."""
-    root = Path(root)
-    now = time.time() if now is None else now
-    interval = SWEEP_MIN_INTERVAL if interval is None else interval
-    global SWEEP_WAKES
-    SWEEP_WAKES = [t for t in SWEEP_WAKES if now - t < SWEEP_WINDOW]
-    if (root / ".COORDINATOR_STOP").exists():
-        return []                          # a stop was requested; waking again would fight it
-    woken = []
-    for topic, count in work_by_topic(root):
-        key = (str(root.resolve()), topic)
-        if now - SWEEP_LAST.get(key, 0) < interval:
-            continue
-        if len(SWEEP_WAKES) >= SWEEP_MAX_WAKES:
-            break                          # cap the noise: five unanswered wakes is enough
-        if not coordinator_is_idle(root):
-            break                          # a round is in flight — wake after it, not into it
-        SWEEP_LAST[key] = now
-        SWEEP_WAKES.append(now)
-        res = wake_and_log(root, topic, count)
-        if res.get("ok"):
-            take_work(root, topic)         # count the attempt, consume the send
-        woken.append(res)
-    return woken
-
-
-def sweep_loop(root, seconds):
-    while True:
-        try:
-            sweep_once(root)
-        except Exception:
-            pass                           # a sweep must never take the server down
-        time.sleep(max(0.5, seconds))
-
-
-def start_sweep(root, seconds):
-    """Start the sweep thread and make its interval observable on /health."""
-    global SWEEP_SECONDS
-    SWEEP_SECONDS = float(seconds or 0)
-    if SWEEP_SECONDS <= 0:
-        return None
-    t = threading.Thread(target=sweep_loop, args=(Path(root), SWEEP_SECONDS), daemon=True)
-    t.start()
-    return t
-
-
-def take_work(root, topic):
-    """Hand over a topic's batch: count the attempt, consume the send. The one place it
-    happens, so the wake path and the page cannot drift apart."""
-    unread = unread_notes(root, topic)
-    if unread:
-        data = load_feedback(root, topic)
-        ids = set(a["id"] for a in unread)
-        for a in data["annotations"]:
-            if a.get("id") in ids:
-                a["attempts"] = a.get("attempts", 0) + 1
-        save_feedback(root, topic, data)
-    send = read_send(root, topic)
-    if send and not send.get("consumed_at"):
-        send["consumed_at"] = now_iso()
-        write_send(root, topic, send)
-    return unread or pending_notes(root, topic)
-
+# ── content changes: the hot-swap source, and what can be undone ──────────
 
 def note_content_change(root, topic, content):
     """Log which sections changed, and snapshot the content so a round can be undone.
@@ -576,20 +357,6 @@ def note_content_change(root, topic, content):
 # snapshot the only recovery is retyping. Cheap insurance: keep the last KEEP versions.
 
 KEEP_SNAPSHOTS = 20
-
-# A note that a round fails to resolve (neither acked nor flagged) would otherwise re-trigger
-# a fresh round forever — an endless agent loop, which is worse than the silent drop it was
-# meant to fix. Two tries, then it is `stuck` and the page says so.
-MAX_ROUND_ATTEMPTS = 2
-
-
-def stuck_notes(root, topic):
-    send = read_send(root, topic)
-    sent_at = (send or {}).get("ts") or ""
-    return [a for a in pending_notes(root, topic)
-            if not a.get("flagged") and a.get("ts", "") <= sent_at
-            and a.get("attempts", 0) >= MAX_ROUND_ATTEMPTS]
-
 
 def versions_dir(root, topic):
     return topic_paths(root, topic)["dir"] / "versions"
@@ -664,8 +431,6 @@ class Handler(BaseHTTPRequestHandler):
                 "root": str(self.root.resolve()), "mermaid": MERMAID_ASSET.is_file(),
                 "canvases": list_canvases(self.root), "time": now_iso(),
                 "rev": script_rev(),
-                # 0 = the sweep is off (tests, or a deliberately silent daemon).
-                "sweep": SWEEP_SECONDS,
             })
 
         if path == "/mermaid.js":
@@ -726,23 +491,13 @@ class Handler(BaseHTTPRequestHandler):
                 "v": sha(content), "sections": section_hashes(content),
                 "pending": len(pending_notes(self.root, topic)),
                 "unsent": len(unsent_notes(self.root, topic)),
-                "unread": len(unread_notes(self.root, topic)),
-                "stuck": len(stuck_notes(self.root, topic)),
-                # flagged notes await a HUMAN decision and are never dispatched, so the
-                # page must not report them as work in progress.
+                # flagged notes await a HUMAN decision, so the page must not report them
+                # as work in progress.
                 "flagged": len([a for a in pending_notes(self.root, topic) if a.get("flagged")]),
-                "sent": bool(send and not send.get("consumed_at")),
-                # Delivery state, so the page can say the notes were COLLECTED. Without
-                # this the user presses Send again because nothing appears to happen.
+                # Delivery state, so the page can say the notes were COLLECTED. Nothing
+                # consumes a send automatically — a session reads `pending`.
                 "last_send_ts": (send or {}).get("ts"),
-                "send_consumed_at": (send or {}).get("consumed_at"),
                 "send_count": (send or {}).get("count"),
-                "stop_requested": stop_path(self.root, topic).exists(),
-                # Liveness: the daemon notices work by itself and wakes the coordinator, so
-                # the page's question is "is the sweep armed and is there a coordinator to
-                # wake", never "is someone parked".
-                "sweep": SWEEP_SECONDS,
-                "coordinator": bool(read_coordinator_record(self.root)),
             })
 
         if parts and parts[0] == "h":
@@ -809,17 +564,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_topics(parts, body)
         if parts[:2] == ["daemon", "stop"]:
             return self.post_daemon_stop()
-        # One coordinator per root: exactly two root-level commands, and no per-topic worker
-        # plumbing. The coordinator is the agent the daemon wakes; nothing registers it here.
-        if parts[:2] == ["coordinator", "start"]:
-            return self.send_json(200, run_action(
-                [SKILL_DIR / "scripts" / "canvas-worker.py", "coordinator", "start",
-                 "--root", str(self.root)], timeout=180))
-        if parts[:2] == ["coordinator", "stop"]:
-            return self.send_json(200, run_action(
-                [SKILL_DIR / "scripts" / "canvas-worker.py", "coordinator", "stop",
-                 "--root", str(self.root), "--wait", "5"], timeout=180))
-
         if not parts or parts[0] != "a":
             return self.send_json(404, {"error": "not found"})
         topic = self.topic(parts)
@@ -829,10 +573,10 @@ class Handler(BaseHTTPRequestHandler):
         data = load_feedback(self.root, topic)
 
         if len(parts) > 2 and parts[2] == "send":
-            # The Send writes state and stops there. Waking is the daemon's job, on the
-            # sweep — a second wake path here is how one Send became two rounds.
+            # Send writes state and stops there. A session collects it by reading
+            # `pending`; nothing else should ever start a round.
             count = record_send(self.root, topic)
-            return self.send_json(200, {"sent": count, "wake": "sweep"})
+            return self.send_json(200, {"sent": count})
 
         if len(parts) > 2 and parts[2] == "ack":
             ids = set(body.get("ids") or [])
@@ -971,7 +715,6 @@ def cmd_serve(args):
     daemon_file(root).write_text(json.dumps(
         {"port": port, "pid": os.getpid(), "root": str(root.resolve()), "started": now_iso()},
         indent=2) + "\n")
-    start_sweep(root, args.sweep)
     print("canvas: serving %s on http://127.0.0.1:%d" % (root.resolve(), port), flush=True)
     try:
         server.serve_forever()
@@ -1015,15 +758,22 @@ def cmd_stop(args):
     if not info:
         print("canvas: no daemon recorded for %s" % root)
         return 0
+    if info.get("pid"):
+        try:
+            os.kill(info["pid"], 15)
+        except (ProcessLookupError, PermissionError, KeyError, OSError):
+            pass
+    # Keep the record: the user's tab is bound to that origin, and a deliberate restart is
+    # exactly when it must not move. `start` prefers the recorded port, so dropping the file here
+    # made the port jump (8788 -> 7392) and orphan the open page.
+    info["pid"] = None
+    info["stopped"] = now_iso()
     try:
-        os.kill(info["pid"], 15)
-    except (ProcessLookupError, PermissionError, KeyError):
-        pass
-    try:
-        daemon_file(root).unlink()
+        daemon_file(root).write_text(json.dumps(info, indent=2) + "\n")
     except OSError:
         pass
-    print("canvas: stopped (pid %s, port %s)" % (info.get("pid"), info.get("port")))
+    print("canvas: stopped (pid %s, port %s) — port kept for the next start"
+          % (info.get("pid"), info.get("port")))
     return 0
 
 
@@ -1145,9 +895,30 @@ def cmd_open(args):
 
 
 def cmd_send(args):
-    """Simulate the page's Send button: raise the signal, let the sweep do the waking."""
+    """Simulate the page's Send button: raise the signal for a session to collect."""
     count = record_send(Path(args.root), args.topic)
     print("canvas: send raised with %d note(s)" % count)
+    return 0
+
+
+def cmd_list(args):
+    """Every topic under each root, and what is waiting there. Read straight from files,
+    so it works with no daemon running."""
+    for raw in (args.root or [DEFAULT_ROOT]):
+        root = Path(raw)
+        topics = list_canvases(root)
+        if not topics:
+            print("%s: no topics" % root)
+            continue
+        print("%s" % root)
+        for topic in topics:
+            notes = load_feedback(root, topic)["annotations"]
+            pending = [a for a in notes if not a.get("resolved")]
+            flagged = [a for a in pending if a.get("flagged")]
+            send = read_send(root, topic) or {}
+            print("  %-24s pending=%d unsent=%d flagged=%d sent=%s"
+                  % (topic, len(pending), len(unsent_notes(root, topic)), len(flagged),
+                     send.get("ts") or "-"))
     return 0
 
 
@@ -1178,8 +949,6 @@ def main(argv=None):
     sp = common(sub.add_parser("serve"))
     sp.add_argument("--port", type=int, default=DEFAULT_PORT)
     sp.add_argument("--strict-port", action="store_true")
-    sp.add_argument("--sweep", type=float, default=2.0,
-                    help="seconds between sweeps for unread work; 0 disables (default 2)")
     sp.set_defaults(func=cmd_serve)
 
     sp = common(sub.add_parser("start"))
@@ -1230,6 +999,11 @@ def main(argv=None):
     sp = common(sub.add_parser("send"))
     sp.add_argument("topic")
     sp.set_defaults(func=cmd_send)
+
+    sp = sub.add_parser("list", help="every topic and what is waiting (no daemon needed)")
+    sp.add_argument("--root", action="append", default=None,
+                    help="canvas dir; repeatable (default %s)" % DEFAULT_ROOT)
+    sp.set_defaults(func=cmd_list)
 
     args = p.parse_args(argv)
     require_topic(getattr(args, "topic", None))

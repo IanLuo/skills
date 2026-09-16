@@ -209,7 +209,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.6rem 0; }
         background: var(--accent); color: var(--on-accent); }
 /* Bottom bar — status and controls share ONE fixed row, aligned to the content column
    rather than pinned to the window corners, so the group reads as a bar instead of two
-   floating clusters. The requirement input lives in the Conversation panel (see #composer). */
+   floating clusters. Read-and-point: there is no free-text input anywhere in the chrome. */
 #bottombar { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
              width: min(52rem, 100%); padding: .6rem 1.1rem .8rem; z-index: 40;
              display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem;
@@ -332,8 +332,7 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 #history:hover, #dash:hover { background: var(--surface-2); }
 
 #histpanel { position: fixed; top: 0; left: 0; bottom: 0; width: 24rem; max-width: 92vw; z-index: 45;
-             /* No bottom reserve: the panel covers the bar (z 45 > 40), so empty space below the
-                composer was just dead padding. */
+             /* No bottom reserve: the panel covers the bar (z 45 > 40). */
              display: flex; flex-direction: column; background: var(--surface);
              /* Left edge by request: on the right it collided with the page scrollbar,
               so the tab and panel could sit under the thumb. */
@@ -394,28 +393,6 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
    grouping, so the pills cannot collide however the labels grow. */
 #controls { display: flex; align-items: center; flex: none; gap: .45rem; }
 #controls button, #controls span, #controls a { position: static; }
-
-/* Composer — a requirement with no element to point at. Every other note is keyed to an
-   element, but a new requirement usually has none yet. It is docked at the foot of the
-   Conversation panel, so a requirement is written where the conversation is read, and
-   the textarea grows with the text (up to six lines) instead of scrolling a one-line box.
-   Existing tokens only: no new colour, no new elevation. */
-#composer { flex: none; display: flex; align-items: flex-end; gap: .4rem;
-            padding: .6rem .9rem; border-top: 1px solid var(--line); }
-#composer textarea { flex: 1; resize: none; font: inherit; font-size: .85rem;
-                     min-height: 2.5rem; max-height: 40vh; overflow-y: auto;
-                     /* grows with the text (JS sets the height); field-sizing is the same
-                        behaviour natively where it is supported */
-                     field-sizing: content;
-                     padding: .55rem .7rem; border-radius: 8px;
-                     border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
-#composer button { padding: .7rem 1.1rem; border: 0; border-radius: 999px;
-                   background: var(--accent); color: var(--on-accent); cursor: pointer;
-                   font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .8rem; }
-/* It carries an anchor so a requirement note has somewhere to resolve, but it is an input,
-   not a thing to annotate: no tint, no hover wash, no mark. */
-#composer[data-anchor], #composer[data-anchor]:hover, #composer[data-anchor].marked {
-  background: transparent; }
 
 /* ══════════════════════════════════════════════════════════════════════════
    Colour scheme switcher — top of the page, so the reader's choice is one click

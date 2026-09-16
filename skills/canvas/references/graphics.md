@@ -69,6 +69,10 @@ Also available: `.tree` (file/call trees, `white-space: pre`), `.bars`/`.bar`/`.
 (magnitudes), `.note` (a callout), `figure` + `figcaption`, `.card`, `.meta-row`, `.kicker`,
 `.eyebrow`, `.mono`.
 
+**Every `<pre>` carries `.tree`.** A bare `<pre>` has no scroll container, so a long line widens
+the whole document instead of scrolling inside the block — the page overflows and no element's
+bounding box looks guilty. `verify-canvas.py` reports it as a failed `no horizontal overflow`.
+
 
 ## Pick the view by the question shape (borrowed from `show-me`)
 
@@ -103,6 +107,9 @@ need to. Same principle as the readability contract below, applied at authoring 
 than at review time.
 
 ## Readability contract (what keeps a canvas worth reading)
+
+Why these are required and what counts as failure: [communication-contract.md](communication-contract.md).
+Read it before weakening a rule here.
 
 A canvas accumulates: every round adds, nothing is removed, so by round ten it is a wall and
 the live question is lost in it. Three rules fix that, and the first is not optional.
@@ -181,12 +188,16 @@ source text, the diagram is malformed — fix the syntax.
 
 ## The annotation contract
 
+Why every rule here exists (a note lost is data lost): [communication-contract.md](communication-contract.md).
+
 - **Stable anchors.** Every element the user might disagree with carries
   `data-anchor="<kebab-id>"`. Anchors must not change between rounds: the user's
   annotations are keyed by them, and renaming one silently orphans their feedback.
-- **Granularity.** Anchor the claim, option, row, node, or code block — not the wrapper
-  around it. Anchoring a whole section produces vague feedback ("this section is wrong").
-  Do not nest anchors deeper than two levels.
+- **Granularity.** Anchor the smallest element a reader might dispute — a table cell, a figure
+  caption, a single claim, a diagram box — not just its container. A `data-render` shape stops at
+  the row; hand-write the table when the cells need to be pointable. Reusable pattern: keep the
+  row's historical anchor on the `<tr>` and put finer ids on the `<td>`s, so older notes keep
+  resolving while new ones land closer.
 - **Mermaid nodes are automatic.** Each rendered node gets `<figure>.<node>`, so the user
   can point at "the Daemon box" instead of "that diagram". Do not hand-write those ids.
 - **Every anchor should be something you would defend.** If nothing would change when the

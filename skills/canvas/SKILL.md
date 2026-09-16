@@ -1,173 +1,65 @@
 ---
 name: canvas
-description: Co-edit one live page with the user — a canvas on 127.0.0.1 where every element is clickable to annotate, and the agent keeps appending graphics-first content to the same page until the topic changes. Use ONLY when the user explicitly asks for a canvas — "/canvas", "open a canvas", "let's work on this on a canvas", "keep it in the canvas", "co-edit this with me" — or explicitly asks to continue on a canvas that already exists under .agents/canvas/. Never auto-trigger. Do NOT use for a one-shot annotatable page that is not edited across rounds (that is annotate), for a visual answer inside chat (show-me), for charts or dashboards, for writing specs (specs), or for design files (design-task).
+description: Canvas exists so the agent's answers are understandable and the user's feedback keeps its meaning: an article-shaped live page on 127.0.0.1 — abstract, then detail, evidence under each claim, one marked key per section — which the user reads and annotates element by element, and which the agent keeps updating until the topic changes. A round is not done until the page is understood on its own. Use ONLY when the user explicitly asks for a canvas — "/canvas", "open a canvas", "let's work on this on a canvas", "keep it in the canvas", "co-edit this with me" — or explicitly asks to continue on a canvas that already exists under .agents/canvas/. Never auto-trigger. Do NOT use to answer a question with a one-shot page (that is annotate: annotate answers a question, canvas explains a response in depth); nor for a visual answer inside chat (show-me), for charts or dashboards, for writing specs (specs), or for design files (design-task).
 metadata:
   audience: personal
   domain: agent-orchestration
-compatibility: Needs python3 3.9+ for the local daemon (binds 127.0.0.1 only, no external network) and herdr for the coordinator and round panes (without it, run a round inline by hand). The built .html still opens from file:// without the daemon, with reload-to-update and copy-to-clipboard feedback instead of Send.
+compatibility: Needs python3 3.9+ for the local daemon (binds 127.0.0.1 only, no external network); nothing else. The built .html still opens from file:// without the daemon, with reload-to-update and copy-to-clipboard feedback instead of Send.
 ---
 
 # canvas
 
-A canvas is **one page the user and the agent edit together, bound to a topic**. The user
-reads it and annotates anything on it; you append graphics-first content to the same page
-until the topic changes.
+**The purpose: the agent's answer must be understandable, and the user's feedback must not lose
+information.** A canvas is **one page the user and the agent edit together, bound to a topic**;
+the user reads it and annotates anything on it, and you append graphics-first content to the same
+page until the topic changes. Every rule in this skill serves those two failures or is
+mechanics for them — when a rule seems to point elsewhere, this is what it is for.
+
+## What a canvas is for
+
+Two failures it removes, in this order:
+
+- **The agent's answer is hard to understand.** Chat prose is a stream the user has to parse
+  and re-read. A canvas answers in the smallest view that carries the point — pseudocode, a
+  tree, a flowchart, a diff — placed where the question is, with the one live thing marked.
+  The page is the reply; chat is only the nudge to look at it.
+- **The user's feedback loses information.** "It's wrong" in a chat box goes stale the moment
+  the next message lands. On a canvas every element the user might dispute carries a stable
+  `data-anchor`, so a note lands on the exact claim it is about, is stored on disk, and
+  survives the round that answers it.
+
+**Done is not "the notes were acked."** A round is finished when a reader who was not in the
+conversation can open the page and answer *what changed, what is now true, and what is being
+decided* by scanning it — no prose required, nothing to ask. A round that answered every note
+and explained nothing failed.
 
 The page is the reply. **Delivery is push-free**: the user annotates and presses **Send** on the
-page; the daemon notices the Send on its sweep and wakes the coordinator, which dispatches a
-round. Nobody copies anything into a chat box, and the user never has to say "go".
+page, and the note is on disk the moment it is typed — nobody copies anything into a chat box.
+The one thing the page cannot do is start a round, so read `pending` when the user asks you to look.
 
 Below, `$S` is this skill's directory (the parent of `SKILL.md`). Run the commands from
 the project root.
 
-## Who does what — keep the loop out of the user's session
-
-A round costs a lot of context (file reads, build output, headless DOM dumps). Run it in the
-session the user is talking to and you spend their context on the loop. So:
-
-| role | who | does |
-|---|---|---|
-| **coordinator session** | the session talking to the user | opens/archives canvases, authors content, starts/stops the coordinator agent, answers in chat. **Never runs a round.** |
-| **coordinator agent** | ONE persistent agent per root, in a herdr pane | **woken by the daemon** when a topic has unread notes; dispatches one round per wake, then ends its turn |
-| **round worker** | a disposable agent, one per round | reads the notes, edits the sections, builds, verifies, `say`s, `ack`s, exits |
-
-The user only ever watches the page. The round worker's context absorbs the loop, and your
-session stays free.
-
-```bash
-python3 $S/scripts/canvas-worker.py coordinator start  --root .agents/canvas   # ONE per root
-python3 $S/scripts/canvas-worker.py coordinator status --root .agents/canvas
-python3 $S/scripts/canvas-worker.py coordinator stop   --root .agents/canvas   # graceful: round finishes, pane closes
-```
-
-`coordinator start` writes `<root>/COORDINATOR.md` (the task card, from
-`references/coordinator-card.md`), splits a pane with herdr and hands the card to one agent. The
-card is self-sufficient — the agent has no memory of your conversation, so put anything it needs
-to know in the card (or in the content).
-
-**Claiming the role — no coordinator → become one, one already there → report it.** `start` is
-idempotent, and it is the only sanctioned claim:
-
-- a coordinator herdr still knows → reports it (`already running — canvas-coord-<label> (pi) in
-  pane <id>`) and starts nothing; relay that, do not dispatch a second
-- the name taken by another root → reports the holder, starts nothing
-- no coordinator (record missing, or its pane gone) → **becomes one**: new pane, new agent,
-  `.coordinator.json` rewritten to name it
-
-Never hand-write `.coordinator.json`: it skips the check above, and two wakers on one root
-dispatch two rounds for one note (`content.html` has no merge). One per root is locked —
-`references/architecture.md`, load-bearing structure 4.
-
-**There is nothing to park and nothing to listen for.** The daemon sweeps every 2 s; when a
-topic has unread notes **and the coordinator is idle**, it prompts the coordinator, which
-dispatches a round. If no coordinator exists, or the daemon is down, the notes sit on disk and
-the page says so (`no coordinator`). `coordinator stop` sets `<root>/.COORDINATOR_STOP`, which
-stops the sweep from waking it, and closes the pane once the round in flight is done.
-
-**Working inline** is the fallback when there is no herdr session (`HERDR_ENV` unset): run one
-round by hand from the section below. Do not try to park your main session — nothing needs to be
-parked for the page to work.
-
-**One writer at a time.** While a round is running, that worker owns `content.html`. If you need
-to author content, `stop` the coordinator (graceful) first, make your change, then start it again.
-
-## Where topics live, and how other agents find them
-
-`DEFAULT_ROOT` is the **relative** path `.agents/canvas`, so a topic lives with the project it
-documents: `<project>/.agents/canvas/<topic>/`. That choice keeps a topic one archivable,
-copyable, deletable unit — and costs discoverability, because nothing then knows other roots
-exist. Two things fix that cheaply:
-
-- **Nothing is global — today.** Roots are named explicitly (`--root`); there is no index file,
-  no registry and no shared state, and each root runs its own daemon. A root's own directory is
-  the only source of truth, so two projects cannot see or break each other.
-  `canvas-worker.py list` with no `--root` lists just the root here; `list --root A --root B`
-  lists several.
-  *Locked, not yet built:* `references/architecture.md` decision 1 makes one daemon serve every
-  project with explicit registration — until that lands, two projects means two daemons and two
-  ports.
-- **A root outlives its daemon.** `canvas.py stop` marks the root's daemon gone but **keeps the
-  root** — its topics are still on disk and still worth finding, so a later `canvas.py start`
-  brings them back.
-- **Files are the contract.** `say`, `ack`, `pending`, `flag`, `versions`, `restore` are pure
-  file operations — **no daemon needed** — and a round is just edits to `content.html`. So any
-  agent that knows the path can take a topic over cold, with no setup and no shared memory.
-  `.agents/canvas/` is gitignored: these files persist on this disk, they do not travel with
-  the repo.
-
-**Liveness is the daemon's sweep.** Nobody parks and nothing heartbeats: the daemon scans every
-registered root every 2 s, and wakes the coordinator when a topic has unread notes and the
-coordinator is idle. `/v` reports `sweep` (the interval, 0 when off), `coordinator` (whether one
-is recorded) and the note counts — so the page can say honestly whether a Send will be read.
-
-## Files (root: `.agents/canvas/`, one DIRECTORY per topic)
-
-```
-.agents/canvas/<topic>/
-├── content.html     the round worker edits this — the section-keyed content
-├── index.html       build-canvas.py writes it — shell + chrome, the file:// fallback
-├── ROUND.md         canvas-worker.py writes it — the round worker's task card
-├── feedback.json    the daemon writes it — the user's annotations
-├── send.json        the daemon writes it — the Send state (ts, count, consumed_at)
-├── history.jsonl    the daemon writes it — append-only record of the conversation
-├── rounds.jsonl     canvas-worker.py writes it — one line per dispatched round
-└── versions/        canvas.py snapshots content.html in here, so a round can be undone
-```
-
-Everything a session produced lives in that one directory, so a topic can be archived,
-copied, or deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens
-(`^[a-z0-9][a-z0-9-]{0,63}$`).
-
-## Open a canvas
-
-```bash
-python3 $S/scripts/build-canvas.py <topic> --new        # first time: creates content + shell
-python3 $S/scripts/canvas.py start --root .agents/canvas --open <topic>
-python3 $S/scripts/canvas.py open <topic>               # reopen an existing one
-python3 $S/scripts/canvas.py stop                       # when the session ends
-```
-
-`start` prints the URL and opens the browser. The port is picked at start time (7391 by
-default, next free one if taken — `start`/`open` always print the authoritative URL, so
-trust those and never guess a port). Say the URL to the user once, then stop mentioning
-it — the tab stays open.
-
-Add mermaid to the repo once to get rendered diagrams:
-
-```bash
-curl -sL -o $S/assets/mermaid.min.js https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
-```
-
-## The dashboard — what is running, and how to stop it
-
-The daemon serves `dashboard.html` (this skill's folder, static, no build step) at `/`, and
-every canvas page links to it — `dashboard` sits in the bottom-right controls row,
-beside Conversation and Send (hidden when the page is opened from `file://`, where `/dashboard`
-does not resolve). It lists every topic with the state that matters — whether a coordinator is
-recorded, how many notes are pending / unsent / queued-unread, rounds, and Send → reply latency —
-and every button runs one of the skill's own CLIs and prints its real output. The CLI equivalent is on
-the page, because the page is never the only way.
-
-```bash
-open http://127.0.0.1:<port>/                                   # the daemon prints the port
-python3 $S/scripts/canvas-worker.py list --root .agents/canvas  # the same view in a terminal
-```
-
-Buttons: **create** a topic (`POST /topics`) · **start** / **stop** the coordinator
-(`POST /coordinator/start|stop`) · **stop the daemon** (`POST /daemon/stop`). A topic's rebuild
-route exists on the daemon but has no button — run `build-canvas.py <topic>`.
-
-One state means "fix me": **no coordinator** while notes are waiting, and the legend says so
-(`armed` / `no coordinator`). The counts come from files, so a restart cannot change them.
-
-It only claims what it can prove: the sweep state, the coordinator record and the STOP flag. It has
-**no "working" state** on purpose — a consumed send means notes were collected, not that a
-round is in flight; the daemon cannot see the agent, so it does not pretend to. It also warns
-when the running daemon is an older revision of `canvas.py` than the file on disk.
-
 ## Content contract
 
-`<topic>.content.html` is a flat list of top-level sections:
+**What the page must achieve — understandable answers, lossless notes — is the contract in
+[references/communication-contract.md](references/communication-contract.md).** This section is
+how to satisfy it. `<topic>.content.html` is a flat list of top-level sections:
+
+**The page is an article, not a chat.** Every canvas answers in this order: **abstract** (the point
+in ~3 lines, in the first section, never folded) → **detail** → **evidence** (a view under every
+claim that can carry one) → **key** (one marked takeaway per section). Accurate, concrete, short.
+That shape is what tells a canvas apart from `/annotate`: annotate **answers a question** and the
+artifact is the response; canvas **explains a response** the user has to understand, in depth.
+
+**It is about the subject, never about the round.** The page reads as one current document on one
+topic — no round numbers, no “changed this round” in the content. Rounds are your bookkeeping: they
+live in the Conversation panel and `history.jsonl`. A page that has to be read in round order is not
+an article.
+
+**Resolution.** Every claim the user might dispute is its own `data-anchor` — a sentence, a table
+row, a bar, a diagram box — so a note never has to say “somewhere in this section”. Fewer words,
+more diagram: prose carries the abstract, the lead and the takeaway; everything else gets a view.
 
 ```html
 <section data-section="s1">
@@ -196,11 +88,11 @@ when the running daemon is an older revision of `canvas.py` than the file on dis
   for flow — and `.compare`/`.cards` for options **last**, not first. Prose is the last resort.
   For repeated shapes you may write data instead of markup (`data-render`) — but that is a
   correctness win, not a token win; do not go hunting for token savings in markup.
-- Read **[references/architecture.md](references/architecture.md)** before changing how delivery,
-  liveness or ownership works. It is locked (`specs:locked:`) and records why the one server, the
-  2 s sweep, the lease and the wake target are the way they are — with the rejected alternatives.
+- Read **[references/architecture.md](references/architecture.md)** before changing how the daemon
+  serves, stores or hot-swaps. It is locked (`specs:locked:`) and records what the daemon is for
+  and what it deliberately is not — with the rejected alternatives.
 - Read **[references/manual.md](references/manual.md)** when running any canvas command, when
-  something is wrong (no coordinator, a note ignored, a page not updating), or when handing a
+  something is wrong (a note ignored, a page not updating), or when handing a
   canvas to another agent. It has the command map, the lifecycle, and symptom→cause→fix playbooks.
 - Read **[references/design-system.md](references/design-system.md)** before changing any canvas
   visual: the palette (3 schemes), type scale, spacing, radii and component states are locked
@@ -209,32 +101,107 @@ when the running daemon is an older revision of `canvas.py` than the file on dis
   a diagram, when a block does not show up, or when the user questions a cost claim. It has
   the primitives, the mermaid picker, the measured token costs, and the failure modes.
 
+## Who does what — you run the round
+
+Two roles, and only one of them authors anything:
+
+| role | who | does |
+|---|---|---|
+| **the session** | the agent the user is talking to — you | opens/archives canvases, authors content, runs the round steps below, answers in chat |
+| **the daemon** | `canvas.py serve` | serves the page, stores every note on disk the moment it is typed, hot-swaps changed sections. **Never edits content.** |
+
+There is no coordinator and no worker: **the round runs in your session, when the user asks.**
+Delivery is still push-free — the notes are on disk, not in a chat box — but nothing wakes you.
+The delivery step is one sentence from the user ("check the canvas"), and until then the notes
+wait on disk and the page says so.
+
+That means a round costs *your* context (file reads, build output, headless DOM dumps). Keep it
+to the sections the notes point at: `pending` names the anchors, and nothing else needs reading.
+
+**One writer at a time is now just a rule about you.** Nothing else writes `content.html`; do not
+run a second session on one topic while a round is in flight, and do not hand the same topic to a
+subagent at the same time as yourself.
+
+## Where topics live
+
+`DEFAULT_ROOT` is the **relative** path `.agents/canvas`, so a topic lives with the project it
+documents: `<project>/.agents/canvas/<topic>/` — one archivable, copyable, deletable unit.
+
+- **Nothing is global.** Roots are named explicitly (`--root`); there is no index file and no
+  shared state, and each root runs its own daemon. A root's own directory is the only source of
+  truth, so two projects cannot see or break each other. `list --root A --root B` lists several.
+  Two projects means two daemons and two ports; that is the whole cost of the choice.
+- **Files are the contract.** `say`, `ack`, `pending`, `flag`, `versions`, `restore` are pure
+  file operations — **no daemon needed** — and a round is just edits to `content.html`, so any
+  agent that knows the path can take a topic over cold. `canvas.py stop` marks the daemon gone
+  but **keeps the root** — its topics are still on disk. `.agents/canvas/` is gitignored: these
+  files persist on this disk, they do not travel with the repo.
+
+The daemon is a **page server**, nothing more: it serves, stores and hot-swaps. Why it is shaped
+that way — and what was rejected — is locked in [references/architecture.md](references/architecture.md).
+
+## Files (root: `.agents/canvas/`, one DIRECTORY per topic)
+
+```
+.agents/canvas/<topic>/
+├── content.html     you edit this — the section-keyed content
+├── index.html       build-canvas.py writes it — shell + chrome, the file:// fallback
+├── feedback.json    the daemon writes it — the user's annotations
+├── send.json        the daemon writes it — the Send state (ts, count)
+├── history.jsonl    the daemon writes it — append-only record of the conversation
+└── versions/        canvas.py snapshots content.html in here, so a round can be undone
+```
+
+Everything a session produced lives in that one directory, so a topic can be archived,
+copied, or deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens
+(`^[a-z0-9][a-z0-9-]{0,63}$`).
+
+## Open a canvas
+
+```bash
+python3 $S/scripts/build-canvas.py <topic> --new        # first time: creates content + shell
+python3 $S/scripts/canvas.py start --root .agents/canvas --open <topic>
+python3 $S/scripts/canvas.py open <topic>               # reopen an existing one
+python3 $S/scripts/canvas.py stop                       # when the session ends
+```
+
+`start` prints the URL and opens the browser. The port is picked at start time (7391 by
+default, next free one if taken — `start`/`open` always print the authoritative URL, so
+trust those and never guess a port). Say the URL to the user once, then stop mentioning
+it — the tab stays open.
+
+Add mermaid to the repo once to get rendered diagrams:
+
+```bash
+curl -sL -o $S/assets/mermaid.min.js https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
+```
+
+## The dashboard — what is waiting, and how to stop the daemon
+
+The daemon serves `dashboard.html` at `/`, and every page links to it. It lists each topic with
+the state that matters — notes pending / unsent / flagged, rounds, send → reply latency — and
+every button runs one of this skill's own CLIs and prints the real output. Same view in a
+terminal: `python3 $S/scripts/canvas.py list --root .agents/canvas`.
+
+It claims only what it can prove from files, so it has **no "working" state**: notes waiting on
+disk is not the same as a round in flight, and the page does not pretend otherwise. Counts come
+from files, so a daemon restart cannot change them.
+
 ## The round loop
 
-One round is the unit of work, and the daemon is the only thing that decides when one starts.
+One round is the unit of work. **Nothing starts one but you** — a round begins when the user
+asks, or when you see notes waiting and say what you are doing.
 
-**The wake.** The daemon sweeps every 2 s. When a topic has unread notes **and the recorded
-coordinator is idle**, it prompts that coordinator via `herdr agent prompt`; the coordinator
-dispatches one round and ends its turn. The outcome is logged to `history.jsonl` as a `wake`
-event ("coordinator woken" / "nobody was woken — no coordinator recorded"), so a silent failure
-is visible on the page. A successful wake also counts the attempt and consumes the Send, so one
-Send produces one round; notes nobody resolves are retried at most `MAX_ROUND_ATTEMPTS` times
-before the page marks them **stuck**.
-
-There is no park and no `wait`: a park was a blocking call inside an agent turn, so any
-interruption ended it and nothing re-parked. Keep the loop in a herdr pane — the coordinator
-agent — and your own session out of it.
-
-This is the loop the **round worker** runs; you only run the steps by hand when working inline.
-
-1. **Be woken (or start a round yourself).** A round begins when the daemon wakes the
-   coordinator, which runs:
+1. **Read what is waiting.** The anchors name the sections, so you know what to open:
    ```bash
-   python3 $S/scripts/canvas-worker.py round <topic> --root .agents/canvas --wait
+   python3 $S/scripts/canvas.py pending <topic> --root .agents/canvas
    ```
-   That splits a pane, hands the new agent `<topic>/ROUND.md`, waits, and closes the pane.
-   Inline, you do the round's steps yourself, starting from `canvas.py pending <topic>`.
-2. Edit **only** the affected sections of `.agents/canvas/<topic>/content.html`.
+   Notes marked `flagged` need a decision you must not make — leave them (step 6). If nothing is
+   unresolved, say so and stop.
+2. **Read what they actually meant**, then edit **only** the affected sections of
+   `.agents/canvas/<topic>/content.html`. Fix notes landing on the same section together, and
+   bring in the views from [references/graphics.md](references/graphics.md) — the smallest view
+   that makes the point.
 3. Refresh the fallback shell and mark the notes you addressed:
    ```bash
    python3 $S/scripts/build-canvas.py <topic>
@@ -259,13 +226,27 @@ This is the loop the **round worker** runs; you only run the steps by hand when 
    without opening Conversation, and keep the chat message to that same one line — the page is
    the reply, chat is the nudge.
 
-## A canvas decides; a worker acts
+   **Then read the sections you changed back as the user would.** If the fix is a sentence of
+   prose where a pseudocode block, a tree or a diagram would carry the point, replace it — that
+   is the job, not an extra.
+6. **Escalate instead of inventing.** A note that needs a decision you may not make gets a flag,
+   not a guess — leave it unresolved so the user still sees it:
+   ```bash
+   python3 $S/scripts/canvas.py flag <topic> --ids <id> --note "<what you need decided>"
+   python3 $S/scripts/canvas.py say <topic> "QUESTION: <what you need decided>"
+   ```
+   **Every note must end acked or flagged.** Never guess a product, scope or design decision, and
+   never edit around the chrome — `chrome.css`/`chrome.js` are shared by every canvas and locked
+   in [references/design-system.md](references/design-system.md).
 
-A round produces a **decision**, not a change. That boundary is the point of this skill: the
-page is where you and the user agree on what is true and what to do, and the agreement is
-worth reading before any code moves. So a round records, and nothing else.
+## A canvas communicates; it does not execute
 
-- **In a round, the only file that changes is `<topic>/content.html`** (plus the shell
+The page is the **medium, not the actor**. A round's job is to make something understood and to
+record it, so a round edits `<topic>/content.html` and nothing else. That is a boundary on the
+*repository*, never on the page — explaining more, adding the view that makes a section land, is
+the work. Editing the project is not.
+
+- **In a round the only file that changes is `<topic>/content.html`** (plus the shell
   `build-canvas.py` regenerates) and the topic's own history. No project code, no skill files,
   no other topic, and **no `git commit`**.
 - **A note that asks for a code change is recorded as a decision, not implemented.** Write what
@@ -273,19 +254,17 @@ worth reading before any code moves. So a round records, and nothing else.
   handoff, not the round.
 - **Implementation starts only after the user reviews the conclusion.** Hand it to a worker with
   its own checkout: `/task-agent start` for a worktree-backed task (the path for anything
-  non-trivial), or `/dev-task` for a small in-repo change. The canvas conclusion is the task
-  card: problem, decision, acceptance criteria, and what must not change.
-- **Never let a round "just fix it".** The eager version — a round that edits the repo and
-  commits while the page still says *proposed* — is the failure this rule removes: the user
-  reviews a decision, not a fait accompli.
+  non-trivial), or `/dev-task` for a small in-repo change. The conclusion is the task card:
+  problem, decision, acceptance criteria, and what must not change.
+- **Never let a round "just fix it".** A round that edits the repo and commits while the page
+  still says *proposed* shows the user a fait accompli instead of a decision to review.
 
 ## History
 
 `<topic>/history.jsonl` is append-only. The daemon logs every note, resolve, delete and
 content change by itself; `say` adds your line. **Rounds are derived, not stored** — a round
 is the events since your previous `say` — so nothing is renumbered and a lost write cannot
-corrupt the past. The page renders it behind the **Conversation** button (which also holds the
-requirement composer), and clicking a user
+corrupt the past. The page renders it behind the **Conversation** button, and clicking a user
 row scrolls to the element that note was about.
 
 Read it directly when you need the session's shape:
@@ -307,28 +286,38 @@ directory stays, and `canvas.py open <old-topic>` reopens it.
   python3 $S/scripts/build-canvas.py <topic> --inline-mermaid
   python3 $S/scripts/canvas.py stop
   ```
-- **Session over** → stop the coordinator, then the daemon:
+- **Session over** → stop the daemon:
   ```bash
-  python3 $S/scripts/canvas-worker.py coordinator stop --root .agents/canvas   # round finishes, pane closes
   python3 $S/scripts/canvas.py stop
   ```
-  Nothing is left running, and the pane is closed.
+  The topics stay on disk; `canvas.py start` brings the page back. Nothing else is left running.
 
 ## Rules
 
 - **Never ask the user to paste their notes into chat.** That is the friction this skill
-  exists to remove. A Send is stored on disk and the sweep will wake the coordinator — just
-  read it with `canvas.py pending <topic>`.
+  exists to remove. Every note is on disk the moment it is typed — read it with
+  `canvas.py pending <topic>`.
+- **Nothing wakes you: never claim a round is coming.** The page stores a note but cannot start
+  a round, so a Send is only a signal. Read `pending` when the user asks, and do not tell them
+  work is in progress because a Send happened.
 - Keep chat near-silent. The page is the reply; a paragraph in chat duplicating it is paid
   for twice.
 - Never rewrite the whole canvas when a section changed. Re-emitting unchanged sections is
   the single most expensive mistake in this workflow.
 - Never renumber or rename anchors, and do not nest sections.
-- **A canvas decides; a worker acts.** A round edits `<topic>/content.html` and nothing else —
-  no project code, no commits. A code change it records is implementation for a reviewed
-  handoff (`/task-agent` or `/dev-task`), never done inside the round.
+- **A canvas communicates; it does not execute.** A round edits `<topic>/content.html` and
+  nothing else — no project code, no commits. Explaining more is the work; editing the repo is
+  not. A code change it records is a reviewed handoff (`/task-agent` or `/dev-task`).
 - Resolve notes with `ack` once addressed — resolved notes stay visible and greyed, so the
   user can see you did not drop them.
+- **A round is not done until the page is understood.** Answering a note by explaining less —
+  a terse "fixed", a claim with no view under it — is a failed round. The smallest view that
+  makes the point beats a paragraph, and a paragraph beats silence.
+- **Keep the article shape.** The abstract goes first and stays unfolded; one `.key` per section;
+  a wall of prose is a failure of the round, not a style choice.
+- **Order by subject, not by round.** Do not number rounds in the content or write “changed this
+  round” into a section — that is what the Conversation panel is for. The page must read correctly
+  to someone who never saw an earlier version of it.
 - The daemon binds `127.0.0.1` only and serves from `.agents/canvas/`; it is not a general
   web server. Do not point it at a repo the user has not asked you to expose.
 - Never overwrite `.agents/canvas/<topic>.feedback.json` — the daemon owns it, and clobbering

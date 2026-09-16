@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>canvas · dashboard</title>
 <!--
-  The control panel for every canvas on this machine: topics, the processes that serve
-  them, and the numbers that say whether a coordinator will be woken.
+  Every canvas on this machine, and what is waiting on each one.
 
   It is a STATIC file — no build step, no dependencies, no inlined chrome. The daemon
   serves it at / (and /dashboard) and answers /topics; opened straight from disk it says
@@ -40,8 +39,8 @@
   .topic { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-weight:600; }
   .chip { display:inline-block; padding:.1rem .5rem; border-radius:999px; font-size:.68rem;
           border:1px solid var(--line); background:var(--surface-2); color:var(--ink-2); white-space:nowrap; }
-  .chip.armed { background:color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color:var(--ok); color:var(--ok); }
-  .chip.unread, .chip.stopped { background:color-mix(in srgb, var(--crit) 10%, var(--surface)); border-color:var(--crit); color:var(--crit); }
+  .chip.clear { background:color-mix(in srgb, var(--ok) 14%, var(--surface)); border-color:var(--ok); color:var(--ok); }
+  .chip.needs, .chip.waiting { background:color-mix(in srgb, var(--crit) 10%, var(--surface)); border-color:var(--crit); color:var(--crit); }
   .muted { color:var(--ink-3); }
   .crit { color:var(--crit); }
   .warn { color:var(--warn); }
@@ -79,8 +78,8 @@
 <div id="main">
   <table>
     <thead><tr>
-      <th>topic</th><th>who will be woken</th>
-      <th>notes</th><th>rounds</th><th>send → reply</th>
+      <th>topic</th><th>state</th>
+      <th>notes</th><th>rounds</th><th>last send</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -97,16 +96,6 @@
   <div class="panel">
     <h2>actions</h2>
     <pre id="log">nothing yet — every action you press prints its command and output here.</pre>
-  </div>
-
-  <div class="panel">
-    <h2>coordinator</h2>
-    <div class="row">
-      <button id="coordstart">start</button>
-      <button id="coordstop">stop</button>
-      <span class="legend">one agent per root. The daemon sweeps every 2 s and wakes it on
-        <b>every</b> topic; it dispatches each batch to a disposable worker.</span>
-    </div>
   </div>
 
   <div class="panel">
@@ -127,15 +116,14 @@
 
   <div class="panel legend">
     <h2>what the states mean</h2>
-    <b>armed</b> — the sweep is on and a coordinator is recorded, so a Send is woken and read.
-    <b>no coordinator</b> — the sweep has nobody to wake; start one above.
-    <b>unread send</b> — notes were sent and the wake has not consumed them yet.
-    <b>no sweep</b> — the daemon was started with <code>--sweep 0</code>.
-    <b>stopped</b> — a STOP flag is set; the loop is over until someone clears it.
+    <b>clear</b> — nothing waiting.
+    <b>notes waiting</b> — notes are on disk; a round happens when the agent is in your session.
+    <b>unsent</b> — written but not sent yet.
+    <b>needs you</b> — flagged notes awaiting a decision no agent may make.
     <p class="muted" style="margin:.6rem 0 0">
-      Nothing has to be parked any more: the daemon notices work itself. A topic with notes and
-      no coordinator is the state to fix. Chrome/CSS changes only reach an open canvas after a
-      browser reload.</p>
+      This page can keep itself live and store every note; it cannot start a round. Ask the
+      agent to check the canvas — that is the whole delivery step now.
+      Chrome/CSS changes only reach an open canvas after a browser reload.</p>
   </div>
 </div>
 
@@ -155,18 +143,15 @@ function age(iso) {
   return Math.round(s / 3600) + 'h';
 }
 
-// The verdict the user actually needs: will a Send be woken and read? Derived only from what
-// the daemon can prove (sweep interval, coordinator record, STOP flag, send state). There is
-// deliberately no "working" state: a set consumed_at means notes were handed over, not that a
-// round is in flight now — the daemon cannot see the agent, so it does not claim to.
+// State, derived from files only. There is no "working" state and no promise of a wake:
+// a session reads the notes, and nothing here can claim more than that.
 function verdict(t) {
-  if (t.stop_requested) return ['stopped', 'stopped', 'STOP is set — the loop is over until it is cleared'];
-  if (!t.sweep) return ['unread', 'no sweep', 'the daemon was started with --sweep 0 — nothing will be woken'];
-  if (!t.coordinator) return ['unread', 'no coordinator',
-    t.pending ? t.pending + ' note(s) waiting with nobody to wake'
-              : 'nothing will read a Send until a coordinator starts'];
-  if (t.queued) return ['unread', 'unread send', 'sent, and the wake has not consumed it yet'];
-  return ['armed', 'armed', 'the sweep wakes the coordinator, which dispatches a round'];
+  if (t.flagged) return ['needs', 'needs you',
+    t.flagged + ' flagged note(s) — a decision no agent may make'];
+  if (t.pending) return ['waiting', 'notes waiting',
+    t.pending + ' note(s) on disk — ask the agent to check this canvas'];
+  if (t.unsent) return ['waiting', 'unsent', t.unsent + ' note(s) not sent yet'];
+  return ['clear', 'clear', 'nothing waiting'];
 }
 
 function render() {
@@ -177,7 +162,6 @@ function render() {
     if (t.pending) notes.push('<b>' + t.pending + ' pending</b>');
     if (t.flagged) notes.push(t.flagged + ' flagged');
     if (t.unsent) notes.push(t.unsent + ' unsent');
-    if (t.queued) notes.push('<span class="crit">queued, unread</span>');
     return `<tr>
       <td><a class="topic" href="${esc(t.url)}">${esc(t.topic)}</a><br>
           <span class="muted">${t.sections} sections</span></td>
@@ -185,28 +169,26 @@ function render() {
           <span class="muted">${esc(why)}</span></td>
       <td>${notes.length ? notes.join(' · ') : '<span class="muted">clear</span>'}</td>
       <td>${t.rounds}${t.last_reply ? '<br><span class="muted">last ' + age(t.last_reply) + ' ago</span>' : ''}</td>
-      <td>${t.latency_s != null ? t.latency_s + 's' : '<span class="muted">—</span>'}
-          ${t.sent_at ? '<br><span class="muted">send ' + age(t.sent_at) + ' ago</span>' : ''}</td>
+      <td>${t.sent_at ? age(t.sent_at) + ' ago' : '<span class="muted">—</span>'}
+          ${t.latency_s != null ? '<br><span class="muted">answer in ' + t.latency_s + 's</span>' : ''}</td>
     </tr>`;
   }).join('');
   $('rows').innerHTML = rows || `<tr><td colspan="5" class="muted">no canvases under ${esc(DATA.root)}</td></tr>`;
-  const up = DATA.topics.filter((t) => t.sweep && t.coordinator).length;
-  const unread = DATA.topics.filter((t) => t.queued).length;
-  const noc = DATA.topics.filter((t) => t.sweep && !t.coordinator && t.pending).length;
+  const waiting = DATA.topics.filter((t) => t.pending).length;
+  const needs = DATA.topics.filter((t) => t.flagged).length;
   $('head').innerHTML = `daemon <b>up</b> · port <b>${DATA.port}</b> · pid <b>${DATA.pid}</b>`
     + ` · rev <b>${esc((DATA.rev || '').slice(0, 8))}</b> · root <code>${esc(DATA.root)}</code><br>`
-    + `${DATA.topics.length} topic(s) · <b>${up}</b> armed (the sweep will wake the coordinator)`
-    + (unread ? ` · <span class="crit">${unread} with an unread send</span>` : '')
-    + (noc ? ` · <span class="crit">${noc} with notes and no coordinator</span>` : '')
+    + `${DATA.topics.length} topic(s)`
+    + (waiting ? ` · <b>${waiting}</b> with notes waiting` : ' · nothing waiting')
+    + (needs ? ` · <span class="crit">${needs} needing your decision</span>` : '')
     + ` · refreshed ${new Date().toLocaleTimeString()}`;
   if (DATA.stale) {
     $('head').innerHTML += '<br><span class="warn">the daemon is running an older revision of '
       + 'canvas.py than the one on disk — restart it to pick up the changes</span>';
   }
   $('cli').textContent = [
-    `canvas-worker.py list --root ${DATA.root}`,
-    `canvas-worker.py coordinator status --root ${DATA.root}`,
-    `canvas-worker.py round <topic> --root ${DATA.root} --wait`,
+    `canvas.py list --root ${DATA.root}`,
+    `canvas.py pending <topic> --root ${DATA.root}`,
     `build-canvas.py <topic> --root ${DATA.root}`,
     `canvas.py start --root ${DATA.root} --port ${DATA.port}`,
     `canvas.py stop --root ${DATA.root}`,
@@ -230,31 +212,14 @@ async function refresh() {
       ? 'This file was opened from disk, so it cannot reach the daemon. Start one and use its URL:'
       : 'No daemon answered at <code>/topics</code>. Start it:';
     $('offline-cmd').textContent =
-      'python3 ' + '<skill>/scripts/canvas.py start --root ' + (DATA ? DATA.root : '.agents/canvas') + ' --port 8788\n'
-      + 'then open  http://127.0.0.1:8788/';
+      'python3 ' + '<skill>/scripts/canvas.py start --root ' + (DATA ? DATA.root : '.agents/canvas') + '\n'
+      + 'then open the URL it prints';
     $('head').innerHTML = '<b class="crit">daemon not reachable</b>'
       + (DATA ? ' — showing the last reading, which may be stale' : '');
   }
 }
 
 function log(msg) { $('log').textContent = (msg + '\n\n' + $('log').textContent).slice(0, 6000); }
-
-// The coordinator is the only process worth two buttons: one start, one stop, at the root.
-async function coordinator(action, btn) {
-  BUSY = true; if (btn) btn.disabled = true;
-  const cmd = `canvas-worker.py coordinator ${action} --root ${DATA.root}`;
-  try {
-    const r = await fetch(`/coordinator/${action}`, { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const j = await r.json();
-    log(`$ ${cmd}\n${j.ok ? 'ok' : 'FAILED'}${j.code != null ? ' (exit ' + j.code + ')' : ''}\n`
-        + (j.out || '') + (j.err ? '\n' + j.err : ''));
-  } catch (e) { log(`$ ${cmd}\nFAILED — ${e.message}`); }
-  BUSY = false; if (btn) btn.disabled = false;
-  await refresh();
-}
-document.getElementById('coordstart').onclick = (e) => coordinator('start', e.target);
-document.getElementById('coordstop').onclick = (e) => coordinator('stop', e.target);
 
 $('create').onclick = async () => {
   const topic = $('newtopic').value.trim();
@@ -264,7 +229,7 @@ $('create').onclick = async () => {
     const r = await fetch('/topics', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ topic }) });
     const j = await r.json();
-    log(`$ build-canvas.py ${topic} --root .agents/canvas --new\n${j.ok ? 'ok' : 'FAILED'}\n`
+    log(`$ build-canvas.py ${topic} --root ${DATA.root} --new\n${j.ok ? 'ok' : 'FAILED'}\n`
         + (j.out || '') + (j.err ? '\n' + j.err : '') + (j.error ? '\n' + j.error : ''));
     if (j.ok) $('newtopic').value = '';
   } catch (err) { log('create failed — ' + err.message); }

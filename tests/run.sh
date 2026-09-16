@@ -8,7 +8,7 @@
 #   2. Upstream conformance: downloads the official anthropics/skills
 #      quick_validate.py (pinned commit) and confirms skill-man's validate.py
 #      agrees with it on every fixture, so skill-man cannot silently diverge.
-#   3. Script behaviour: every tests/<dir>/test_*.py (audit.py, canvas daemon).
+#   3. Script behaviour: every tests/<dir>/test_*.py (audit.py).
 #      Each prints FAIL lines and exits non-zero on failure.
 #
 # Usage: bash tests/run.sh

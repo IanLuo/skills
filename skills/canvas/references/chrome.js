@@ -71,7 +71,11 @@ async function persist(ann, method) {
 
 function snippetOf(el) {
   const clone = el.cloneNode(true);
-  clone.querySelectorAll('.badge').forEach((b) => b.remove());
+  // Strip chrome and diagram internals before reading text. mermaid injects its own <style>
+  // element INSIDE the rendered svg, so a note on a diagram box used to capture
+  // "#mermaid-1234{font-family:…}" instead of the box's label; <defs> and <title> are the same
+  // kind of noise.
+  clone.querySelectorAll('.badge, style, defs, title, script').forEach((n) => n.remove());
   return clone.textContent.trim().replace(/\s+/g, ' ').slice(0, 80);
 }
 
@@ -100,7 +104,7 @@ function mark() {
 // ── annotation dialog ──────────────────────────────────────────────────────
 
 document.addEventListener('click', (e) => {
-  if (e.target.closest('#form') || e.target.closest('#composer')) return;
+  if (e.target.closest('#form')) return;
   const el = e.target.closest('[data-anchor]');
   if (!el) return;
   e.preventDefault();
@@ -198,46 +202,11 @@ function addAnnotation() {
 $('cancel').onclick = closeDialog;
 $('add').onclick = addAnnotation;
 
-// ── composer: a requirement with no element to point at ────────────────────
-// Every other note is keyed to an element, but a new requirement usually has no element
-// yet — that is the point of it. It is posted against the composer itself, which is a
-// stable anchor, so the history panel can still jump back to where it was written.
+// ── the composer was removed — design-system.md rev 6 ──────────────────────
+// A canvas is read-and-point: a requirement becomes a note on the element it concerns,
+// which is already the mechanism for every other note. The free-text box was the one
+// affordance that made this page feel like a chat client — and so like /annotate.
 
-function submitRequirement() {
-  const box = $('req');
-  const c = box.value.trim();
-  if (!c) return;
-  const a = { id: '', anchor: 'composer', snippet: 'new requirement',
-              comment: c, severity: 'suggestion', resolved: false };
-  ANNOTATIONS.push(a);
-  persist(a, 'POST');
-  mark();
-  box.value = '';
-  growReq();
-  status('requirement added — press Send');
-}
-
-// The requirement box grows with the text — up to 40% of the viewport, then it scrolls
-// inside itself. It used to stop at 96px (six lines), which fought the CSS max-height and
-// made a long requirement unreadable while it was being written.
-function growReq() {
-  const b = $('req');
-  b.style.height = 'auto';
-  const cap = Math.round(window.innerHeight * 0.4);
-  b.style.height = Math.min(b.scrollHeight, cap) + 'px';
-}
-
-$('reqadd').onclick = submitRequirement;
-// Enter adds the requirement; Shift+Enter inserts a newline. The earlier version made
-// plain Enter a newline to protect multi-line input, which cost the convention everyone
-// expects — the modifier keeps both, so neither has to be given up. Cmd/Ctrl+Enter still
-// works (it is an Enter without Shift), so muscle memory from either version holds.
-$('req').addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' || e.shiftKey) return;
-  e.preventDefault();
-  submitRequirement();
-});
-$('req').addEventListener('input', growReq);
 
 // Escape closes the innermost open surface, and is NEVER allowed to discard typed text.
 // The annotation dialog wins when it is open, because closing it drops the anchor the note
@@ -289,7 +258,7 @@ $('send').onclick = async () => {
   try {
     const r = await fetch('/a/' + TOPIC + '/send', { method: 'POST' });
     const res = await r.json();
-    status('sent · the sweep wakes the coordinator within ~2s');
+    status('sent · stored on disk — the agent reads it in your session');
     $('send').textContent = 'Sent ✓';
   } catch (e) {
     $('send').disabled = false;
@@ -539,28 +508,18 @@ document.querySelectorAll('#schemes button').forEach((b) => {
   b.onclick = () => applyScheme(b.dataset.pick, true);
 });
 
-// Liveness is the daemon's job now: nobody parks, so the useful question is not "is anyone
-// listening" but "will anything be woken". The dot is filled when the sweep is armed and a
-// coordinator exists to wake it; red when there is no coordinator and notes are waiting.
+// The daemon keeps the page live and puts every note on disk the moment it is typed.
+// There is no auto-wake: a round happens when a session is talking to the user. So the dot
+// reports work state, and the text never implies a reader that does not exist.
 function indicator(v) {
-  const stopped = !!(v && v.stop_requested);
   const unsent = (v && v.unsent) || 0;
   const pending = (v && v.pending) || 0;
-  const consumedAt = (v && v.send_consumed_at) || null;
+  const flagged = (v && v.flagged) || 0;
   const lastSend = (v && v.last_send_ts) || null;
   const el = $('listening');
-  const sweeping = Number((v && v.sweep) || 0) > 0;
-  const coordinator = !!(v && v.coordinator);
-  const waiting = (v && ((v.unread || 0) + (v.unsent || 0) + (v.pending || 0))) || 0;
-  const armed = sweeping && coordinator;        // the daemon will wake the coordinator
-  const noWake = sweeping && !coordinator && waiting > 0;
-  let label = 'no sweep';
-  if (stopped) { label = 'stopped'; }
-  else if (armed) { label = 'auto-wake'; }
-  else if (noWake) { label = 'no coordinator'; }
-  el.textContent = label;
-  el.classList.toggle('on', armed);
-  el.classList.toggle('warn', noWake || stopped);
+  el.textContent = pending ? 'notes waiting' : 'live';
+  el.classList.toggle('on', pending > 0);
+  el.classList.toggle('warn', flagged > 0);
 
   // An empty Send is a no-op that still pings the agent, so the button turns itself
   // off once everything has been sent. (Found by the user pressing it with nothing
@@ -569,12 +528,10 @@ function indicator(v) {
   send.disabled = LIVE && unsent === 0;
   send.textContent = unsent ? 'Send · ' + unsent : (pending ? 'Sent ✓' : 'Send');
 
-  const unread = (v && v.unread) || 0;
-  const flagged = (v && v.flagged) || 0;
   // The status pill carries the state as a dot too, so it is legible at a glance.
   const st = $('status');
-  st.classList.toggle('on', armed);
-  st.classList.toggle('warn', (unread > 0 && !armed) || stopped);
+  st.classList.toggle('on', pending > 0);
+  st.classList.toggle('warn', flagged > 0);
   const clock = (iso) => (String(iso).match(/T(\d\d:\d\d)/) || [null, iso])[1];
   const badge = $('convonotice');
   if (badge) { badge.hidden = !flagged; badge.textContent = flagged ? String(flagged) : ''; }
@@ -584,30 +541,16 @@ function indicator(v) {
     status('⚠ ' + flagged + ' note(s) need your decision — flagged, not being worked');
     return;
   }
-  if (unread && !coordinator) {
-    // Sent, never handled, and no coordinator to wake — say so plainly instead of implying
-    // work is happening. This is the state that used to be silent.
-    status('⚠ ' + unread + ' sent note(s) not handled · no coordinator to wake');
-    return;
-  }
   if (unsent) {
     status(unsent + ' note(s) not sent yet — press Send');
-  } else if (v && v.sent && !coordinator) {
-    // The queue is NOT a promise. With nobody to wake the notes sit on disk until a
-    // coordinator starts, and saying "waiting for the agent to look" told the user a reader
-    // was coming that did not exist.
-    status('sent · stored — nothing will read them until a coordinator starts');
-  } else if (v && v.sent) {
-    status('sent · the sweep wakes the coordinator within ~2s');
-  } else if (pending && consumedAt) {
-    // the agent has them; this is the line that stops the user re-sending
-    status('collected ' + clock(consumedAt) + ' · ' + pending + ' waiting for a round');
   } else if (pending) {
-    status('live · ' + pending + ' note(s) unresolved');
+    // The page cannot wake anyone, and saying otherwise would promise a reader that is
+    // not there. Say what is true: the notes are on disk, and a session collects them.
+    status(pending + ' note(s) waiting — ask the agent to check this canvas');
   } else if (lastSend) {
     status('all notes resolved · last send ' + clock(lastSend));
   } else {
-    status('live · ' + (armed ? 'auto-wake armed' : 'write a note to begin'));
+    status('live · write a note to begin');
   }
 }
 
@@ -621,7 +564,7 @@ let HISTORY = [];
 async function loadHistory() {
   if (!LIVE) {
     // Static (file://): no daemon, so no round history — but the panel now holds the
-    // requirement composer, so the panel and its button must stay reachable.
+    // and its button must stay reachable.
     $('histbody').innerHTML = '<p class="empty">No history without the daemon — the requirement box below still works.</p>';
     return;
   }
@@ -679,12 +622,12 @@ function evLine(e) {
       (e.ids || []).length + ' note(s)</span></div>';
   }
   if (e.kind === 'wake') {
-    // Whether anyone was woken is the question this whole mechanism exists to answer, so it
-    // gets a line rather than being invisible.
+    // Legacy event: before the delivery loop was removed, a daemon woke a dispatch agent and
+    // logged whether that reached anyone. Nothing wakes anyone now, so a wake line is read as
+    // what it is — a marker that the page was sent.
     return '<div class="ev meta"><span class="who"></span><span class="txt">' +
-      (e.ok ? 'coordinator woken to read them'
-            : 'nobody was woken — ' + escapeHtml(e.why || 'no coordinator') +
-              ' (start one from the dashboard)') +
+      (e.ok ? 'sent to the agent (legacy)'
+            : 'sent — nothing collected it (legacy)') +
       '</span></div>';
   }
   if (e.kind === 'delete') {
@@ -762,7 +705,7 @@ function renderHistory() {
     el.onclick = () => {
       const t = document.querySelector('[data-anchor="' + CSS_ESCAPE(el.dataset.jump) + '"]');
       if (!t) { status('that element is gone from the page'); return; }
-      // The composer lives inside the panel now, so reveal it before jumping to it.
+      // A note on a chrome element opens the panel, so it can be read where it was written.
       if (t.closest('#histpanel')) $('histpanel').hidden = false;
       t.scrollIntoView({ behavior: 'smooth', block: 'center' });
       t.classList.add('flash');
