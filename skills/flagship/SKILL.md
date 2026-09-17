@@ -24,19 +24,20 @@ Then ensure `fs` is on PATH, or use the full path to the binary.
 
 ## The rule: always read context first
 
-**Before any work**, read the project state. Never create tasks or make changes blind:
+**Before any work**, discover projects and read state. Never create tasks or make changes blind:
 
 ```bash
-fs status --project <name>              # current task tree
+fs project list                          # discover all managed projects
+fs status --project <name>               # current task tree
 fs query "<topic>" --project <name>     # relevant decisions/knowledge
 fs kb get <playbook-name>               # applicable procedures
 ```
 
-This is the core discipline — a fresh agent session reads the store to resume without operator re-explanation.
+In a fresh session, `fs project list` is always the first command — it shows all known projects ordered by last activity. Then drill into the relevant project with `fs status`.
 
 ## Workflow
 
-1. **Read** — `fs status` to understand current state
+1. **Discover** — `fs project list` to find managed projects, then `fs status` for the relevant one
 2. **Check prerequisites** — `fs kb get <task-type>-prerequisites` for required docs/steps
 3. **Pick or create task** — find an existing pending task or `fs task add`
 4. **Mark active** — `fs task update <id> --status active`
@@ -51,10 +52,12 @@ All commands return JSON to stdout: `{"ok": true, "data": {...}}` or `{"ok": fal
 ### Project
 
 ```bash
-fs project create [--name NAME] [--root PATH]
+fs project create [--name NAME] [--root PATH]   # create + register
+fs project list                                  # all known projects (ordered by last activity)
+fs project get NAME                              # single project lookup
 ```
 
-`--root` defaults to git repo root or cwd. `--name` derives from directory if omitted.
+`--root` defaults to git repo root or cwd. `--name` derives from directory if omitted. All projects are registered in the global registry at `~/.fs/registry.db`.
 
 ### Tasks
 
@@ -147,13 +150,17 @@ Before starting a task type that has a prerequisite playbook:
 ## Data locations
 
 ```
-<project_root>/.fs/store.db    # Event store (per-project, SQLite + WAL)
+~/.fs/registry.db              # Global project registry (all known projects)
 ~/.fs/kb/                       # Knowledge center (global, YAML playbooks)
+<project_root>/.fs/store.db    # Event store (per-project, SQLite + WAL)
 ```
 
 ## Example session
 
 ```bash
+# Discover projects in a fresh session
+fs project list
+
 # Resume work on a project
 fs status --project myapp
 fs query "auth" --project myapp
@@ -179,5 +186,6 @@ fs task update t-abc12345 --status done \
 - Full event payload schemas
 - FTS5 query syntax and ranking
 - Playbook YAML format details
+- Project registry schema and behavior
 - Multi-project workflows
 - Store integrity and WAL behavior

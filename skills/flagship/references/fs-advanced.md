@@ -5,6 +5,7 @@
 - [Event payload schemas](#event-payload-schemas)
 - [FTS5 query syntax](#fts5-query-syntax)
 - [Playbook YAML format](#playbook-yaml-format)
+- [Project registry](#project-registry)
 - [Multi-project workflows](#multi-project-workflows)
 - [Store integrity and WAL](#store-integrity-and-wal)
 - [Common patterns](#common-patterns)
@@ -120,6 +121,39 @@ fs kb edit --name dev-task-prerequisites --file /tmp/updated.yaml
 
 # Remove
 fs kb remove dev-task-prerequisites
+```
+
+## Project registry
+
+The global project registry at `~/.fs/registry.db` tracks all known projects.
+
+### Schema
+
+| Column | Type | Description |
+|---|---|---|
+| `name` | TEXT (unique) | Project name — the `--project` identifier |
+| `root_path` | TEXT | Absolute path to the project root |
+| `created_at` | TIMESTAMP | When `fs project create` was run |
+| `last_activity` | TIMESTAMP | Auto-updated on every project-targeting command |
+
+### Behavior
+
+- **Auto-registration** — `fs project create` adds the project to the registry automatically.
+- **Activity tracking** — every command that uses `--project` (status, query, task add, etc.) updates `last_activity` for that project. This keeps the registry sorted by recency.
+- **Listing** — `fs project list` returns all registered projects ordered by `last_activity` descending (most recently used first).
+- **Lookup** — `fs project get NAME` returns a single project's registry entry (name, root_path, created_at, last_activity).
+- **No manual edits** — the registry is managed exclusively by `fs` commands. Never write to `~/.fs/registry.db` directly.
+
+### Commands
+
+```bash
+# List all projects (most recently active first)
+fs project list
+# → [{name, root_path, created_at, last_activity}, ...]
+
+# Single project lookup
+fs project get myapp
+# → {name: "myapp", root_path: "/path/to/myapp", created_at: "...", last_activity: "..."}
 ```
 
 ## Multi-project workflows
