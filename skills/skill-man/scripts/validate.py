@@ -20,8 +20,7 @@ handles the common subset (single-line scalars + one-level nested maps) so the
 script still runs where PyYAML is absent, but with a clear limitation message.
 
 Usage:
-    python3 validate.py [skills_dir]          # validate (report only)
-    python3 validate.py --fix [skills_dir]    # auto-fix common issues
+    python3 validate.py [skills_dir]
 
 If skills_dir is omitted, it is resolved relative to this script's location
 (skills/ at the repo root), so the script works whether run from the repo or via
@@ -229,33 +228,6 @@ def validate_skill(skill_dir: str):
             f"consider moving detail into references/"
         )
 
-    # Setup-heavy detection: flag env var setup prose that could be scriptified.
-    setup_patterns = [
-        (r'(?:export|set)\s+\w+=["\']', "export statements"),
-        (r'~/.claude/settings\.json', "settings.json configuration"),
-        (r'Required environment variables', "environment variable setup"),
-    ]
-    setup_mentions = []
-    for pattern, label in setup_patterns:
-        if re.search(pattern, body_text, re.IGNORECASE):
-            setup_mentions.append(label)
-
-    # Flag if we have setup instructions AND they appear in a section (multi-line)
-    if setup_mentions and re.search(r'^##\s+(Setup|Configuration|Environment)', body_text, re.MULTILINE):
-        # Count setup-related lines
-        setup_section = re.search(
-            r'^##\s+(Setup|Configuration|Environment).*?(?=^##|\Z)',
-            body_text,
-            re.MULTILINE | re.DOTALL
-        )
-        if setup_section:
-            setup_lines = len(setup_section.group(0).splitlines())
-            if setup_lines > 15:
-                msgs.append(
-                    f"⚠ {name}: Setup section is {setup_lines} lines with {', '.join(setup_mentions)}. "
-                    f"Consider extracting to scripts/setup.sh or scripts/load-credentials.sh"
-                )
-
     if ok and not any(m.startswith("⚠") for m in msgs):
         msgs.append(f"✓ {name}")
     elif ok:
@@ -325,131 +297,16 @@ def _check_compat(fm, name, msgs) -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
-def _check_sibling_conflicts(skills_dir):
-    """Check for skills with overlapping domains but no negative triggers.
-
-    Returns list of warning messages for skills that could conflict.
-    """
-    if not os.path.isdir(skills_dir):
-        return []
-
-    skill_dirs = sorted(
-        os.path.join(skills_dir, d)
-        for d in os.listdir(skills_dir)
-        if not d.startswith(".") and os.path.isdir(os.path.join(skills_dir, d))
-    )
-
-    # Build domain map: domain -> [(name, description)]
-    domain_map = {}
-    for sd in skill_dirs:
-        name = os.path.basename(sd)
-        skill_path = os.path.join(sd, "SKILL.md")
-        if not os.path.isfile(skill_path):
-            continue
-
-        with open(skill_path, encoding="utf-8") as f:
-            content = f.read()
-        fm, err, _ = parse_frontmatter(content)
-        if err or not fm:
-            continue
-
-        # Extract domain from metadata
-        domain = None
-        if "metadata" in fm and isinstance(fm["metadata"], dict):
-            domain = fm["metadata"].get("domain")
-
-        if domain:
-            domain_map.setdefault(domain, []).append((name, fm.get("description", "")))
-
-    # Check for conflicts: same domain, no "Do NOT use" in description
-    warnings = []
-    for domain, skills in domain_map.items():
-        if len(skills) > 1:
-            for name, desc in skills:
-                if not re.search(r'\bDo NOT (use|trigger)', desc, re.IGNORECASE):
-                    sibling_names = [n for n, _ in skills if n != name]
-                    warnings.append(
-                        f"⚠ {name}: shares domain '{domain}' with {', '.join(sibling_names)} "
-                        f"but description lacks negative trigger ('Do NOT use for...'). "
-                        f"Consider adding disambiguation."
-                    )
-
-    return warnings
-
-
-def auto_fix_skill(skill_path):
-    """Apply auto-fixes to common issues. Returns (fixed_count, messages)."""
-    with open(skill_path, encoding="utf-8") as f:
-        original = f.read()
-
-    fixed = original
-    fixes = []
-
-    # Fix 1: trailing whitespace on lines
-    if re.search(r' +$', fixed, re.MULTILINE):
-        fixed = re.sub(r' +$', '', fixed, flags=re.MULTILINE)
-        fixes.append("removed trailing whitespace")
-
-    # Fix 2: ensure single final newline
-    if not fixed.endswith('\n'):
-        fixed += '\n'
-        fixes.append("added final newline")
-    elif fixed.endswith('\n\n\n'):
-        fixed = fixed.rstrip('\n') + '\n'
-        fixes.append("normalized final newlines to single")
-
-    # Fix 3: normalize frontmatter spacing (ensure blank line after ---)
-    frontmatter_end = re.search(r'\n---\s*\n', fixed)
-    if frontmatter_end:
-        # Ensure exactly one blank line after closing ---
-        before = fixed[:frontmatter_end.end()]
-        after = fixed[frontmatter_end.end():]
-        if not after.startswith('\n'):
-            fixed = before + '\n' + after
-            fixes.append("added blank line after frontmatter")
-
-    if fixed != original:
-        with open(skill_path, 'w', encoding="utf-8") as f:
-            f.write(fixed)
-        return len(fixes), fixes
-
-    return 0, []
-
-
 def main():
-    # Parse arguments
-    fix_mode = False
-    args = sys.argv[1:]
-    if args and args[0] == '--fix':
-        fix_mode = True
-        args = args[1:]
-
-    arg = args[0] if args else os.path.join(repo_root_from_script(), "skills")
+    arg = sys.argv[1] if len(sys.argv) > 1 else os.path.join(repo_root_from_script(), "skills")
 
     # If the arg points at a single skill dir (contains SKILL.md), validate just it.
     if os.path.isfile(os.path.join(arg, "SKILL.md")):
         if not _HAVE_YAML:
             print("validate: PyYAML not found — using stdlib fallback (no block-scalar/list support).", file=sys.stderr)
-
-        skill_path = os.path.join(os.path.abspath(arg), "SKILL.md")
-        if fix_mode:
-            fix_count, fixes = auto_fix_skill(skill_path)
-            if fix_count:
-                print(f"✓ {os.path.basename(arg)}: applied {fix_count} fix(es): {', '.join(fixes)}")
-            else:
-                print(f"✓ {os.path.basename(arg)}: no fixes needed")
-
         ok, msgs = validate_skill(os.path.abspath(arg))
         for line in msgs:
             print(line)
-
-        # Check sibling conflicts only if we're in a skills/ directory
-        parent_dir = os.path.dirname(os.path.abspath(arg))
-        if os.path.basename(parent_dir) == "skills":
-            conflict_warnings = _check_sibling_conflicts(parent_dir)
-            for w in conflict_warnings:
-                print(w)
-
         return 0 if ok else 1
 
     skills_dir = arg
@@ -470,32 +327,13 @@ def main():
         return 0
 
     all_ok = True
-    total_fixes = 0
-
     for sd in skill_dirs:
-        name = os.path.basename(sd)
-        skill_path = os.path.join(sd, "SKILL.md")
-
-        if fix_mode and os.path.isfile(skill_path):
-            fix_count, fixes = auto_fix_skill(skill_path)
-            if fix_count:
-                print(f"✓ {name}: applied {fix_count} fix(es): {', '.join(fixes)}")
-                total_fixes += fix_count
-
         ok, msgs = validate_skill(sd)
         if not ok:
             all_ok = False
         for line in msgs:
             print(line)
-
-    # Check for sibling conflicts across all skills
-    conflict_warnings = _check_sibling_conflicts(skills_dir)
-    for w in conflict_warnings:
-        print(w)
-
     print()
-    if fix_mode and total_fixes:
-        print(f"Applied {total_fixes} total fix(es) across {len(skill_dirs)} skill(s).")
     print("All skills valid." if all_ok else "Some skills failed validation.")
     return 0 if all_ok else 1
 
