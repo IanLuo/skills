@@ -68,10 +68,12 @@
 }
 
 /* Emphasis utilities — the mechanism behind "make the point obvious, dim the rest".
-   .key marks the one thing that matters in a section (at most one per section) and is
-   the ONLY accent rule the system allows. .dim lowers tone WITHOUT lowering legibility:
-   every tone tier clears AA. */
-.key { border-left: 2px solid var(--accent); padding-left: .95rem; }
+   .key marks the one thing that matters in a section (at most one per section). Emphasis is
+   tone and weight, never a coloured bar — see Decoration in design-system.md. The accent is
+   reserved for the one saturated role per scheme, and a 2px accent rule beside a paragraph read
+   as an ornament rather than as emphasis. .dim lowers tone WITHOUT lowering legibility: every
+   tone tier clears AA. */
+.key { font-weight: 500; }
 .key > :first-child { margin-top: 0; }
 .key > :last-child { margin-bottom: 0; }
 .dim { color: var(--ink-3); }

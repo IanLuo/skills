@@ -15,7 +15,7 @@ Locked: re-run design-task to change it, do not edit around it.
 
 - User's words: "more creative visual, make the point emphasised, non-important elements dimmed, background calm, highlights obvious, colour pattern harmonious, steady, mature, cold, calm", plus "a colour scheme selector that can switch", "don't put too many colours on page".
 - Mechanism per goal:
-  - point emphasised → 3-step tone ladder + one `.key` block per section
+  - point emphasised → 3-step tone ladder + one `.key` block per section (weight, no decoration)
   - non-important dimmed → `.dim` lowers *tone*, never legibility
   - background calm → surfaces within 8% luminance of the background
   - highlights obvious → exactly ONE saturated accent per scheme
@@ -79,12 +79,17 @@ Locked: re-run design-task to change it, do not edit around it.
 
 ## Emphasis mechanism
 
-- `.key` — 2px accent left-rule marking the one thing that matters in a section. At most one per section, and **the only accent rule the system permits**.
+- `.key` — marks the one thing that matters in a section (at most one per section) by **weight, not decoration**: `font-weight: 500`. It carried a 2px accent left-rule until Rev 8; the accent is for the one saturated role per scheme, and a coloured bar beside a paragraph reads as an ornament.
 - `.note` — a callout is a **tone change, not a decoration**: `--surface-2` fill, radius 6px, no rule and no accent wash.
 - `.dim` — drops to `--ink-3` (still ≥ 4.5:1). Never applied to text the reader needs; for non-text de-emphasis use `--line` / `--surface-2` instead.
 - Tone ladder: `--ink` 16.3:1 → `--ink-2` 7.2:1 → `--ink-3` 4.9:1 (slate). Hierarchy by weight, not by illegibility.
 - Severity spends no extra hue: suggestion = tone step, important = accent, critical = `--crit`.
-- Decoration budget (user rule, 2026-09-12): one accent rule per section at most; no other left/right bars, no accent washes, no gradients. Dots and pills (listening, count badge, severity) are status, not decoration.
+- **Decoration budget (user rule, 2026-09-17): no coloured bar at all.** Emphasis is tone and
+  weight; the accent is spent on the one saturated role per scheme, never on a rule beside a
+  paragraph. No left/right rules, no accent washes, no gradients. Dots and pills (status, count
+  badge, severity) are status, not decoration. Anything decorative added later must be **dim,
+  thin and quiet** — if it draws the eye before the content does, it is wrong. Supersedes the
+  2026-09-12 budget, which allowed one accent rule per section.
 
 ## Typography
 
@@ -166,7 +171,15 @@ Locked: re-run design-task to change it, do not edit around it.
 - `annotate` still carries the pre-lock palette (`#d8731f` accent, `#2f63c9` blue). Two chrome stylesheets now exist; folding annotate into this system is **not** done and is not covered by this lock.
 - The accent-as-`code`-colour choice means a code chip is accent-coloured on `--surface-2`; it passes at 4.67:1 (slate) with the least margin of any pair. Darkening `--surface-2` further will break it.
 
-Last reviewed: 2026-09-16 · canvas design task
+Last reviewed: 2026-09-17 · canvas design task
+Rev 8 (2026-09-17): **the `.key` accent rule is removed**, on the user's direction — "a small
+decoration in the text block at the end of a section, left of the box with a highlight color, I
+don't want it". It was a 2px `--accent` left-rule, and it was the only coloured rule in the system,
+so the accent appeared beside a paragraph as an ornament competing with the marks, badges and links
+that already own it. `.key` now marks the point by weight alone (`font-weight: 500`). The design
+rule is general and is now written down: **decoration is never a coloured bar — emphasis is tone and
+weight, and any decoration added later must be dim, thin and quiet.** No colour moved, so the
+contrast table is unchanged; `verify-canvas.py` re-run and every topic rebuilt.
 Rev 7 (2026-09-16): **the dashboard is removed** on the user's direction. It existed to start and
 stop a coordinator and to show a dispatch loop's state; both were deleted, leaving two buttons whose
 jobs are `canvas.py list` and `build-canvas.py <topic> --new`. Removed: `dashboard.html`, the
