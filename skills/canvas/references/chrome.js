@@ -656,18 +656,22 @@ function renderAnswers(scope) {
     // reusing it made verify count an answer block as a rendered spec (2 of 1).
     if (el.dataset.quoted === '1') return;
     const note = ANNOTATIONS.find((a) => a.id === el.dataset.answers);
-    // Annotations land after the first paint; wait rather than leaving a quote that never fills.
-    if (!note && ANNOTATIONS.length === 0) return;
+    // build-canvas.py writes the note into the file, so the quote works with no daemon and no
+    // localStorage. Fall back to the annotations, and wait for them rather than rendering a
+    // quote that never fills.
+    const inlined = Object.prototype.hasOwnProperty.call(el.dataset, 'note');
+    if (!inlined && !note && ANNOTATIONS.length === 0) return;
     el.dataset.quoted = '1';
     const head = document.createElement('div');
     head.className = 'answer-head';
     const label = document.createElement('span');
     label.className = 'answer-label';
-    label.textContent = note ? 'answering your note' : 'your note is gone';
+    const text = inlined ? el.dataset.note : (note ? note.comment : null);
+    label.textContent = text !== null ? 'answering your note' : 'your note is gone';
     const q = document.createElement('blockquote');
     q.className = 'answer-note';
-    q.textContent = note ? note.comment
-                         : 'note ' + el.dataset.answers + ' is no longer on this page';
+    q.textContent = text !== null ? text
+                                  : 'note ' + el.dataset.answers + ' is no longer on this page';
     head.appendChild(label);
     head.appendChild(q);
     el.insertBefore(head, el.firstChild);

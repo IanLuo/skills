@@ -238,7 +238,9 @@ def fresh_sections(root, topic):
         return []
     fresh = set()
     for e in events[boundary + 1:]:
-        if e.get("kind") != "content":
+        if e.get("kind") != "content" or e.get("baseline"):
+            # A baseline event means "the snapshot was missing, so we cannot say what changed".
+            # Counting it would light up every section on the page.
             continue
         fresh.update(e.get("changed") or [])
         fresh.update(e.get("added") or [])

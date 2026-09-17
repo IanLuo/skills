@@ -98,7 +98,8 @@ whole point of the block.
 
 ## Emphasis (chrome-provided — use these instead of inventing styling)
 
-- `.key` — the one thing that matters in a section. Renders an accent left-rule. **At most one per section.**
+- `.key` — the one thing that matters in a section, marked by **weight** (`font-weight: 500`), not by a
+  rule or a colour. **At most one per section.**
 - `.dim` — lowers tone without losing legibility (stays ≥ 4.5:1). Never for text the reader needs; to de-emphasise non-text, change the surface/line token instead.
 - Tone ladder: `--ink` (the point) → `--ink-2` (support) → `--ink-3` (metadata). Hierarchy by weight, not by illegibility.
 

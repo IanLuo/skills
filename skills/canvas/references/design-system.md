@@ -88,8 +88,10 @@ Locked: re-run design-task to change it, do not edit around it.
   weight; the accent is spent on the one saturated role per scheme, never on a rule beside a
   paragraph. No left/right rules, no accent washes, no gradients. Dots and pills (status, count
   badge, severity) are status, not decoration. Anything decorative added later must be **dim,
-  thin and quiet** — if it draws the eye before the content does, it is wrong. Supersedes the
-  2026-09-12 budget, which allowed one accent rule per section.
+  thin and quiet** — if it draws the eye before the content does, it is wrong. One exception, and it
+  is status rather than decoration: the `2px --crit` rule on a flagged row (`#histbody .ev.needs`),
+  which marks a note awaiting the user. Supersedes the 2026-09-12 budget, which allowed one accent
+  rule per section.
 
 ## Typography
 
@@ -149,7 +151,7 @@ Locked: re-run design-task to change it, do not edit around it.
 | bars | `.bars`, `.bar`, `.track`, `.fill` | static, hover (anchor) |
 | flow | `.flow`, `.step`, `.arr` | static, hover (anchor) |
 | tree block | `.tree` | static, preformatted |
-| callout | `.note` | static (accent rule + 5% wash) |
+| callout | `.note` | static — a tone change (`--surface-2`, radius 6px), no rule and no accent wash |
 | figure/caption | `figure`, `.figcap` | static |
 | diagram block | `.mermaid`, `.mermaid-failed` | rendered, failed (crit dashed + reason line) |
 | spec error | `.spec-error` | bad JSON / unknown `data-render` kind |

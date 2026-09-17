@@ -17,6 +17,7 @@ import argparse
 import json
 import re
 import sys
+import json
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -130,6 +131,32 @@ def check_content(content):
     return errors, summary
 
 
+def inline_answer_notes(content, feedback_path):
+    """Write each answer's note into the file, so the join survives without the daemon.
+
+    In static (`file://`) mode the page reads annotations from localStorage, so an answer opened
+    in another browser, or after storage was cleared, rendered bare — losing the one thing the
+    block is for. The note is on disk at build time, so it goes into the document. Runtime still
+    falls back to the annotations when the attribute is absent (an answer whose note has since
+    been deleted), and says the note is gone rather than dropping the join silently.
+    """
+    try:
+        notes = {a.get("id"): (a.get("comment") or "")
+                 for a in json.loads(feedback_path.read_text(encoding="utf-8"))["annotations"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return content
+
+    def add(m):
+        tag, aid = m.group(0), m.group(1)
+        if "data-note=" in tag or aid not in notes:
+            return tag
+        text = (notes[aid].replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+        return tag[:-1] + ' data-note="%s">' % text
+
+    return re.sub(r'<div\b[^>]*\bdata-answers="([^"]+)"[^>]*>', add, content)
+
+
 def build(args):
     topic = args.topic
     if not TOPIC_RE.match(topic):
@@ -147,6 +174,7 @@ def build(args):
         content_path.write_text(STARTER % (topic, topic), encoding="utf-8")
 
     content = content_path.read_text(encoding="utf-8")
+    content = inline_answer_notes(content, topic_path / "feedback.json")
 
     errors, summary = check_content(content)
     print("check    " + summary)
