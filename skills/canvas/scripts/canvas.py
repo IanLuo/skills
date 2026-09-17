@@ -414,8 +414,12 @@ def snapshot(root, topic, content, v):
     existing = sorted(p.name for p in d.glob("*.html"))
     name = "%03d-%s.html" % (len(existing) + 1, v)
     (d / name).write_text(content, encoding="utf-8")
-    for old in sorted(d.glob("*.html"))[:-KEEP_SNAPSHOTS]:
+    pruned = sorted(d.glob("*.html"))[:-KEEP_SNAPSHOTS]
+    for old in pruned:
         old.unlink(missing_ok=True)
+    if pruned:
+        print("canvas: pruned %d old snapshot(s) from %s/versions — the newest %d are kept"
+              % (len(pruned), topic, KEEP_SNAPSHOTS))
     return name
 
 

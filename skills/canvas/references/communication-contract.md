@@ -1,4 +1,4 @@
-<!-- specs:locked:e089072 2026-09-17 type=spec -->
+<!-- specs:locked:74e8433 2026-09-17 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -172,8 +172,8 @@ Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit 
 
 - `verify-canvas.py` renders the real page headlessly and fails on an unrendered diagram, a spec
   error, or a broken shell — automated.
-- `build-canvas.py` rejects duplicate anchors, nested sections, malformed spec JSON and unknown
-  `data-render` kinds at build time — automated.
+- `build-canvas.py` rejects duplicate anchors or section ids, nested sections, malformed spec JSON
+  and unknown `data-render` kinds at build time — automated.
 - **The scan test (R2) is manual:** hand a fresh agent the rendered page and nothing else; it
   must answer what changed / what is true / what is being decided without opening chat.
 - Anchor stability is greppable across two revisions of `content.html`.

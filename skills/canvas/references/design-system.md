@@ -1,4 +1,4 @@
-<!-- design:locked:9d67455 2026-09-16 -->
+<!-- design:locked:74e8433 2026-09-17 -->
 # Design system — canvas chrome
 
 Read this before changing `chrome.css`, `chrome.js` chrome markup, or any canvas visual token.
@@ -169,9 +169,10 @@ Locked: re-run design-task to change it, do not edit around it.
 Last reviewed: 2026-09-16 · canvas design task
 Rev 7 (2026-09-16): **the dashboard is removed** on the user's direction. It existed to start and
 stop a coordinator and to show a dispatch loop's state; both were deleted, leaving two buttons whose
-jobs are `canvas.py list` and `build-canvas.py <topic> --new`. Removed: `dashboard.html`, the `/` and
-`/topics` routes, `#dash` from `#controls` and its rules. The origin now serves a plain index of topic
-links. No token changed, so the contrast table is unchanged.
+jobs are `canvas.py list` and `build-canvas.py <topic> --new`. Removed: `dashboard.html`, the
+`/topics` route, `#dash` from `#controls` and its rules. `/` now serves a plain index of topic links,
+and `/dashboard` is kept as an alias of it so an existing bookmark does not 404. No token changed, so
+the contrast table is unchanged.
 Rev 6 (2026-09-16): **the composer is removed**, on the user's direction. A canvas is read-and-point,
 so a requirement becomes a note on the element it concerns — the same mechanism as every other note.
 The free-text box was the one affordance that made a canvas feel like a chat client, and so like

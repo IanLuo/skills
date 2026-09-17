@@ -173,9 +173,9 @@ annotations on it.
 The saving is 11–15%, not the third it looks like. Choose `data-render` for correctness and
 consistency; choose raw HTML when the layout is bespoke and no shape fits.
 
-`build-canvas.py` validates content before writing the shell: duplicate anchors, nested
-sections, malformed spec JSON and unknown kinds all fail the build rather than appearing as
-a broken page.
+`build-canvas.py` validates content before writing the shell: duplicate anchors or section ids,
+nested sections, malformed spec JSON and unknown kinds all fail the build rather than appearing
+as a broken page.
 
 Use inline `<svg>` only for small bespoke marks — under ~6 elements. Above that it is
 ~320 tokens and hand-placed coordinates, and mermaid wins.

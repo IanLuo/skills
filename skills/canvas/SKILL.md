@@ -246,8 +246,8 @@ the work. Editing the project is not.
 `history.jsonl` is append-only: every note, resolve, delete and content change, plus your `say`
 lines. **Rounds are derived, not stored** — a round is the events since your previous `say` — so
 nothing is renumbered and a lost write cannot corrupt the past. `build-canvas.py` refuses
-duplicate anchors, nested sections, malformed spec JSON and unknown `data-render` kinds; fix
-what it reports. Detail in [references/manual.md](references/manual.md).
+duplicate anchors or section ids, nested sections, malformed spec JSON and unknown `data-render`
+kinds; fix what it reports. Detail in [references/manual.md](references/manual.md).
 
 ## Rules
 

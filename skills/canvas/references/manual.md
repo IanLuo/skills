@@ -5,6 +5,9 @@
 - You are about to run any canvas command and want the right one first try.
 - Something is wrong: a note was ignored, a page will not update.
 - You are handing a canvas to another agent, or taking one over.
+- You are about to change the daemon or `canvas.py`: `architecture.md` — the runtime's shape and
+  the constraints that forced it.
+- You are about to change what a note or a round owes the reader: `communication-contract.md`.
 - N/A: the content contract (sections, anchors, primitives) is in `SKILL.md` and `graphics.md`; the palette/type/component rules are locked in `design-system.md`.
 
 ## The model in one paragraph
@@ -37,7 +40,7 @@
 ├── feedback.json    the daemon writes it — the user's annotations
 ├── send.json        the daemon writes it — the Send state (ts, count)
 ├── history.jsonl    the daemon writes it — append-only record of the conversation
-└── versions/        canvas.py snapshots content.html in here, so a round can be undone
+└── versions/        canvas.py snapshots content.html here (newest 20 kept), so a round can be undone
 ```
 
 Everything a session produced lives in that one directory, so a topic can be archived, copied or
@@ -69,10 +72,10 @@ deleted as a unit. `<topic>` is a slug: lowercase, digits, hyphens (`^[a-z0-9][a
   Send at all there is nothing to gate against, so every unresolved note is the batch.
 - The notes are on disk from the moment they are typed — a Send decides *what is in play*, never
   whether a note is stored.
-- Daemon routes, if you need them directly: `/` topic index · `/t/<topic>` page · `/c` content
-  · `/v` version+state · `/h` history · `/a` annotations · `/health` · `POST /daemon/stop`.
-  There is no dashboard and no `/topics`: `canvas.py list` and `build-canvas.py <topic> --new`
-  are the interface.
+- Daemon routes, if you need them directly: `/` topic index (also served at `/dashboard`, kept as
+  an alias so an old bookmark does not 404) · `/t/<topic>` page · `/c` content · `/v` version+state
+  · `/h` history · `/a` annotations · `/health` · `POST /daemon/stop`. There is no dashboard page
+  and no `/topics`: `canvas.py list` and `build-canvas.py <topic> --new` are the interface.
 
 ## Lifecycle
 
@@ -149,7 +152,8 @@ A topic is meant to be dropped — that is the normal end of its life, not a des
 - N/A: unattended rounds — nothing starts a round but a session the user is talking to.
 - N/A: multi-writer merge — one writer per topic, and it is you.
 - N/A: hosted/remote canvases — the daemon binds `127.0.0.1` only.
-- N/A: recovery of a deleted topic — snapshots cover `content.html` only.
+- N/A: recovery of a deleted topic — snapshots cover `content.html` only, and only the newest 20 are
+  kept (`versions/` is a bounded undo buffer, not an archive).
 - N/A: phone-viewport verification (see above).
 
-Last reviewed: 2026-09-15 · canvas skill
+Last reviewed: 2026-09-17 · canvas skill

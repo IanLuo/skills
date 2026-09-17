@@ -46,6 +46,7 @@ class ContentCheck(HTMLParser):
     def __init__(self):
         super().__init__()
         self.anchors = []
+        self.section_ids = []
         self.sections = 0
         self.depth = 0
         self.nested = 0
@@ -59,6 +60,8 @@ class ContentCheck(HTMLParser):
         a = dict(attrs)
         if tag == "section":
             self.sections += 1
+            if "data-section" in a:
+                self.section_ids.append(a["data-section"])
             if self.depth:
                 self.nested += 1
             self.depth += 1
@@ -98,6 +101,11 @@ def check_content(content):
     dupes = sorted({a for a in c.anchors if c.anchors.count(a) > 1})
     if dupes:
         errors.append("duplicate data-anchor ids: %s" % ", ".join(dupes))
+
+    dupe_sections = sorted({s for s in c.section_ids if c.section_ids.count(s) > 1})
+    if dupe_sections:
+        errors.append("duplicate data-section ids: %s — show and the hot-swap key on a unique id"
+                      % ", ".join(dupe_sections))
 
     for kind, raw in c.specs:
         try:
