@@ -182,6 +182,10 @@ asks, or when you see notes waiting and say what you are doing.
    Then edit those sections of `.agents/canvas/<topic>/content.html`. Fix notes landing on the
    same section together, and bring in the views from
    [references/graphics.md](references/graphics.md) — the smallest view that makes the point.
+   **Write every answer as an `.answer` block bound to the note's id**, in the section the note was
+   on — `data-answers="c1789…"` from `pending`. The chrome quotes the note back above your reply, so
+   the pair travels together. A reply that is just a sentence in the prose is a reply the reader has
+   to hunt for.
 3. Refresh the fallback shell and mark the notes you addressed:
    ```bash
    python3 $S/scripts/build-canvas.py <topic>

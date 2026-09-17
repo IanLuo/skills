@@ -97,6 +97,7 @@ function mark() {
     b.textContent = String(mine.length);
     el.appendChild(b);
   });
+  renderAnswers(document);
   const pending = ANNOTATIONS.filter((a) => !a.resolved).length;
   $('send').textContent = pending ? 'Send · ' + pending : 'Send';
 }
@@ -424,7 +425,7 @@ async function applySections(html, hashes) {
 
   renderSpecs(content);
   decorateSections(content);
-  mark();
+  mark();              // also re-quotes the notes each .answer replies to
   await renderMermaid(touched);
   clearFail();   // fresh content: an earlier render error is no longer relevant
 }
@@ -432,8 +433,10 @@ async function sync() {
   if (document.visibilityState !== 'visible') return;
   const v = await fetchVersion();
   if (!v) return;
-  // The indicator must stay honest even when nothing changed, so update it first.
+  // The indicator must stay honest even when nothing changed, so update it first. Fresh marking
+  // comes before the early return: a new Send clears it without changing any content.
   indicator(v);
+  markFresh(v.fresh);
   if (v.v === lastV) return;
   try {
     const r = await fetch('/c/' + TOPIC, { cache: 'no-store' });
@@ -643,6 +646,54 @@ function evLine(e) {
 // settled sections FOLD (the reader can still open them), new ones are flagged, and the
 // reader can answer "what changed since I last looked?" by scanning the pills alone.
 // No attribute = untouched, so every existing canvas is unchanged.
+// ── answers: the reply to a note, bound to the note ────────────────────────
+// A round writes `<div class="answer" data-answers="<note id>">`. Quoting the note back, in
+// place, is what makes the pair travel together: before this, the reader had the note in the
+// Conversation panel and the answer somewhere in the prose, with nothing joining them.
+function renderAnswers(scope) {
+  scope.querySelectorAll('.answer[data-answers]').forEach((el) => {
+    // Its own flag, NOT `data-rendered`: that one belongs to the data-render renderer, and
+    // reusing it made verify count an answer block as a rendered spec (2 of 1).
+    if (el.dataset.quoted === '1') return;
+    const note = ANNOTATIONS.find((a) => a.id === el.dataset.answers);
+    // Annotations land after the first paint; wait rather than leaving a quote that never fills.
+    if (!note && ANNOTATIONS.length === 0) return;
+    el.dataset.quoted = '1';
+    const head = document.createElement('div');
+    head.className = 'answer-head';
+    const label = document.createElement('span');
+    label.className = 'answer-label';
+    label.textContent = note ? 'answering your note' : 'your note is gone';
+    const q = document.createElement('blockquote');
+    q.className = 'answer-note';
+    q.textContent = note ? note.comment
+                         : 'note ' + el.dataset.answers + ' is no longer on this page';
+    head.appendChild(label);
+    head.appendChild(q);
+    el.insertBefore(head, el.firstChild);
+  });
+}
+
+// ── what a round just changed ───────────────────────────────────────────────
+// The daemon knows which sections changed since the last Send and says so on /v. Derived, never
+// authored: the content talks about the subject, the chrome points at what is new. It clears by
+// itself when the user sends again.
+function markFresh(fresh) {
+  const list = fresh || [];
+  document.querySelectorAll('#content > section[data-section]').forEach((sec) => {
+    const pill = sec.querySelector(':scope > .secpill.fresh');
+    const isNew = list.indexOf(sec.dataset.section) >= 0;
+    if (isNew && !pill) {
+      const p = document.createElement('span');
+      p.className = 'secpill fresh';
+      p.textContent = 'new since your send';
+      sec.insertBefore(p, sec.firstChild);
+    } else if (!isNew && pill) {
+      pill.remove();
+    }
+  });
+}
+
 function decorateSections(scope) {
   scope.querySelectorAll('[data-section][data-status]').forEach((sec) => {
     if (sec.dataset.decorated === '1') return;
@@ -782,6 +833,7 @@ async function initMermaid() {
   }
   lastV = v.v;
   indicator(v);
+  markFresh(v.fresh);
   loadHistory();
   setInterval(sync, 1000);
 })();

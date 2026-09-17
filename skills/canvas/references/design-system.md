@@ -142,6 +142,8 @@ Locked: re-run design-task to change it, do not edit around it.
 | count badge | `.badge` | pending count; suppressed inside `<pre>` and `<svg>` |
 | ~~composer~~ | — | **removed in Rev 6. `#composer`, `#req`, `#reqadd` no longer exist.** Read-and-point: a requirement is a note on the element it concerns |
 | emphasis | `.key`, `.dim` | static |
+| answer to a note | `.answer`, `.answer-head`, `.answer-label`, `.answer-note` | tone-only block (`--surface-2`, radius 6px); the note is quoted above the reply from the annotations; `.answer-note.gone` when the note is no longer on the page |
+| fresh section | `#content .secpill.fresh` | derived from `/v.fresh` (sections changed since the last Send), never authored; clears on the next Send |
 | cards | `.cards`, `.card`, `.kicker` | static, hover (anchor) |
 | compare table | `.compare` | static; header row uppercase mono |
 | bars | `.bars`, `.bar`, `.track`, `.fill` | static, hover (anchor) |
@@ -172,6 +174,14 @@ Locked: re-run design-task to change it, do not edit around it.
 - The accent-as-`code`-colour choice means a code chip is accent-coloured on `--surface-2`; it passes at 4.67:1 (slate) with the least margin of any pair. Darkening `--surface-2` further will break it.
 
 Last reviewed: 2026-09-17 · canvas design task
+Rev 9 (2026-09-17): **an answer now carries its note, and the page marks what is fresh.** On the
+user's direction — "I got an answer but I have no idea where it is, it's buried in the texts. We need
+a way to distinguish my note and the llm's answer, and they better be connected" — a round writes
+`<div class="answer" data-answers="<note id>">`, and the chrome quotes the note back above the reply
+so the pair travels together. It is a tone change (`--surface-2`, radius 6px), no rule and no accent.
+Separately, `/v` now returns `fresh` — the sections changed since the last Send — and the chrome
+marks them with `.secpill.fresh`. Both are chrome-owned: the content never carries round language.
+No token changed, so the contrast table is unchanged.
 Rev 8 (2026-09-17): **the `.key` accent rule is removed**, on the user's direction — "a small
 decoration in the text block at the end of a section, left of the box with a highlight color, I
 don't want it". It was a 2px `--accent` left-rule, and it was the only coloured rule in the system,

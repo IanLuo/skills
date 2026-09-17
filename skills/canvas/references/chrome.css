@@ -295,6 +295,19 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
               padding: .45rem .7rem; font-size: .85rem; color: var(--ink); }
 .flow .step[data-anchor]:hover { background: var(--surface-2); }
 .flow .arr { color: var(--ink-3); font-size: .8rem; }
+/* An answer to a note. The note is quoted back above the reply, so the pair travels together —
+   before this the note lived in the Conversation panel and the reply somewhere in the prose, with
+   nothing joining them. Tone change only: no rule, no accent wash (decoration budget). */
+.answer { background: var(--surface-2); border-radius: 6px; padding: .85rem 1rem; margin: 1.1rem 0; }
+.answer-head { margin: 0 0 .6rem; }
+.answer-label { display: block; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                font-size: .62rem; letter-spacing: .12em; text-transform: uppercase;
+                color: var(--ink-3); }
+.answer-note { margin: .3rem 0 0; color: var(--ink-2); font-size: .92rem; }
+.answer-note::before { content: "“"; }
+.answer-note::after { content: "”"; }
+.answer-note.gone { color: var(--ink-3); font-style: italic; }
+
 /* A callout is a tone change, not a decoration: no left rule, no accent wash. */
 .note { background: var(--surface-2); padding: .7rem .9rem; border-radius: 6px; margin: 1rem 0; }
 .tree { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .83rem;
@@ -491,6 +504,8 @@ figcaption, .figcap { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospa
 #content .secpill.settled { background: var(--surface-2); color: var(--ink-3); }
 #content .secpill.new { background: var(--accent); color: var(--on-accent); }
 #content .secpill.open { border: 1px solid var(--line); color: var(--ink-2); }
+/* Fresh is the daemon's, not the author's: it marks sections changed since the last Send. */
+#content .secpill.fresh { background: var(--accent); color: var(--on-accent); }
 #content .secfold > summary { cursor: pointer; list-style: none; }
 #content .secfold > summary::-webkit-details-marker { display: none; }
 #content .secfold > summary::after { content: " ▸"; color: var(--ink-3); font-size: .8em; }

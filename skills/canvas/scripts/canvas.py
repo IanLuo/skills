@@ -219,6 +219,33 @@ def split_sections(content):
     return out
 
 
+def fresh_sections(root, topic):
+    """Sections whose content changed since the user last pressed Send.
+
+    The daemon already records this (`content` events carry changed/added/removed), so the page
+    can point at what a round just changed without the content carrying any round language. It is
+    derived, never authored: the agent writes about the subject, the chrome says what is new.
+    """
+    # Order, not time. Timestamps are second-granular, so a Send and the content change it
+    # triggers routinely share a second and a `ts >` comparison drops the very change it is
+    # looking for. The log is append-only, so the last `send` event is the boundary.
+    events = load_history(root, topic)
+    boundary = None
+    for i, e in enumerate(events):
+        if e.get("kind") == "send":
+            boundary = i
+    if boundary is None:
+        return []
+    fresh = set()
+    for e in events[boundary + 1:]:
+        if e.get("kind") != "content":
+            continue
+        fresh.update(e.get("changed") or [])
+        fresh.update(e.get("added") or [])
+        fresh.difference_update(e.get("removed") or [])
+    return sorted(fresh)
+
+
 def batch_notes(root, topic):
     """(batch, held): the notes a round may work, and the ones held back.
 
@@ -538,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
                 # consumes a send automatically — a session reads `pending`.
                 "last_send_ts": (send or {}).get("ts"),
                 "send_count": (send or {}).get("count"),
+                # What a round just changed, so the page can mark it. See fresh_sections.
+                "fresh": fresh_sections(self.root, topic),
             })
 
         if parts and parts[0] == "h":

@@ -75,6 +75,27 @@ Pipeline, no library needed:
 </div>
 ```
 
+## Answering a note, in place
+
+An answer is the reply to one note, and it belongs beside the thing the note was about — not in
+the prose somewhere, where the reader has to hunt for which note is being answered.
+
+```html
+<div class="answer" data-anchor="ans-1" data-answers="c1789651066734">
+  <p>The bar was the 2px accent rule beside the key block. Only its colour is going.</p>
+</div>
+```
+
+- `data-answers` is the **note id** from `canvas.py pending` — that is the join.
+- The chrome quotes the note back above your reply, read from the annotations at load. You do not
+  write the quote, and you should not.
+- `data-anchor` is still required: the user may want to dispute the answer.
+- With the note's id gone (an older topic, a hand-written block), the quote renders as
+  *"your note is no longer on this page"* rather than silently losing the join.
+
+`verify-canvas.py` counts them: **every `.answer` must render its quote**, because the join is the
+whole point of the block.
+
 ## Emphasis (chrome-provided — use these instead of inventing styling)
 
 - `.key` — the one thing that matters in a section. Renders an accent left-rule. **At most one per section.**

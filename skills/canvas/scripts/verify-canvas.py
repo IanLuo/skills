@@ -208,6 +208,10 @@ class DomCheck(HTMLParser):
             self.counts["rendered"] += 1
         if "rhead" in cls:
             self.counts["round"] += 1
+        if cls and cls[0] == "answer":
+            self.counts["answer"] += 1
+        if "answer-note" in cls:
+            self.counts["answer_note"] += 1
         anchor = a.get("data-anchor")
         if anchor:
             self.counts["anchor"] += 1
@@ -342,6 +346,13 @@ def check(dom, topic):
     else:
         add("data-render specs rendered", d.counts["rendered"] >= d.counts["render"],
             "%d of %d" % (d.counts["rendered"], d.counts["render"]))
+
+    # An answer is only useful if it carries the note it replies to: the whole point is that the
+    # pair travels together. It is rendered from the annotations at load, so a broken join shows
+    # as a bare block with no quote.
+    add("answers quote their note",
+        d.counts["answer_note"] >= d.counts["answer"],
+        "%d block(s), %d quoted" % (d.counts["answer"], d.counts["answer_note"]))
 
     add("sections present", d.counts["section"] >= 1,
         "%d sections, %d anchors" % (d.counts["section"], d.counts["anchor"]))

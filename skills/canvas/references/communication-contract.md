@@ -93,6 +93,13 @@ Obeys `../skill-man/references/doc-format.md`: bullets, fixed headers, explicit 
 - Every element the user might dispute carries a stable `data-anchor`; anchors never change
   between rounds.
 - A note is on disk before it is answered, and `ack` greys it rather than deleting it.
+- **An answer is bound to its note, and sits where the note was.** The reply is an `.answer` block
+  carrying the note's id (`data-answers`), and the chrome quotes the note back above it. A reply
+  written as ordinary prose fails this: the reader then has the note in one place and the answer in
+  another with nothing joining them, which is the same as not answering.
+- **What a round changed is marked by the page, not by the author.** The daemon derives the
+  sections changed since the last Send and the chrome marks them; the content never carries round
+  language. Freshness is a property of the files, so it cannot be claimed wrongly or forgotten.
 - A section that poses a question is rendered in a view (pseudocode / tree / mermaid / diff /
   `.cards`), not only in prose.
 - **Everyone under `body *` is pointable at the resolution the claim deserves** — the abstract and
