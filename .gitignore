@@ -10,6 +10,11 @@
 scratch/
 *.log
 
+# Python bytecode — every script here is run directly, so this appears the moment
+# anything imports a sibling module. Regenerable, and audit.py counts it as an orphan.
+__pycache__/
+*.pyc
+
 # Generated agent artifacts (regenerable — not source)
 .agents/artifacts/
 .agents/canvas/
