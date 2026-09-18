@@ -75,10 +75,6 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
-## Project tracking
-
-- **Use `fs` (flagship) for task/decision tracking.** Run `fs project list` at session start to discover managed projects. Before working on a tracked project, read its state with `fs status --project <name>`. Record decisions and knowledge as you go.
-
 ## House rules (maintained by ianluo)
 
 - **Commit authorship.** When committing, do NOT add the agent as an author or
