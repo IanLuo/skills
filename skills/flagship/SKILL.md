@@ -12,15 +12,16 @@ Manage projects, tasks, decisions, and knowledge via the `fs` CLI. Every state c
 
 ## Setup
 
-The `fs` binary must be built first:
+The `fs` binary lives at `skills/flagship/scripts/fs` after building:
 
 ```bash
-cd /Users/iluo/Documents/github/flagship
-nix develop
-go build -o fs ./cmd/
+# Build (from the skills repo root)
+nix develop -c bash src/flagship/build.sh
 ```
 
-Then ensure `fs` is on PATH, or use the full path to the binary.
+The build script compiles the Go source in `src/flagship/` and copies the binary to `skills/flagship/scripts/fs`. Ensure this path is on PATH, or use the full path.
+
+If the binary doesn't exist, the skill can't function — run the build first.
 
 ## The rule: always read context first
 
