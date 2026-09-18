@@ -103,17 +103,20 @@ fs kb edit --name NAME --file PATH     # update
 fs kb remove NAME                      # delete
 ```
 
-Playbooks are YAML at `~/.fs/kb/<name>.yaml`. Format:
+Playbooks are YAML at `~/.fs/kb/<name>.yaml`. Each step is `kind: body`, and `fs kb get` returns steps as `{kind, body}` objects:
 
 ```yaml
 name: dev-task-prerequisites
 type: prerequisite
 trigger: dev-task
 steps:
-  - spec
-  - system-design
-  - architecture
+  - check: test -f AGENTS.md
+  - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
+  - ask: a locked PRD is present, and it names this one deliverable
+  - ask: is the acceptance check for this deliverable stated
 ```
+
+The kind decides what the step means: `check` is a shell command `fs dispatch` runs at the project root, `ask` is for the cap to confirm, `say` is worker context and not part of the gate. `fs kb add` and `fs kb edit` refuse a step whose kind the playbook type does not allow — `prerequisite`: check, ask; `procedure`: say, check; `routing`: exactly one say step naming the skill. See `references/fs-advanced.md` for the full format.
 
 ## Event model rules
 

@@ -17,12 +17,10 @@ const devPlaybook = `name: dev-task-prerequisites
 type: prerequisite
 trigger: dev-task
 steps:
-  - read AGENTS.md at the project root
-  - find locked docs on disk with grep -rl for the specs:locked and design:locked markers
-  - a locked PRD is present; if absent, ask the user before proceeding
-  - if the locked PRD covers more than one deliverable, the user has named the slice
-  - if design-system.md exists its first line carries a design:locked marker; absent means run design-task first
-  - the acceptance check for this deliverable is stated
+  - check: test -f AGENTS.md
+  - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
+  - ask: a locked PRD is present, and it names this one deliverable
+  - ask: is the acceptance check for this deliverable stated
 `
 
 // fixture wires a handler, registry, and knowledge center isolated in temp dirs.
@@ -118,23 +116,43 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	if brief.Playbook != "dev-task-prerequisites" {
 		t.Errorf("playbook = %q", brief.Playbook)
 	}
-	if len(brief.Checklist) != 6 {
-		t.Fatalf("checklist has %d items, want one per playbook step (6)", len(brief.Checklist))
+	if len(brief.Checklist) != 4 {
+		t.Fatalf("checklist has %d items, want the 2 checks + 2 asks", len(brief.Checklist))
 	}
 
-	byStatus := map[string]string{}
+	byBody := map[string]dispatch.Item{}
 	for _, item := range brief.Checklist {
-		byStatus[item.Step] = item.Status
+		byBody[item.Body] = item
 	}
-	if got := byStatus["read AGENTS.md at the project root"]; got != "pass" {
-		t.Errorf("AGENTS.md step status = %q, want pass", got)
+
+	agentsCheck := byBody["test -f AGENTS.md"]
+	if agentsCheck.Kind != knowledge.KindCheck || agentsCheck.Status != "pass" {
+		t.Errorf("AGENTS.md check = %+v, want a passing check", agentsCheck)
 	}
-	grepStep := "find locked docs on disk with grep -rl for the specs:locked and design:locked markers"
-	if got := byStatus[grepStep]; got != "pass" {
-		t.Errorf("locked-doc grep step status = %q, want pass", got)
+	if agentsCheck.Output != "" {
+		t.Errorf("AGENTS.md check output = %q, want empty", agentsCheck.Output)
 	}
-	if got := byStatus["the acceptance check for this deliverable is stated"]; got != "?" {
-		t.Errorf("cap-only step status = %q, want ?", got)
+
+	grepBody := "grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' ."
+	grepCheck := byBody[grepBody]
+	if grepCheck.Kind != knowledge.KindCheck || grepCheck.Status != "pass" {
+		t.Errorf("locked-doc check = %+v, want a passing check", grepCheck)
+	}
+	if !strings.Contains(grepCheck.Output, filepath.Join("docs", "prd.md")) {
+		t.Errorf("locked-doc check output = %q, want the matched doc", grepCheck.Output)
+	}
+
+	for _, ask := range []string{
+		"a locked PRD is present, and it names this one deliverable",
+		"is the acceptance check for this deliverable stated",
+	} {
+		item, ok := byBody[ask]
+		if !ok {
+			t.Fatalf("ask step %q missing from the checklist", ask)
+		}
+		if item.Kind != knowledge.KindAsk || item.Status != "?" {
+			t.Errorf("ask %q = %+v, want kind ask and status ?", ask, item)
+		}
 	}
 
 	if len(brief.LockedDocs) != 1 || brief.LockedDocs[0] != filepath.Join("docs", "prd.md") {
@@ -161,12 +179,87 @@ func TestPrepareReportsFailingMechanicalChecks(t *testing.T) {
 	brief := resp.Data.(*dispatch.Brief)
 
 	for _, item := range brief.Checklist {
-		if item.Status == "pass" {
-			t.Errorf("step %q passed against an empty root", item.Step)
+		switch item.Kind {
+		case knowledge.KindCheck:
+			if item.Status != "fail" {
+				t.Errorf("check %q status = %q against an empty root, want fail", item.Body, item.Status)
+			}
+		case knowledge.KindAsk:
+			if item.Status != "?" {
+				t.Errorf("ask %q status = %q, want ?", item.Body, item.Status)
+			}
 		}
 	}
 	if len(brief.LockedDocs) != 0 {
 		t.Errorf("locked_docs = %v, want empty", brief.LockedDocs)
+	}
+}
+
+// Regression for the original defect: meaning comes from the declared kind, not
+// from words in the body. A check no keyword could match still runs.
+func TestPrepareRunsCheckWhateverItsWording(t *testing.T) {
+	const reworded = `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: echo reworded
+`
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", reworded)
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+
+	if len(brief.Checklist) != 1 {
+		t.Fatalf("checklist has %d items, want 1", len(brief.Checklist))
+	}
+	item := brief.Checklist[0]
+	if item.Kind != knowledge.KindCheck || item.Body != "echo reworded" {
+		t.Errorf("item = %+v, want the check as declared", item)
+	}
+	if item.Status != "pass" {
+		t.Errorf("status = %q, want pass", item.Status)
+	}
+	if item.Output != "reworded" {
+		t.Errorf("output = %q, want reworded", item.Output)
+	}
+	if !strings.Contains(brief.NextCommand, "reworded") {
+		t.Errorf("the brief handed to the worker must carry the check output, got %q", brief.NextCommand)
+	}
+}
+
+// A say step is worker context, not a gate item: it never appears in the
+// checklist and never carries a status.
+func TestPrepareSayIsContextNotGate(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "AGENTS.md"), "# agents\n")
+	const procedure = `name: dev-task-prerequisites
+type: procedure
+trigger: dev-task
+steps:
+  - say: read AGENTS.md before editing
+  - check: test -f AGENTS.md
+`
+	f := newFixture(t, root)
+	f.writePlaybook(t, "dev-task-prerequisites", procedure)
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+
+	if len(brief.Checklist) != 1 || brief.Checklist[0].Kind != knowledge.KindCheck {
+		t.Errorf("checklist = %+v, want only the check", brief.Checklist)
+	}
+	if len(brief.Context) != 1 || brief.Context[0] != "read AGENTS.md before editing" {
+		t.Errorf("context = %v, want the say body", brief.Context)
+	}
+	if !strings.Contains(brief.NextCommand, "read AGENTS.md before editing") {
+		t.Errorf("the brief handed to the worker must carry the say step, got %q", brief.NextCommand)
 	}
 }
 

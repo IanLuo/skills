@@ -194,8 +194,8 @@ func TestRunTaskBlocksOnMissingPrerequisite(t *testing.T) {
 type: prerequisite
 trigger: dev-task
 steps:
-  - ensure locked spec exists
-  - ensure architecture doc exists
+  - check: ensure locked spec exists
+  - check: ensure architecture doc exists
 `))
 
 	o := orchestrator.New(s, kc, me)
@@ -226,8 +226,8 @@ func TestRunTaskPassesPrerequisiteWhenDocsExist(t *testing.T) {
 type: prerequisite
 trigger: dev-task
 steps:
-  - ensure locked spec exists
-  - ensure architecture doc exists
+  - check: ensure locked spec exists
+  - check: ensure architecture doc exists
 `))
 
 	// Provide a prerequisite checker that says docs exist.

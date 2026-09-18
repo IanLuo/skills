@@ -8,17 +8,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
 
+// Step kinds. A step declares what it is, so the dispatcher never has to guess
+// from its wording: check runs a shell command, ask is for the cap to confirm,
+// say is worker context and not part of the gate.
+const (
+	KindCheck = "check"
+	KindAsk   = "ask"
+	KindSay   = "say"
+)
+
+// allowedKinds is the closed step vocabulary per playbook type. A type absent
+// here (e.g. convention) carries no step-kind rule. routing is validated by
+// validateRouting, which also constrains the step count and body.
+var allowedKinds = map[string][]string{
+	"prerequisite": {KindCheck, KindAsk},
+	"procedure":    {KindSay, KindCheck},
+}
+
+// Step is one playbook step: a kind plus its body.
+type Step struct {
+	Kind string `json:"kind" yaml:"kind"`
+	Body string `json:"body" yaml:"body"`
+}
+
 // Playbook is the structured config entity (SYSTEM-DESIGN R2).
 type Playbook struct {
-	Name        string   `json:"name" yaml:"name"`
-	Type        string   `json:"type" yaml:"type"`
-	Trigger     string   `json:"trigger" yaml:"trigger"`
-	Steps       []string `json:"steps" yaml:"steps"`
-	EngineScope string   `json:"engine_scope,omitempty" yaml:"engine_scope,omitempty"`
+	Name        string `json:"name" yaml:"name"`
+	Type        string `json:"type" yaml:"type"`
+	Trigger     string `json:"trigger" yaml:"trigger"`
+	Steps       []Step `json:"steps" yaml:"steps"`
+	EngineScope string `json:"engine_scope,omitempty" yaml:"engine_scope,omitempty"`
 }
 
 // Center manages playbook files on disk.
@@ -47,6 +71,9 @@ func (c *Center) Add(name string, data []byte) error {
 	// Ensure the name field matches.
 	if pb.Name != "" && pb.Name != name {
 		return fmt.Errorf("knowledge: name in file (%s) does not match --name (%s)", pb.Name, name)
+	}
+	if err := validatePlaybook(name, pb); err != nil {
+		return err
 	}
 
 	path := c.path(name)
@@ -102,7 +129,11 @@ func (c *Center) Edit(name string, data []byte) error {
 		return fmt.Errorf("knowledge: name is required")
 	}
 
-	if _, err := parsePlaybook(data); err != nil {
+	pb, err := parsePlaybook(data)
+	if err != nil {
+		return err
+	}
+	if err := validatePlaybook(name, pb); err != nil {
 		return err
 	}
 
@@ -140,8 +171,9 @@ func (c *Center) path(name string) string {
 //	type: value
 //	trigger: value
 //	steps:
-//	  - step one
-//	  - step two
+//	  - check: test -f AGENTS.md
+//	  - ask: is the acceptance check stated?
+//	  - say: read AGENTS.md before editing
 //	engine_scope: value
 func parsePlaybook(data []byte) (*Playbook, error) {
 	pb := &Playbook{}
@@ -157,7 +189,7 @@ func parsePlaybook(data []byte) (*Playbook, error) {
 		if inSteps {
 			if strings.HasPrefix(trimmed, "- ") {
 				step := strings.TrimPrefix(trimmed, "- ")
-				pb.Steps = append(pb.Steps, strings.TrimSpace(step))
+				pb.Steps = append(pb.Steps, parseStep(step))
 				continue
 			}
 			inSteps = false
@@ -189,6 +221,74 @@ func parsePlaybook(data []byte) (*Playbook, error) {
 	}
 
 	return pb, nil
+}
+
+// parseStep splits a step line at its first ":". A leading token that names a
+// known kind selects it; anything else — including a colon further into prose —
+// defaults to say, so playbooks written before kinds existed keep parsing.
+func parseStep(line string) Step {
+	if kind, body, ok := strings.Cut(line, ":"); ok {
+		if k := strings.TrimSpace(kind); isKind(k) {
+			return Step{Kind: k, Body: strings.TrimSpace(body)}
+		}
+	}
+	return Step{Kind: KindSay, Body: strings.TrimSpace(line)}
+}
+
+func isKind(kind string) bool {
+	switch kind {
+	case KindCheck, KindAsk, KindSay:
+		return true
+	}
+	return false
+}
+
+// validatePlaybook enforces the closed step vocabulary for a playbook's type.
+// It runs on the write path only: a playbook already on disk is read as-is.
+func validatePlaybook(name string, pb *Playbook) error {
+	if pb.Type == "routing" {
+		return validateRouting(name, pb)
+	}
+	allowed, ok := allowedKinds[pb.Type]
+	if !ok {
+		return nil
+	}
+	for i, step := range pb.Steps {
+		if !slices.Contains(allowed, step.Kind) {
+			return fmt.Errorf(
+				"knowledge: %s playbook %q step %d (%q) has kind %q; allowed kinds: %s",
+				pb.Type, name, i+1, step.Body, step.Kind, strings.Join(allowed, ", "))
+		}
+	}
+	return nil
+}
+
+// validateRouting holds a routing playbook to exactly one say step whose body
+// is the skill name.
+func validateRouting(name string, pb *Playbook) error {
+	switch {
+	case len(pb.Steps) == 0:
+		return fmt.Errorf(
+			"knowledge: routing playbook %q has no steps; a routing playbook is exactly one step — the skill name, kind %s",
+			name, KindSay)
+	case len(pb.Steps) > 1:
+		return fmt.Errorf(
+			"knowledge: routing playbook %q step 2 (%q) is extra; a routing playbook is exactly one step (allowed kinds: %s)",
+			name, pb.Steps[1].Body, KindSay)
+	}
+
+	step := pb.Steps[0]
+	if step.Kind != KindSay {
+		return fmt.Errorf(
+			"knowledge: routing playbook %q step (%q) has kind %q; a routing step is the skill name, kind %s (allowed kinds: %s)",
+			name, step.Body, step.Kind, KindSay, KindSay)
+	}
+	if step.Body == "" || strings.ContainsAny(step.Body, " \t") {
+		return fmt.Errorf(
+			"knowledge: routing playbook %q step body %q must be a single skill name (allowed kinds: %s)",
+			name, step.Body, KindSay)
+	}
+	return nil
 }
 
 // MarshalJSON implements custom JSON marshaling (for CLI output).

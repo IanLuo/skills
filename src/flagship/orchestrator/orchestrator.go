@@ -138,8 +138,8 @@ func (o *Orchestrator) checkPrerequisites(taskType string) error {
 
 	var missing []string
 	for _, step := range pb.Steps {
-		if !o.prereqChecker(step) {
-			missing = append(missing, step)
+		if !o.prereqChecker(step.Body) {
+			missing = append(missing, step.Body)
 		}
 	}
 
@@ -187,7 +187,7 @@ func (o *Orchestrator) composePrompt(tree *query.Tree, node *query.Node, taskTyp
 		for _, pb := range procedures {
 			fmt.Fprintf(&b, "### %s\n", pb.Name)
 			for _, step := range pb.Steps {
-				fmt.Fprintf(&b, "- %s\n", step)
+				fmt.Fprintf(&b, "- %s\n", step.Body)
 			}
 			b.WriteString("\n")
 		}
@@ -230,7 +230,7 @@ func (o *Orchestrator) resolveSkill(taskType string) string {
 			continue
 		}
 		if pb.Type == "routing" && pb.Trigger == taskType && len(pb.Steps) > 0 {
-			return pb.Steps[0]
+			return pb.Steps[0].Body
 		}
 	}
 	return taskType

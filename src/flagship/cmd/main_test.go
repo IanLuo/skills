@@ -799,8 +799,8 @@ func TestCLIKBAddGetListEditRemove(t *testing.T) {
 type: prerequisite
 trigger: dev-task
 steps:
-  - check spec
-  - check arch
+  - check: test -f docs/prd.md
+  - check: test -f docs/arch.md
 `
 	pbFile := writePlaybook(t, dir, "dev-prereqs", playbook)
 
@@ -875,9 +875,9 @@ steps:
 type: prerequisite
 trigger: dev-task
 steps:
-  - check spec
-  - check arch
-  - run linter
+  - check: test -f docs/prd.md
+  - check: test -f docs/arch.md
+  - check: go vet ./...
 `
 	updatedFile := writePlaybook(t, dir, "dev-prereqs-updated", updated)
 	resp, code = runKB("kb", "edit", "--name", "dev-prereqs", "--file", updatedFile)
@@ -905,16 +905,77 @@ steps:
 	}
 }
 
+// fs kb add refuses an invalid playbook, naming the offending step and the
+// kinds its type allows.
+func TestCLIKBAddRefusesInvalidPlaybooks(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+
+	cases := []struct {
+		name string
+		pb   string
+		want string
+	}{
+		{
+			name: "prereq-say",
+			pb: `name: prereq-say
+type: prerequisite
+trigger: t
+steps:
+  - check: test -f AGENTS.md
+  - say: read AGENTS.md before editing
+`,
+			want: "read AGENTS.md before editing",
+		},
+		{
+			name: "proc-ask",
+			pb: `name: proc-ask
+type: procedure
+trigger: t
+steps:
+  - ask: is the acceptance check stated?
+`,
+			want: "allowed kinds: say, check",
+		},
+		{
+			name: "route-two",
+			pb: `name: route-two
+type: routing
+trigger: t
+steps:
+  - say: dev-task
+  - say: review-task
+`,
+			want: "review-task",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pbFile := writePlaybook(t, dir, tc.name, tc.pb)
+			resp, code := runFS(t, bin, dir, "kb", "add", "--name", tc.name, "--file", pbFile)
+			if code != 1 {
+				t.Fatalf("add exit = %d, want 1: %v", code, resp)
+			}
+			if resp["ok"] != false {
+				t.Errorf("ok = %v, want false", resp["ok"])
+			}
+			errMsg, _ := resp["error"].(string)
+			if !strings.Contains(errMsg, tc.want) {
+				t.Errorf("error %q must name %q", errMsg, tc.want)
+			}
+		})
+	}
+}
+
 const dispatchPlaybook = `name: dev-task-prerequisites
 type: prerequisite
 trigger: dev-task
 steps:
-  - read AGENTS.md at the project root
-  - find locked docs on disk with grep -rl for the specs:locked and design:locked markers
-  - a locked PRD is present; if absent, ask the user before proceeding
-  - if the locked PRD covers more than one deliverable, the user has named the slice
-  - if design-system.md exists its first line carries a design:locked marker; absent means run design-task first
-  - the acceptance check for this deliverable is stated
+  - check: test -f AGENTS.md
+  - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
+  - ask: a locked PRD is present, and it names this one deliverable
+  - ask: is the acceptance check for this deliverable stated
 `
 
 // fs dispatch prepares the brief from the playbook and the project root, and
@@ -949,18 +1010,28 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 	data := resp["data"].(map[string]any)
 
 	checklist := data["checklist"].([]any)
-	if len(checklist) != 6 {
-		t.Fatalf("checklist has %d items, want one per playbook step (6)", len(checklist))
+	if len(checklist) != 4 {
+		t.Fatalf("checklist has %d items, want the 2 checks + 2 asks", len(checklist))
 	}
-	agentsStep := ""
+	byBody := map[string]map[string]any{}
 	for _, raw := range checklist {
 		item := raw.(map[string]any)
-		if strings.Contains(item["step"].(string), "AGENTS.md") {
-			agentsStep = item["status"].(string)
-		}
+		byBody[item["body"].(string)] = item
 	}
-	if agentsStep != "pass" {
-		t.Errorf("AGENTS.md step status = %q, want pass", agentsStep)
+	agentsCheck, ok := byBody["test -f AGENTS.md"]
+	if !ok {
+		t.Fatalf("AGENTS.md check missing from the checklist: %v", byBody)
+	}
+	if agentsCheck["kind"] != "check" || agentsCheck["status"] != "pass" {
+		t.Errorf("AGENTS.md check = %v, want a passing check", agentsCheck)
+	}
+	grepBody := "grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' ."
+	if grepCheck, ok := byBody[grepBody]; !ok {
+		t.Fatalf("locked-doc check missing from the checklist: %v", byBody)
+	} else if grepCheck["status"] != "pass" {
+		t.Errorf("locked-doc check = %v, want pass", grepCheck)
+	} else if out, _ := grepCheck["output"].(string); !strings.Contains(out, filepath.Join("docs", "prd.md")) {
+		t.Errorf("locked-doc check output = %q, want the matched doc", out)
 	}
 
 	locked := data["locked_docs"].([]any)

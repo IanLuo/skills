@@ -79,19 +79,35 @@ type: prerequisite          # prerequisite | procedure | convention | routing
 trigger: dev-task           # which task type or skill triggers this
 engine_scope: herdr         # optional — scope to a specific engine
 steps:
-  - spec                    # each step is a required doc or action
-  - system-design
-  - architecture
+  - check: test -f AGENTS.md       # kind: body — the kind declares what the step means
+  - ask: is the acceptance check stated?
+  - say: read AGENTS.md before editing
 ```
+
+Each step is `kind: body`:
+
+| Kind | Meaning |
+|---|---|
+| `check` | A shell command `fs dispatch` runs with cwd = the project root. Pass/fail plus the command's output. |
+| `ask` | Only the cap can confirm it; dispatch reports `?`. |
+| `say` | Worker context, not part of the gate. Carried in the brief text. |
+
+A step line with no recognized kind prefix defaults to `say` (split at the first `:`),
+so prose playbooks written before kinds existed still parse. `fs kb get` returns steps
+as `{kind, body}` objects.
 
 ### Playbook types
 
-| Type | Purpose |
-|---|---|
-| `prerequisite` | Docs/conditions that must exist before starting a task type |
-| `procedure` | Step-by-step instructions for a workflow |
-| `convention` | Coding/naming/formatting rules to follow |
-| `routing` | Maps task types to skills/engines |
+| Type | Purpose | Allowed step kinds |
+|---|---|---|
+| `prerequisite` | Docs/conditions that must exist before starting a task type | `check`, `ask` |
+| `procedure` | Step-by-step instructions for a workflow | `say`, `check` |
+| `convention` | Coding/naming/formatting rules to follow | — |
+| `routing` | Maps task types to skills/engines | exactly one `say` step whose body is the skill name |
+
+`fs kb add` and `fs kb edit` enforce the vocabulary on the write path: an invalid
+playbook is refused with an error naming the offending step and the allowed kinds.
+`fs kb get` reads whatever is on disk, valid or not.
 
 ### CRUD operations
 
@@ -102,15 +118,14 @@ name: dev-task-prerequisites
 type: prerequisite
 trigger: dev-task
 steps:
-  - spec
-  - system-design
-  - architecture
+  - check: test -f specs/prd.md
+  - ask: is the acceptance check stated?
 EOF
 fs kb add --name dev-task-prerequisites --file /tmp/playbook.yaml
 
 # Read
 fs kb get dev-task-prerequisites
-# Returns the YAML content
+# Returns the parsed playbook: steps are {kind, body} objects
 
 # List all
 fs kb list

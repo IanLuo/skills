@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,13 +26,13 @@ import (
 // scope is just a string, so it is never registered and never created.
 const capScope = "cap"
 
-// Item is one playbook step in the brief's checklist. Status is "pass" or
-// "fail" for a step dispatch can check mechanically, and "?" for a step only
-// the cap can confirm. Check names the mechanical check that produced Status.
+// Item is one gate step in the brief's checklist: a check the dispatcher ran,
+// or an ask only the cap can confirm. Body is the shell command for a check.
 type Item struct {
-	Step   string `json:"step"`
-	Status string `json:"status"`
-	Check  string `json:"check,omitempty"`
+	Kind   string `json:"kind"`   // check | ask
+	Body   string `json:"body"`   // the command to run, or the question
+	Status string `json:"status"` // pass | fail for a check, ? for an ask
+	Output string `json:"output,omitempty"`
 }
 
 // Brief is the data payload of fs dispatch.
@@ -42,6 +43,7 @@ type Brief struct {
 	TaskType    string   `json:"task_type"`
 	Playbook    string   `json:"playbook"`
 	Checklist   []Item   `json:"checklist"`
+	Context     []string `json:"context,omitempty"`
 	LockedDocs  []string `json:"locked_docs"`
 	Notes       []string `json:"notes"`
 	CapNodeID   string   `json:"cap_node_id"`
@@ -90,8 +92,9 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	return command.Response{OK: true, Data: brief}
 }
 
-// buildBrief runs the mechanical prerequisites against the project root and
-// pairs every playbook step with the status it can establish.
+// buildBrief runs the typed prerequisites against the project root: every check
+// step is executed there, every ask becomes a "?" for the cap, and every say is
+// carried as worker context rather than a gate item.
 func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string) (*Brief, error) {
 	info, err := os.Stat(proj.RootPath)
 	if err != nil {
@@ -101,12 +104,19 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 		return nil, fmt.Errorf("project %q root %s is not a directory", proj.Name, proj.RootPath)
 	}
 
-	agentsMD := fileExists(filepath.Join(proj.RootPath, "AGENTS.md"))
 	lockedDocs := findLockedDocs(proj.RootPath)
 
 	checklist := make([]Item, 0, len(pb.Steps))
+	var context []string
 	for _, step := range pb.Steps {
-		checklist = append(checklist, classify(step, agentsMD, lockedDocs))
+		switch step.Kind {
+		case knowledge.KindCheck:
+			checklist = append(checklist, runCheck(step.Body, proj.RootPath))
+		case knowledge.KindAsk:
+			checklist = append(checklist, Item{Kind: step.Kind, Body: step.Body, Status: "?"})
+		default: // say — worker context, not part of the gate
+			context = append(context, step.Body)
+		}
 	}
 
 	return &Brief{
@@ -116,6 +126,7 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 		TaskType:   taskType,
 		Playbook:   pb.Name,
 		Checklist:  checklist,
+		Context:    context,
 		LockedDocs: lockedDocs,
 		Notes: []string{
 			"the locked-doc grep matches the marker text anywhere, so it has a known false positive when a repo documents the marker syntax itself",
@@ -123,25 +134,17 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 	}, nil
 }
 
-// classify pairs a playbook step with a mechanical check when the step names
-// one, and marks it "?" otherwise — only the cap can confirm the rest.
-func classify(step string, agentsMD bool, lockedDocs []string) Item {
-	lower := strings.ToLower(step)
-	switch {
-	case strings.Contains(lower, "agents.md"):
-		return Item{
-			Step:   step,
-			Status: passFail(agentsMD),
-			Check:  "AGENTS.md exists at the project root",
-		}
-	case strings.Contains(lower, "grep"):
-		return Item{
-			Step:   step,
-			Status: passFail(len(lockedDocs) > 0),
-			Check:  "grep -rl for the specs:locked and design:locked markers in *.md",
-		}
-	default:
-		return Item{Step: step, Status: "?"}
+// runCheck executes a check's body as a shell command with cwd = the project
+// root, and reports pass/fail plus the command's combined output.
+func runCheck(body, root string) Item {
+	cmd := exec.Command("sh", "-c", body)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	return Item{
+		Kind:   knowledge.KindCheck,
+		Body:   body,
+		Status: passFail(err == nil),
+		Output: strings.TrimRight(string(out), "\n"),
 	}
 }
 
@@ -150,11 +153,6 @@ func passFail(ok bool) string {
 		return "pass"
 	}
 	return "fail"
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 // findLockedDocs returns the *.md files under root carrying a specs:locked or
@@ -229,19 +227,28 @@ func nextCommand(b *Brief) string {
 		shellQuote(b.RootPath), name, name, shellQuote(renderBrief(b)))
 }
 
-// renderBrief is the text the cap hands the worker: goal, project root,
-// checklist, and the locked docs.
+// renderBrief is the text the cap hands the worker: goal, project root, the say
+// steps as context, the gate checklist with each check's output, and the locked
+// docs.
 func renderBrief(b *Brief) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Goal: %s\n", b.Goal)
 	fmt.Fprintf(&sb, "Project: %s (root %s)\n", b.Project, b.RootPath)
+	if len(b.Context) > 0 {
+		sb.WriteString("Context:\n")
+		for _, say := range b.Context {
+			fmt.Fprintf(&sb, "- %s\n", say)
+		}
+	}
 	sb.WriteString("Checklist:\n")
 	for _, item := range b.Checklist {
-		fmt.Fprintf(&sb, "- [%s] %s", item.Status, item.Step)
-		if item.Check != "" {
-			fmt.Fprintf(&sb, " (%s)", item.Check)
+		fmt.Fprintf(&sb, "- [%s] %s\n", item.Status, item.Body)
+		if item.Output != "" {
+			sb.WriteString("    output:\n")
+			for _, line := range strings.Split(item.Output, "\n") {
+				fmt.Fprintf(&sb, "      %s\n", line)
+			}
 		}
-		sb.WriteString("\n")
 	}
 	if len(b.LockedDocs) > 0 {
 		fmt.Fprintf(&sb, "Locked docs: %s\n", strings.Join(b.LockedDocs, ", "))
