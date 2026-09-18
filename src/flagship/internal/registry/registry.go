@@ -6,6 +6,8 @@ package registry
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -24,9 +26,15 @@ type Registry struct {
 	db *sql.DB
 }
 
+// busyTimeoutMS is how long a command waits for the registry's write lock before
+// giving up with SQLITE_BUSY.
+const busyTimeoutMS = "5000"
+
 // Open creates or opens a registry at path. Sets WAL mode and creates schema.
 func Open(path string) (*Registry, error) {
-	db, err := sql.Open("sqlite", path)
+	// _busy_timeout is a DSN parameter because it is per-connection: the driver
+	// applies it to every connection the pool opens.
+	db, err := sql.Open("sqlite", path+"?_busy_timeout="+busyTimeoutMS)
 	if err != nil {
 		return nil, fmt.Errorf("registry: open %s: %w", path, err)
 	}
@@ -54,6 +62,14 @@ func (r *Registry) JournalMode() (string, error) {
 	var mode string
 	err := r.db.QueryRow("PRAGMA journal_mode").Scan(&mode)
 	return mode, err
+}
+
+// BusyTimeout returns how long a connection waits for the write lock, in ms
+// (for testing).
+func (r *Registry) BusyTimeout() (int, error) {
+	var ms int
+	err := r.db.QueryRow("PRAGMA busy_timeout").Scan(&ms)
+	return ms, err
 }
 
 func createSchema(db *sql.DB) error {
@@ -142,4 +158,27 @@ func (r *Registry) UpdateActivity(name string) error {
 		return fmt.Errorf("registry: update activity %s: %w", name, err)
 	}
 	return nil
+}
+
+// Resolve returns the name of the registered project owning path — the deepest
+// root_path that is path itself or an ancestor of it. ok is false when no
+// registered project covers path.
+func (r *Registry) Resolve(path string) (string, bool, error) {
+	projects, err := r.List()
+	if err != nil {
+		return "", false, err
+	}
+
+	path = filepath.Clean(path)
+	name, depth := "", -1
+	for _, p := range projects {
+		root := filepath.Clean(p.RootPath)
+		if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+			continue
+		}
+		if len(root) > depth {
+			name, depth = p.Name, len(root)
+		}
+	}
+	return name, depth >= 0, nil
 }

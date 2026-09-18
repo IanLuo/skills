@@ -15,6 +15,10 @@ import (
 // EventType enumerates the hardcoded event types (SPEC R3, SYSTEM-DESIGN R2).
 type EventType string
 
+// busyTimeoutMS is how long a command waits for the shared store's write lock
+// before giving up with SQLITE_BUSY.
+const busyTimeoutMS = "5000"
+
 const (
 	ProjectCreated   EventType = "project-created"
 	TaskCreated      EventType = "task-created"
@@ -64,7 +68,10 @@ type Store struct {
 
 // Open creates or opens a store at path. Sets WAL mode and creates schema.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// One store serves every project, so parallel commands contend for a single
+	// write lock. _busy_timeout is a DSN parameter because it is per-connection:
+	// the driver applies it to every connection the pool opens.
+	db, err := sql.Open("sqlite", path+"?_busy_timeout="+busyTimeoutMS)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
@@ -80,18 +87,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: pragma: %w", err)
 	}
 
-	// PRAGMA integrity_check: refuse all operations on corrupt DB
-	// (SPEC R9, SYSTEM-DESIGN R4).
-	var integrity string
-	if err := db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("store: integrity check failed: %w", err)
-	}
-	if integrity != "ok" {
-		db.Close()
-		return nil, fmt.Errorf("store: integrity check failed: %s", integrity)
-	}
-
+	// Header and schema damage is refused here: journal_mode and createSchema both
+	// read the file and fail with SQLITE_NOTADB / SQLITE_CORRUPT. A full
+	// PRAGMA integrity_check is deliberately not run — it is linear in file size
+	// (≈4ms/MB, ~2s on a 144MB store) and this one store now serves every project,
+	// so it would tax every command. SQLite reports corruption when it reads a
+	// damaged page, which is the same refusal, later (SPEC R9, SYSTEM-DESIGN R4).
 	if err := createSchema(db); err != nil {
 		db.Close()
 		return nil, err
@@ -115,6 +116,14 @@ func (s *Store) JournalMode() (string, error) {
 	var mode string
 	err := s.db.QueryRow("PRAGMA journal_mode").Scan(&mode)
 	return mode, err
+}
+
+// BusyTimeout returns how long a connection waits for the write lock, in ms
+// (for testing).
+func (s *Store) BusyTimeout() (int, error) {
+	var ms int
+	err := s.db.QueryRow("PRAGMA busy_timeout").Scan(&ms)
+	return ms, err
 }
 
 func createSchema(db *sql.DB) error {

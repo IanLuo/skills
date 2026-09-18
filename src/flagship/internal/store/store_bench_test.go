@@ -3,6 +3,7 @@ package store_test
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -142,5 +143,61 @@ func BenchmarkSearch100Nodes(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		s.Search(projectID, "authentication")
+	}
+}
+
+// seedProjects appends perProject events to each of projects projects.
+func seedProjects(b *testing.B, s *store.Store, projects, perProject int) {
+	b.Helper()
+	for p := 0; p < projects; p++ {
+		projectID := fmt.Sprintf("p%02d", p)
+		for i := 0; i < perProject; i++ {
+			nodeID := fmt.Sprintf("t-%06d", i)
+			payload, _ := json.Marshal(map[string]string{"goal": fmt.Sprintf("task %d in project %s", i, projectID)})
+			if _, err := s.Append(store.Event{Type: store.TaskCreated, ProjectID: projectID, NodeID: &nodeID, Payload: payload}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
+// BenchmarkOpenSharedStore guards the decision that Open is not linear in file
+// size: one store holds every project, so a full integrity scan here would tax
+// every command.
+func BenchmarkOpenSharedStore(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "bench.db")
+	s, err := store.Open(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	seedProjects(b, s, 20, 1000)
+	s.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		st, err := store.Open(path)
+		if err != nil {
+			b.Fatal(err)
+		}
+		st.Close()
+	}
+}
+
+// BenchmarkSearchAtScale measures a project-scoped search with 20 projects in one
+// store: FTS5 matches globally, so cost grows with matches outside the project.
+func BenchmarkSearchAtScale(b *testing.B) {
+	dir := b.TempDir()
+	s, err := store.Open(filepath.Join(dir, "bench.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	seedProjects(b, s, 20, 1000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.Search("p00", "task 4242"); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

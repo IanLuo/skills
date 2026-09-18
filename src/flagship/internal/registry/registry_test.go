@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -181,5 +182,55 @@ func TestListOrderByLastActivity(t *testing.T) {
 	}
 	if projects[1].Name != "old" {
 		t.Errorf("expected 'old' second, got %s", projects[1].Name)
+	}
+}
+
+func TestOpenSetsBusyTimeout(t *testing.T) {
+	// Commands open the registry on every invocation, so parallel agents must
+	// wait for its write lock rather than failing with SQLITE_BUSY.
+	r := open(t)
+	ms, err := r.BusyTimeout()
+	if err != nil {
+		t.Fatalf("BusyTimeout: %v", err)
+	}
+	if ms != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", ms)
+	}
+}
+
+func TestResolveMapsPathToOwningProject(t *testing.T) {
+	r := open(t)
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register("outer", root); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register("inner", sub); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		path   string
+		want   string
+		wantOK bool
+	}{
+		{root, "outer", true},
+		{filepath.Join(root, "x"), "outer", true},
+		{sub, "inner", true},
+		{filepath.Join(sub, "deep"), "inner", true},
+		{root + "-sibling", "", false}, // shared prefix is not a child
+		{t.TempDir(), "", false},
+	}
+	for _, tc := range cases {
+		got, ok, err := r.Resolve(tc.path)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", tc.path, err)
+		}
+		if ok != tc.wantOK || got != tc.want {
+			t.Errorf("Resolve(%s) = (%q, %v), want (%q, %v)", tc.path, got, ok, tc.want, tc.wantOK)
+		}
 	}
 }

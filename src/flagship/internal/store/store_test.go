@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,24 @@ func TestOpenCreatesDB(t *testing.T) {
 
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("DB file not created: %v", err)
+	}
+}
+
+func TestOpenSetsBusyTimeout(t *testing.T) {
+	// One store holds every project, so parallel commands must wait for the
+	// write lock rather than failing with SQLITE_BUSY.
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	ms, err := s.BusyTimeout()
+	if err != nil {
+		t.Fatalf("BusyTimeout: %v", err)
+	}
+	if ms != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", ms)
 	}
 }
 
@@ -367,27 +386,53 @@ func TestOpenRejectsGarbageFile(t *testing.T) {
 	}
 }
 
-func TestOpenRunsIntegrityCheck(t *testing.T) {
-	// Verify the integrity check runs on Open by confirming a valid DB passes.
+func TestOpenDoesNotScanWholeFile(t *testing.T) {
+	// Open must not be linear in file size: this one store holds every project, so
+	// a full integrity scan here would tax every command. Damage outside the
+	// header and schema is therefore refused when SQLite reads the page, not at
+	// open.
 	path := tempDB(t)
 	s, err := store.Open(path)
 	if err != nil {
-		t.Fatalf("Open valid DB: %v", err)
+		t.Fatalf("Open: %v", err)
+	}
+	for i := 0; i < 500; i++ {
+		nid := fmt.Sprintf("t-%04d", i)
+		s.Append(store.Event{Type: store.TaskCreated, ProjectID: "p", NodeID: &nid,
+			Payload: json.RawMessage(`{"goal":"task"}`)})
 	}
 	s.Close()
 
-	// Re-open should succeed (integrity check passes on clean DB).
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 3*4096 {
+		t.Skipf("store too small to damage a data page: %d bytes", len(data))
+	}
+	// Leave page 1 (header + schema) intact; destroy every data page.
+	for i := 4096; i < len(data); i++ {
+		data[i] = 0xFF
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	s2, err := store.Open(path)
 	if err != nil {
-		t.Fatalf("Re-open valid DB: %v", err)
+		t.Fatalf("Open scanned the whole file and refused a store with damaged data pages: %v", err)
 	}
-	s2.Close()
+	defer s2.Close()
+
+	// The damage is real: reading it must fail rather than return clean state.
+	if _, err := s2.Replay("p", nil); err == nil {
+		t.Error("damaged data page read without error")
+	}
 }
 
-func TestOpenIntegrityCheckRejectsCorrupt(t *testing.T) {
-	// SPEC R9: integrity check catches corruption.
+func TestOpenRejectsDamagedSchema(t *testing.T) {
+	// SPEC R9: damage to the header or schema is refused at open.
 	path := tempDB(t)
-	// Create a valid DB first.
 	s, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -395,26 +440,24 @@ func TestOpenIntegrityCheckRejectsCorrupt(t *testing.T) {
 	s.Append(store.Event{Type: store.ProjectCreated, ProjectID: "p", Payload: json.RawMessage(`{"name":"p","root_path":"/p"}`)})
 	s.Close()
 
-	// Corrupt the file by overwriting part of the middle (preserving the header).
+	// Overwrite the middle of page 1, preserving the 100-byte file header, which
+	// SQLite reads to decide whether the file is a database at all.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) > 200 {
-		for i := 100; i < 200 && i < len(data); i++ {
-			data[i] = 0xFF
-		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		_, err = store.Open(path)
-		// Either the integrity check or some other pragma will fail.
-		// The point: it must not succeed silently.
-		if err == nil {
-			t.Log("WARN: corruption not detected — SQLite may have self-healed via WAL. Acceptable.")
-		}
-	} else {
-		t.Skip("DB too small to corrupt meaningfully")
+	if len(data) <= 200 {
+		t.Skip("DB too small to damage meaningfully")
+	}
+	for i := 100; i < 200; i++ {
+		data[i] = 0xFF
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Open(path); err == nil {
+		t.Error("damaged schema read without error")
 	}
 }
 

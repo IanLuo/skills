@@ -41,11 +41,28 @@ func getFS(t *testing.T) string {
 	return fsBin
 }
 
+// testHomes holds one isolated home per test, created on first use.
+var testHomes sync.Map
+
+// testHome returns the isolated home for this test. Every runFS call in a test
+// shares it whatever working directory it runs in, while the real ~/.fs is
+// never touched.
+func testHome(t *testing.T) string {
+	t.Helper()
+	if home, ok := testHomes.Load(t); ok {
+		return home.(string)
+	}
+	home, _ := testHomes.LoadOrStore(t, t.TempDir())
+	t.Cleanup(func() { testHomes.Delete(t) })
+	return home.(string)
+}
+
 // runFS runs the fs binary in a directory.
 func runFS(t *testing.T, bin, dir string, args ...string) (map[string]any, int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 	out, err := cmd.Output()
 	exitCode := 0
 	if err != nil {
@@ -73,6 +90,7 @@ func TestLogsGoToStderrNotStdout(t *testing.T) {
 
 	cmd := exec.Command(bin, "project", "create", "--name", "logtest", "--root", dir)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -120,8 +138,92 @@ func TestCLIProjectCreate(t *testing.T) {
 	if resp["ok"] != true {
 		t.Fatalf("not ok: %v", resp["error"])
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".fs", "store.db")); err != nil {
-		t.Fatalf("store.db not created: %v", err)
+	// Per-project data lives in the global store, never in the repo.
+	if _, err := os.Stat(filepath.Join(dir, ".fs")); !os.IsNotExist(err) {
+		t.Fatalf("project dir must not hold fs data: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(testHome(t), ".fs", "store.db")); err != nil {
+		t.Fatalf("global store not created: %v", err)
+	}
+}
+
+// The store is shared and partitioned by project_id, and the project a command
+// targets is the registered project owning the working directory.
+func TestCLIStoreSharedAcrossProjects(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	other := t.TempDir()
+
+	runFS(t, bin, dir, "project", "create", "--name", "demo")
+	runFS(t, bin, dir, "task", "add", "--goal", "Implement auth")
+
+	// Acting in the registered root targets "demo", not dir's basename.
+	resp, code := runFS(t, bin, dir, "status")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	if data["project_id"] != "demo" {
+		t.Errorf("project_id = %v, want demo", data["project_id"])
+	}
+	if tasks := data["tasks"].([]any); len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+
+	// The basename partition stays empty.
+	resp, code = runFS(t, bin, dir, "status", "--project", filepath.Base(dir))
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	if tasks := resp["data"].(map[string]any)["tasks"]; tasks != nil {
+		t.Errorf("basename partition should be empty, got %v", tasks)
+	}
+
+	// A different working directory reaches the same data by project name.
+	resp, code = runFS(t, bin, other, "status", "--project", "demo")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	tasks := resp["data"].(map[string]any)["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task from %s, got %d", other, len(tasks))
+	}
+}
+
+// Parallel agents write to one store; no writer may fail on the write lock.
+func TestCLIConcurrentWriters(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "demo")
+
+	const writers = 16
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cmd := exec.Command(bin, "task", "add", "--goal", fmt.Sprintf("task %d", i))
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "HOME="+testHome(t))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				errs[i] = fmt.Errorf("writer %d: %v: %s", i, err, out)
+			}
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	resp, code := runFS(t, bin, dir, "status")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	if tasks := resp["data"].(map[string]any)["tasks"].([]any); len(tasks) != writers {
+		t.Errorf("got %d tasks, want %d", len(tasks), writers)
 	}
 }
 
@@ -441,13 +543,12 @@ func writePlaybook(t *testing.T, dir, name, content string) string {
 func TestCLIProjectList(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
-	homeDir := t.TempDir()
 
 	runWithHome := func(args ...string) (map[string]any, int) {
 		t.Helper()
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 		out, err := cmd.Output()
 		exitCode := 0
 		if err != nil {
@@ -507,13 +608,12 @@ func TestCLIProjectList(t *testing.T) {
 func TestCLIProjectGet(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
-	homeDir := t.TempDir()
 
 	runWithHome := func(args ...string) (map[string]any, int) {
 		t.Helper()
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 		out, err := cmd.Output()
 		exitCode := 0
 		if err != nil {
@@ -560,13 +660,12 @@ func TestCLIProjectCreateRegisters(t *testing.T) {
 	// fs project create should register in the global registry.
 	bin := getFS(t)
 	dir := t.TempDir()
-	homeDir := t.TempDir()
 
 	runWithHome := func(args ...string) (map[string]any, int) {
 		t.Helper()
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 		out, err := cmd.Output()
 		exitCode := 0
 		if err != nil {
@@ -607,13 +706,12 @@ func TestCLILastActivityUpdates(t *testing.T) {
 	// Commands that target a project should update last_activity.
 	bin := getFS(t)
 	dir := t.TempDir()
-	homeDir := t.TempDir()
 
 	runWithHome := func(args ...string) (map[string]any, int) {
 		t.Helper()
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 		out, err := cmd.Output()
 		exitCode := 0
 		if err != nil {
@@ -697,9 +795,6 @@ func TestCLIKBAddGetListEditRemove(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 
-	// Override KB dir via HOME env.
-	homeDir := t.TempDir()
-
 	playbook := `name: dev-prereqs
 type: prerequisite
 trigger: dev-task
@@ -714,7 +809,7 @@ steps:
 		t.Helper()
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		cmd.Env = append(os.Environ(), "HOME="+testHome(t))
 		out, err := cmd.Output()
 		exitCode := 0
 		if err != nil {

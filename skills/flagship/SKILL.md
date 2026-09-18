@@ -119,7 +119,7 @@ steps:
 
 These are non-negotiable:
 
-1. **Never write to `.fs/store.db` directly** — only use `fs` commands
+1. **Never write to `~/.fs/store.db` or `~/.fs/registry.db` directly** — only use `fs` commands
 2. **Events are immutable** — no undo; correct with compensating events (update status back, edit goal again)
 3. **Always record decisions** — when making a choice, use the `--decision` flag on `fs task update`
 4. **Always record knowledge** — when learning something useful, use `fs task knowledge`
@@ -150,11 +150,19 @@ Before starting a task type that has a prerequisite playbook:
 
 ## Data locations
 
-```
-~/.fs/registry.db              # Global project registry (all known projects)
-~/.fs/kb/                       # Knowledge center (global, YAML playbooks)
-<project_root>/.fs/store.db    # Event store (per-project, SQLite + WAL)
-```
+Everything lives under `~/.fs/` — no project directory is written to:
+
+- `~/.fs/store.db` — event store: every project's events, partitioned by `project_id`
+- `~/.fs/registry.db` — global project registry
+- `~/.fs/kb/` — knowledge center (global YAML playbooks)
+
+## Project identity
+
+One store holds every project, partitioned by `project_id`. A command targets
+`--project NAME` if given, else the registered project whose `root_path` owns the
+working directory, else the directory name. So after `fs project create --name demo`,
+every command in that repo targets `demo` — and `--project` reaches any registered
+project from anywhere. See [references/fs-advanced.md](references/fs-advanced.md).
 
 ## Example session
 

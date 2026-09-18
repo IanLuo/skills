@@ -18,7 +18,7 @@ Every event is a JSON object with fixed envelope + type-specific payload:
 {
   "id": "01HXYZ...",
   "timestamp": "2025-09-13T12:00:00Z",
-  "project_id": "p-abc12345",
+  "project_id": "myapp",
   "node_id": "t-abc12345",
   "parent_node_id": "t-parent00",
   "commit_sha": "a1b2c3d",
@@ -158,17 +158,23 @@ fs project get myapp
 
 ## Multi-project workflows
 
-Each project has its own `.fs/store.db`. The `--project` flag selects which store to operate on.
+One store, `~/.fs/store.db`, holds every project's events partitioned by
+`project_id`. `--project` selects the partition, so any project is reachable from
+any directory.
 
 ```bash
-# List projects (by checking for .fs/store.db in known paths)
-# Note: fs doesn't have a global project index — track projects manually
+# Discover projects
+fs project list
 
-# Work across projects
+# Work across projects (no need to cd somewhere first)
 fs status --project frontend
 fs status --project backend
 fs query "shared API contract" --project backend
 ```
+
+When `--project` is omitted the target is the registered project whose `root_path`
+owns the working directory; if the directory is unregistered, its directory name is
+used. Registration happens on `fs project create`.
 
 The knowledge center (`~/.fs/kb/`) is global — playbooks apply across all projects.
 
@@ -176,9 +182,16 @@ The knowledge center (`~/.fs/kb/`) is global — playbooks apply across all proj
 
 - **SQLite WAL mode** — write-ahead logging for crash safety. Transactions commit atomically.
 - **Append-only** — events are never modified or deleted. Derived state rebuilds from replay.
-- **Integrity check** — runs on store open. Corrupt DB is detected and refused with an error.
+- **Corruption** — a damaged file header or schema is refused at open. A full
+  `PRAGMA integrity_check` is deliberately *not* run per command (it is linear in
+  file size, and this one store grows with every project); damage to a data page is
+  reported by SQLite when that page is read.
 - **FTS5 self-healing** — if the FTS index becomes corrupted, it auto-rebuilds on next query.
-- **No concurrent writers** — `fs` commands are short-lived and serialize on SQLite's write lock. Safe for sequential agent use; avoid parallel writes to the same project store.
+- **Concurrent writers** — commands wait up to 5s for the write lock (`busy_timeout`)
+  instead of failing with SQLITE_BUSY, so parallel agents can share the store. Very
+  long write bursts still serialize on SQLite's single writer.
+- **Search scope** — FTS5 matches the whole store and then filters by `project_id`, so a
+  query whose terms appear in many projects costs more than its own project's size.
 
 ## Common patterns
 

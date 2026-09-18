@@ -70,26 +70,62 @@ Commands:
   kb remove NAME                                Remove a playbook`)
 }
 
-// handler opens the store and returns a command handler.
-// Store location: <project_root>/.fs/store.db (SYSTEM-DESIGN R4).
-func handler() (*command.Handler, string) {
-	projectRoot := command.DetectProjectRoot()
-	if projectRoot == "" {
-		// Fallback to cwd
-		var err error
-		projectRoot, err = os.Getwd()
-		if err != nil {
-			fatal("cannot determine project root: " + err.Error())
-		}
+// fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives
+// here: the registry, the shared event store, and the knowledge center.
+func fsHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal("cannot determine home directory: " + err.Error())
 	}
-
-	dbDir := filepath.Join(projectRoot, ".fs")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
-		fatal("cannot create .fs directory: " + err.Error())
+	dir := filepath.Join(home, ".fs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal("cannot create ~/.fs directory: " + err.Error())
 	}
+	return dir
+}
 
-	dbPath := filepath.Join(dbDir, "store.db")
-	h, err := command.NewHandler(dbPath)
+// storePath returns the shared event store. Every project's events live in this
+// one file, partitioned by project_id — no per-repo .fs directory.
+func storePath() string {
+	return filepath.Join(fsHome(), "store.db")
+}
+
+// projectRoot returns the git repo root, or the working directory outside a repo.
+func projectRoot() string {
+	if root := command.DetectProjectRoot(); root != "" {
+		return root
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		fatal("cannot determine project root: " + err.Error())
+	}
+	return wd
+}
+
+// resolveProjectID returns the project a command targets: an explicit name wins,
+// else the registered project whose root owns the working directory, else the
+// working directory's name.
+func resolveProjectID(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	root := projectRoot()
+	reg := openRegistry()
+	defer reg.Close()
+	name, ok, err := reg.Resolve(root)
+	if err != nil {
+		// Falling back to the directory name would silently target another
+		// partition, so say so before doing it.
+		logger.Error("registry resolve failed", "root", root, "error", err)
+	} else if ok {
+		return name
+	}
+	return filepath.Base(root)
+}
+
+// handler opens the shared store and returns a handler plus the resolved project.
+func handler(projectID string) (*command.Handler, string) {
+	h, err := command.NewHandler(storePath())
 	if err != nil {
 		fatal(err.Error())
 	}
@@ -100,7 +136,7 @@ func handler() (*command.Handler, string) {
 	// Auto-capture git HEAD (ARCHITECTURE R4).
 	h.SetCommitSHA(command.DetectCommitSHA())
 
-	return h, projectRoot
+	return h, resolveProjectID(projectID)
 }
 
 func projectCmd(args []string) {
@@ -133,16 +169,16 @@ func projectCreate(args []string) {
 	name := flagVal(args, "--name", "")
 	root := flagVal(args, "--root", "")
 
-	h, projectRoot := handler()
-	defer h.Close()
-
 	if root == "" {
-		root = projectRoot
+		root = projectRoot()
 	}
 	if name == "" {
 		// Default to directory name.
 		name = filepath.Base(root)
 	}
+
+	h, _ := handler(name)
+	defer h.Close()
 
 	resp := h.ProjectCreate(name, root)
 	if resp.OK {
@@ -225,12 +261,9 @@ func taskAdd(args []string) {
 	parent := flagVal(args, "--parent", "")
 	projectID := flagVal(args, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
 
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 	if goal == "" {
 		fatal("--goal is required")
 	}
@@ -257,12 +290,8 @@ func taskUpdate(args []string) {
 	decision := flagVal(rest, "--decision", "")
 	projectID := flagVal(rest, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskUpdate(projectID, nodeID, status, decision, nil)
 	if resp.OK {
@@ -280,12 +309,8 @@ func taskEdit(args []string) {
 	goal := flagVal(rest, "--goal", "")
 	projectID := flagVal(rest, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskEdit(projectID, nodeID, goal, nil)
 	if resp.OK {
@@ -303,12 +328,8 @@ func taskBlock(args []string) {
 	reason := flagVal(rest, "--reason", "")
 	projectID := flagVal(rest, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskBlock(projectID, nodeID, reason)
 	if resp.OK {
@@ -325,12 +346,8 @@ func taskUnblock(args []string) {
 	rest := args[1:]
 	projectID := flagVal(rest, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskUnblock(projectID, nodeID)
 	if resp.OK {
@@ -348,12 +365,8 @@ func taskKnowledge(args []string) {
 	summary := flagVal(rest, "--summary", "")
 	projectID := flagVal(rest, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.KnowledgeAdd(projectID, nodeID, summary)
 	if resp.OK {
@@ -365,12 +378,8 @@ func taskKnowledge(args []string) {
 func statusCmd(args []string) {
 	projectID := flagVal(args, "--project", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	updateActivity(projectID)
 	resp := h.Status(projectID)
@@ -514,27 +523,14 @@ func kbRemove(args []string) {
 	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "removed"}})
 }
 
-// kbDir returns the knowledge center directory.
-// SYSTEM-DESIGN R4: Knowledge center at ~/.fs/kb/.
+// kbDir returns the knowledge center directory. SYSTEM-DESIGN R4: ~/.fs/kb/.
 func kbDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fatal("cannot determine home directory: " + err.Error())
-	}
-	return filepath.Join(home, ".fs", "kb")
+	return filepath.Join(fsHome(), "kb")
 }
 
 // registryPath returns the path to the global registry database.
 func registryPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fatal("cannot determine home directory: " + err.Error())
-	}
-	dir := filepath.Join(home, ".fs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fatal("cannot create ~/.fs directory: " + err.Error())
-	}
-	return filepath.Join(dir, "registry.db")
+	return filepath.Join(fsHome(), "registry.db")
 }
 
 // openRegistry opens the global project registry.
@@ -574,12 +570,8 @@ func queryCmd(args []string) {
 		fatal("search term is required: fs query SEARCH_TERM [--project ID]")
 	}
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	updateActivity(projectID)
 	resp := h.Query(projectID, searchTerm)
@@ -591,12 +583,8 @@ func logCmd(args []string) {
 	nodeIDStr := flagVal(args, "--node", "")
 	eventTypeStr := flagVal(args, "--type", "")
 
-	h, projectRoot := handler()
+	h, projectID := handler(projectID)
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	var nodeID *string
 	if nodeIDStr != "" {
