@@ -24,6 +24,45 @@
      <p class="eyebrow">…</p> above the title, a mono status line as
      <div class="meta-row"><span><b>N</b> items</span><span class="sep">·</span>…</div>,
      and .card for a boxed block.
+
+     ── ANSWERING A PREVIOUS ROUND ────────────────────────────────
+     If this artifact answers notes from an earlier round, do NOT
+     paraphrase them into prose — the reader cannot tell their words
+     from yours, and "where is the answer?" is the failure this
+     vocabulary exists to prevent. Quote each note VERBATIM and pair
+     it with your answer as one thread:
+
+       <div class="ev user" data-thread="r1e" data-anchor="r1e">
+         <span class="who">you</span>
+         <div class="txt">edit or create? (the note, verbatim)</div></div>
+       <div class="ev agent" data-thread="r1e" data-anchor="r1e-answer"
+            data-status="new">
+         <span class="who">me</span>
+         <div class="txt">Both — the lease is on the topic…</div></div>
+
+     data-thread is the pairing key and must be the note's original
+     anchor id. The user row keeps that id as its data-anchor so notes
+     survive every round. The agent row takes data-anchor too, so the
+     next round can annotate the answer. Both rows are required.
+
+     ── WHAT IS FRESH ─────────────────────────────────────────────
+     Mark it, or the reader sees one undifferentiated wall of text.
+     Put the round's delta in the opening meta-row, then per element:
+
+       data-status="new"     first appearance this round
+       data-status="changed" revised since the last round
+       data-status="settled" carried over, unchanged (recedes)
+       data-status="open"    awaiting the reader's decision
+
+     On a .ev row the state appears beside the voice label; on any
+     other element it renders as a pill. For a round or section
+     heading use <span class="secpill new">3 new</span>. A row with no
+     data-status is treated as settled.
+
+     ── RETIRING A NOTE ───────────────────────────────────────────
+     A thread that is finished may be dropped, but silently, never:
+     list its ids on the round wrapper — data-retired="r1a,r1b" — so
+     build-artifact.py --prev can prove nothing was lost.
      ============================================================ -->
 
 <h1 data-anchor="title">…</h1>

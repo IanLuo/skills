@@ -139,7 +139,67 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.6rem 0; }
 #status { position: fixed; bottom: 1rem; left: 1rem; z-index: 20; font-size: .78rem;
           color: var(--ink-3); font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Round loop — two voices, and what is fresh.
+
+   A round answers the previous round's notes, so the page carries two authored
+   voices and must say which is which and what changed. The vocabulary is borrowed
+   VERBATIM from canvas (`.ev` / `.who` / `.txt` / `.secpill` / data-status) so one
+   reading habit works on both surfaces instead of a third dialect growing.
+
+   Freshness is a WORD, never a tint: `.marked` already owns the accent tint for
+   "you annotated this", so a fresh element tinted the same way would be
+   indistinguishable from an annotated one.
+   ══════════════════════════════════════════════════════════════════════════ */
+.round { margin: 1.6rem 0; }
+
+/* One thread = a `.ev.user` (the note, verbatim, data-anchor) paired with a
+   `.ev.agent` (the answer). Both carry the same data-thread id, so the pairing is
+   structural rather than a naming convention written into the prose. The answer
+   carries data-anchor too — round N+1 must be able to annotate it.
+   A row with no data-status is settled: it stays unmarked, deliberately. */
+.ev { display: grid; grid-template-columns: 5.4rem 1fr; column-gap: .6rem; align-items: start;
+      padding: .5rem .6rem; border-radius: 6px; margin: .35rem 0; }
+.ev .who { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: .62rem;
+           letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding-top: .2rem; }
+.ev .txt { color: var(--ink-2); word-break: break-word; }
+.ev .txt b { color: var(--ink); }
+.ev.user { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.ev.user:hover { background: color-mix(in srgb, var(--accent) 11%, transparent); }
+.ev.agent .who { color: var(--accent); }
+
+/* Freshness sits in the mono gutter beside the voice label, where it cannot disturb
+   the row's grid the way an inserted element would. */
+.ev[data-status="new"] .who::after { content: " · new"; color: var(--accent); font-weight: 600; }
+.ev[data-status="changed"] .who::after { content: " · changed"; color: var(--accent-ink); }
+
+/* The pill — freshness at round or section level, and the automatic marker for any
+   other element carrying data-status. States match canvas (settled recedes in tone,
+   new takes the accent, open is the working state); `changed` is annotate's own, for
+   "revised since you last read this". */
+.secpill { display: inline-block; margin: 0 0 .55rem; padding: .1rem .5rem; border-radius: 999px;
+           font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+           font-size: .62rem; letter-spacing: .12em; text-transform: uppercase; }
+.secpill.new { background: var(--accent); color: var(--on-accent); }
+.secpill.changed { border: 1px solid var(--accent); color: var(--accent-ink); }
+.secpill.settled { background: var(--surface-2); color: var(--ink-3); }
+.secpill.open { border: 1px solid var(--line); color: var(--ink-2); }
+
+[data-status]:not(.ev)::before {
+  display: inline-block; margin-right: .45rem; padding: .1rem .45rem; border-radius: 999px;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: .58rem; letter-spacing: .12em; text-transform: uppercase; vertical-align: .1em; }
+[data-status="new"]:not(.ev)::before { content: "new";
+  background: var(--accent); color: var(--on-accent); }
+[data-status="changed"]:not(.ev)::before { content: "changed";
+  border: 1px solid var(--accent); color: var(--accent-ink); }
+[data-status="settled"]:not(.ev)::before { content: "settled";
+  background: var(--surface-2); color: var(--ink-3); }
+
 @media (max-width: 640px) {
   body { padding: 1.8rem 1.2rem 5rem; }
   h1[data-anchor="title"] { font-size: 1.6rem; }
+  /* The gutter has no room to hold a voice label beside the text — stack it. */
+  .ev { grid-template-columns: 1fr; row-gap: .15rem; }
+  .ev .who { padding-top: 0; }
 }

@@ -44,6 +44,44 @@ The build script inlines the static chrome so the artifact is ONE self-contained
    user it's open, that every element is clickable to annotate, and the Done button
    copies the feedback for pasting back.
 
+## Answering a previous round
+
+When the artifact answers notes from an earlier round, the page carries two authored
+voices and must say which is which. **Quote each note verbatim and pair it with your
+answer as one thread** — never paraphrase a note into prose, because then the reader
+cannot tell their words from yours. That, and a note quietly vanished, is the failure
+this vocabulary exists to prevent.
+
+```html
+<div class="ev user" data-thread="r1e" data-anchor="r1e">
+  <span class="who">you</span><div class="txt">edit or create?</div></div>
+<div class="ev agent" data-thread="r1e" data-anchor="r1e-answer" data-status="new">
+  <span class="who">me</span><div class="txt">Both — the lease is on the topic…</div></div>
+```
+
+`data-thread` is the note's original anchor id. The user row keeps it as `data-anchor`
+so note ids survive every round; the answer row takes `data-anchor` too, so the next
+round can annotate the answer. Both rows are required. The vocabulary is canvas's —
+`.ev`, `.who`, `.txt`, `.secpill`, `data-status` — so a reader's habit carries across
+both surfaces; don't invent parallel names.
+
+Then mark what is fresh, or the reader sees one undifferentiated wall:
+
+- `data-status="new" | "changed" | "settled" | "open"` per element (a row with none is
+  settled). On a `.ev` row the state shows beside the voice label; elsewhere it renders
+  as a pill.
+- the round's delta in the opening `.meta-row`, e.g. `<b>3</b> new · <b>1</b> changed`.
+- `<span class="secpill new">3 new</span>` on the round heading.
+
+Build with `--prev` and the script fails on a note that was neither carried forward nor
+retired — so loss is loud, not silent. A finished thread is retired explicitly by id:
+`data-retired="r1a,r1b"` on the round wrapper.
+
+```bash
+python3 scripts/build-artifact.py <name> <name>.content.html \
+  --prev .agents/artifacts/<previous-round>.html
+```
+
 ## Resolve feedback
 
 The user pastes the feedback into chat — one annotation per line, compact and readable:
@@ -78,6 +116,9 @@ Read the file on demand; don't load it wholesale into context.
   snippet is the fallback locator, not the primary.
 - **Copy-paste transport.** No server, no POST, no polling. The user clicks **Done** to
   copy the JSON and paste it when ready — the loop is async.
+- **Two voices, paired.** A round that answers notes quotes them verbatim in a
+  `.ev.user` row and pairs each with its `.ev.agent` answer by `data-thread`. A note is
+  carried forward or explicitly retired — never dropped, never paraphrased.
 - **Simple format.** One line per annotation in the pasted JSON, no noise, severity only
   when it adds signal.
 - **Code/context is truth.** If the artifact is stale vs the current context, say so
