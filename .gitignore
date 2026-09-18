@@ -23,6 +23,9 @@ __pycache__/
 src/credentials/target/
 skills/credentials/scripts/cred-run
 
+# Go build output (flagship skill) — compiled binary is regenerable
+skills/flagship/scripts/fs
+
 # Vendored third-party diagram library (~4MB). Fetch it with the curl line in
 # skills/canvas/SKILL.md; the canvas degrades to source text without it.
 skills/canvas/assets/mermaid.min.js
