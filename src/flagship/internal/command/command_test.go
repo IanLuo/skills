@@ -612,3 +612,73 @@ func TestErrorResponse(t *testing.T) {
 		t.Errorf("expected 0 tasks, got %d", len(data.Tasks))
 	}
 }
+
+// Unfinished lists every node that is not done, across every scope in the
+// store, including scopes that were never registered.
+func TestUnfinishedAcrossScopes(t *testing.T) {
+	h := setup(t)
+
+	add := func(project, goal string) string {
+		t.Helper()
+		resp := h.TaskAdd(project, goal, nil)
+		if !resp.OK {
+			t.Fatalf("TaskAdd(%s, %s): %s", project, goal, resp.Error)
+		}
+		return resp.Data.(command.EventData).NodeID
+	}
+
+	doneID := add("skills", "finished thing")
+	if resp := h.TaskUpdate("skills", doneID, "done", "closed", nil); !resp.OK {
+		t.Fatalf("TaskUpdate: %s", resp.Error)
+	}
+	add("skills", "open thing")
+	add("cap", "cap backlog")
+	add("never-registered", "orphan thing")
+
+	resp := h.Unfinished()
+	if !resp.OK {
+		t.Fatalf("Unfinished: %s", resp.Error)
+	}
+	unfinished := resp.Data.(map[string]any)["unfinished"].([]command.UnfinishedNode)
+	if len(unfinished) != 3 {
+		t.Fatalf("unfinished has %d nodes, want 3: %+v", len(unfinished), unfinished)
+	}
+
+	byGoal := map[string]command.UnfinishedNode{}
+	for _, node := range unfinished {
+		byGoal[node.Goal] = node
+	}
+	if _, ok := byGoal["finished thing"]; ok {
+		t.Error("a done node must not be reported as unfinished")
+	}
+	for goal, project := range map[string]string{
+		"open thing":   "skills",
+		"cap backlog":  "cap",
+		"orphan thing": "never-registered",
+	} {
+		node, ok := byGoal[goal]
+		if !ok {
+			t.Errorf("unfinished %q missing", goal)
+			continue
+		}
+		if node.ProjectID != project {
+			t.Errorf("%q project_id = %q, want %q", goal, node.ProjectID, project)
+		}
+		if node.Status == "done" {
+			t.Errorf("%q status = done, want anything else", goal)
+		}
+	}
+
+	// Deterministic and stable: ordered by scope, then node id.
+	for i := 1; i < len(unfinished); i++ {
+		prev, cur := unfinished[i-1], unfinished[i]
+		if prev.ProjectID > cur.ProjectID {
+			t.Errorf("unfinished not ordered by scope: %v", unfinished)
+			break
+		}
+		if prev.ProjectID == cur.ProjectID && prev.NodeID > cur.NodeID {
+			t.Errorf("unfinished not ordered by node id within a scope: %v", unfinished)
+			break
+		}
+	}
+}

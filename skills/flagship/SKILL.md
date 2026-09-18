@@ -80,11 +80,31 @@ fs task unblock NODE_ID [--project ID]
 fs task knowledge NODE_ID --summary "JWT refresh tokens expire after 7 days" [--project ID]
 ```
 
+### Task status
+
+Status is derived by replaying events: a task's status is the `to` of its last
+`status-changed` event. There are exactly four.
+
+| status | meaning |
+|---|---|
+| `pending` | prepared but **not delivered** — unresolved, revisit it |
+| `active` | dispatched; a worker is on it |
+| `blocked` | waiting on the user |
+| `done` | closed, with a closing decision |
+
+Never mark an unfinished task `done`. Abandoning a dispatch means marking it
+`done` with a decision that says it was never delivered: the record then shows
+the drop instead of hiding it.
+
 ### Querying
 
 ```bash
 # Task tree with statuses, goals, decisions
 fs status [--project ID]
+
+# Every task not done, across every scope — reads the store's scopes, not the
+# registry, so it works after a registry wipe and includes the implicit cap scope
+fs unfinished
 
 # Full-text search across all event payloads (FTS5)
 fs query "search term" [--project ID]
@@ -150,6 +170,17 @@ Before starting a task type that has a prerequisite playbook:
 1. `fs kb get <task-type>-prerequisites`
 2. Verify each required doc exists and is locked
 3. If missing → `fs task block <id> --reason "Missing <doc>"`
+
+`fs dispatch --project P --type T --goal G` runs that playbook's `check` steps
+at the project root. Checks run in order and **stop at the first failure**: the
+command exits non-zero, names the failing command and its output, and says what
+to do. Fix it, or pass `--confirm` to run every check anyway — the override is
+recorded as a decision on the cap's dispatch node.
+
+Dispatch also refuses while an earlier dispatch node is still unresolved
+(`pending`/`active`/`blocked`): the cap must resolve it or pass `--confirm`,
+which records `user confirmed proceeding with unresolved dispatches: <ids>`.
+Only `dispatch <type>: ` nodes gate this way — the cap's own backlog does not.
 
 ## Data locations
 

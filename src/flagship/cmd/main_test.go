@@ -995,13 +995,7 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
-	kbDir := filepath.Join(testHome(t), ".fs", "kb")
-	if err := os.MkdirAll(kbDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(kbDir, "dev-task-prerequisites.yaml"), []byte(dispatchPlaybook), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", dispatchPlaybook)
 
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
@@ -1087,5 +1081,203 @@ func TestCLIDispatchMissingPlaybook(t *testing.T) {
 	errMsg, _ := resp["error"].(string)
 	if !strings.Contains(errMsg, "no-such-type-prerequisites") {
 		t.Errorf("error must name the missing playbook, got %q", errMsg)
+	}
+}
+
+// writeKBPlaybook installs a playbook in the isolated home's knowledge center.
+func writeKBPlaybook(t *testing.T, home, name, content string) {
+	t.Helper()
+	kbDir := filepath.Join(home, ".fs", "kb")
+	if err := os.MkdirAll(kbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kbDir, name+".yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// capTask returns the cap-scope task with the given goal, via fs status.
+func capTask(t *testing.T, bin, dir, goal string) map[string]any {
+	t.Helper()
+	resp, code := runFS(t, bin, dir, "status", "--project", "cap")
+	if code != 0 {
+		t.Fatalf("status cap exit %d: %v", code, resp["error"])
+	}
+	tasks, _ := resp["data"].(map[string]any)["tasks"].([]any)
+	for _, raw := range tasks {
+		if task := raw.(map[string]any); task["goal"] == goal {
+			return task
+		}
+	}
+	t.Fatalf("cap node with goal %q not found in %v", goal, tasks)
+	return nil
+}
+
+func containsString(values []any, want string) bool {
+	for _, v := range values {
+		if s, ok := v.(string); ok && s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// fs unfinished reads scopes from the store: the implicit cap scope and a scope
+// that was never registered both report, and done nodes are omitted.
+func TestCLIUnfinishedListsEveryScopeFromTheStore(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	doneResp, code := runFS(t, bin, root, "task", "add", "--goal", "finished thing", "--project", "skills")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, doneResp["error"])
+	}
+	doneID := doneResp["data"].(map[string]any)["node_id"].(string)
+	runFS(t, bin, root, "task", "update", doneID, "--status", "done", "--decision", "closed", "--project", "skills")
+
+	runFS(t, bin, root, "task", "add", "--goal", "open thing", "--project", "skills")
+	runFS(t, bin, root, "task", "add", "--goal", "cap backlog", "--project", "cap")
+	runFS(t, bin, root, "task", "add", "--goal", "orphan thing", "--project", "never-registered")
+
+	resp, code := runFS(t, bin, root, "unfinished")
+	if code != 0 {
+		t.Fatalf("unfinished exit %d: %v", code, resp["error"])
+	}
+	unfinished := resp["data"].(map[string]any)["unfinished"].([]any)
+
+	byGoal := map[string]map[string]any{}
+	for _, raw := range unfinished {
+		node := raw.(map[string]any)
+		byGoal[node["goal"].(string)] = node
+	}
+	if _, ok := byGoal["finished thing"]; ok {
+		t.Errorf("a done node must not be reported as unfinished: %v", unfinished)
+	}
+	for goal, project := range map[string]string{
+		"open thing":   "skills",
+		"cap backlog":  "cap",
+		"orphan thing": "never-registered",
+	} {
+		node, ok := byGoal[goal]
+		if !ok {
+			t.Errorf("unfinished %q missing from %v", goal, unfinished)
+			continue
+		}
+		if node["project_id"] != project {
+			t.Errorf("%q project_id = %v, want %q", goal, node["project_id"], project)
+		}
+	}
+
+	// The unregistered scope proves the registry is not the source: it lists in
+	// fs unfinished but project get cannot find it.
+	if _, code := runFS(t, bin, root, "project", "get", "never-registered"); code == 0 {
+		t.Error("never-registered must not be in the registry")
+	}
+}
+
+// A failing check stops the run at that check, and --confirm overrides it while
+// recording the override on the cap node.
+func TestCLIDispatchFailsFastThenConfirm(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	sentinel := filepath.Join(t.TempDir(), "dispatch-check3-ran")
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", fmt.Sprintf(`name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: true
+  - check: false
+  - check: touch %s
+`, sentinel))
+
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"prerequisite check failed", `"false"`, "tell the user", "--confirm"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
+		}
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Errorf("check 3 ran despite check 2 failing: %v", err)
+	}
+	// A refusal records nothing, so the confirm below is not gated by it.
+	if capResp, _ := runFS(t, bin, root, "status", "--project", "cap"); capResp["data"].(map[string]any)["tasks"] != nil {
+		t.Errorf("a refusal must not record a cap node: %v", capResp)
+	}
+
+	resp, code = runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	if code != 0 {
+		t.Fatalf("--confirm exit = %d: %v", code, resp["error"])
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("--confirm must run every check; check 3 did not run: %v", err)
+	}
+
+	task := capTask(t, bin, root, "dispatch dev-task: sample")
+	want := "user confirmed proceeding past a failing check: false"
+	if !containsString(task["decisions"].([]any), want) {
+		t.Errorf("cap decisions = %v, want %q", task["decisions"], want)
+	}
+
+	// Clean up: an unresolved dispatch node makes later dispatches refuse.
+	nodeID := resp["data"].(map[string]any)["cap_node_id"].(string)
+	runFS(t, bin, root, "task", "update", nodeID, "--status", "done", "--decision", "test cleanup", "--project", "cap")
+}
+
+// An unresolved dispatch stops the next one, and --confirm overrides it while
+// naming the dispatch it left open.
+func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: true
+`)
+
+	first, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "first")
+	if code != 0 {
+		t.Fatalf("first dispatch exit %d: %v", code, first["error"])
+	}
+	firstID := first["data"].(map[string]any)["cap_node_id"].(string)
+
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "second")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"unresolved dispatches", firstID, "--confirm"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
+		}
+	}
+
+	confirmed, code := runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "second")
+	if code != 0 {
+		t.Fatalf("--confirm exit = %d: %v", code, confirmed["error"])
+	}
+	task := capTask(t, bin, root, "dispatch dev-task: second")
+	want := "user confirmed proceeding with unresolved dispatches: " + firstID
+	if !containsString(task["decisions"].([]any), want) {
+		t.Errorf("cap decisions = %v, want %q", task["decisions"], want)
+	}
+
+	// Clean up both dispatch nodes.
+	secondID := confirmed["data"].(map[string]any)["cap_node_id"].(string)
+	for _, id := range []string{firstID, secondID} {
+		runFS(t, bin, root, "task", "update", id, "--status", "done", "--decision", "test cleanup", "--project", "cap")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
@@ -54,6 +55,15 @@ type TaskInfo struct {
 type StatusResult struct {
 	ProjectID string     `json:"project_id"`
 	Tasks     []TaskInfo `json:"tasks"`
+}
+
+// UnfinishedNode is one task that is not done, tagged with the scope it lives
+// in so fs unfinished can report every scope at once.
+type UnfinishedNode struct {
+	ProjectID string `json:"project_id"`
+	NodeID    string `json:"node_id"`
+	Status    string `json:"status"`
+	Goal      string `json:"goal"`
 }
 
 // Handler executes commands against a store.
@@ -306,6 +316,62 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 	for _, child := range node.Children {
 		collectTasks(child, out)
 	}
+}
+
+// Unfinished lists every node that is not done, across every scope in the
+// store. Scopes come from the events themselves, not the registry: a node in a
+// scope that was never registered, or whose registry row was lost, still
+// reports here.
+func (h *Handler) Unfinished() Response {
+	scopes, err := h.store.Scopes()
+	if err != nil {
+		h.logger.Error("store scopes failed", "command", "unfinished", "error", err)
+		return errResp(err.Error())
+	}
+
+	unfinished := []UnfinishedNode{}
+	for _, scope := range scopes {
+		nodes, err := h.UnfinishedIn(scope)
+		if err != nil {
+			h.logger.Error("store replay failed", "command", "unfinished", "scope", scope, "error", err)
+			return errResp(err.Error())
+		}
+		unfinished = append(unfinished, nodes...)
+	}
+
+	h.logger.Info("command executed", "command", "unfinished", "scopes", len(scopes), "unfinished", len(unfinished))
+	return okResp(map[string]any{"unfinished": unfinished})
+}
+
+// UnfinishedIn lists the nodes in one scope that are not done, ordered by node
+// id. Status is derived by replaying the scope's events, the same way fs status
+// derives it.
+func (h *Handler) UnfinishedIn(scope string) ([]UnfinishedNode, error) {
+	events, err := h.store.Replay(scope, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	tree := query.BuildTree(scope, events)
+	nodes := make([]*query.Node, 0, len(tree.Nodes))
+	for _, node := range tree.Nodes {
+		nodes = append(nodes, node)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeID < nodes[j].NodeID })
+
+	unfinished := make([]UnfinishedNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Status == "done" {
+			continue
+		}
+		unfinished = append(unfinished, UnfinishedNode{
+			ProjectID: scope,
+			NodeID:    node.NodeID,
+			Status:    node.Status,
+			Goal:      node.Goal,
+		})
+	}
+	return unfinished, nil
 }
 
 // deriveStatus replays events to find the current status of a node.

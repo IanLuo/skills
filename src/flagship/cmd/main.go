@@ -41,6 +41,8 @@ func main() {
 		kbCmd(os.Args[2:])
 	case "dispatch":
 		dispatchCmd(os.Args[2:])
+	case "unfinished":
+		unfinishedCmd()
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -64,6 +66,7 @@ Commands:
   task unblock NODE_ID                          Unblock a task
   task knowledge NODE_ID --summary TEXT         Add knowledge to a task
   status [--project PROJECT_ID]                 Show project status
+  unfinished                                   Every task not done, across every scope
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   kb add --name NAME --file PATH                Add a playbook
@@ -71,7 +74,8 @@ Commands:
   kb list                                       List playbooks
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
-  dispatch --project P --type TYPE --goal GOAL  Prepare a dispatch brief (does not spawn)`)
+  dispatch --project P --type TYPE --goal GOAL [--confirm]
+                                               Prepare a dispatch brief (does not spawn)`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives
@@ -129,6 +133,13 @@ func resolveProjectID(explicit string) string {
 
 // handler opens the shared store and returns a handler plus the resolved project.
 func handler(projectID string) (*command.Handler, string) {
+	return openHandler(), resolveProjectID(projectID)
+}
+
+// openHandler opens the shared store with the CLI's logger and commit sha. It
+// deliberately does not touch the registry: commands such as fs unfinished must
+// keep working after a registry wipe.
+func openHandler() *command.Handler {
 	h, err := command.NewHandler(storePath())
 	if err != nil {
 		fatal(err.Error())
@@ -140,7 +151,7 @@ func handler(projectID string) (*command.Handler, string) {
 	// Auto-capture git HEAD (ARCHITECTURE R4).
 	h.SetCommitSHA(command.DetectCommitSHA())
 
-	return h, resolveProjectID(projectID)
+	return h
 }
 
 func projectCmd(args []string) {
@@ -606,12 +617,23 @@ func logCmd(args []string) {
 	output(resp)
 }
 
+// unfinishedCmd lists every node that is not done, across every scope. Scopes
+// come from the store's events, so a scope that was never registered — or whose
+// registry row was lost — still reports its unfinished work.
+func unfinishedCmd() {
+	h := openHandler()
+	defer h.Close()
+
+	output(h.Unfinished())
+}
+
 // dispatchCmd prepares the cap's dispatch brief and records the cap's node.
 // It never spawns: the brief carries the herdr command for the cap to run.
 func dispatchCmd(args []string) {
 	project := flagVal(args, "--project", "")
 	taskType := flagVal(args, "--type", "")
 	goal := flagVal(args, "--goal", "")
+	confirm := hasFlag(args, "--confirm")
 
 	if project == "" {
 		fatal("--project is required")
@@ -635,7 +657,7 @@ func dispatchCmd(args []string) {
 	h, _ := handler("cap")
 	defer h.Close()
 
-	output(dispatch.Prepare(h, reg, kc, project, taskType, goal))
+	output(dispatch.Prepare(h, reg, kc, project, taskType, goal, confirm))
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.
@@ -656,6 +678,17 @@ func flagVal(args []string, flag, def string) string {
 		}
 	}
 	return def
+}
+
+// hasFlag reports whether a boolean flag is present. flagVal cannot answer
+// this: it consumes the next argument, which a trailing --confirm does not have.
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // isHelp returns true if the arg is a help flag.

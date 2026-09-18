@@ -300,6 +300,28 @@ func (s *Store) Replay(projectID string, filter *ReplayFilter) ([]Event, error) 
 	return scanEvents(rows)
 }
 
+// Scopes returns every distinct project_id in the events table, sorted. The
+// store is the only source of truth for which scopes exist: the registry is a
+// discovery index for codebases, so it neither holds implicit scopes such as cap
+// nor survives being wiped.
+func (s *Store) Scopes() ([]string, error) {
+	rows, err := s.db.Query("SELECT DISTINCT project_id FROM events ORDER BY project_id")
+	if err != nil {
+		return nil, fmt.Errorf("store: scopes: %w", err)
+	}
+	defer rows.Close()
+
+	var scopes []string
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, fmt.Errorf("store: scan scope: %w", err)
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
+}
+
 // Search performs FTS5 prefix search on event payloads within a project.
 // Each term is treated as a prefix to improve recall (e.g. "auth" matches "authentication").
 // If the FTS5 table is corrupt or missing, it auto-rebuilds from events and retries

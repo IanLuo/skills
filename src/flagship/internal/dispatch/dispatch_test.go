@@ -1,8 +1,10 @@
 package dispatch_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,6 +24,26 @@ steps:
   - ask: a locked PRD is present, and it names this one deliverable
   - ask: is the acceptance check for this deliverable stated
 `
+
+const passingPlaybook = `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: true
+`
+
+// failFastPlaybook passes, then fails, then touches a sentinel. A failing check
+// must stop the run, so the sentinel is the proof that check 3 never ran.
+func failFastPlaybook(sentinel string) string {
+	return fmt.Sprintf(`name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: true
+  - check: false
+  - check: touch %s
+`, sentinel)
+}
 
 // fixture wires a handler, registry, and knowledge center isolated in temp dirs.
 type fixture struct {
@@ -58,7 +80,40 @@ func newFixture(t *testing.T, root string) *fixture {
 		t.Fatalf("knowledge.Open: %v", err)
 	}
 
+	// Tests create cap-scope dispatch nodes, and one left unresolved makes later
+	// dispatches refuse. Close them, so the suite never becomes order-dependent.
+	t.Cleanup(func() { resolveCapScope(h) })
+
 	return &fixture{h: h, reg: reg, kc: kc, storeDB: dbPath, kbDir: kbDir}
+}
+
+// resolveCapScope marks every node in the cap scope done. Best-effort: cleanup
+// must not fail a test that already passed.
+func resolveCapScope(h *command.Handler) {
+	nodes, err := h.UnfinishedIn("cap")
+	if err != nil {
+		return
+	}
+	for _, node := range nodes {
+		h.TaskUpdate("cap", node.NodeID, "done", "test cleanup", nil)
+	}
+}
+
+// capDecisions returns the decisions recorded on one cap-scope node, via the
+// same derived state fs status reports.
+func capDecisions(t *testing.T, f *fixture, nodeID string) []string {
+	t.Helper()
+	resp := f.h.Status("cap")
+	if !resp.OK {
+		t.Fatalf("Status: %s", resp.Error)
+	}
+	for _, task := range resp.Data.(command.StatusResult).Tasks {
+		if task.NodeID == nodeID {
+			return task.Decisions
+		}
+	}
+	t.Fatalf("cap node %s not found", nodeID)
+	return nil
 }
 
 func (f *fixture) writePlaybook(t *testing.T, name, content string) {
@@ -81,7 +136,7 @@ func writeFile(t *testing.T, path, content string) {
 func TestPrepareMissingPlaybook(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x")
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", false)
 	if resp.OK {
 		t.Fatal("expected failure for a missing playbook")
 	}
@@ -101,7 +156,7 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -168,30 +223,107 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	}
 }
 
-func TestPrepareReportsFailingMechanicalChecks(t *testing.T) {
-	f := newFixture(t, t.TempDir()) // empty root: no AGENTS.md, no locked docs
-	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
+func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "check3-ran")
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
-	if !resp.OK {
-		t.Fatalf("Prepare: %s", resp.Error)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	if resp.OK {
+		t.Fatal("a failing check must refuse, not prepare a brief")
 	}
-	brief := resp.Data.(*dispatch.Brief)
-
-	for _, item := range brief.Checklist {
-		switch item.Kind {
-		case knowledge.KindCheck:
-			if item.Status != "fail" {
-				t.Errorf("check %q status = %q against an empty root, want fail", item.Body, item.Status)
-			}
-		case knowledge.KindAsk:
-			if item.Status != "?" {
-				t.Errorf("ask %q status = %q, want ?", item.Body, item.Status)
-			}
+	for _, want := range []string{"prerequisite check failed", `"false"`, "tell the user", "--confirm"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
 	}
-	if len(brief.LockedDocs) != 0 {
-		t.Errorf("locked_docs = %v, want empty", brief.LockedDocs)
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Errorf("check 3 ran despite check 2 failing: stat err = %v", err)
+	}
+
+	// A refusal must leave nothing behind: a cap node here would make every
+	// later dispatch refuse.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("cap scope has %d nodes after a refusal, want 0", len(nodes))
+	}
+}
+
+func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "check3-ran")
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", true)
+	if !resp.OK {
+		t.Fatalf("--confirm must prepare despite the failure: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+	if len(brief.Checklist) != 3 {
+		t.Fatalf("checklist has %d items, want all 3 checks", len(brief.Checklist))
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("--confirm must run every check; check 3 did not run: %v", err)
+	}
+
+	want := "user confirmed proceeding past a failing check: false"
+	if decisions := capDecisions(t, f, brief.CapNodeID); !slices.Contains(decisions, want) {
+		t.Errorf("cap node decisions = %v, want %q", decisions, want)
+	}
+}
+
+func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", false)
+	if !first.OK {
+		t.Fatalf("first dispatch: %s", first.Error)
+	}
+	firstID := first.Data.(*dispatch.Brief).CapNodeID
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", false)
+	if resp.OK {
+		t.Fatal("expected refusal while a dispatch is unresolved")
+	}
+	for _, want := range []string{"unresolved dispatches", firstID, "--confirm"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", true)
+	if !confirmed.OK {
+		t.Fatalf("--confirm dispatch: %s", confirmed.Error)
+	}
+	brief := confirmed.Data.(*dispatch.Brief)
+	want := "user confirmed proceeding with unresolved dispatches: " + firstID
+	if decisions := capDecisions(t, f, brief.CapNodeID); !slices.Contains(decisions, want) {
+		t.Errorf("cap node decisions = %v, want %q", decisions, want)
+	}
+}
+
+// The cap scope holds long-lived non-dispatch work (the cap loop). The gate is
+// about dispatches, so that work must never block a new dispatch.
+func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+
+	added := f.h.TaskAdd("cap", "cap loop", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	capLoopID := added.Data.(command.EventData).NodeID
+	if resp := f.h.TaskBlock("cap", capLoopID, "waiting on the user"); !resp.OK {
+		t.Fatalf("task block: %s", resp.Error)
+	}
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	if !resp.OK {
+		t.Fatalf("a non-dispatch cap node must not gate: %s", resp.Error)
 	}
 }
 
@@ -207,7 +339,7 @@ steps:
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", reworded)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -246,7 +378,7 @@ steps:
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", procedure)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -265,10 +397,12 @@ steps:
 
 func TestPrepareCreatesCapNode(t *testing.T) {
 	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "AGENTS.md"), "# agents\n")
+	writeFile(t, filepath.Join(root, "docs", "prd.md"), "<!-- specs:locked: prd -->\n")
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample")
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -321,7 +455,7 @@ func TestPrepareRequiresArgs(t *testing.T) {
 		{"skills", "", "x"},
 		{"skills", "dev-task", ""},
 	} {
-		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal)
+		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, false)
 		if resp.OK {
 			t.Errorf("Prepare(%q, %q, %q) should fail", tc.project, tc.taskType, tc.goal)
 		}

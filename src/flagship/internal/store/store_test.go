@@ -565,3 +565,46 @@ func TestAppendBatchValidationRejectsAll(t *testing.T) {
 		t.Fatalf("expected 1 event (rollback), got %d", len(all))
 	}
 }
+
+// Scopes enumerates the project ids present in the events table, sorted — the
+// store, not the registry, is the source of truth for which scopes exist.
+func TestScopes(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if scopes, err := s.Scopes(); err != nil {
+		t.Fatalf("Scopes on an empty store: %v", err)
+	} else if len(scopes) != 0 {
+		t.Errorf("scopes = %v, want none", scopes)
+	}
+
+	for _, scope := range []string{"skills", "cap", "never-registered", "skills"} {
+		nid := "t1"
+		if _, err := s.Append(store.Event{
+			Type:      store.TaskCreated,
+			ProjectID: scope,
+			NodeID:    &nid,
+			Payload:   json.RawMessage(`{"goal":"g"}`),
+		}); err != nil {
+			t.Fatalf("Append to %s: %v", scope, err)
+		}
+	}
+
+	scopes, err := s.Scopes()
+	if err != nil {
+		t.Fatalf("Scopes: %v", err)
+	}
+	want := []string{"cap", "never-registered", "skills"}
+	if len(scopes) != len(want) {
+		t.Fatalf("scopes = %v, want %v", scopes, want)
+	}
+	for i := range want {
+		if scopes[i] != want[i] {
+			t.Errorf("scopes = %v, want %v", scopes, want)
+			break
+		}
+	}
+}

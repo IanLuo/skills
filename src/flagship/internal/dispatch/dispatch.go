@@ -5,6 +5,9 @@
 //
 // It prepares only: it never spawns an agent. Spawning is the cap's step, and
 // the brief carries the herdr command for it.
+//
+// It also gates: a failing prerequisite check or an earlier dispatch that was
+// never delivered stops preparation, unless the cap passes --confirm.
 package dispatch
 
 import (
@@ -53,7 +56,11 @@ type Brief struct {
 // Prepare composes the brief for a task type and records the cap's node. It
 // returns the CLI response envelope, so failures are reported the same way as
 // every other command's.
-func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string) command.Response {
+//
+// It refuses in two cases rather than preparing work in a bad state: an earlier
+// dispatch is still unresolved, or a prerequisite check failed. confirm overrides
+// both refusals and records the override as a decision on the cap's node.
+func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, confirm bool) command.Response {
 	if project == "" {
 		return errResp("--project is required")
 	}
@@ -77,7 +84,17 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 
-	brief, err := buildBrief(pb, proj, taskType, goal)
+	// Gate: a dispatch the cap prepared but never delivered is still open work.
+	// Refuse to pile another one on top of it unless the cap says to proceed.
+	unresolved, err := unresolvedDispatches(h)
+	if err != nil {
+		return errResp(fmt.Sprintf("dispatch: %v", err))
+	}
+	if len(unresolved) > 0 && !confirm {
+		return errResp(unresolvedError(unresolved))
+	}
+
+	brief, err := buildBrief(pb, proj, taskType, goal, confirm)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
@@ -89,13 +106,61 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	brief.CapNodeID = nodeID
 	brief.NextCommand = nextCommand(brief)
 
+	if confirm {
+		if err := recordOverrides(h, nodeID, brief, unresolved); err != nil {
+			return errResp(fmt.Sprintf("dispatch: %v", err))
+		}
+	}
+
 	return command.Response{OK: true, Data: brief}
+}
+
+// isDispatchGoal reports whether a goal was written by fs dispatch, which always
+// labels its node "dispatch <type>: <goal>". The cap's own backlog is not
+// dispatch work, so the gate must not treat it as such.
+func isDispatchGoal(goal string) bool {
+	rest, ok := strings.CutPrefix(goal, "dispatch ")
+	if !ok {
+		return false
+	}
+	typ, _, ok := strings.Cut(rest, ": ")
+	return ok && typ != ""
+}
+
+// unresolvedDispatches returns the cap's dispatch nodes that are not done.
+func unresolvedDispatches(h *command.Handler) ([]command.UnfinishedNode, error) {
+	nodes, err := h.UnfinishedIn(capScope)
+	if err != nil {
+		return nil, err
+	}
+
+	var unresolved []command.UnfinishedNode
+	for _, node := range nodes {
+		if isDispatchGoal(node.Goal) {
+			unresolved = append(unresolved, node)
+		}
+	}
+	return unresolved, nil
+}
+
+// unresolvedError names each unresolved dispatch and says how to clear it.
+func unresolvedError(unresolved []command.UnfinishedNode) string {
+	named := make([]string, len(unresolved))
+	for i, node := range unresolved {
+		named[i] = fmt.Sprintf("%s (%q)", node.NodeID, node.Goal)
+	}
+	return fmt.Sprintf(
+		"dispatch: unresolved dispatches in scope %s: %s; resolve them (fs task update ID --status done --decision ...) or re-run with --confirm to proceed",
+		capScope, strings.Join(named, ", "))
 }
 
 // buildBrief runs the typed prerequisites against the project root: every check
 // step is executed there, every ask becomes a "?" for the cap, and every say is
 // carried as worker context rather than a gate item.
-func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string) (*Brief, error) {
+//
+// Checks run in order and stop at the first failure unless confirm is set. The
+// user fixes one thing at a time; a list of failures buries the decision.
+func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string, confirm bool) (*Brief, error) {
 	info, err := os.Stat(proj.RootPath)
 	if err != nil {
 		return nil, fmt.Errorf("project %q root %s is unreadable: %w", proj.Name, proj.RootPath, err)
@@ -111,7 +176,13 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 	for _, step := range pb.Steps {
 		switch step.Kind {
 		case knowledge.KindCheck:
-			checklist = append(checklist, runCheck(step.Body, proj.RootPath))
+			item := runCheck(step.Body, proj.RootPath)
+			checklist = append(checklist, item)
+			if item.Status == "fail" && !confirm {
+				return nil, fmt.Errorf(
+					"prerequisite check failed: %q; output: %s; tell the user and fix it, or re-run with --confirm to proceed",
+					item.Body, checkOutput(item))
+			}
 		case knowledge.KindAsk:
 			checklist = append(checklist, Item{Kind: step.Kind, Body: step.Body, Status: "?"})
 		default: // say — worker context, not part of the gate
@@ -153,6 +224,15 @@ func passFail(ok bool) string {
 		return "pass"
 	}
 	return "fail"
+}
+
+// checkOutput is the failing command's output, made explicit when it produced
+// none so the refusal always says what happened.
+func checkOutput(item Item) string {
+	if strings.TrimSpace(item.Output) == "" {
+		return "(no output)"
+	}
+	return item.Output
 }
 
 // findLockedDocs returns the *.md files under root carrying a specs:locked or
@@ -203,17 +283,46 @@ func recordCapNode(h *command.Handler, taskType, goal, project string) (string, 
 		return "", fmt.Errorf("record cap node: task-created response carried no node id")
 	}
 
-	decided := h.TaskUpdate(
-		capScope,
-		data.NodeID,
-		"",
-		fmt.Sprintf("dispatch %s: %s to project %s", taskType, goal, project),
-		nil,
-	)
-	if !decided.OK {
-		return "", fmt.Errorf("record cap decision: %s", decided.Error)
+	summary := fmt.Sprintf("dispatch %s: %s to project %s", taskType, goal, project)
+	if err := recordDecision(h, data.NodeID, summary); err != nil {
+		return "", err
 	}
 	return data.NodeID, nil
+}
+
+// recordOverrides records the cap's --confirm overrides on its own dispatch node:
+// one decision per failing check, plus one naming the dispatches that were
+// already unresolved. Without them the refusal leaves no trace in the log.
+func recordOverrides(h *command.Handler, nodeID string, brief *Brief, unresolved []command.UnfinishedNode) error {
+	for _, item := range brief.Checklist {
+		if item.Status != "fail" {
+			continue
+		}
+		summary := "user confirmed proceeding past a failing check: " + item.Body
+		if err := recordDecision(h, nodeID, summary); err != nil {
+			return err
+		}
+	}
+
+	if len(unresolved) > 0 {
+		ids := make([]string, len(unresolved))
+		for i, node := range unresolved {
+			ids[i] = node.NodeID
+		}
+		summary := "user confirmed proceeding with unresolved dispatches: " + strings.Join(ids, ", ")
+		if err := recordDecision(h, nodeID, summary); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordDecision(h *command.Handler, nodeID, summary string) error {
+	resp := h.TaskUpdate(capScope, nodeID, "", summary, nil)
+	if !resp.OK {
+		return fmt.Errorf("record cap decision: %s", resp.Error)
+	}
+	return nil
 }
 
 // nextCommand is the herdr line the cap runs to deliver the brief to a worker.
