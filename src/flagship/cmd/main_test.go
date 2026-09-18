@@ -904,3 +904,117 @@ steps:
 		t.Errorf("expected exit 1 after remove, got %d", code)
 	}
 }
+
+const dispatchPlaybook = `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - read AGENTS.md at the project root
+  - find locked docs on disk with grep -rl for the specs:locked and design:locked markers
+  - a locked PRD is present; if absent, ask the user before proceeding
+  - if the locked PRD covers more than one deliverable, the user has named the slice
+  - if design-system.md exists its first line carries a design:locked marker; absent means run design-task first
+  - the acceptance check for this deliverable is stated
+`
+
+// fs dispatch prepares the brief from the playbook and the project root, and
+// records the cap's node in the cap scope without registering "cap".
+func TestCLIDispatchPreparesBrief(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("# agents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "prd.md"), []byte("<!-- specs:locked: prd -->\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	kbDir := filepath.Join(testHome(t), ".fs", "kb")
+	if err := os.MkdirAll(kbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kbDir, "dev-task-prerequisites.yaml"), []byte(dispatchPlaybook), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+
+	checklist := data["checklist"].([]any)
+	if len(checklist) != 6 {
+		t.Fatalf("checklist has %d items, want one per playbook step (6)", len(checklist))
+	}
+	agentsStep := ""
+	for _, raw := range checklist {
+		item := raw.(map[string]any)
+		if strings.Contains(item["step"].(string), "AGENTS.md") {
+			agentsStep = item["status"].(string)
+		}
+	}
+	if agentsStep != "pass" {
+		t.Errorf("AGENTS.md step status = %q, want pass", agentsStep)
+	}
+
+	locked := data["locked_docs"].([]any)
+	if len(locked) != 1 || locked[0] != filepath.Join("docs", "prd.md") {
+		t.Errorf("locked_docs = %v, want [docs/prd.md]", locked)
+	}
+
+	if cmd := data["next_command"].(string); !strings.Contains(cmd, "herdr agent prompt") {
+		t.Errorf("next_command missing the herdr prompt step: %q", cmd)
+	}
+
+	// The cap node lives in the cap scope, and cap is not a registered project.
+	statusResp, code := runFS(t, bin, root, "status", "--project", "cap")
+	if code != 0 {
+		t.Fatalf("status cap exit %d: %v", code, statusResp["error"])
+	}
+	capData := statusResp["data"].(map[string]any)
+	if capData["project_id"] != "cap" {
+		t.Errorf("cap scope project_id = %v", capData["project_id"])
+	}
+	tasks := capData["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("cap scope has %d tasks, want 1", len(tasks))
+	}
+	task := tasks[0].(map[string]any)
+	if task["goal"] != "dispatch dev-task: sample" {
+		t.Errorf("cap task goal = %v", task["goal"])
+	}
+	decisions := task["decisions"].([]any)
+	if len(decisions) != 1 || !strings.Contains(decisions[0].(string), "skills") {
+		t.Errorf("cap task decisions = %v, want the target project named", decisions)
+	}
+
+	resp, code = runFS(t, bin, root, "project", "get", "cap")
+	if code == 0 {
+		t.Errorf("cap must never be registered as a project, got %v", resp)
+	}
+}
+
+// A missing playbook fails cleanly and names the file the cap must supply.
+func TestCLIDispatchMissingPlaybook(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "no-such-type", "--goal", "x")
+	if code != 1 {
+		t.Errorf("exit = %d, want 1", code)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "no-such-type-prerequisites") {
+		t.Errorf("error must name the missing playbook, got %q", errMsg)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
@@ -38,6 +39,8 @@ func main() {
 		logCmd(os.Args[2:])
 	case "kb":
 		kbCmd(os.Args[2:])
+	case "dispatch":
+		dispatchCmd(os.Args[2:])
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -67,7 +70,8 @@ Commands:
   kb get NAME                                   Get a playbook
   kb list                                       List playbooks
   kb edit --name NAME --file PATH               Edit a playbook
-  kb remove NAME                                Remove a playbook`)
+  kb remove NAME                                Remove a playbook
+  dispatch --project P --type TYPE --goal GOAL  Prepare a dispatch brief (does not spawn)`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives
@@ -600,6 +604,38 @@ func logCmd(args []string) {
 	updateActivity(projectID)
 	resp := h.Log(projectID, nodeID, eventType)
 	output(resp)
+}
+
+// dispatchCmd prepares the cap's dispatch brief and records the cap's node.
+// It never spawns: the brief carries the herdr command for the cap to run.
+func dispatchCmd(args []string) {
+	project := flagVal(args, "--project", "")
+	taskType := flagVal(args, "--type", "")
+	goal := flagVal(args, "--goal", "")
+
+	if project == "" {
+		fatal("--project is required")
+	}
+	if taskType == "" {
+		fatal("--type is required")
+	}
+	if goal == "" {
+		fatal("--goal is required")
+	}
+
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	reg := openRegistry()
+	defer reg.Close()
+
+	// The cap's scope is implicit — a project_id, never a registry row.
+	h, _ := handler("cap")
+	defer h.Close()
+
+	output(dispatch.Prepare(h, reg, kc, project, taskType, goal))
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.
