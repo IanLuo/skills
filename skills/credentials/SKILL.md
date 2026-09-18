@@ -98,5 +98,5 @@ Variables available: `$YOUR_VAR1`, `$YOUR_VAR2`
 
 ## Skills Using This Pattern
 
-- [atlassian](../atlassian) — example implementation
-- (Add more as created)
+- [atlassian](../atlassian) — Jira & Confluence
+- [github](../github) — GitHub API & private repos
