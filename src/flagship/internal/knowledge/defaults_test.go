@@ -367,11 +367,13 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 	}
 
 	for name, usedBy := range map[string]string{
-		"cap":                    "prompt:cap",
-		"herdr":                  "prompt:cap",
-		"dev-task-prerequisites": "dispatch:dev-task",
-		"parallel-prerequisites": "dispatch:parallel",
-		"parallel-cleanup":       "close:parallel",
+		"cap":                     "prompt:cap",
+		"herdr":                   "prompt:cap",
+		"dev-task-prerequisites":  "dispatch:dev-task",
+		"parallel-prerequisites":  "dispatch:parallel",
+		"parallel-cleanup":        "close:parallel",
+		"integrate-prerequisites": "dispatch:integrate",
+		"integrate-cleanup":       "close:integrate",
 	} {
 		if got := stateOf(t, states, name).UsedBy; got != usedBy {
 			t.Errorf("shipped %s used_by = %q, want %q", name, got, usedBy)

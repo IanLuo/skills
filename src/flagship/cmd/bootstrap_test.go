@@ -18,12 +18,15 @@ const (
 	herdrPlaybook    = "herdr"
 	parPrePlaybook   = "parallel-prerequisites"
 	parCleanPlaybook = "parallel-cleanup"
+	intPrePlaybook   = "integrate-prerequisites"
+	intCleanPlaybook = "integrate-cleanup"
 )
 
 // shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
 // of them; the cap's standing rules are built from the procedure ones.
 var shippedPlaybooks = []string{
 	capPlaybook, devPlaybook, herdrPlaybook, parPrePlaybook, parCleanPlaybook,
+	intPrePlaybook, intCleanPlaybook,
 }
 
 // shippedDefault is a default the binary is expected to carry. The test process

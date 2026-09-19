@@ -1,0 +1,22 @@
+name: integrate-cleanup
+type: cleanup
+trigger: integrate
+steps:
+  # The exit gate for an integration dispatch. An integration dispatch names no
+  # worktree — the worker merges into main — so these checks run at the project
+  # root, the merged main checkout, and that is the tree each one is about. They
+  # deliberately do not ask herdr: git is what owns a branch and a worktree.
+
+  # The suite must be green on the merged tree. `tests/run.sh` is this repo's
+  # declared suite, so it runs here rather than being taken on the worker's word.
+  - check: bash tests/run.sh
+
+  # The member's tree must be gone: integration is not finished while any linked
+  # worktree remains.
+  - check: test "$(git worktree list --porcelain | grep -c '^worktree ')" -eq 1 || { echo "a linked worktree still exists: $(git worktree list --porcelain | awk '/^worktree /{print $2}' | tr '\n' ' ')"; exit 1; }
+
+  # The branch must be deleted, or merged — which is what a squash-merge leaves.
+  # A branch that is neither merged into HEAD nor deleted is unintegrated work.
+  - check: test -z "$(git for-each-ref --format='%(refname:short)' --no-merged HEAD refs/heads/)" || { echo "an unmerged local branch remains: $(git for-each-ref --format='%(refname:short)' --no-merged HEAD refs/heads/ | tr '\n' ' ')"; exit 1; }
+
+  - ask: was the integration verdict read before this closed
