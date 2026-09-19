@@ -1,0 +1,12 @@
+name: parallel-cleanup
+type: cleanup
+trigger: parallel
+steps:
+  # Checks run with cwd set to the worker project's root — for a parallel
+  # dispatch, the worktree the worker ran in. The prose the gate encodes is what
+  # each command asserts: no uncommitted files, and the branch merged into main
+  # (a dispatch abandoned instead of merged closes with --abandoned, which skips
+  # this gate by definition).
+  - check: test -z "$(git status --porcelain)"
+  - check: git merge-base --is-ancestor HEAD main
+  - ask: was the merge reviewed before this closed

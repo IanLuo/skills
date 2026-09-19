@@ -91,17 +91,17 @@ var cmdSpecs = map[string]cmdSpec{
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
-		usage: "Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--confirm] [--deliver]",
+		usage: "Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--confirm] [--deliver] [--worktree WORKSPACE_ID]",
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--confirm": false, "--deliver": false,
+			"--confirm": false, "--deliver": false, "--worktree": true,
 		},
 	},
 	"close": {
-		usage: "Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT | --abandoned --reason TEXT",
+		usage: "Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT [--confirm] | --abandoned --reason TEXT",
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
-			"--abandoned": false, "--reason": true,
+			"--confirm": false, "--abandoned": false, "--reason": true,
 		},
 	},
 	"unfinished": {usage: "Usage: fs unfinished"},

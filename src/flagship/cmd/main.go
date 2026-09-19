@@ -104,15 +104,21 @@ Commands:
   kb reset NAME --yes                           Restore the shipped default
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
-  dispatch --project P --type TYPE --goal GOAL [--confirm] [--deliver]
+  dispatch --project P --type TYPE --goal GOAL [--confirm] [--deliver] [--worktree WS]
                                                Prepare a dispatch brief; --deliver
-                                               also hands it to a worker pane
-  close --node NODE [--worker P:NODE] --decision TEXT
-                                               Close out a dispatch: close its
-                                               pane, then mark the node done.
-                                               The worker node comes from the
-                                               delivery record; --worker is only
-                                               a check against it
+                                               also hands it to a worker pane;
+                                               --worktree names the herdr
+                                               worktree workspace to tear down
+                                               at close
+  close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
+                                               Close out a dispatch: run its
+                                               cleanup gate, then close its pane,
+                                               tab, and worktree, then mark the
+                                               node done. The worker node comes
+                                               from the delivery record; --worker
+                                               is only a check against it.
+                                               --confirm answers the gate's ask
+                                               steps
   close --node NODE --abandoned --reason TEXT  Close a never-delivered dispatch`)
 }
 
@@ -844,6 +850,7 @@ func dispatchCmd(args []string) {
 	project := flagVal(args, "--project", "")
 	taskType := flagVal(args, "--type", "")
 	goal := flagVal(args, "--goal", "")
+	worktree := flagVal(args, "--worktree", "")
 	confirm := hasFlag(args, "--confirm")
 	deliver := hasFlag(args, "--deliver")
 
@@ -873,36 +880,51 @@ func dispatchCmd(args []string) {
 	defer h.Close()
 
 	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, confirm)
-	if resp.OK && deliver {
-		resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), resp.Data.(*dispatch.Brief))
+	if resp.OK {
+		brief := resp.Data.(*dispatch.Brief)
+		brief.Worktree = worktree
+		if deliver {
+			resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), brief)
+		}
 	}
 	output(resp)
 }
 
 // closeCmd is the close-out gate: it refuses to close a dispatch whose worker
-// node is not done, then closes the pane from the recorded delivery and marks
-// the cap's node done.
+// node is not done, runs the exit gate its task type declares, then closes the
+// pane, tab, and worktree from the recorded delivery and marks the cap's node
+// done.
 func closeCmd(args []string) {
 	req := dispatch.CloseRequest{
 		NodeID:    flagVal(args, "--node", ""),
 		Worker:    flagVal(args, "--worker", ""),
 		Decision:  flagVal(args, "--decision", ""),
+		Confirm:   hasFlag(args, "--confirm"),
 		Abandoned: hasFlag(args, "--abandoned"),
 		Reason:    flagVal(args, "--reason", ""),
 	}
 
-	// The close-out's events describe the worker's project, so the sha comes
-	// from that project's root when the worker names a registered one.
+	// The cleanup gate runs in the worker project's root, so the registry is
+	// always needed — and the close-out's events describe that project, so the
+	// sha comes from its root too.
+	reg := openRegistry()
+	defer reg.Close()
+
 	root := ""
-	if workerProject, _, ok := strings.Cut(req.Worker, ":"); ok {
-		reg := openRegistry()
-		defer reg.Close()
-		root = registryRoot(reg, workerProject)
+	if req.Worker != "" {
+		if workerProject, _, ok := strings.Cut(req.Worker, ":"); ok {
+			root = registryRoot(reg, workerProject)
+		}
 	}
 	h := openHandler(root)
 	defer h.Close()
 
-	output(dispatch.Close(h, dispatch.NewHerdrCLI(), req))
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	output(dispatch.Close(h, dispatch.NewHerdrCLI(), reg, kc, req))
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.

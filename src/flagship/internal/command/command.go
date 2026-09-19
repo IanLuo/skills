@@ -48,14 +48,19 @@ type UpdateResult struct {
 //
 // Project and Node are what let close-out name the worker without the cap
 // guessing. They are absent only on records written before the link existed;
-// TabID likewise, on records written before the worker got a tab of its own.
+// TabID likewise, on records written before the worker got a tab of its own;
+// Type and Worktree, on records written before the cleanup gate and worktree
+// teardown existed. Type is what close-out reads to find the exit gate, and it
+// is structural — never recovered from the goal string, which is prose.
 type DeliveryRecord struct {
-	PaneID  string `json:"pane_id"`
-	TabID   string `json:"tab_id,omitempty"`
-	Agent   string `json:"agent"`
-	Engine  string `json:"engine"`
-	Project string `json:"project"`
-	Node    string `json:"node"`
+	PaneID   string `json:"pane_id"`
+	TabID    string `json:"tab_id,omitempty"`
+	Agent    string `json:"agent"`
+	Engine   string `json:"engine"`
+	Project  string `json:"project"`
+	Node     string `json:"node"`
+	Type     string `json:"type,omitempty"`
+	Worktree string `json:"worktree,omitempty"`
 }
 
 // TaskInfo represents derived task state for status output.

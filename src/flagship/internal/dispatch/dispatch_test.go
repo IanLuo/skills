@@ -117,6 +117,12 @@ func (f *fixture) writePlaybook(t *testing.T, name, content string) {
 	}
 }
 
+// close runs the close-out gate against this fixture's store, registry, and
+// knowledge center, so tests exercise the real signature without repeating it.
+func (f *fixture) close(hc dispatch.HerdrCLI, req dispatch.CloseRequest) command.Response {
+	return dispatch.Close(f.h, hc, f.reg, f.kc, req)
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

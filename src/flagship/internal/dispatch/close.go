@@ -5,6 +5,11 @@
 // done, and that a verdict was recorded. It cannot check that the cap read that
 // node. Do not pretend otherwise: the gate makes the omission visible and
 // expensive, it does not make it impossible.
+//
+// Close-out also runs the exit gate its task type declares — a cleanup playbook
+// — and tears down whatever the delivery opened: the pane, its tab, and the
+// worktree the worker ran in. Prerequisites guard entry; without this, nothing
+// guards exit, and a worktree leaks exactly the way panes once did.
 package dispatch
 
 import (
@@ -13,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/knowledge"
+	"github.com/flagship-dev/flagship/internal/registry"
 )
 
 // CloseRequest is the cap's close-out of one dispatch.
@@ -20,18 +27,22 @@ type CloseRequest struct {
 	NodeID    string // the cap's dispatch node
 	Worker    string // optional "<project>:<node>"; must match the delivery record when given
 	Decision  string // the cap's verdict, recorded on the cap node
+	Confirm   bool   // the cap has answered the cleanup gate's ask steps
 	Abandoned bool   // the dispatch was never delivered
 	Reason    string // why it was never delivered; required with Abandoned
 }
 
 // CloseResult is the close-out's data payload. Worker names the node this
-// close-out rested on, so the cap can see which one it just signed off.
+// close-out rested on, so the cap can see which one it just signed off. Cleanup
+// says what the exit gate did — including that there was none, which must be
+// visible rather than silent.
 type CloseResult struct {
 	NodeID   string `json:"node_id"`
 	Decision string `json:"decision"`
 	Worker   string `json:"worker,omitempty"`
 	PaneID   string `json:"pane_id,omitempty"`
 	TabID    string `json:"tab_id,omitempty"`
+	Cleanup  string `json:"cleanup,omitempty"`
 	Warning  string `json:"warning,omitempty"`
 }
 
@@ -48,7 +59,12 @@ type CloseResult struct {
 //
 // --abandoned skips the delivery and worker gates and records
 // "abandoned, never delivered: <reason>" instead of a verdict.
-func Close(h *command.Handler, hc HerdrCLI, req CloseRequest) command.Response {
+//
+// reg and kc are how the exit gate finds its footing: kc holds the cleanup
+// playbook named by the delivery record's type, and reg says which root that
+// playbook's checks run in. Both are needed only after the worker's node is
+// known to be done, so a refusal never reads either.
+func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, req CloseRequest) command.Response {
 	if req.NodeID == "" {
 		return errResp("--node is required: fs close --node <cap node> ...")
 	}
@@ -112,15 +128,111 @@ func Close(h *command.Handler, hc HerdrCLI, req CloseRequest) command.Response {
 		TabID:    delivery.TabID,
 	}
 	if !req.Abandoned {
-		if warning := tearDownWorker(hc, delivery.TabID, delivery.PaneID); warning != "" {
-			result.Warning = warning
+		// The exit gate runs before anything is torn down or marked done: a
+		// dispatch that fails it is still open work, and its pane, tab, and
+		// worktree must remain so it can be finished.
+		gate, confirmations, err := runCleanupGate(reg, kc, delivery, req.Confirm)
+		if err != nil {
+			return errResp(err.Error())
 		}
+		result.Cleanup = gate
+		for _, confirmation := range confirmations {
+			if err := recordDecision(h, req.NodeID, confirmation); err != nil {
+				return errResp(err.Error())
+			}
+		}
+
+		var warnings []string
+		if warning := tearDownWorker(hc, delivery.TabID, delivery.PaneID); warning != "" {
+			warnings = append(warnings, warning)
+		}
+		if delivery.Worktree != "" {
+			if warning := tearDownWorktree(hc, delivery.Worktree); warning != "" {
+				warnings = append(warnings, warning)
+			}
+		}
+		result.Warning = strings.Join(warnings, "; ")
+	} else {
+		result.Cleanup = "no cleanup gate: the dispatch was abandoned"
 	}
 
 	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
 		return errResp("mark node done: " + resp.Error)
 	}
 	return command.Response{OK: true, Data: result}
+}
+
+// runCleanupGate runs the exit gate the delivery's task type declares: the
+// <type>-cleanup playbook. It returns a note describing what happened and one
+// confirmation per ask step, for the caller to record on the cap's node.
+//
+// A type with no shipped or local cleanup playbook has no gate, and says so —
+// a missing exit gate must be visible, never silent. A playbook that exists but
+// cannot be read is refused, because a gate that fails open is worse than none.
+//
+// Checks run in order with cwd set to the worker project's root, and the first
+// failure refuses — the same fail-fast shape as fs dispatch, and for the same
+// reason: the user fixes one thing at a time. ask steps are questions only the
+// user can answer, so they are refused until --confirm says they have been.
+func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery command.DeliveryRecord, confirm bool) (string, []string, error) {
+	if delivery.Type == "" {
+		return "no cleanup gate: the delivery record carries no task type", nil, nil
+	}
+	name := delivery.Type + "-cleanup"
+	if !kc.Has(name) {
+		return fmt.Sprintf("no cleanup gate: no cleanup playbook %s.yaml", name), nil, nil
+	}
+
+	pb, err := kc.Get(name)
+	if err != nil {
+		return "", nil, fmt.Errorf("close: read cleanup playbook %s: %v", name, err)
+	}
+
+	var asks []string
+	for _, step := range pb.Steps {
+		if step.Kind == knowledge.KindAsk {
+			asks = append(asks, step.Body)
+		}
+	}
+	if len(asks) > 0 && !confirm {
+		quoted := make([]string, len(asks))
+		for i, ask := range asks {
+			quoted[i] = fmt.Sprintf("%q", ask)
+		}
+		return "", nil, fmt.Errorf(
+			"close: cleanup gate %s has unconfirmed steps: %s; answer each, then re-run with --confirm",
+			name, strings.Join(quoted, ", "))
+	}
+
+	proj, err := reg.Get(delivery.Project)
+	if err != nil {
+		return "", nil, fmt.Errorf("close: cleanup gate %s cannot run: %v", name, err)
+	}
+
+	checks := 0
+	for _, step := range pb.Steps {
+		if step.Kind != knowledge.KindCheck {
+			continue
+		}
+		item := runCheck(step.Body, proj.RootPath)
+		if item.Status != "pass" {
+			return "", nil, fmt.Errorf(
+				"close: cleanup check failed: %q; output: %s; fix it, then close again",
+				item.Body, checkOutput(item))
+		}
+		checks++
+	}
+
+	confirmations := make([]string, 0, len(asks))
+	for _, ask := range asks {
+		confirmations = append(confirmations, "user confirmed cleanup step: "+ask)
+	}
+
+	note := fmt.Sprintf("cleanup gate %s: %d checks passed", name, checks)
+	if len(asks) > 0 {
+		note += fmt.Sprintf(", %d confirmed", len(asks))
+	}
+	return note, confirmations, nil
 }
 
 // tearDownWorker closes the pane a delivery opened, then its tab, and returns a
@@ -144,6 +256,20 @@ func tearDownWorker(hc HerdrCLI, tabID, paneID string) string {
 		return ""
 	}
 	return strings.Join(warnings, "; ") + " — close it by hand"
+}
+
+// tearDownWorktree removes the worktree workspace the delivery recorded, and
+// returns a warning for a worktree herdr would not remove.
+//
+// The point is that a worktree must not outlive its node. So a worktree herdr
+// no longer knows is the goal state, not a failure, and herdr being unavailable
+// is a warning rather than a refusal — the same rule the pane teardown follows,
+// and the same reason: close-out must not depend on the dispatcher being up.
+func tearDownWorktree(hc HerdrCLI, wsID string) string {
+	if err := hc.RemoveWorktree(wsID); err != nil && !errors.Is(err, ErrWorktreeGone) {
+		return fmt.Sprintf("could not remove worktree %s: %v — remove it by hand", wsID, err)
+	}
+	return ""
 }
 
 // workerFor resolves which node in the target project this close-out is about.

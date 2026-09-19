@@ -315,6 +315,17 @@ steps:
 			want: []string{"step 2", "is the acceptance check stated?", `"ask"`, "allowed kinds: say, check"},
 		},
 		{
+			name: "cleanup refuses say",
+			pb: `name: p
+type: cleanup
+trigger: t
+steps:
+  - check: git status --porcelain
+  - say: the worktree must be clean
+`,
+			want: []string{"step 2", "the worktree must be clean", `"say"`, "allowed kinds: check, ask"},
+		},
+		{
 			name: "routing refuses two steps",
 			pb: `name: p
 type: routing

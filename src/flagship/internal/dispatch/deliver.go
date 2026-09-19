@@ -32,6 +32,12 @@ var ErrPaneGone = errors.New("pane is already gone")
 // success rather than failure: closing a tab's last pane removes the tab.
 var ErrTabGone = errors.New("tab is already gone")
 
+// ErrWorktreeGone reports that a worktree workspace no longer exists, or was
+// never one. Removing an already-removed worktree is success, not failure: the
+// point is that none is left behind, not that this close is the one that
+// removed it.
+var ErrWorktreeGone = errors.New("worktree is already gone")
+
 // HerdrCLI is the slice of the herdr CLI the dispatch lifecycle uses: open a
 // tab for the worker, start an agent in its root pane, send the brief, read
 // what the agents are doing, and tear the tab down again.
@@ -57,6 +63,10 @@ type HerdrCLI interface {
 	ClosePane(paneID string) error
 	// CloseTab closes tabID, returning ErrTabGone if it no longer exists.
 	CloseTab(tabID string) error
+	// RemoveWorktree removes the worktree workspace wsID, returning
+	// ErrWorktreeGone if herdr has no such worktree — one already removed is the
+	// goal state, not a failure.
+	RemoveWorktree(wsID string) error
 }
 
 // Deliver hands the prepared brief to a worker: it opens a tab of the worker's
@@ -99,12 +109,14 @@ func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 	}
 
 	delivery := command.DeliveryRecord{
-		PaneID:  paneID,
-		TabID:   tabID,
-		Agent:   agent,
-		Engine:  herdrEngine,
-		Project: brief.Project,
-		Node:    workerID,
+		PaneID:   paneID,
+		TabID:    tabID,
+		Agent:    agent,
+		Engine:   herdrEngine,
+		Project:  brief.Project,
+		Node:     workerID,
+		Type:     brief.TaskType,
+		Worktree: brief.Worktree,
 	}
 	if resp := h.RecordDelivery(capScope, brief.CapNodeID, delivery); !resp.OK {
 		abandonWorker(hc, tabID, paneID)
@@ -251,6 +263,19 @@ func (herdrCLI) CloseTab(tabID string) error {
 	_, err := runHerdr("tab", "close", tabID)
 	if herdrErrorCode(err) == "tab_not_found" {
 		return ErrTabGone
+	}
+	return err
+}
+
+// RemoveWorktree removes a worktree workspace via herdr. A workspace herdr no
+// longer knows, or one that is not a worktree at all, is already gone: the
+// caller's goal is that no worktree outlives the node, not that this call is
+// what removed it.
+func (herdrCLI) RemoveWorktree(wsID string) error {
+	_, err := runHerdr("worktree", "remove", "--workspace", wsID)
+	switch herdrErrorCode(err) {
+	case "workspace_not_found", "worktree_not_found", "not_git_worktree":
+		return ErrWorktreeGone
 	}
 	return err
 }

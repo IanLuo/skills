@@ -39,7 +39,7 @@ Every event is a JSON object with fixed envelope + type-specific payload:
 | `task-blocked` | `reason` (string) |
 | `task-unblocked` | (empty object) |
 | `metadata-changed` | `field` (string), `old_value` (string), `new_value` (string) |
-| `delivery-recorded` | `pane_id` (string), `agent` (string), `engine` (string) |
+| `delivery-recorded` | `pane_id` (string), `tab_id` (string), `agent` (string), `engine` (string), `project` (string), `node` (string), `type` (string), `worktree` (string) |
 
 ### Composite operations
 
@@ -76,7 +76,7 @@ Playbooks are YAML files stored at `~/.fs/kb/<name>.yaml`.
 
 ```yaml
 name: dev-task-prerequisites
-type: prerequisite          # prerequisite | procedure | convention | routing
+type: prerequisite          # prerequisite | cleanup | procedure | convention | routing
 trigger: dev-task           # which task type or skill triggers this
 engine_scope: herdr         # optional — scope to a specific engine
 steps:
@@ -89,7 +89,7 @@ Each step is `kind: body`:
 
 | Kind | Meaning |
 |---|---|
-| `check` | A shell command `fs dispatch` runs with cwd = the project root. Pass/fail plus the command's output. |
+| `check` | A shell command `fs dispatch` runs with cwd = the project root, and `fs close` runs with cwd = the worker project's root. Pass/fail plus the command's output. |
 | `ask` | Only the cap can confirm it; dispatch reports `?`. |
 | `say` | Worker context, not part of the gate. Carried in the brief text. |
 
@@ -102,6 +102,7 @@ as `{kind, body}` objects.
 | Type | Purpose | Allowed step kinds |
 |---|---|---|
 | `prerequisite` | Docs/conditions that must exist before starting a task type | `check`, `ask` |
+| `cleanup` | Conditions that must hold before a dispatch closes out | `check`, `ask` |
 | `procedure` | Step-by-step instructions for a workflow | `say`, `check` |
 | `convention` | Coding/naming/formatting rules to follow | — |
 | `routing` | Maps task types to skills/engines | exactly one `say` step whose body is the skill name |
@@ -140,10 +141,11 @@ fs kb remove dev-task-prerequisites
 
 ### Shipped defaults and drift
 
-Two playbooks ship inside the binary and are seeded into `~/.fs/kb/`: `cap` and
-`dev-task-prerequisites` (every other task-type playbook is written by hand).
-They live in `src/flagship/defaults/kb/` and are embedded with `//go:embed`, so
-the contract is versioned with the code and survives a wipe.
+Five playbooks ship inside the binary and are seeded into `~/.fs/kb/`: `cap`,
+`dev-task-prerequisites`, `herdr`, `parallel-prerequisites`, and
+`parallel-cleanup` (every other task-type playbook is written by hand). They
+live in `src/flagship/defaults/kb/` and are embedded with `//go:embed`, so the
+contract is versioned with the code and survives a wipe.
 
 ```bash
 fs bootstrap                  # create ~/.fs/kb and write every absent playbook

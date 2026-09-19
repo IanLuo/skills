@@ -61,6 +61,12 @@ type Brief struct {
 	// exists and it stays empty.
 	WorkerNode string `json:"worker_node,omitempty"`
 
+	// Worktree is the herdr worktree workspace this dispatch runs in, when it
+	// runs in one. Deliver records it so close-out can remove it: a worktree
+	// must not be able to outlive a closed node. Empty for a dispatch that runs
+	// in the project root.
+	Worktree string `json:"worktree,omitempty"`
+
 	// Delivery is the pane binding, set only when fs dispatch --deliver handed
 	// the brief to a worker. It is recorded as a delivery-recorded event; this
 	// field is the same binding echoed back to the caller.

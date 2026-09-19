@@ -25,8 +25,12 @@ const (
 // allowedKinds is the closed step vocabulary per playbook type. A type absent
 // here (e.g. convention) carries no step-kind rule. routing is validated by
 // validateRouting, which also constrains the step count and body.
+//
+// prerequisite guards entry and cleanup guards exit; both are gates, so both
+// admit the same kinds. A gate that only speaks is not a gate.
 var allowedKinds = map[string][]string{
 	"prerequisite": {KindCheck, KindAsk},
+	"cleanup":      {KindCheck, KindAsk},
 	"procedure":    {KindSay, KindCheck},
 }
 
@@ -100,6 +104,17 @@ func (c *Center) Get(name string) (*Playbook, error) {
 	}
 
 	return parsePlaybook(data)
+}
+
+// Has reports whether a playbook named name exists on disk. It is how a caller
+// tells an absent playbook, which a gate treats as no gate, from one that is
+// present but unreadable, which a gate must refuse rather than skip.
+func (c *Center) Has(name string) bool {
+	if name == "" {
+		return false
+	}
+	_, err := os.Stat(c.path(name))
+	return err == nil
 }
 
 // List returns sorted names of all playbooks.

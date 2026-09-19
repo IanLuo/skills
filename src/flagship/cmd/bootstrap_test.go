@@ -13,14 +13,18 @@ import (
 )
 
 const (
-	capPlaybook   = "cap"
-	devPlaybook   = "dev-task-prerequisites"
-	herdrPlaybook = "herdr"
+	capPlaybook      = "cap"
+	devPlaybook      = "dev-task-prerequisites"
+	herdrPlaybook    = "herdr"
+	parPrePlaybook   = "parallel-prerequisites"
+	parCleanPlaybook = "parallel-cleanup"
 )
 
 // shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
 // of them; the cap's standing rules are built from the procedure ones.
-var shippedPlaybooks = []string{capPlaybook, devPlaybook, herdrPlaybook}
+var shippedPlaybooks = []string{
+	capPlaybook, devPlaybook, herdrPlaybook, parPrePlaybook, parCleanPlaybook,
+}
 
 // shippedDefault is a default the binary is expected to carry. The test process
 // runs in this package's directory, so the module's defaults/ is one level up:

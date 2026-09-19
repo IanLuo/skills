@@ -1,0 +1,12 @@
+name: parallel-prerequisites
+type: prerequisite
+trigger: parallel
+steps:
+  - check: test -d .git
+  - check: herdr worktree list >/dev/null
+  # The batch's cards are named here, one argument each, so disjointness is a
+  # set intersection rather than a judgement call. Edit this playbook per batch
+  # with fs kb edit. With no cards named, check-parallel.sh refuses rather than
+  # passing vacuously.
+  - check: bin/check-parallel.sh
+  - ask: is the batch small enough that the merges are reviewable one at a time
