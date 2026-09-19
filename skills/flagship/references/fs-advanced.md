@@ -89,7 +89,7 @@ Each step is `kind: body`:
 
 | Kind | Meaning |
 |---|---|
-| `check` | A shell command `fs dispatch` runs with cwd = the project root, and `fs close` runs with cwd = the worker project's root. Pass/fail plus the command's output. |
+| `check` | A shell command `fs dispatch` runs with cwd = the project root, and `fs close` runs with cwd = the tree the worker ran in: the worktree the delivery record names, or the project root when the record names none. A worktree the record names but herdr cannot resolve refuses the close rather than checking the wrong tree. Pass/fail plus the command's output. |
 | `ask` | Only the cap can confirm it; dispatch reports `?`. |
 | `say` | Worker context, not part of the gate. Carried in the brief text. |
 
@@ -103,6 +103,9 @@ world: `FS_PROJECT`, `FS_TYPE`, `FS_GOAL`, and `FS_CARDS` (the `--cards` value,
 comma-separated, empty when none was given, and never unset). That is what
 `parallel-prerequisites.yaml` uses: `check: bin/check-parallel.sh $FS_CARDS`.
 `fs close`'s exit checks get no `FS_*`: a close-out has no batch to offer.
+Exit checks run before the gate's `ask` steps: an ask is a question only the user
+can answer, so a check that fails refuses first instead of making the user
+confirm a gate that cannot pass.
 
 ### Playbook types
 

@@ -62,10 +62,12 @@ type CloseResult struct {
 // --abandoned skips the delivery and worker gates and records
 // "abandoned, never delivered: <reason>" instead of a verdict.
 //
-// reg and kc are how the exit gate finds its footing: kc holds the cleanup
-// playbook named by the delivery record's type, and reg says which root that
-// playbook's checks run in. Both are needed only after the worker's node is
-// known to be done, so a refusal never reads either.
+// reg, kc, and hc are how the exit gate finds its footing: kc holds the
+// cleanup playbook named by the delivery record's type, reg says which project
+// root the checks would run in, and hc resolves the worktree when the record
+// names one — the checks run there instead, because that is the tree the
+// dispatch worked in. All three are needed only after the worker's node is
+// known to be done, so a refusal never reads any of them.
 func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, req CloseRequest) command.Response {
 	if req.NodeID == "" {
 		return errResp("--node is required: fs close --node <cap node> ...")
@@ -132,7 +134,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		// The exit gate runs before anything is torn down or marked done: a
 		// dispatch that fails it is still open work, and its pane and worktree must
 		// remain so it can be finished.
-		gate, confirmations, err := runCleanupGate(reg, kc, delivery, req.Confirm)
+		gate, confirmations, err := runCleanupGate(hc, reg, kc, delivery, req.Confirm)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -171,11 +173,14 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 // a missing exit gate must be visible, never silent. A playbook that exists but
 // cannot be read is refused, because a gate that fails open is worse than none.
 //
-// Checks run in order with cwd set to the worker project's root, and the first
-// failure refuses — the same fail-fast shape as fs dispatch, and for the same
-// reason: the user fixes one thing at a time. ask steps are questions only the
-// user can answer, so they are refused until --confirm says they have been.
-func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery command.DeliveryRecord, confirm bool) (string, []string, error) {
+// Checks run in order in the tree the dispatch worked in — the worktree the
+// record names, or the worker project's root when it names none — and the first
+// failure refuses: the same fail-fast shape as fs dispatch, and for the same
+// reason, the user fixes one thing at a time. Checks come before the asks,
+// because an ask is a question only the user can answer: making them confirm a
+// gate and then revealing that a check fails wastes the answer and hides the
+// failure. ask steps are refused until --confirm says they have been answered.
+func runCleanupGate(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, delivery command.DeliveryRecord, confirm bool) (string, []string, error) {
 	if delivery.Type == "" {
 		return "no cleanup gate: the delivery record carries no task type", nil, nil
 	}
@@ -198,17 +203,12 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 			asks = append(asks, step.Body)
 		}
 	}
-	if len(asks) > 0 && !confirm {
-		quoted := make([]string, len(asks))
-		for i, ask := range asks {
-			quoted[i] = fmt.Sprintf("%q", ask)
-		}
-		return "", nil, fmt.Errorf(
-			"close: cleanup gate %s has unconfirmed steps: %s; answer each, then re-run with --confirm",
-			name, strings.Join(quoted, ", "))
-	}
 
 	proj, err := reg.Get(delivery.Project)
+	if err != nil {
+		return "", nil, fmt.Errorf("close: cleanup gate %s cannot run: %v", name, err)
+	}
+	cwd, err := checkDir(hc, delivery, proj.RootPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("close: cleanup gate %s cannot run: %v", name, err)
 	}
@@ -221,7 +221,7 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 		// Exit checks get no FS_* environment: those carry the dispatch's own
 		// inputs (its cards, above all), and a close-out has none to offer — the
 		// delivery record names a pane and a node, not a batch.
-		item := runCheck(step.Body, proj.RootPath, nil)
+		item := runCheck(step.Body, cwd, nil)
 		if item.Status != "pass" {
 			return "", nil, fmt.Errorf(
 				"close: cleanup check failed: %q; output: %s; fix it, then close again",
@@ -230,16 +230,53 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 		checks++
 	}
 
+	if len(asks) > 0 && !confirm {
+		quoted := make([]string, len(asks))
+		for i, ask := range asks {
+			quoted[i] = fmt.Sprintf("%q", ask)
+		}
+		return "", nil, fmt.Errorf(
+			"close: cleanup gate %s has unconfirmed steps: %s; answer each, then re-run with --confirm",
+			name, strings.Join(quoted, ", "))
+	}
+
 	confirmations := make([]string, 0, len(asks))
 	for _, ask := range asks {
 		confirmations = append(confirmations, "user confirmed cleanup step: "+ask)
 	}
 
 	note := fmt.Sprintf("cleanup gate %s: %d checks passed", name, checks)
+	if delivery.Worktree != "" {
+		note += " in worktree " + delivery.Worktree
+	}
 	if len(asks) > 0 {
 		note += fmt.Sprintf(", %d confirmed", len(asks))
 	}
 	return note, confirmations, nil
+}
+
+// checkDir returns the directory the cleanup checks run in: the worktree the
+// dispatch worked in when the record names one, and the worker project's root
+// otherwise.
+//
+// The worktree is resolved rather than taken on trust, because the record names
+// a workspace, not a path. And a workspace that cannot be resolved is an error
+// rather than a fall back to the project root: the shipped checks assert things
+// about the worktree — no uncommitted files, branch merged — and the project
+// root is routinely another agent's dirty tree, so checking it would fail or
+// pass for reasons that have nothing to do with the dispatch while reporting
+// that the gate ran.
+func checkDir(hc HerdrCLI, delivery command.DeliveryRecord, root string) (string, error) {
+	if delivery.Worktree == "" {
+		return root, nil
+	}
+	checkout, err := hc.WorktreeCheckout(delivery.Worktree)
+	if err != nil {
+		return "", fmt.Errorf(
+			"worktree %s: %w; its checks must run in the tree the dispatch worked in, so fix the workspace or close with --abandoned --reason \"<why>\"",
+			delivery.Worktree, err)
+	}
+	return checkout, nil
 }
 
 // tearDownPane closes the pane a delivery split open, and returns a warning for

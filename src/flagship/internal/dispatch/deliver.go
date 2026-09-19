@@ -35,11 +35,18 @@ var ErrPaneGone = errors.New("pane is already gone")
 var ErrWorktreeGone = errors.New("worktree is already gone")
 
 // ErrNoRootPane reports that a worktree workspace has no pane a worker can be
-// started in: herdr does not know the workspace, it is not a worktree, or none
-// of its panes sits at the worktree's checkout. A worktree dispatch is refused
-// rather than falling back to splitting the cap's pane, which would run the
-// worker in the main checkout while the record claimed isolation.
+// started in: none of its panes sits at the worktree's checkout. A worktree
+// dispatch is refused rather than falling back to splitting the cap's pane,
+// which would run the worker in the main checkout while the record claimed
+// isolation.
 var ErrNoRootPane = errors.New("worktree workspace has no root pane")
+
+// ErrNoWorktree reports that a worktree workspace cannot be resolved to a
+// checkout path: herdr does not know the workspace, or it is not a worktree.
+// Every gate that needs the tree refuses on it rather than falling back to the
+// project root — running a check against a tree the dispatch never touched, and
+// reporting success, is worse than refusing.
+var ErrNoWorktree = errors.New("worktree workspace cannot be resolved")
 
 // HerdrCLI is the slice of the herdr CLI the dispatch lifecycle uses: split a
 // pane for the worker, start an agent in it, send the brief, read what the
@@ -62,9 +69,16 @@ type HerdrCLI interface {
 	SplitPane(cwd string) (paneID, tabID string, err error)
 	// WorktreeRootPane returns the pane a worktree dispatch starts its worker
 	// in: the root pane herdr created with the workspace, whose cwd is the
-	// worktree's own checkout. It returns ErrNoRootPane — naming wsID — when
-	// there is no such pane.
+	// worktree's own checkout. It returns ErrNoWorktree when the workspace
+	// cannot be resolved and ErrNoRootPane when it has no pane at the checkout —
+	// both naming wsID.
 	WorktreeRootPane(wsID string) (paneID, tabID string, err error)
+	// WorktreeCheckout returns the checkout path of the worktree workspace wsID.
+	// It is how the cleanup gate finds the tree the dispatch worked in: the
+	// delivery record names a workspace, not a path. ErrNoWorktree means the
+	// workspace could not be resolved, which a gate refuses on rather than
+	// guessing.
+	WorktreeCheckout(wsID string) (string, error)
 	// StartAgent starts an interactive agent named name in an existing pane.
 	StartAgent(paneID, name string) error
 	// Prompt submits text to the agent hosted by paneID.
@@ -258,8 +272,8 @@ func (herdrCLI) StartAgent(paneID, name string) error {
 // several panes sit at the checkout, the first herdr lists is taken. A workspace
 // with no such pane is ErrNoRootPane rather than a guess, because starting the
 // worker anywhere else would be the very bug this avoids.
-func (herdrCLI) WorktreeRootPane(wsID string) (string, string, error) {
-	checkout, err := worktreeCheckout(wsID)
+func (h herdrCLI) WorktreeRootPane(wsID string) (string, string, error) {
+	checkout, err := h.WorktreeCheckout(wsID)
 	if err != nil {
 		return "", "", err
 	}
@@ -292,13 +306,13 @@ func (herdrCLI) WorktreeRootPane(wsID string) (string, string, error) {
 		ErrNoRootPane, wsID, len(resp.Result.Panes), checkout)
 }
 
-// worktreeCheckout returns the checkout path of the worktree workspace wsID, or
-// ErrNoRootPane when herdr has no such workspace or it is not a worktree.
-func worktreeCheckout(wsID string) (string, error) {
+// WorktreeCheckout returns the checkout path of the worktree workspace wsID, or
+// ErrNoWorktree when herdr has no such workspace or it is not a worktree.
+func (herdrCLI) WorktreeCheckout(wsID string) (string, error) {
 	out, err := runHerdr("workspace", "get", wsID)
 	if err != nil {
 		if herdrErrorCode(err) == "workspace_not_found" {
-			return "", fmt.Errorf("%w: herdr has no workspace %s", ErrNoRootPane, wsID)
+			return "", fmt.Errorf("%w: herdr has no workspace %s", ErrNoWorktree, wsID)
 		}
 		return "", fmt.Errorf("herdr workspace get %s: %w", wsID, err)
 	}
@@ -317,7 +331,7 @@ func worktreeCheckout(wsID string) (string, error) {
 	}
 	checkout := resp.Result.Workspace.Worktree.CheckoutPath
 	if checkout == "" {
-		return "", fmt.Errorf("%w: workspace %s is not a worktree", ErrNoRootPane, wsID)
+		return "", fmt.Errorf("%w: workspace %s is not a worktree", ErrNoWorktree, wsID)
 	}
 	return checkout, nil
 }

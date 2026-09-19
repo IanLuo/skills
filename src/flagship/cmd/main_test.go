@@ -1476,6 +1476,19 @@ func goGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// gitOut runs git in dir and returns its trimmed stdout — for `status
+// --porcelain`, where an empty answer is the assertion.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // A missing playbook fails cleanly and names the file the cap must supply.
 func TestCLIDispatchMissingPlaybook(t *testing.T) {
 	bin := getFS(t)
@@ -1810,6 +1823,17 @@ case "$cmd $sub" in
     done
     rm -f "$(id_file pane "$id")"
     printf '{"result":{"closed":true}}\n'
+    ;;
+  "worktree remove")
+    # Close-out teardown removes the worktree the record names; which one it
+    # removed is kept, so a test can assert it.
+    ws=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--workspace" ]; then ws="${2:-}"; shift 2 || true; else shift; fi
+    done
+    [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$ws"
+    printf '%s' "$ws" > "$state/worktree_removed"
+    printf '{"result":{"removed":true}}\n'
     ;;
   "agent start")
     # args: <name> --kind <kind> --pane <pane>
@@ -2169,6 +2193,63 @@ func TestCLIDeliverInAWorktreeStartsTheWorkerInTheWorktreeRootPane(t *testing.T)
 	}
 }
 
+// The cleanup gate's checks run in the worktree the dispatch worked in, not the
+// main checkout. This is the live failure in miniature: the project root is
+// dirty and the worktree is clean and merged, so the shipped checks pass in the
+// worktree and would fail in the root. The dirtiness is asserted at the time, so
+// the test proves what it claims rather than assuming it.
+func TestCLICloseRunsCleanupChecksInTheWorktreeNotTheMainCheckout(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	// The shipped parallel-cleanup checks, verbatim: no uncommitted files, and
+	// the branch merged into main.
+	writeKBPlaybook(t, testHome(t), "dev-task-cleanup", `name: dev-task-cleanup
+type: cleanup
+trigger: dev-task
+steps:
+  - check: test -z "$(git status --porcelain)"
+  - check: git merge-base --is-ancestor HEAD main
+`)
+
+	// A real repository with a real linked worktree, so the checks shell out to
+	// git exactly as they do live.
+	goGit(t, root, "init", "-q", "-b", "main")
+	writeFileIn(t, root, "seed.txt", "seed\n")
+	goGit(t, root, "add", "seed.txt")
+	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
+	worktree := filepath.Join(t.TempDir(), "wt")
+	goGit(t, root, "worktree", "add", "-q", worktree, "-b", "batch-test-X")
+
+	writeFileIn(t, root, "uncommitted.txt", "another agent's work\n")
+	if dirty := gitOut(t, root, "status", "--porcelain"); !strings.Contains(dirty, "uncommitted.txt") {
+		t.Fatalf("the main checkout is not dirty (%q); the test would prove nothing", dirty)
+	}
+	if dirty := gitOut(t, worktree, "status", "--porcelain"); dirty != "" {
+		t.Fatalf("the worktree is not clean (%q); the test would prove nothing", dirty)
+	}
+
+	env, state, _ := fakeHerdrOnPath(t)
+	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
+	finishWorker(t, bin, root, workerRef)
+
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v — the checks pass in the worktree even though the main checkout is dirty", code, closed["error"])
+	}
+	data := closed["data"].(map[string]any)
+	if data["cleanup"] != "cleanup gate dev-task-cleanup: 2 checks passed in worktree wWT" {
+		t.Errorf("cleanup = %v, want the checks reported and the tree they ran in", data["cleanup"])
+	}
+	// Teardown still removes the worktree the record names, so the fix leaves
+	// the exit path exactly as it was.
+	if removed, err := os.ReadFile(filepath.Join(state, "worktree_removed")); err != nil || string(removed) != "wWT" {
+		t.Errorf("worktree removed = %q (err %v), want wWT", removed, err)
+	}
+}
+
 // A worktree workspace herdr does not know is refused, naming it, before any
 // worker node exists and without splitting the cap's pane. The refusal is the
 // point: a fallback split would put a worker in the main checkout under a record
@@ -2185,7 +2266,7 @@ func TestCLIDeliverRefusesAnUnknownWorktreeWorkspace(t *testing.T) {
 		t.Fatalf("exit = %d, want 1: %v", code, resp)
 	}
 	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"wNOPE", "root pane", "unresolved"} {
+	for _, want := range []string{"wNOPE", "cannot be resolved", "unresolved"} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}

@@ -33,12 +33,18 @@ type fakeHerdr struct {
 	rootPaneTab string
 	rootPaneErr error
 
-	created []string
-	started []string
-	prompts []promptCall
-	closed  []string
-	removed []string
-	rooted  []string
+	// checkoutPath/checkoutErr stand in for the checkout path a worktree
+	// workspace resolves to — the tree the cleanup gate must run its checks in.
+	checkoutPath string
+	checkoutErr  error
+
+	created   []string
+	started   []string
+	prompts   []promptCall
+	closed    []string
+	removed   []string
+	rooted    []string
+	checkouts []string
 }
 
 // promptCall is one brief handed to a pane, so a test can read the text the
@@ -59,6 +65,14 @@ func (f *fakeHerdr) WorktreeRootPane(wsID string) (string, string, error) {
 		return "", "", f.rootPaneErr
 	}
 	return f.rootPaneID, f.rootPaneTab, nil
+}
+
+func (f *fakeHerdr) WorktreeCheckout(wsID string) (string, error) {
+	f.checkouts = append(f.checkouts, wsID)
+	if f.checkoutErr != nil {
+		return "", f.checkoutErr
+	}
+	return f.checkoutPath, nil
 }
 
 func (f *fakeHerdr) StartAgent(paneID, name string) error {
@@ -145,6 +159,20 @@ func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID string) {
 		Type: store.DeliveryRecorded, ProjectID: "cap", NodeID: &capNode, Payload: payload,
 	}); err != nil {
 		t.Fatalf("append legacy delivery-recorded: %v", err)
+	}
+}
+
+// recordWorktreeDelivery writes a delivery record bound to a worktree workspace,
+// the shape a worktree dispatch records: a batch's workers ran in one, and the
+// cleanup gate has to find that tree.
+func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID string) {
+	t.Helper()
+	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
+		PaneID: paneID, TabID: wsID + ":t1", Agent: "dispatch-parallel", Engine: "herdr",
+		Project: "skills", Node: workerID, Type: "parallel", Worktree: wsID,
+	})
+	if !resp.OK {
+		t.Fatalf("RecordDelivery: %s", resp.Error)
 	}
 }
 
@@ -815,6 +843,190 @@ steps:
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// A worktree record's checks must run in the worktree, not in the project root.
+// The shipped parallel-cleanup checks assert things about the worktree — no
+// uncommitted files, branch merged — and the main checkout is routinely another
+// agent's dirty tree, so a gate that runs there fails for reasons the dispatch
+// had nothing to do with. Here the root carries the file the worktree does not,
+// and the worktree the file the root does not: only the worktree passes both.
+func TestCloseRunsCleanupChecksInTheWorktreeTheRecordNames(t *testing.T) {
+	root := t.TempDir()
+	worktree := t.TempDir()
+	writeFile(t, filepath.Join(worktree, "clean.marker"), "")
+	writeFile(t, filepath.Join(root, "uncommitted.marker"), "")
+
+	f := newFixture(t, root)
+	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
+type: cleanup
+trigger: parallel
+steps:
+  - check: test -f clean.marker
+  - check: test ! -f uncommitted.marker
+`)
+
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7")
+
+	herdr := &fakeHerdr{checkoutPath: worktree}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if len(herdr.checkouts) != 1 || herdr.checkouts[0] != "w7" {
+		t.Errorf("worktrees resolved = %v, want the recorded w7", herdr.checkouts)
+	}
+	// The note names the tree the checks ran in: a gate whose footing is
+	// invisible is how checking the wrong tree went unnoticed.
+	note := resp.Data.(dispatch.CloseResult).Cleanup
+	if !strings.Contains(note, "2 checks passed") || !strings.Contains(note, "in worktree w7") {
+		t.Errorf("cleanup note = %q, want the checks and the tree they ran in", note)
+	}
+}
+
+// A check that genuinely fails in the worktree still refuses, naming the command
+// and its output. The root is clean here, so a gate that fell back to it would
+// pass — the failure has to come from the worktree's own state.
+func TestCloseRefusesAWorktreeCleanupCheckThatFailsThere(t *testing.T) {
+	root := t.TempDir()
+	worktree := t.TempDir()
+	writeFile(t, filepath.Join(root, "state.txt"), "clean\n")
+	writeFile(t, filepath.Join(worktree, "state.txt"), "dirty\n")
+
+	f := newFixture(t, root)
+	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
+type: cleanup
+trigger: parallel
+steps:
+  - check: grep -c clean state.txt
+`)
+
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7")
+
+	herdr := &fakeHerdr{checkoutPath: worktree}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a check that fails in the worktree must refuse the close")
+	}
+	for _, want := range []string{"cleanup check failed", `"grep -c clean state.txt"`, "0", "fix it"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if len(herdr.closed) != 0 || len(herdr.removed) != 0 {
+		t.Errorf("a refused close touched herdr: closed=%v removed=%v", herdr.closed, herdr.removed)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// A record naming a worktree that cannot be resolved refuses, naming the
+// workspace. It must not fall back to the project root: checking a tree the
+// dispatch never touched, and reporting that the gate ran, is how the wrong-tree
+// bug hid in the first place.
+func TestCloseRefusesWhenTheRecordedWorktreeCannotBeResolved(t *testing.T) {
+	root := t.TempDir()
+	sentinel := filepath.Join(root, "check-ran")
+	f := newFixture(t, root)
+	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
+type: cleanup
+trigger: parallel
+steps:
+  - check: touch %s
+`, sentinel))
+
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "wZZ")
+
+	herdr := &fakeHerdr{checkoutErr: fmt.Errorf("%w: herdr has no workspace wZZ", dispatch.ErrNoWorktree)}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("an unresolvable worktree must refuse the close")
+	}
+	for _, want := range []string{"wZZ", "parallel-cleanup", "herdr has no workspace", "--abandoned"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	// The sentinel is the proof it did not check the root instead: had it fallen
+	// back, this check would have run there.
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Errorf("a check ran in the project root despite the worktree being unresolvable: stat err = %v", err)
+	}
+	if len(herdr.closed) != 0 || len(herdr.removed) != 0 {
+		t.Errorf("a refused close touched herdr: closed=%v removed=%v", herdr.closed, herdr.removed)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// An outstanding ask must not mask a failing check: the checks run first, so the
+// refusal names what the user has to fix rather than asking them to confirm a
+// gate that cannot pass, and only revealing the failure afterwards.
+func TestCloseRunsCleanupChecksBeforeTheAsks(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
+type: cleanup
+trigger: dev-task
+steps:
+  - check: echo boom >&2; false
+  - ask: was the merge reviewed before this closed
+`)
+
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a failing check must refuse the close even with an ask outstanding")
+	}
+	for _, want := range []string{"cleanup check failed", `"echo boom >&2; false"`, "boom"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if strings.Contains(resp.Error, "unconfirmed steps") {
+		t.Errorf("error %q reports the ask; the check has to be refused first", resp.Error)
+	}
+}
+
+// A record that names no worktree keeps the footing it always had: the checks
+// run in the worker project's root, and herdr is not consulted at all.
+func TestCloseRunsCleanupChecksInTheProjectRootWithoutAWorktree(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "clean.marker"), "")
+
+	f := newFixture(t, root)
+	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
+type: cleanup
+trigger: dev-task
+steps:
+  - check: test -f clean.marker
+`)
+
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	herdr := &fakeHerdr{}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if len(herdr.checkouts) != 0 {
+		t.Errorf("worktrees resolved = %v for a record that names none", herdr.checkouts)
+	}
+	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "1 checks passed") {
+		t.Errorf("cleanup note = %q, want the check reported", note)
 	}
 }
 
