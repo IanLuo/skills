@@ -11,10 +11,39 @@ import (
 	"github.com/flagship-dev/flagship/internal/store"
 )
 
+// Kind is a node's structural kind: what the node is, independent of the prose
+// in its goal. It replaces the conventions that used to be words in the goal
+// string — a node stays what it is when its goal is rewritten.
+type Kind string
+
+const (
+	// KindWork is an ordinary task. It is the default, so a node created
+	// without a kind — including every node created before kinds existed —
+	// reads as work.
+	KindWork Kind = "work"
+	// KindDispatch is a node fs dispatch wrote, on the cap's scope and on the
+	// worker's scope in the target project. The dispatch gates select on it.
+	KindDispatch Kind = "dispatch"
+	// KindGap is something noticed and not dispatched: the backlog.
+	KindGap Kind = "gap"
+)
+
+// ValidKind reports whether k names a kind. The empty string is not a kind:
+// absence means the default, and callers resolve it rather than storing it.
+func ValidKind(k Kind) bool {
+	switch k {
+	case KindWork, KindDispatch, KindGap:
+		return true
+	}
+	return false
+}
+
 // Node represents a single task in the project tree.
 type Node struct {
 	NodeID    string   `json:"node_id"`
 	Goal      string   `json:"goal"`
+	Kind      Kind     `json:"kind"`
+	FoundBy   string   `json:"found_by,omitempty"`
 	Status    string   `json:"status"`
 	ParentID  string   `json:"parent_id,omitempty"`
 	Orphan    bool     `json:"orphan,omitempty"`
@@ -69,7 +98,11 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 
 		switch evt.Type {
 		case store.TaskCreated:
-			var p struct{ Goal string }
+			var p struct {
+				Goal    string `json:"goal"`
+				Kind    string `json:"kind"`
+				FoundBy string `json:"found_by"`
+			}
 			_ = json.Unmarshal(evt.Payload, &p)
 			parentID := ""
 			if evt.ParentNodeID != nil {
@@ -78,6 +111,8 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 			node := &Node{
 				NodeID:   nid,
 				Goal:     p.Goal,
+				Kind:     nodeKind(p.Kind, p.Goal),
+				FoundBy:  p.FoundBy,
 				Status:   "pending",
 				ParentID: parentID,
 			}
@@ -110,9 +145,13 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				NewValue string `json:"new_value"`
 			}
 			_ = json.Unmarshal(evt.Payload, &p)
-			if p.Field == "goal" {
+			switch p.Field {
+			case "goal":
 				node := tree.ensureNode(nid)
 				node.Goal = p.NewValue
+			case "kind":
+				node := tree.ensureNode(nid)
+				node.Kind = parseKind(p.NewValue)
 			}
 
 		default:
@@ -166,10 +205,51 @@ func (t *Tree) ensureNode(nid string) *Node {
 	}
 	n := &Node{
 		NodeID: nid,
+		Kind:   KindWork,
 		Status: "pending",
 	}
 	t.Nodes[nid] = n
 	return n
+}
+
+// nodeKind resolves the kind of a task-created event. An event written before
+// nodes carried a kind carries none: it reads as the default, except that a
+// goal fs dispatch wrote was a dispatch then and still is. That legacy read is
+// against the creation goal, never the current one, so editing a goal cannot
+// change what a node is — which is the failure the prefix convention had.
+func nodeKind(raw, createdGoal string) Kind {
+	if k := Kind(raw); ValidKind(k) {
+		return k
+	}
+	if legacyDispatchGoal(createdGoal) {
+		return KindDispatch
+	}
+	return KindWork
+}
+
+// parseKind reads a kind from an event payload, defaulting to work when it is
+// absent or unrecognised: an unknown kind is not a fourth kind, it is a default.
+func parseKind(raw string) Kind {
+	if k := Kind(raw); ValidKind(k) {
+		return k
+	}
+	return KindWork
+}
+
+// legacyDispatchGoal reports whether a goal was written by fs dispatch before
+// nodes carried a kind. It always labelled its node "dispatch <type>: <goal>".
+//
+// This is the only prose read of a goal left in the codebase. It exists solely
+// so events written before kind existed keep behaving as they did, and it is
+// read once, against the creation goal. Every node written since carries its
+// kind, and a node whose goal is edited does not change kind.
+func legacyDispatchGoal(goal string) bool {
+	rest, ok := strings.CutPrefix(goal, "dispatch ")
+	if !ok {
+		return false
+	}
+	typ, _, ok := strings.Cut(rest, ": ")
+	return ok && typ != ""
 }
 
 // Summary returns a concise text summary of the project tree, suitable for

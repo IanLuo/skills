@@ -27,6 +27,7 @@ import (
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 )
 
@@ -156,26 +157,17 @@ func triggerError(kind, name string, pb *knowledge.Playbook, taskType string) er
 		kind, name, pb.Trigger, taskType, taskType)
 }
 
-// isDispatchGoal reports whether a goal was written by fs dispatch, which always
-// labels its node "dispatch <type>: <goal>". The cap's own backlog is not
-// dispatch work, so the gate must not treat it as such.
-func isDispatchGoal(goal string) bool {
-	rest, ok := strings.CutPrefix(goal, "dispatch ")
-	if !ok {
-		return false
-	}
-	typ, _, ok := strings.Cut(rest, ": ")
-	return ok && typ != ""
-}
-
 // dispatchGoal is the goal text fs dispatch writes — on the cap's node, and on
 // the worker's node in the target project. Both ends of the link carry the same
-// text, so the two nodes read as one piece of work.
+// text, so the two nodes read as one piece of work. It is prose for a reader:
+// what makes a node a dispatch is its kind, never this text.
 func dispatchGoal(taskType, goal string) string {
 	return fmt.Sprintf("dispatch %s: %s", taskType, goal)
 }
 
-// unresolvedDispatches returns the cap's dispatch nodes that are not done.
+// unresolvedDispatches returns the cap's dispatch nodes that are not done. A
+// node is a dispatch because it was written as one, so a dispatch whose goal
+// was later edited is still recognised — the failure the goal prefix had.
 func unresolvedDispatches(h *command.Handler) ([]command.UnfinishedNode, error) {
 	nodes, err := h.UnfinishedIn(capScope)
 	if err != nil {
@@ -184,7 +176,7 @@ func unresolvedDispatches(h *command.Handler) ([]command.UnfinishedNode, error) 
 
 	var unresolved []command.UnfinishedNode
 	for _, node := range nodes {
-		if isDispatchGoal(node.Goal) {
+		if node.Kind == query.KindDispatch {
 			unresolved = append(unresolved, node)
 		}
 	}
@@ -345,7 +337,7 @@ func findLockedDocs(root string) []string {
 // and the decision naming the project the work went to. It returns the node id
 // so the cap can read its own dispatch back.
 func recordCapNode(h *command.Handler, taskType, goal, project string) (string, error) {
-	added := h.TaskAdd(capScope, dispatchGoal(taskType, goal), nil)
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), query.KindDispatch, "", nil)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}
@@ -413,7 +405,8 @@ func nextCommand(b *Brief) string {
 
 // renderBrief is the text the cap hands the worker: goal, project root, the
 // node the worker owns, the say steps as context, the gate checklist with each
-// check's output, and the locked docs.
+// check's output, and the locked docs. It also carries the standing worker
+// obligation, so every worker is told how a gap it notices outlives it.
 func renderBrief(b *Brief) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Goal: %s\n", b.Goal)
@@ -421,6 +414,15 @@ func renderBrief(b *Brief) string {
 	if b.WorkerNode != "" {
 		fmt.Fprintf(&sb, "Note your work on %s — that node already exists and is yours; do not create another.\n", b.WorkerNode)
 	}
+	// The standing worker obligation. A gap a worker notices must outlive it,
+	// and the only channel that survives is a node: the final message is not
+	// read and closing destroys the transcript.
+	foundBy := b.WorkerNode
+	if foundBy == "" {
+		foundBy = "<your node, PROJECT:NODE>"
+	}
+	fmt.Fprintf(&sb, "Gaps: a gap you flag and do not fix must become a node — "+
+		"`fs task add --kind gap --found-by %s --goal \"...\"` — because your final message is not read and closing destroys your transcript.\n", foundBy)
 	if len(b.Context) > 0 {
 		sb.WriteString("Context:\n")
 		for _, say := range b.Context {

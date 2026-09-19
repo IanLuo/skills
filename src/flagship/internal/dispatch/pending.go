@@ -43,12 +43,15 @@ type PendingEntry struct {
 	State      string `json:"state"`
 }
 
-// PendingResult is the data payload of fs pending: one entry per dispatch, and
-// a count per state so the cap can see at a glance what needs it.
+// PendingResult is the data payload of fs pending: one entry per dispatch, a
+// count per state so the cap can see at a glance what needs it, and the size of
+// the backlog — the kind=gap nodes nobody has picked up, so it is never only
+// remembered.
 type PendingResult struct {
-	Pending []PendingEntry `json:"pending"`
-	Counts  map[string]int `json:"counts"`
-	Warning string         `json:"warning,omitempty"`
+	Pending          []PendingEntry `json:"pending"`
+	Counts           map[string]int `json:"counts"`
+	UndispatchedGaps int            `json:"undispatched_gaps"`
+	Warning          string         `json:"warning,omitempty"`
 }
 
 // Pending lists every dispatch in the cap's scope that is not done, with what
@@ -79,6 +82,11 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 	}
 
 	result := PendingResult{Pending: entries, Counts: counts}
+	gaps, err := h.OpenGaps()
+	if err != nil {
+		return errResp(fmt.Sprintf("pending: %v", err))
+	}
+	result.UndispatchedGaps = gaps
 	if herdrErr != nil {
 		result.Warning = fmt.Sprintf(
 			"herdr is unavailable (%v): an unfinished worker's state cannot be read, and is reported as %q",

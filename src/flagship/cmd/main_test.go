@@ -295,6 +295,86 @@ func TestCLITaskEdit(t *testing.T) {
 	}
 }
 
+// fs task add --kind/--found-by writes the structural kind, fs gaps reads it
+// back with found_by, and fs unfinished groups by it. The gap count travels with
+// fs pending.
+func TestCLITaskKindGapsAndUnfinished(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	gapResp, code := runFS(t, bin, dir, "task", "add", "--kind", "gap", "--found-by", "p:t-found", "--goal", "the teardown is untested", "--project", "p")
+	if code != 0 {
+		t.Fatalf("gap add exit %d: %v", code, gapResp["error"])
+	}
+	runFS(t, bin, dir, "task", "add", "--goal", "ordinary work", "--project", "p")
+
+	gaps, code := runFS(t, bin, dir, "gaps")
+	if code != 0 {
+		t.Fatalf("gaps exit %d: %v", code, gaps["error"])
+	}
+	list := gaps["data"].(map[string]any)["gaps"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("gaps = %v, want the one gap node", list)
+	}
+	gap := list[0].(map[string]any)
+	if gap["goal"] != "the teardown is untested" || gap["found_by"] != "p:t-found" || gap["status"] != "pending" {
+		t.Errorf("gap = %v, want the goal, found_by and status of the gap", gap)
+	}
+
+	unfinished, _ := runFS(t, bin, dir, "unfinished")
+	groups := unfinished["data"].(map[string]any)["unfinished"].(map[string]any)
+	if len(groups["gap"].([]any)) != 1 || len(groups["work"].([]any)) != 1 {
+		t.Errorf("unfinished groups = %v, want one gap and one work", groups)
+	}
+
+	pending, _ := runFS(t, bin, dir, "pending")
+	if got := pending["data"].(map[string]any)["undispatched_gaps"]; got != float64(1) {
+		t.Errorf("undispatched_gaps = %v, want 1", got)
+	}
+}
+
+// A kind typo is refused at write time rather than stored as a kind nothing
+// reads.
+func TestCLITaskAddRefusesAnUnknownKind(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	resp, code := runFS(t, bin, dir, "task", "add", "--kind", "gapp", "--goal", "x", "--project", "p")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "gapp") {
+		t.Errorf("error %q must name the rejected kind", errMsg)
+	}
+}
+
+// fs task edit --kind moves a node between the groups without rewriting its
+// goal — how the backlog was migrated.
+func TestCLITaskEditKindMigratesANode(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+	add, _ := runFS(t, bin, dir, "task", "add", "--goal", "backlog: something", "--project", "p")
+	nodeID := add["data"].(map[string]any)["node_id"].(string)
+
+	if _, code := runFS(t, bin, dir, "task", "edit", nodeID, "--kind", "gap", "--project", "p"); code != 0 {
+		t.Fatalf("edit exit %d", code)
+	}
+
+	gaps, _ := runFS(t, bin, dir, "gaps")
+	if list := gaps["data"].(map[string]any)["gaps"].([]any); len(list) != 1 {
+		t.Fatalf("gaps = %v, want the migrated node", list)
+	}
+
+	status, _ := runFS(t, bin, dir, "status", "--project", "p")
+	task := status["data"].(map[string]any)["tasks"].([]any)[0].(map[string]any)
+	if task["goal"] != "backlog: something" || task["kind"] != "gap" {
+		t.Errorf("task = %v, want kind gap and the goal left alone", task)
+	}
+}
+
 func TestCLIStatusDecision(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
@@ -1588,15 +1668,19 @@ func TestCLIUnfinishedListsEveryScopeFromTheStore(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("unfinished exit %d: %v", code, resp["error"])
 	}
-	unfinished := resp["data"].(map[string]any)["unfinished"].([]any)
+	unfinished := resp["data"].(map[string]any)["unfinished"].(map[string]any)
+	work, ok := unfinished["work"].([]any)
+	if !ok {
+		t.Fatalf("unfinished = %v, want a work group", unfinished)
+	}
 
 	byGoal := map[string]map[string]any{}
-	for _, raw := range unfinished {
+	for _, raw := range work {
 		node := raw.(map[string]any)
 		byGoal[node["goal"].(string)] = node
 	}
 	if _, ok := byGoal["finished thing"]; ok {
-		t.Errorf("a done node must not be reported as unfinished: %v", unfinished)
+		t.Errorf("a done node must not be reported as unfinished: %v", work)
 	}
 	for goal, project := range map[string]string{
 		"open thing":   "skills",
@@ -1605,7 +1689,7 @@ func TestCLIUnfinishedListsEveryScopeFromTheStore(t *testing.T) {
 	} {
 		node, ok := byGoal[goal]
 		if !ok {
-			t.Errorf("unfinished %q missing from %v", goal, unfinished)
+			t.Errorf("unfinished %q missing from %v", goal, work)
 			continue
 		}
 		if node["project_id"] != project {

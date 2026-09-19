@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/query"
 )
 
 // agentKind is the agent the dispatcher launches in the worker pane. It matches
@@ -193,7 +194,7 @@ func workerPane(hc HerdrCLI, brief *Brief) (paneID, tabID, checkout string, err 
 // the brief at it, so the brief the worker receives names the node it owns
 // rather than leaving it to invent one.
 func createWorkerNode(h *command.Handler, brief *Brief) (string, error) {
-	added := h.TaskAdd(brief.Project, dispatchGoal(brief.TaskType, brief.Goal), nil)
+	added := h.TaskAddKind(brief.Project, dispatchGoal(brief.TaskType, brief.Goal), query.KindDispatch, "", nil)
 	if !added.OK {
 		return "", fmt.Errorf("create worker node in %s: %s", brief.Project, added.Error)
 	}

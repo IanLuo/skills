@@ -224,6 +224,12 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 		!strings.Contains(brief.NextCommand, "herdr agent prompt") {
 		t.Errorf("next_command must be the herdr split/start/prompt line, got %q", brief.NextCommand)
 	}
+	// The standing worker obligation travels in the brief the command sends, so
+	// a worker learns how a gap outlives it before it starts.
+	if !strings.Contains(brief.NextCommand, "--kind gap") ||
+		!strings.Contains(brief.NextCommand, "your final message is not read") {
+		t.Errorf("next_command must carry the worker obligation, got %q", brief.NextCommand)
+	}
 }
 
 func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
@@ -306,6 +312,30 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 	want := "user confirmed proceeding with unresolved dispatches: " + firstID
 	if decisions := capDecisions(t, f, brief.CapNodeID); !slices.Contains(decisions, want) {
 		t.Errorf("cap node decisions = %v, want %q", decisions, want)
+	}
+}
+
+// The dispatch gate reads the node's kind, not its goal, so a dispatch whose
+// goal was rewritten still blocks a new dispatch.
+func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false)
+	if !first.OK {
+		t.Fatalf("first dispatch: %s", first.Error)
+	}
+	firstID := first.Data.(*dispatch.Brief).CapNodeID
+	if resp := f.h.TaskEdit("cap", firstID, "no longer says dispatch", "", nil); !resp.OK {
+		t.Fatalf("task edit: %s", resp.Error)
+	}
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false)
+	if resp.OK {
+		t.Fatal("a dispatch whose goal was rewritten must still gate")
+	}
+	if !strings.Contains(resp.Error, firstID) {
+		t.Errorf("error %q must name the edited dispatch %s", resp.Error, firstID)
 	}
 }
 

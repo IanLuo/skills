@@ -7,6 +7,7 @@ import (
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
 )
 
@@ -148,7 +149,7 @@ func TestPendingReportsAMissingRecordUnlinked(t *testing.T) {
 // the cap to close a dispatch.
 func TestPendingIgnoresNonDispatchCapNodes(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	addCapNode(t, f, "cap loop")
+	addCapKindNode(t, f, "cap loop", query.KindWork)
 	addCapNode(t, f, "dispatch dev-task: abandoned")
 
 	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{}))
@@ -158,6 +159,48 @@ func TestPendingIgnoresNonDispatchCapNodes(t *testing.T) {
 	}
 	if result.Pending[0].State != dispatch.StateUnlinked {
 		t.Errorf("state = %q, want the one dispatch unlinked", result.Pending[0].State)
+	}
+}
+
+// The regression for the retired convention: what makes a node a dispatch is its
+// kind, so rewriting its goal cannot turn it into something the cap stops seeing.
+// The prefix got this exactly wrong.
+func TestPendingSeesADispatchWhoseGoalWasEdited(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	capNode := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "active")
+	agent := "dispatch-dev-task-" + workerID
+	recordDeliveryAs(t, f, capNode, agent, workerID)
+
+	// Rewrite the goal so the prose no longer says "dispatch ..." at all.
+	if resp := f.h.TaskEdit("cap", capNode, "reworded entirely", "", nil); !resp.OK {
+		t.Fatalf("task edit: %s", resp.Error)
+	}
+
+	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{
+		agents: map[string]string{agent: "working"},
+	}))
+
+	if entry := pendingEntryFor(t, result, capNode); entry.State != dispatch.StateRunning {
+		t.Errorf("state = %q, want %q", entry.State, dispatch.StateRunning)
+	}
+}
+
+// fs pending reports the backlog's size, so the cap does not have to remember
+// it: open gaps are counted, and a resolved one is not.
+func TestPendingReportsTheUndispatchedGapCount(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	addCapKindNode(t, f, "an open gap", query.KindGap)
+	resolved := addCapKindNode(t, f, "a resolved gap", query.KindGap)
+	if resp := f.h.TaskUpdate("cap", resolved, "done", "fixed", nil); !resp.OK {
+		t.Fatalf("task update: %s", resp.Error)
+	}
+	addCapKindNode(t, f, "ordinary work", query.KindWork)
+
+	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{}))
+
+	if result.UndispatchedGaps != 1 {
+		t.Errorf("undispatched_gaps = %d, want 1", result.UndispatchedGaps)
 	}
 }
 

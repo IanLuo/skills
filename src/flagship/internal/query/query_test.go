@@ -261,6 +261,106 @@ func TestDeriveTreeMetadataChanged(t *testing.T) {
 	}
 }
 
+// seedTaskKind adds a task-created event that carries a kind and found_by, the
+// shape a node written since kinds existed has.
+func seedTaskKind(t *testing.T, s *store.Store, projectID, nodeID, goal, kind, foundBy string) {
+	t.Helper()
+	payload := map[string]string{"goal": goal, "kind": kind}
+	if foundBy != "" {
+		payload["found_by"] = foundBy
+	}
+	data, _ := json.Marshal(payload)
+	_, err := s.Append(store.Event{
+		Type:      store.TaskCreated,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		Payload:   data,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Kind comes from the event, not from the goal. An event written before kinds
+// existed reads as work, except a goal fs dispatch wrote, which was a dispatch
+// then and still is.
+func TestDeriveTreeKind(t *testing.T) {
+	s := openStore(t)
+	seedProject(t, s, "proj")
+	seedTask(t, s, "proj", "t-legacy-dispatch", "dispatch dev-task: sample", nil)
+	seedTask(t, s, "proj", "t-legacy-work", "backlog: something noticed", nil)
+	seedTaskKind(t, s, "proj", "t-gap", "something noticed", "gap", "skills:t-found")
+	seedTaskKind(t, s, "proj", "t-work", "ordinary", "work", "")
+
+	e := query.NewEngine(s)
+	tree, err := e.DeriveTree("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]query.Kind{
+		"t-legacy-dispatch": query.KindDispatch,
+		"t-legacy-work":     query.KindWork,
+		"t-gap":             query.KindGap,
+		"t-work":            query.KindWork,
+	}
+	for nodeID, kind := range want {
+		node := tree.Nodes[nodeID]
+		if node == nil {
+			t.Fatalf("node %s missing", nodeID)
+		}
+		if node.Kind != kind {
+			t.Errorf("node %s kind = %q, want %q", nodeID, node.Kind, kind)
+		}
+	}
+	if got := tree.Nodes["t-gap"].FoundBy; got != "skills:t-found" {
+		t.Errorf("found_by = %q, want skills:t-found", got)
+	}
+	if got := tree.Nodes["t-work"].FoundBy; got != "" {
+		t.Errorf("found_by on a node without one = %q, want empty", got)
+	}
+}
+
+// A goal edit rewrites prose; it must not rewrite what the node is. The prefix
+// convention got this exactly wrong.
+func TestDeriveTreeGoalEditKeepsKind(t *testing.T) {
+	s := openStore(t)
+	seedProject(t, s, "proj")
+	seedTaskKind(t, s, "proj", "t1", "dispatch dev-task: sample", "dispatch", "")
+	seedMetadataChanged(t, s, "proj", "t1", "goal", "dispatch dev-task: sample", "reworded entirely")
+
+	e := query.NewEngine(s)
+	tree, err := e.DeriveTree("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := tree.Nodes["t1"]
+	if node.Goal != "reworded entirely" {
+		t.Errorf("goal = %q, want the edit", node.Goal)
+	}
+	if node.Kind != query.KindDispatch {
+		t.Errorf("kind = %q, want dispatch after a goal edit", node.Kind)
+	}
+}
+
+// A kind change is a new event: the latest one wins, and the node keeps the
+// field the newest event set.
+func TestDeriveTreeKindEdit(t *testing.T) {
+	s := openStore(t)
+	seedProject(t, s, "proj")
+	seedTaskKind(t, s, "proj", "t1", "a gap", "work", "")
+	seedMetadataChanged(t, s, "proj", "t1", "kind", "work", "gap")
+
+	e := query.NewEngine(s)
+	tree, err := e.DeriveTree("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.Nodes["t1"].Kind; got != query.KindGap {
+		t.Errorf("kind = %q, want gap after the edit", got)
+	}
+}
+
 func TestDeriveTreeMultipleRoots(t *testing.T) {
 	// AC13: concurrent work streams — multiple top-level tasks.
 	s := openStore(t)

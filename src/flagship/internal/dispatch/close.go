@@ -21,6 +21,7 @@ import (
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 )
 
@@ -78,10 +79,10 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 	if err != nil {
 		return errResp(err.Error())
 	}
-	if !isDispatchGoal(node.Goal) {
+	if node.Kind != query.KindDispatch {
 		return errResp(fmt.Sprintf(
-			"close: %s is not a dispatch node — its goal %q is not a dispatch goal (want the prefix \"dispatch TYPE: \")",
-			req.NodeID, node.Goal))
+			"close: %s is not a dispatch node — its kind is %q, want %q",
+			req.NodeID, node.Kind, query.KindDispatch))
 	}
 
 	decision := req.Decision

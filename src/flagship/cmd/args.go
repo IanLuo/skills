@@ -33,8 +33,8 @@ var cmdSpecs = map[string]cmdSpec{
 	"project get":  {usage: "Usage: fs project get NAME", positionals: 1},
 
 	"task add": {
-		usage: "Usage: fs task add --goal GOAL [--parent NODE_ID] [--project PROJECT_ID]",
-		flags: map[string]bool{"--goal": true, "--parent": true, "--project": true},
+		usage: "Usage: fs task add --goal GOAL [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--project PROJECT_ID]",
+		flags: map[string]bool{"--goal": true, "--parent": true, "--kind": true, "--found-by": true, "--project": true},
 	},
 	"task update": {
 		usage:       "Usage: fs task update NODE_ID --status STATUS [--decision TEXT] [--project PROJECT_ID]",
@@ -42,8 +42,8 @@ var cmdSpecs = map[string]cmdSpec{
 		positionals: 1,
 	},
 	"task edit": {
-		usage:       "Usage: fs task edit NODE_ID --goal GOAL [--project PROJECT_ID]",
-		flags:       map[string]bool{"--goal": true, "--project": true},
+		usage:       "Usage: fs task edit NODE_ID [--goal GOAL] [--kind work|dispatch|gap] [--project PROJECT_ID]",
+		flags:       map[string]bool{"--goal": true, "--kind": true, "--project": true},
 		positionals: 1,
 	},
 	"task block": {
@@ -117,6 +117,7 @@ comma-separated list.`,
 		},
 	},
 	"unfinished": {usage: "Usage: fs unfinished"},
+	"gaps":       {usage: "Usage: fs gaps"},
 	"pending":    {usage: "Usage: fs pending"},
 }
 

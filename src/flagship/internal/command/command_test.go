@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
 )
 
@@ -253,14 +254,190 @@ func TestTaskEdit(t *testing.T) {
 	taskResp := h.TaskAdd("proj", "original goal", nil)
 	nodeID := taskResp.Data.(command.EventData).NodeID
 
-	resp := h.TaskEdit("proj", nodeID, "revised goal", nil)
+	resp := h.TaskEdit("proj", nodeID, "revised goal", "", nil)
 	if !resp.OK {
 		t.Fatalf("not OK: %s", resp.Error)
 	}
-	data := resp.Data.(command.EventData)
-	if data.EventType != store.MetadataChanged {
-		t.Errorf("type: %s", data.EventType)
+	data := resp.Data.(command.UpdateResult)
+	if len(data.Events) != 1 || data.Events[0].EventType != store.MetadataChanged {
+		t.Errorf("events: %+v", data.Events)
 	}
+}
+
+// A node with no kind is the default, so an ordinary task add is unchanged.
+func TestTaskAddDefaultsToWork(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	h.TaskAdd("proj", "ordinary work", nil)
+
+	task := onlyTask(t, h, "proj")
+	if task.Kind != query.KindWork {
+		t.Errorf("kind = %q, want %q", task.Kind, query.KindWork)
+	}
+}
+
+// A gap carries its kind and the node that found it, so the backlog is
+// structural rather than a prefix on the goal.
+func TestTaskAddKindWithFoundBy(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "skills:t-found", nil)
+	if !resp.OK {
+		t.Fatalf("TaskAddKind: %s", resp.Error)
+	}
+
+	task := onlyTask(t, h, "proj")
+	if task.Kind != query.KindGap {
+		t.Errorf("kind = %q, want %q", task.Kind, query.KindGap)
+	}
+	if task.FoundBy != "skills:t-found" {
+		t.Errorf("found_by = %q, want skills:t-found", task.FoundBy)
+	}
+}
+
+func TestTaskAddRefusesAnUnknownKind(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", nil)
+	if resp.OK {
+		t.Fatal("an unknown kind must be refused at write time, not stored")
+	}
+	if !strings.Contains(resp.Error, "gapp") {
+		t.Errorf("error %q must name the rejected kind", resp.Error)
+	}
+}
+
+func TestTaskAddRefusesAMalformedFoundBy(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	for _, ref := range []string{"skills", "skills:", ":t-1", "skills:t-1:extra"} {
+		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, nil)
+		if resp.OK {
+			t.Errorf("found_by %q must be refused", ref)
+			continue
+		}
+		if !strings.Contains(resp.Error, "<project>:<node>") {
+			t.Errorf("error %q must show the wanted shape", resp.Error)
+		}
+	}
+}
+
+// The kind setter: editing a node's kind moves it between the groups without
+// touching its goal — how the backlog was migrated.
+func TestTaskEditKind(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	taskResp := h.TaskAdd("proj", "backlog: something noticed", nil)
+	nodeID := taskResp.Data.(command.EventData).NodeID
+
+	resp := h.TaskEdit("proj", nodeID, "", query.KindGap, nil)
+	if !resp.OK {
+		t.Fatalf("TaskEdit: %s", resp.Error)
+	}
+
+	task := onlyTask(t, h, "proj")
+	if task.Kind != query.KindGap {
+		t.Errorf("kind = %q, want %q", task.Kind, query.KindGap)
+	}
+	if task.Goal != "backlog: something noticed" {
+		t.Errorf("goal = %q, want it left alone", task.Goal)
+	}
+}
+
+func TestTaskEditRefusesAnUnknownKind(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	nodeID := h.TaskAdd("proj", "a task", nil).Data.(command.EventData).NodeID
+
+	resp := h.TaskEdit("proj", nodeID, "", query.Kind("gapp"), nil)
+	if resp.OK {
+		t.Fatal("an unknown kind must be refused")
+	}
+}
+
+// Unfinished reports one group per kind, each present even when empty.
+func TestUnfinishedGroupsByKind(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	h.TaskAdd("proj", "ordinary work", nil)
+	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", nil)
+	h.TaskAddKind("proj", "a gap", query.KindGap, "skills:t-found", nil)
+
+	resp := h.Unfinished()
+	if !resp.OK {
+		t.Fatalf("Unfinished: %s", resp.Error)
+	}
+	groups := resp.Data.(map[string]any)["unfinished"].(map[string][]command.UnfinishedNode)
+
+	for kind, wantGoal := range map[query.Kind]string{
+		query.KindWork:     "ordinary work",
+		query.KindDispatch: "a dispatch",
+		query.KindGap:      "a gap",
+	} {
+		got := groups[string(kind)]
+		if len(got) != 1 {
+			t.Fatalf("group %q = %+v, want one node", kind, got)
+		}
+		if got[0].Goal != wantGoal || got[0].Kind != kind {
+			t.Errorf("group %q node = %+v, want goal %q", kind, got[0], wantGoal)
+		}
+	}
+}
+
+// fs gaps lists kind=gap nodes across scopes, open ones first, with found_by.
+func TestGapsListsOpenFirstAcrossScopes(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", nil).Data.(command.EventData).NodeID
+	if resp := h.TaskUpdate("proj", doneGap, "done", "fixed", nil); !resp.OK {
+		t.Fatalf("TaskUpdate: %s", resp.Error)
+	}
+	h.TaskAddKind("proj", "an open gap", query.KindGap, "skills:t-found", nil)
+	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", nil)
+	h.TaskAdd("proj", "ordinary work", nil)
+
+	resp := h.Gaps()
+	if !resp.OK {
+		t.Fatalf("Gaps: %s", resp.Error)
+	}
+	gaps := resp.Data.(map[string]any)["gaps"].([]command.GapNode)
+	if len(gaps) != 3 {
+		t.Fatalf("gaps = %+v, want the three gap nodes and no work node", gaps)
+	}
+	if gaps[len(gaps)-1].Status != "done" {
+		t.Errorf("gaps = %+v, want the done gap last", gaps)
+	}
+	open := gaps[:len(gaps)-1]
+	found := false
+	for _, gap := range open {
+		if gap.Status != "pending" {
+			t.Errorf("open gap = %+v, want pending", gap)
+		}
+		if gap.FoundBy == "skills:t-found" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("gaps = %+v, want the open gap carrying found_by", gaps)
+	}
+}
+
+// onlyTask returns the single task fs status derives for a scope.
+func onlyTask(t *testing.T, h *command.Handler, project string) command.TaskInfo {
+	t.Helper()
+	resp := h.Status(project)
+	if !resp.OK {
+		t.Fatalf("Status: %s", resp.Error)
+	}
+	tasks := resp.Data.(command.StatusResult).Tasks
+	if len(tasks) != 1 {
+		t.Fatalf("status has %d tasks, want 1: %+v", len(tasks), tasks)
+	}
+	return tasks[0]
 }
 
 func TestStatus(t *testing.T) {
@@ -310,7 +487,7 @@ func TestStatusReflectsEdit(t *testing.T) {
 	taskResp := h.TaskAdd("proj", "original", nil)
 	nodeID := taskResp.Data.(command.EventData).NodeID
 
-	h.TaskEdit("proj", nodeID, "revised", nil)
+	h.TaskEdit("proj", nodeID, "revised", "", nil)
 
 	resp := h.Status("proj")
 	data := resp.Data.(command.StatusResult)
@@ -776,14 +953,25 @@ func TestUnfinishedAcrossScopes(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("Unfinished: %s", resp.Error)
 	}
-	unfinished := resp.Data.(map[string]any)["unfinished"].([]command.UnfinishedNode)
-	if len(unfinished) != 3 {
-		t.Fatalf("unfinished has %d nodes, want 3: %+v", len(unfinished), unfinished)
+	unfinished := resp.Data.(map[string]any)["unfinished"].(map[string][]command.UnfinishedNode)
+	// Every kind is reported, even when it holds nothing: a reader sees the
+	// groups it should have looked in.
+	for _, kind := range []query.Kind{query.KindWork, query.KindDispatch, query.KindGap} {
+		if _, ok := unfinished[string(kind)]; !ok {
+			t.Errorf("unfinished has no %q group: %v", kind, unfinished)
+		}
+	}
+	work := unfinished[string(query.KindWork)]
+	if len(work) != 3 {
+		t.Fatalf("unfinished work has %d nodes, want 3: %+v", len(work), work)
 	}
 
 	byGoal := map[string]command.UnfinishedNode{}
-	for _, node := range unfinished {
+	for _, node := range work {
 		byGoal[node.Goal] = node
+		if node.Kind != query.KindWork {
+			t.Errorf("node %s kind = %q, want work", node.NodeID, node.Kind)
+		}
 	}
 	if _, ok := byGoal["finished thing"]; ok {
 		t.Error("a done node must not be reported as unfinished")
@@ -807,14 +995,14 @@ func TestUnfinishedAcrossScopes(t *testing.T) {
 	}
 
 	// Deterministic and stable: ordered by scope, then node id.
-	for i := 1; i < len(unfinished); i++ {
-		prev, cur := unfinished[i-1], unfinished[i]
+	for i := 1; i < len(work); i++ {
+		prev, cur := work[i-1], work[i]
 		if prev.ProjectID > cur.ProjectID {
-			t.Errorf("unfinished not ordered by scope: %v", unfinished)
+			t.Errorf("unfinished not ordered by scope: %v", work)
 			break
 		}
 		if prev.ProjectID == cur.ProjectID && prev.NodeID > cur.NodeID {
-			t.Errorf("unfinished not ordered by node id within a scope: %v", unfinished)
+			t.Errorf("unfinished not ordered by node id within a scope: %v", work)
 			break
 		}
 	}

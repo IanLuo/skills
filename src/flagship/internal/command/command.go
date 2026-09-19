@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
@@ -74,13 +75,15 @@ type DeliveryRecord struct {
 
 // TaskInfo represents derived task state for status output.
 type TaskInfo struct {
-	NodeID       string   `json:"node_id"`
-	Goal         string   `json:"goal"`
-	Status       string   `json:"status"`
-	ParentNodeID string   `json:"parent_node_id,omitempty"`
-	Orphan       bool     `json:"orphan,omitempty"`
-	Decisions    []string `json:"decisions,omitempty"`
-	Knowledge    []string `json:"knowledge,omitempty"`
+	NodeID       string     `json:"node_id"`
+	Goal         string     `json:"goal"`
+	Kind         query.Kind `json:"kind"`
+	FoundBy      string     `json:"found_by,omitempty"`
+	Status       string     `json:"status"`
+	ParentNodeID string     `json:"parent_node_id,omitempty"`
+	Orphan       bool       `json:"orphan,omitempty"`
+	Decisions    []string   `json:"decisions,omitempty"`
+	Knowledge    []string   `json:"knowledge,omitempty"`
 }
 
 // StatusResult is the data payload for fs status.
@@ -90,12 +93,24 @@ type StatusResult struct {
 }
 
 // UnfinishedNode is one task that is not done, tagged with the scope it lives
-// in so fs unfinished can report every scope at once.
+// in and its structural kind, so fs unfinished can group every scope's work.
 type UnfinishedNode struct {
+	ProjectID string     `json:"project_id"`
+	NodeID    string     `json:"node_id"`
+	Status    string     `json:"status"`
+	Goal      string     `json:"goal"`
+	Kind      query.Kind `json:"kind"`
+	FoundBy   string     `json:"found_by,omitempty"`
+}
+
+// GapNode is one kind=gap node: something noticed and not dispatched, with
+// found_by naming the node that noticed it when one was recorded.
+type GapNode struct {
 	ProjectID string `json:"project_id"`
 	NodeID    string `json:"node_id"`
 	Status    string `json:"status"`
 	Goal      string `json:"goal"`
+	FoundBy   string `json:"found_by,omitempty"`
 }
 
 // Handler executes commands against a store.
@@ -162,13 +177,28 @@ func (h *Handler) ProjectCreate(name, rootPath string) Response {
 	})
 }
 
-// TaskAdd appends a task-created event. AC2.
+// TaskAdd appends a task-created event of the default kind, work. AC2.
 func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response {
+	return h.TaskAddKind(projectID, goal, query.KindWork, "", parentNodeID)
+}
+
+// TaskAddKind appends a task-created event carrying its structural kind — and,
+// for a gap, the node that noticed it. It is the write side of the kind the
+// dispatch gates and fs gaps read.
+func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy string, parentNodeID *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
 	if goal == "" {
 		return errResp("goal is required")
+	}
+	if !query.ValidKind(kind) {
+		return errResp(fmt.Sprintf("invalid kind: %q (valid: work, dispatch, gap)", kind))
+	}
+	if foundBy != "" {
+		if err := validNodeRef(foundBy); err != nil {
+			return errResp(err.Error())
+		}
 	}
 
 	// A parent that is not in the project would leave the node unreachable in
@@ -188,7 +218,11 @@ func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response
 	}
 
 	nodeID := newNodeID()
-	payload, _ := json.Marshal(map[string]string{"goal": goal})
+	payload := map[string]string{"goal": goal, "kind": string(kind)}
+	if foundBy != "" {
+		payload["found_by"] = foundBy
+	}
+	data, _ := json.Marshal(payload)
 
 	id, err := h.store.Append(store.Event{
 		Type:         store.TaskCreated,
@@ -196,20 +230,30 @@ func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response
 		NodeID:       &nodeID,
 		ParentNodeID: parentNodeID,
 		CommitSHA:    h.commitSHA,
-		Payload:      payload,
+		Payload:      data,
 	})
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-add", "error", err)
 		return errResp(err.Error())
 	}
 
-	h.logger.Info("command executed", "command", "task-add", "project", projectID, "node_id", nodeID, "event_id", id)
+	h.logger.Info("command executed", "command", "task-add", "project", projectID, "node_id", nodeID, "kind", kind, "event_id", id)
 	return okResp(EventData{
 		EventID:   id,
 		EventType: store.TaskCreated,
 		NodeID:    nodeID,
 		CommitSHA: h.commitSHA,
 	})
+}
+
+// validNodeRef refuses a found_by that is not "<project>:<node>". It is the only
+// thing naming what a gap was found by, so a typo must fail at write time.
+func validNodeRef(ref string) error {
+	project, node, ok := strings.Cut(ref, ":")
+	if !ok || project == "" || node == "" || strings.Contains(node, ":") {
+		return fmt.Errorf("found_by must be \"<project>:<node>\", got %q", ref)
+	}
+	return nil
 }
 
 // TaskUpdate appends status-changed and optionally decision-recorded events. AC4.
@@ -350,8 +394,9 @@ func (h *Handler) DeliveryFor(projectID, nodeID string) (DeliveryRecord, bool, e
 	return d, true, nil
 }
 
-// TaskEdit appends a metadata-changed event. AC11.
-func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, commitSHA *string) Response {
+// TaskEdit appends a metadata-changed event for each field it is given: the
+// goal, the kind, or both. AC11.
+func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind, commitSHA *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -364,36 +409,58 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, commitSHA *string)
 		sha = commitSHA
 	}
 
-	// Derive current goal for old_value.
-	oldGoal := h.deriveGoal(projectID, nodeID)
+	var events []EventData
 
 	if newGoal != "" {
-		payload, _ := json.Marshal(map[string]string{
-			"field":     "goal",
-			"old_value": oldGoal,
-			"new_value": newGoal,
-		})
-		id, err := h.store.Append(store.Event{
-			Type:      store.MetadataChanged,
-			ProjectID: projectID,
-			NodeID:    &nodeID,
-			CommitSHA: sha,
-			Payload:   payload,
-		})
+		data, err := h.appendMetadata(projectID, nodeID, "goal", h.deriveGoal(projectID, nodeID), newGoal, sha)
 		if err != nil {
 			h.logger.Error("store append failed", "command", "task-edit", "error", err)
 			return errResp(err.Error())
 		}
-		h.logger.Info("command executed", "command", "task-edit", "project", projectID, "node_id", nodeID, "event_id", id)
-		return okResp(EventData{
-			EventID:   id,
-			EventType: store.MetadataChanged,
-			NodeID:    nodeID,
-			CommitSHA: sha,
-		})
+		events = append(events, data)
 	}
 
-	return errResp("nothing to edit: provide --goal")
+	// An empty kind means "leave it alone": the CLI cannot distinguish an
+	// absent --kind from an empty one, and neither should be stored.
+	if newKind != "" {
+		if !query.ValidKind(newKind) {
+			return errResp(fmt.Sprintf("invalid kind: %q (valid: work, dispatch, gap)", newKind))
+		}
+		data, err := h.appendMetadata(projectID, nodeID, "kind", string(h.deriveKind(projectID, nodeID)), string(newKind), sha)
+		if err != nil {
+			h.logger.Error("store append failed", "command", "task-edit", "error", err)
+			return errResp(err.Error())
+		}
+		events = append(events, data)
+	}
+
+	if len(events) == 0 {
+		return errResp("nothing to edit: provide --goal and/or --kind")
+	}
+
+	h.logger.Info("command executed", "command", "task-edit", "project", projectID, "node_id", nodeID, "events", len(events))
+	return okResp(UpdateResult{Events: events})
+}
+
+// appendMetadata appends one metadata-changed event and returns its envelope
+// entry. A kind change is a new event, never a rewrite.
+func (h *Handler) appendMetadata(projectID, nodeID, field, oldValue, newValue string, sha *string) (EventData, error) {
+	payload, _ := json.Marshal(map[string]string{
+		"field":     field,
+		"old_value": oldValue,
+		"new_value": newValue,
+	})
+	id, err := h.store.Append(store.Event{
+		Type:      store.MetadataChanged,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		CommitSHA: sha,
+		Payload:   payload,
+	})
+	if err != nil {
+		return EventData{}, err
+	}
+	return EventData{EventID: id, EventType: store.MetadataChanged, NodeID: nodeID, CommitSHA: sha}, nil
 }
 
 // Status derives current state for all tasks in a project. AC3.
@@ -424,6 +491,8 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 	*out = append(*out, TaskInfo{
 		NodeID:       node.NodeID,
 		Goal:         node.Goal,
+		Kind:         node.Kind,
+		FoundBy:      node.FoundBy,
 		Status:       node.Status,
 		ParentNodeID: node.ParentID,
 		Orphan:       node.Orphan,
@@ -436,9 +505,10 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 }
 
 // Unfinished lists every node that is not done, across every scope in the
-// store. Scopes come from the events themselves, not the registry: a node in a
-// scope that was never registered, or whose registry row was lost, still
-// reports here.
+// store, grouped by structural kind so the backlog and the dispatch status are
+// visible without reading goals. Scopes come from the events themselves, not
+// the registry: a node in a scope that was never registered, or whose registry
+// row was lost, still reports here.
 func (h *Handler) Unfinished() Response {
 	scopes, err := h.store.Scopes()
 	if err != nil {
@@ -446,35 +516,112 @@ func (h *Handler) Unfinished() Response {
 		return errResp(err.Error())
 	}
 
-	unfinished := []UnfinishedNode{}
+	// Every kind is present even when empty, so a reader sees the groups it
+	// should have looked in rather than inferring them from what happens to be
+	// there.
+	grouped := map[string][]UnfinishedNode{
+		string(query.KindWork):     {},
+		string(query.KindDispatch): {},
+		string(query.KindGap):      {},
+	}
+	total := 0
 	for _, scope := range scopes {
 		nodes, err := h.UnfinishedIn(scope)
 		if err != nil {
 			h.logger.Error("store replay failed", "command", "unfinished", "scope", scope, "error", err)
 			return errResp(err.Error())
 		}
-		unfinished = append(unfinished, nodes...)
+		for _, node := range nodes {
+			grouped[string(node.Kind)] = append(grouped[string(node.Kind)], node)
+			total++
+		}
 	}
 
-	h.logger.Info("command executed", "command", "unfinished", "scopes", len(scopes), "unfinished", len(unfinished))
-	return okResp(map[string]any{"unfinished": unfinished})
+	h.logger.Info("command executed", "command", "unfinished", "scopes", len(scopes), "unfinished", total)
+	return okResp(map[string]any{"unfinished": grouped})
+}
+
+// Gaps lists every kind=gap node across every scope, open ones first, so a cap
+// reads its backlog in one place instead of remembering it. A gap that has been
+// dispatched or resolved is done and sorts after the open ones; it is not
+// dropped, so the record of what was noticed survives.
+func (h *Handler) Gaps() Response {
+	scopes, err := h.store.Scopes()
+	if err != nil {
+		h.logger.Error("store scopes failed", "command", "gaps", "error", err)
+		return errResp(err.Error())
+	}
+
+	gaps := []GapNode{}
+	for _, scope := range scopes {
+		nodes, err := h.nodesIn(scope)
+		if err != nil {
+			h.logger.Error("store replay failed", "command", "gaps", "scope", scope, "error", err)
+			return errResp(err.Error())
+		}
+		for _, node := range nodes {
+			if node.Kind != query.KindGap {
+				continue
+			}
+			gaps = append(gaps, GapNode{
+				ProjectID: scope,
+				NodeID:    node.NodeID,
+				Status:    node.Status,
+				Goal:      node.Goal,
+				FoundBy:   node.FoundBy,
+			})
+		}
+	}
+
+	// Open first, then scope, then node id: deterministic, and the things a cap
+	// still has to act on are at the top.
+	sort.SliceStable(gaps, func(i, j int) bool {
+		iOpen, jOpen := gaps[i].Status != "done", gaps[j].Status != "done"
+		if iOpen != jOpen {
+			return iOpen
+		}
+		if gaps[i].ProjectID != gaps[j].ProjectID {
+			return gaps[i].ProjectID < gaps[j].ProjectID
+		}
+		return gaps[i].NodeID < gaps[j].NodeID
+	})
+
+	h.logger.Info("command executed", "command", "gaps", "scopes", len(scopes), "gaps", len(gaps))
+	return okResp(map[string]any{"gaps": gaps})
+}
+
+// OpenGaps counts the kind=gap nodes that are not done, across every scope.
+// A gap is open until it is dispatched or resolved — done is the only way it
+// stops counting — so this is the backlog nobody has picked up. fs pending
+// reports it, so the backlog arrives with the turn's first read.
+func (h *Handler) OpenGaps() (int, error) {
+	scopes, err := h.store.Scopes()
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, scope := range scopes {
+		nodes, err := h.UnfinishedIn(scope)
+		if err != nil {
+			return 0, err
+		}
+		for _, node := range nodes {
+			if node.Kind == query.KindGap {
+				count++
+			}
+		}
+	}
+	return count, nil
 }
 
 // UnfinishedIn lists the nodes in one scope that are not done, ordered by node
 // id. Status is derived by replaying the scope's events, the same way fs status
 // derives it.
 func (h *Handler) UnfinishedIn(scope string) ([]UnfinishedNode, error) {
-	events, err := h.store.Replay(scope, nil)
+	nodes, err := h.nodesIn(scope)
 	if err != nil {
 		return nil, err
 	}
-
-	tree := query.BuildTree(scope, events)
-	nodes := make([]*query.Node, 0, len(tree.Nodes))
-	for _, node := range tree.Nodes {
-		nodes = append(nodes, node)
-	}
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeID < nodes[j].NodeID })
 
 	unfinished := make([]UnfinishedNode, 0, len(nodes))
 	for _, node := range nodes {
@@ -486,9 +633,28 @@ func (h *Handler) UnfinishedIn(scope string) ([]UnfinishedNode, error) {
 			NodeID:    node.NodeID,
 			Status:    node.Status,
 			Goal:      node.Goal,
+			Kind:      node.Kind,
+			FoundBy:   node.FoundBy,
 		})
 	}
 	return unfinished, nil
+}
+
+// nodesIn derives every node in one scope, ordered by node id. It is the walk
+// fs status, fs unfinished, and fs gaps share.
+func (h *Handler) nodesIn(scope string) ([]*query.Node, error) {
+	events, err := h.store.Replay(scope, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	tree := query.BuildTree(scope, events)
+	nodes := make([]*query.Node, 0, len(tree.Nodes))
+	for _, node := range tree.Nodes {
+		nodes = append(nodes, node)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeID < nodes[j].NodeID })
+	return nodes, nil
 }
 
 // deriveStatus replays events to find the current status of a node.
@@ -507,6 +673,19 @@ func (h *Handler) deriveStatus(projectID, nodeID string) string {
 		return "pending"
 	}
 	return p.To
+}
+
+// deriveKind replays events to find the current kind of a node, using the same
+// derivation fs status reports. A node that does not exist reads as the default.
+func (h *Handler) deriveKind(projectID, nodeID string) query.Kind {
+	events, err := h.store.Replay(projectID, nil)
+	if err != nil {
+		return query.KindWork
+	}
+	if node, ok := query.BuildTree(projectID, events).Nodes[nodeID]; ok {
+		return node.Kind
+	}
+	return query.KindWork
 }
 
 // deriveGoal replays events to find the current goal of a node.

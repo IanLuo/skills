@@ -11,6 +11,7 @@ import (
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
 )
 
@@ -149,10 +150,18 @@ func (f *fakeGitWorktrees) Remove(repo, path string) error {
 	return nil
 }
 
-// addCapNode records a cap node the way Prepare does, without a playbook.
+// addCapNode records a dispatch node in the cap scope the way Prepare does,
+// without a playbook: the kind carries what the goal prefix used to.
 func addCapNode(t *testing.T, f *fixture, goal string) string {
 	t.Helper()
-	added := f.h.TaskAdd("cap", goal, nil)
+	return addCapKindNode(t, f, goal, query.KindDispatch)
+}
+
+// addCapKindNode records a cap node of a named kind, so a test can show the
+// dispatch gates pass over ordinary cap work.
+func addCapKindNode(t *testing.T, f *fixture, goal string, kind query.Kind) string {
+	t.Helper()
+	added := f.h.TaskAddKind("cap", goal, kind, "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -219,10 +228,11 @@ func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID,
 	}
 }
 
-// addWorkerNode creates a node in the skills scope with the given status.
+// addWorkerNode creates the worker's node in the skills scope, the way Deliver
+// does — a dispatch node — with the given status.
 func addWorkerNode(t *testing.T, f *fixture, status string) string {
 	t.Helper()
-	added := f.h.TaskAdd("skills", "worker task", nil)
+	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -336,6 +346,9 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	if worker.Goal != "dispatch dev-task: sample" {
 		t.Errorf("worker node goal = %q, want the cap node's goal", worker.Goal)
 	}
+	if worker.Kind != query.KindDispatch {
+		t.Errorf("worker node kind = %q, want %q", worker.Kind, query.KindDispatch)
+	}
 
 	if len(herdr.prompts) != 1 {
 		t.Fatalf("prompts = %v, want the brief sent once", herdr.prompts)
@@ -346,6 +359,15 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	}
 	if !strings.Contains(briefText, "do not create another") {
 		t.Errorf("the brief must say the node is the worker's, not one to invent; got:\n%s", briefText)
+	}
+	// Every worker is told how a gap outlives it, with the found_by set to the
+	// node it owns — the message is not read and closing destroys the transcript.
+	for _, want := range []string{
+		"Gaps:", "--kind gap", "--found-by " + brief.WorkerNode, "your final message is not read",
+	} {
+		if !strings.Contains(briefText, want) {
+			t.Errorf("the brief must carry the worker obligation %q; got:\n%s", want, briefText)
+		}
 	}
 }
 
@@ -574,7 +596,7 @@ func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
 
 func TestCloseRefusesANonDispatchNode(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "cap loop")
+	nodeID := addCapKindNode(t, f, "cap loop", query.KindWork)
 
 	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "x"})
 	if resp.OK {
@@ -582,6 +604,23 @@ func TestCloseRefusesANonDispatchNode(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "not a dispatch node") {
 		t.Errorf("error %q must say the node is not a dispatch", resp.Error)
+	}
+}
+
+// Close reads the node's kind, so a dispatch whose goal was rewritten is still
+// the dispatch it was — the prefix convention refused this node.
+func TestCloseClosesADispatchWhoseGoalWasEdited(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	if resp := f.h.TaskEdit("cap", nodeID, "reworded entirely", "", nil); !resp.OK {
+		t.Fatalf("task edit: %s", resp.Error)
+	}
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "read the worker node; verified"})
+	if !resp.OK {
+		t.Fatalf("a goal edit must not un-dispatch a node: %s", resp.Error)
 	}
 }
 

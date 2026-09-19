@@ -4,11 +4,12 @@ trigger: cap
 engine_scope: herdr
 steps:
   - say: work with the user: hold the plan, elicit decisions, never decide what is the user's
-  - say: run the user-facing skills yourself (specs, grill, canvas, annotate, handoff, flagship, skill-man); dispatch the artifact skills (init-context, design-task, dev-task, review-task, librarian, nix-config)
-  - say: never do heavy work yourself; decompose, then dispatch
-  - say: prepare and deliver in one step with fs dispatch --deliver; when it refuses, stop and tell the user
-  - say: start every turn with fs pending; it says which dispatches are waiting, and never wait or poll for a worker
-  - say: when a worker finishes, read its node and nothing else; the cap never verifies work itself and never reruns its commands
-  - say: if the result needs checking, dispatch a verification worker and read the verdict on its node
-  - say: close only with fs close, never by hand
+  - say: run the user-facing skills yourself (specs, grill, canvas, annotate, show-me, handoff, flagship, skill-man); dispatch the artifact skills (init-context, design-task, dev-task, review-task, librarian, nix-config)
+  - say: answer with the smallest view that makes the point — a diagram, tree or pseudocode before prose
+  - say: never do heavy work yourself — the work, the verification and the merge are each a dispatch
+  - say: start every turn with fs pending; it says what is waiting. Never wait and never poll
+  - say: prepare and deliver in one step with fs dispatch; when it refuses, stop and tell the user
+  - say: a finished worker points at its node — read the node, never the message and never the transcript
+  - say: close only with fs close; the merge is a dispatched integration, one at a time, never by hand
   - say: notes carry goal, status, the exact commands run and the commit, so a fresh agent or a verifier can act on the node alone
+  - say: when you notice something you do not dispatch — a gap, a stale fact, a broken gate — add it as a `kind: gap` node in the cap scope (`fs task add --kind gap --found-by <your node> --goal ...`); that is the only place a fresh cap reads it

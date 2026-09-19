@@ -15,6 +15,7 @@ import (
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/knowledge"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
 )
@@ -56,6 +57,9 @@ func main() {
 	case "unfinished":
 		checkArgs("unfinished", os.Args[2:])
 		unfinishedCmd()
+	case "gaps":
+		checkArgs("gaps", os.Args[2:])
+		gapsCmd()
 	case "pending":
 		checkArgs("pending", os.Args[2:])
 		pendingCmd()
@@ -75,18 +79,27 @@ Commands:
   project create [--name NAME] [--root PATH]   Create a project
   project list                                 List all projects
   project get NAME                             Get project info
-  task add --goal GOAL [--parent NODE_ID]       Add a task
+  task add --goal GOAL [--parent NODE_ID]       Add a task; --kind names what it
+                                                is (work, dispatch, gap — work
+                                                by default), and --found-by
+                                                PROJECT:NODE records what a gap
+                                                was found by
   task update NODE_ID --status STATUS [--decision TEXT]  Update task
-  task edit NODE_ID --goal GOAL                 Edit task metadata
+  task edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata: its goal,
+                                                its structural kind, or both
   task block NODE_ID --reason REASON            Block a task
   task unblock NODE_ID                          Unblock a task
   task knowledge NODE_ID --summary TEXT         Add knowledge to a task
   status [--project PROJECT_ID]                 Show project status
-  unfinished                                   Every task not done, across every scope
+  unfinished                                   Every task not done, across every
+                                                scope, grouped by kind
+  gaps                                         Every kind=gap node — the backlog —
+                                                open ones first, with found_by
   pending                                      Every dispatch not closed out, with
                                                 what the cap should do about each:
                                                 ready, running, unseen, gone,
-                                                unlinked
+                                                unlinked — and the undispatched
+                                                gap count
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   bootstrap                                     Seed ~/.fs/kb from the playbooks
@@ -313,9 +326,12 @@ func taskCmd(args []string) {
 		fmt.Fprintln(os.Stderr, `Usage: fs task <subcommand>
 
 Subcommands:
-  add --goal GOAL [--parent NODE_ID]       Add a task
+  add --goal GOAL [--parent NODE_ID] [--kind KIND] [--found-by PROJECT:NODE]
+                                           Add a task; --kind is work (default),
+                                           dispatch or gap; --found-by names
+                                           the node a gap was found by
   update NODE_ID --status STATUS [--decision TEXT]  Update task
-  edit NODE_ID --goal GOAL                 Edit task metadata
+  edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata
   block NODE_ID --reason REASON            Block a task
   unblock NODE_ID                          Unblock a task
   knowledge NODE_ID --summary TEXT         Add knowledge to a task`)
@@ -353,6 +369,8 @@ func taskAdd(args []string) {
 	goal := flagVal(args, "--goal", "")
 	parent := flagVal(args, "--parent", "")
 	projectID := flagVal(args, "--project", "")
+	kind := query.Kind(flagVal(args, "--kind", ""))
+	foundBy := flagVal(args, "--found-by", "")
 
 	h, projectID := handler(projectID)
 	defer h.Close()
@@ -361,12 +379,18 @@ func taskAdd(args []string) {
 		fatal("--goal is required")
 	}
 
+	// An absent --kind means the default. TaskAddKind refuses anything that is
+	// not a kind, so a typo cannot be stored as one.
+	if kind == "" {
+		kind = query.KindWork
+	}
+
 	var parentPtr *string
 	if parent != "" {
 		parentPtr = &parent
 	}
 
-	resp := h.TaskAdd(projectID, goal, parentPtr)
+	resp := h.TaskAddKind(projectID, goal, kind, foundBy, parentPtr)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -405,7 +429,7 @@ func taskEdit(args []string) {
 	h, projectID := handler(projectID)
 	defer h.Close()
 
-	resp := h.TaskEdit(projectID, nodeID, goal, nil)
+	resp := h.TaskEdit(projectID, nodeID, goal, query.Kind(flagVal(rest, "--kind", "")), nil)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -823,15 +847,26 @@ func logCmd(args []string) {
 	output(resp)
 }
 
-// unfinishedCmd lists every node that is not done, across every scope. Scopes
-// come from the store's events, so a scope that was never registered — or whose
-// registry row was lost — still reports its unfinished work.
+// unfinishedCmd lists every node that is not done, grouped by kind, across every
+// scope. Scopes come from the store's events, so a scope that was never
+// registered — or whose registry row was lost — still reports its unfinished
+// work.
 func unfinishedCmd() {
 	// Nothing is referenced, so the sha is the cwd's — nil when it is not a repo.
 	h := openHandler("")
 	defer h.Close()
 
 	output(h.Unfinished())
+}
+
+// gapsCmd lists every kind=gap node across every scope, open ones first, with
+// the node that found it — the backlog, read from the store rather than
+// remembered. It is a read: it writes nothing.
+func gapsCmd() {
+	h := openHandler("")
+	defer h.Close()
+
+	output(h.Gaps())
 }
 
 // pendingCmd answers "what is waiting on the cap": every dispatch in the cap's
