@@ -11,19 +11,32 @@ metadata:
 `cred` stores secrets in a **passphrase-encrypted vault file**
 (`~/.config/cred/vault`) and injects them into a command's environment without
 printing them. There is deliberately **no `get` verb** — a secret value exists
-only inside a child process, never in your output. It is cross-platform: the
-only dependency is `openssl`.
+only inside a child process, never in your output. It is cross-platform: it
+needs only `bash`, `awk`, `find`, `mktemp` and `openssl`, plus the `cred-run`
+binary for `run`.
 
 The entrypoint is `scripts/cred.sh` (a thin dispatcher for the interactive
 verbs) plus the compiled Rust binary `scripts/cred-run` (resolve + inject +
 scrub — the `run` verb). Executing them is the whole point: run them, do not
 read their values into context.
 
-The `cred-run` binary is gitignored — it is built from source in
-`src/credentials/` (outside this skill, so deploy only ships the binary and
-`cred.sh`, not the Rust source). Build it once with
-`nix develop -c bash src/credentials/build.sh`. If `cred run` reports
-"cred-run binary not built", run that command.
+Two units, and the split is deliberate: `cred.sh` owns the whole vault/profile
+contract — where profiles live, where the unlocked cache is, the relock window,
+and `@secret` resolution — and is the only thing that defines it. `cred-run` in
+`src/credentials/` is a build project whose only job is to execute a command and
+scrub its output; it takes that contract from the environment, which `cred.sh`
+exports (`CRED_PROFILE_DIR`, `CRED_UNLOCKED`, `CRED_TTL`, `CRED_SECRET_MARKER`)
+before exec'ing it. So deploy ships `cred.sh` plus a binary, and the Rust source
+never has to agree with the shell by coincidence.
+
+The `cred-run` binary is gitignored — a derived artifact. From the repo root,
+`bin/build-project.sh` builds it with nix and installs it into `scripts/`:
+
+```bash
+./bin/build-project.sh credentials     # nix build .#credentials, then install
+```
+
+If `cred run` reports "cred-run binary not built", run that command.
 
 ## Working rules (non-negotiable)
 
@@ -36,10 +49,20 @@ The `cred-run` binary is gitignored — it is built from source in
    `export TOKEN=... && curl ...` yourself — you will put the value in the
    transcript. `cred run` injects via `exec`'d environment, which is not
    visible in `ps` argv.
-4. **Never pass a secret as a CLI argument.** `curl -H "Authorization: Bearer $TOKEN"`
-   is fine because `$TOKEN` is expanded by the shell inside `cred run`; a literal
-   token in argv is not — argv *is* visible to `ps`. Read env vars in the command,
-   don't interpolate a value you have seen.
+4. **Never pass a secret as a CLI argument** — argv *is* visible to `ps`. Note that
+   `curl -H "Authorization: Bearer $TOKEN"` does **not** work: your shell expands
+   `$TOKEN` before `cred run` ever sees it, so the header goes out empty. Have the
+   command read its own environment instead, which keeps the value off argv:
+
+   ```bash
+   # preferred — no shell involved, so `allow = curl` stays tight
+   cred run github -- curl -sS --variable %GH_TOKEN \
+     --expand-header 'Authorization: Bearer {{GH_TOKEN}}' https://api.github.com/user
+
+   # general fallback — single quotes, so the child shell expands it; needs `sh`
+   # in the allow-list, which only checks the command's first word
+   cred run github -- sh -c 'gh api user --header "Authorization: Bearer $GH_TOKEN"'
+   ```
 5. **Locked = ask the human.** If `cred run` reports `vault is LOCKED`, tell
    the user to run `cred unlock` themselves. You cannot do it (it needs a TTY).
    Do not retry, do not fall back to reading anything.
@@ -56,9 +79,10 @@ cred lock                         # re-lock now
 cred run <profile> -- <cmd> ...   # inject + exec + scrub
 ```
 
-Where `cred` is `bash <repo>/skills/credentials/scripts/cred.sh` unless the
-script is on `PATH`. `cred --help` / `cred help` print a quick summary;
-`cred help run` shows the run-specific help.
+Where `cred` is `bash <repo>/skills/credentials/scripts/cred.sh`. Nothing puts
+that on your `PATH` — the skill deploys as a folder, so use the path; in every
+example below, `cred` means that command. `cred --help` / `cred help` print a
+quick summary; `cred help run` shows the run-specific help.
 
 **Read [references/usage.md](references/usage.md) when** you need the full
 command reference — every flag, exit codes, profile format, worked examples,

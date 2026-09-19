@@ -1,12 +1,18 @@
 //! cred-run — resolve a profile's secrets, inject them into a child process
 //! environment, and scrub their values from the child's stdout/stderr.
 //!
-//! Secrets are read from the transient "unlocked" cache (`$CRED_DIR/unlocked`)
-//! that `cred unlock` writes. It is absent when locked, and its mtime enforces
-//! the 300s relock window — a missing or stale cache fails fast as "locked",
-//! never hangs. Secret values never appear in this process's argv or stdout —
-//! they exist only in the child's `envp` (the one safe channel on Unix) and in
-//! this process's memory for redaction.
+//! This is the executor behind `cred run`, not an entry point: cred.sh owns the
+//! contract — where profiles live, where the unlocked cache is, how long it
+//! stays fresh, and which token in a profile means "resolve from the vault" —
+//! and passes it in as CRED_* environment variables (see Cfg). Nothing about the
+//! vault layout is repeated here, so each definition exists exactly once.
+//!
+//! Secrets are read from the transient "unlocked" cache that `cred unlock`
+//! writes. It is absent when locked, and its mtime enforces the relock window
+//! cred.sh chose — a missing or stale cache fails fast as "locked", never hangs.
+//! Secret values never appear in this process's argv or stdout — they exist only
+//! in the child's `envp` (the one safe channel on Unix) and in this process's
+//! memory for redaction.
 
 use std::env;
 use std::fs;
@@ -17,11 +23,47 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-const TTL: Duration = Duration::from_secs(300);
 const MIN_SCRUB_LEN: usize = 6;
 const REDACTED: &str = "***";
 
 type SecretMap = Vec<(String, String)>; // (VAR, value)
+
+/// The contract owned by cred.sh (see its SECRET_MARKER comment), handed in as
+/// environment variables. There are no defaults on purpose: a missing variable
+/// means this binary was reached without going through cred.sh, and that should
+/// fail loudly rather than silently fall back to a constant that can drift.
+struct Cfg {
+    profile_dir: String,
+    unlocked: String,
+    ttl: Duration,
+    marker: String,
+}
+
+impl Cfg {
+    fn from_env() -> Self {
+        Self {
+            profile_dir: req_env("CRED_PROFILE_DIR"),
+            unlocked: req_env("CRED_UNLOCKED"),
+            ttl: Duration::from_secs(
+                req_env("CRED_TTL")
+                    .parse()
+                    .unwrap_or_else(|_| die("CRED_TTL must be a whole number of seconds", 1)),
+            ),
+            marker: req_env("CRED_SECRET_MARKER"),
+        }
+    }
+}
+
+fn req_env(name: &str) -> String {
+    env::var(name).unwrap_or_else(|_| {
+        die(
+            &format!(
+                "{name} is not set — cred-run is the executor behind `cred run` and must be reached through it"
+            ),
+            1,
+        )
+    })
+}
 
 fn die(msg: &str, code: i32) -> ! {
     eprintln!("cred: {msg}");
@@ -31,6 +73,10 @@ fn die(msg: &str, code: i32) -> ! {
 fn usage() {
     eprintln!(
         "usage: cred run <profile> -- <cmd> [args]\n\
+         \n\
+         This is the executor behind `cred run`. cred.sh supplies the profile,\n\
+         vault and relock settings as CRED_* environment variables; running it\n\
+         directly fails rather than guessing them.\n\
          \n\
          Injects profile vars + vault secrets into <cmd>'s environment and scrubs\n\
          secret values from its stdout and stderr. There is no get — values are\n\
@@ -48,7 +94,7 @@ fn usage() {
     );
 }
 
-fn load_profile(profile_dir: &str, name: &str) -> (Vec<(String, String)>, Vec<String>, Vec<String>) {
+fn load_profile(profile_dir: &str, name: &str, marker: &str) -> (Vec<(String, String)>, Vec<String>, Vec<String>) {
     let path = PathBuf::from(profile_dir).join(format!("{name}.env"));
     let text = fs::read_to_string(&path).unwrap_or_else(|_| {
         die(&format!("no profile '{name}' at {}", path.display()), 1)
@@ -68,7 +114,7 @@ fn load_profile(profile_dir: &str, name: &str) -> (Vec<(String, String)>, Vec<St
         let val = strip_inline_comment(val.trim()).trim();
         if key == "allow" {
             allow = val.split_whitespace().map(str::to_string).collect();
-        } else if val == "@secret" {
+        } else if val == marker {
             secrets.push(key.to_string());
         } else {
             vars.push((key.to_string(), val.to_string()));
@@ -96,10 +142,10 @@ fn strip_inline_comment(v: &str) -> &str {
 /// Read the unlocked cache into (profile, var, value) triples. Returns None when
 /// the cache is missing or its mtime is older than TTL (deleting the stale cache
 /// so a later run fails clean rather than using expired secrets).
-fn read_cache(unlocked: &str) -> Option<Vec<(String, String, String)>> {
+fn read_cache(unlocked: &str, ttl: Duration) -> Option<Vec<(String, String, String)>> {
     let meta = fs::metadata(unlocked).ok()?;
     let mtime = meta.modified().ok()?;
-    if SystemTime::now().duration_since(mtime).map(|d| d > TTL).unwrap_or(true) {
+    if SystemTime::now().duration_since(mtime).map(|d| d > ttl).unwrap_or(true) {
         let _ = fs::remove_file(unlocked);
         return None;
     }
@@ -166,11 +212,11 @@ fn stream_out<R: Read + Send + 'static>(
     }
 }
 
-fn run(profile: &str, argv: &[String], profile_dir: &str, unlocked: &str) -> i32 {
+fn run(profile: &str, argv: &[String], cfg: &Cfg) -> i32 {
     if !valid_profile(profile) {
         die(&format!("invalid profile name '{profile}'"), 1);
     }
-    let (vars, secret_vars, allow) = load_profile(profile_dir, profile);
+    let (vars, secret_vars, allow) = load_profile(&cfg.profile_dir, profile, &cfg.marker);
     if argv.is_empty() {
         die("no command given after '--'", 1);
     }
@@ -187,7 +233,7 @@ fn run(profile: &str, argv: &[String], profile_dir: &str, unlocked: &str) -> i32
     let mut secrets: SecretMap = Vec::new();
     if !secret_vars.is_empty() {
         // A profile with no secrets must work while the vault is locked.
-        let cache = read_cache(unlocked).unwrap_or_else(|| {
+        let cache = read_cache(&cfg.unlocked, cfg.ttl).unwrap_or_else(|| {
             die(
                 "vault is LOCKED — run 'cred unlock' first (this is the intended gate)",
                 2,
@@ -250,11 +296,6 @@ fn main() {
     };
     let profile = rest[0].clone();
 
-    let cred_dir = env::var("CRED_DIR")
-        .unwrap_or_else(|_| format!("{}/.config/cred", env::var("HOME").unwrap_or_default()));
-    let profile_dir = format!("{cred_dir}/profiles");
-    let unlocked = format!("{cred_dir}/unlocked");
-
-    let code = run(&profile, argv, &profile_dir, &unlocked);
+    let code = run(&profile, argv, &Cfg::from_env());
     std::process::exit(code);
 }

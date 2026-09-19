@@ -32,6 +32,12 @@ OPENSSL="${OPENSSL:-openssl}"
 HEADER='# cred-vault-v1'
 TTL=300
 
+# SECRET_MARKER is the token a profile value uses to mean "resolve this from the
+# vault". With the paths above and TTL it is the whole contract between this
+# script and cred-run, which is why cmd_run exports all four instead of letting
+# the binary re-derive them: each definition exists exactly once.
+SECRET_MARKER='@secret'
+
 err() { printf 'cred: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
@@ -104,13 +110,30 @@ VDEC() { # $1 = out file, or "-" for stdout. Wrong passphrase/corrupt vault is c
 profile_file() { printf '%s/%s.env' "$PROFILE_DIR" "$1"; }
 
 # Replace-or-append KEY=VALUE in a profile.
+#
+# One awk pass rather than grep+sed: `sed -i ''` is BSD-only (GNU sed reads the
+# empty suffix as the script and then treats the expression as a filename), and
+# interpolating the value into a sed expression made an `&` inside it expand to
+# the matched text. The value travels through the environment, so it is never on
+# argv and no backslash escape inside it gets reinterpreted.
 upsert() {
   local f="$1" key="$2" val="$3"
-  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$f"; then
-    sed -i '' -E "s|^([[:space:]]*${key}[[:space:]]*=).*|\1${val}|" "$f"
-  else
-    printf '%s=%s\n' "$key" "$val" >> "$f"
-  fi
+  _TMP_CLEANUP="$_TMP_CLEANUP $f.new"
+  CRED_UPSERT_KEY="$key" CRED_UPSERT_VAL="$val" awk '
+    BEGIN { key = ENVIRON["CRED_UPSERT_KEY"]; val = ENVIRON["CRED_UPSERT_VAL"]; done = 0 }
+    {
+      probe = $0
+      sub(/^[[:space:]]+/, "", probe)
+      eq = index(probe, "=")
+      if (eq > 0) {
+        k = substr(probe, 1, eq - 1)
+        sub(/[[:space:]]+$/, "", k)
+        if (!done && k == key) { print key "=" val; done = 1; next }
+      }
+      print
+    }
+    END { if (!done) print key "=" val }
+  ' "$f" > "$f.new" && mv "$f.new" "$f"
 }
 
 # In a decrypted vault (profile<TAB>var<TAB>value lines), drop any line matching
@@ -184,7 +207,7 @@ cmd_add() {
 
   local f; f="$(profile_file "$profile")"
   [ -f "$f" ] || : > "$f"
-  upsert "$f" "$var" "@secret"
+  upsert "$f" "$var" "$SECRET_MARKER"
   printf 'stored %s/%s (secret) and wrote @secret reference to %s\n' "$profile" "$var" "$f"
 }
 
@@ -239,8 +262,15 @@ cmd_run() {
   [ $# -ge 1 ] || die "usage: cred run <profile> -- <cmd> [args]"
   valid_profile "$1" || die "invalid profile name '$1'"
   if [ ! -x "$RUN_BIN" ]; then
-    die "cred-run binary not built — run: nix develop -c bash src/credentials/build.sh"
+    die "cred-run binary not built — run: ./bin/build-project.sh credentials"
   fi
+  # Hand cred-run the contract (see SECRET_MARKER above). Deliberately no
+  # defaults: a missing export must fail loudly rather than let the binary fall
+  # back to a stale constant of its own.
+  export CRED_PROFILE_DIR="$PROFILE_DIR"
+  export CRED_UNLOCKED="$UNLOCKED"
+  export CRED_TTL="$TTL"
+  export CRED_SECRET_MARKER="$SECRET_MARKER"
   exec "$RUN_BIN" run "$@"
 }
 

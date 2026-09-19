@@ -3,12 +3,15 @@
 `cred` stores service credentials in a **passphrase-encrypted vault file** and
 injects them into a command's environment without ever printing a value. There
 is no `get` verb: a secret value exists only inside the child process. It is
-cross-platform — the only dependency is `openssl`.
+cross-platform — it needs `bash`, `awk`, `find`, `mktemp` and `openssl`, plus the
+`cred-run` binary for `run`.
 
 - Deployable entrypoint: `skills/credentials/scripts/cred.sh` (and the compiled
   `scripts/cred-run` binary it delegates `run` to).
-- Source (not deployed): `src/credentials/` — build with
-  `nix develop -c bash src/credentials/build.sh`.
+- Source (not deployed): `src/credentials/` — a build project, exposed as
+  `packages.credentials` in the repo flake. Build and install it with
+  `./bin/build-project.sh credentials` from the repo root, which runs
+  `nix build .#credentials` and installs the artifact into `scripts/`.
 
 ## 1. Setup (once)
 
@@ -202,7 +205,7 @@ cred run aws -- aws sts get-caller-identity
 | Symptom | Fix |
 |---|---|
 | `cred run` → `vault is LOCKED` | human runs `cred unlock` |
-| `cred run` → `cred-run binary not built` | `nix develop -c bash src/credentials/build.sh` |
+| `cred run` → `cred-run binary not built` | `./bin/build-project.sh credentials` |
 | `cred run` → `profile has no 'allow =' line` | add `allow = …` to the profile |
 | `cred run` → `'X' not in profile allow-list` | add `X` to `allow =`, or don't run `X` |
 | `cred run` → `no secret for svc/VAR` | `cred add svc VAR` first |
