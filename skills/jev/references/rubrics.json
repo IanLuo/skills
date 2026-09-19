@@ -1,0 +1,18 @@
+{
+  "prd_locked": {
+    "instructions": "A locked PRD is present, and it names this one deliverable.",
+    "criteria": [
+      "No locked document exists, and nothing names this one deliverable",
+      "A document describes the work, but it is not locked, or it is locked but does not name exactly this one deliverable",
+      "A locked PRD exists and names exactly this one deliverable"
+    ]
+  },
+  "acceptance_stated": {
+    "instructions": "The acceptance check for this deliverable is stated.",
+    "criteria": [
+      "No acceptance check is stated anywhere",
+      "Acceptance is described vaguely, with no pass/fail condition",
+      "A concrete acceptance check is stated that the work can be judged against"
+    ]
+  }
+}
