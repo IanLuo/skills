@@ -122,19 +122,24 @@ Never prints a secret value — secret vars render as `@secret`.
 ### `cred unlock` / `cred lock`
 
 ```bash
-cred unlock   # prompts for the vault passphrase (needs a TTY)
-cred lock
+cred unlock              # opens a window — 300s by default
+cred unlock --for 1800   # or ask for a longer one
+cred lock                # close it now
 ```
 
 `unlock` decrypts the vault **in memory** and hands it to a detached holder
-process (`cred-run hold`) that keeps it for 300s and serves every `cred run`
-until the window closes. `lock` kills the holder immediately.
+process (`cred-run hold`) that keeps it for the window and serves every
+`cred run` until it closes. `lock` kills the holder immediately.
 
 - **Nothing decrypted is written to disk.** There is no plaintext cache file —
   the holder's memory is the only place a secret exists between `unlock` and the
   window closing.
-- The window is a fixed 300s from unlock; it does not extend on use. A command
-  already running when it closes still finishes — only new commands are refused.
+- The window is a fixed 300s by default and does not extend on use; `--for`
+  asks for a different one. A longer window is a real trade — the decrypted
+  vault stays in memory for all of it — but it also buys the one thing that
+  costs typing, since approving a read needs your login password. A command
+  already running when the window closes still finishes; only new ones are
+  refused.
 - Every `cred run` reuses the same holder: you unlock once, not per command.
 - The passphrase comes from the Keychain if you ran `cred remember` — an approval
   dialog, no terminal — and otherwise from a hidden TTY prompt. `cred run` opens
@@ -161,11 +166,12 @@ cred run github -- sh -c 'curl -s -H "Authorization: Bearer $GH_TOKEN" https://a
 - Gives the command your terminal as stdin when you have one, so an interactive
   command can still prompt; without a terminal it gets `/dev/null`.
 - Opens the window itself when it is closed, so an agent never has to ask first:
-  with `cred remember` that is an approval dialog; on a TTY it is a hidden
+  with `cred remember` that is the Keychain approval; on a TTY it is a hidden
   prompt. A refusal — or no remembered passphrase and no terminal — fails as
-  `vault is LOCKED` rather than running the command without credentials.
-- Needs the window open even when the profile has no secrets: a run that
-  silently proceeded without credentials would be worse than a refusal.
+  `vault is LOCKED` rather than running the command without credentials. A run
+  never proceeds on a profile with no secrets unless the window is open, because
+  a run that silently went ahead without credentials would be worse than a
+  refusal.
 
 Exit codes:
 
@@ -244,7 +250,7 @@ Rules:
 6. **⚠️ Never click "Always Allow" on the passphrase dialog.** That one button
    adds `security` to the item's trusted list, after which any process can read
    the passphrase **silently, forever** — worse than the plaintext cache this
-design replaced. `Allow` and `Deny` are per-read and are the only safe answers.
+   design replaced. `Allow` and `Deny` are per-read and are the only safe answers.
 7. **The approval dialog asks for your login password, not a fingerprint.**
    Biometric gating needs `kSecAccessControlUserPresence`, which only the
    Security API can set — the `security` CLI has no flag for it. So approving a

@@ -505,6 +505,34 @@ def main():
             f"exit={r.returncode} err={r.stderr!r}",
         )
 
+        # 15. `cred unlock --for` — the window length is asked for, not assumed.
+        long = pathlib.Path(td) / "longdir"
+        profile(long, "q", "URL=https://api.example.com\nallow=printenv\n")
+        on_a_real_tty(["init"], long, ["pw", "pw"])
+        code, out = on_a_real_tty(["unlock", "--for", "3600"], long, ["pw"])
+        check("unlock --for opens a window", code == 0 and (long / "hold.sock").exists(), out)
+        check("it reports the longer window", "relocks 3600s" in out, out)
+        holder_pid = int((long / "hold.pid").read_text().strip())
+        holder_env = subprocess.run(["ps", "-Eww", "-p", str(holder_pid)],
+                                    capture_output=True, text=True).stdout
+        check("the holder was actually given the long window", "CRED_TTL=3600" in holder_env,
+              holder_env[:300])
+        check("the audit trail records the requested length", "--for 3600" in (long / "unlock.log").read_text(),
+              (long / "unlock.log").read_text())
+        cred(long, "lock")
+
+        for bad, want in ((["--for"], "usage"),
+                          (["--for", "0"], "whole number"),
+                          (["--for", "abc"], "whole number"),
+                          (["--for", "10", "extra"], "usage"),
+                          (["--nope"], "usage")):
+            r = cred(long, "unlock", *bad)
+            check(
+                f"unlock {' '.join(bad)} is rejected",
+                r.returncode != 0 and want in r.stderr,
+                f"{bad} exit={r.returncode} err={r.stderr!r}",
+            )
+
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0
 

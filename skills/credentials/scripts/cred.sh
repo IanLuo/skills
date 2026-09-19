@@ -75,7 +75,7 @@ Usage:
   cred add <profile> <VAR>           store a secret (prompts, no echo)
   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
   cred list [profile]                list profiles / vars (names only)
-  cred unlock                        hold the vault in memory for 5 min
+  cred unlock [--for <secs>]        hold the vault in memory (default 5 min)
   cred lock                          close that window now
   cred run <profile> -- <cmd> [args] run cmd, injecting secrets + scrubbing output
 
@@ -362,8 +362,8 @@ log_unlock() {
 
 # Decrypt the vault and hand it to a holder. Shared by `unlock` and `run`, so
 # there is exactly one way a window opens and one place the passphrase is used.
-open_window() {
-  local pw plain
+open_window() { # $1 = window length in seconds, default TTL
+  local pw plain ttl="${1:-$TTL}"
   [ -f "$VAULT" ] || die "no vault yet — run 'cred init'"
   [ -x "$RUN_BIN" ] || die "cred-run binary not built — run: ./bin/build-project.sh credentials"
   pw="$(passphrase)"
@@ -373,7 +373,7 @@ open_window() {
   [ "${plain%%$'\n'*}" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
   export CRED_PROFILE_DIR="$PROFILE_DIR"
   export CRED_HOLD_SOCK="$HOLD_SOCK"
-  export CRED_TTL="$TTL"
+  export CRED_TTL="$ttl"
   export CRED_SECRET_MARKER="$SECRET_MARKER"
   start_holder < <(printf '%s\n' "$plain")
 }
@@ -403,10 +403,23 @@ cmd_remember() {
   printf 'never click "Always Allow": that would let any process read it silently, for good.\n'
 }
 
+# `cred unlock [--for <seconds>]`. The window defaults to $TTL because a longer
+# one is a real trade — the decrypted vault stays in memory for all of it — so a
+# longer window is asked for explicitly rather than assumed. It also buys the one
+# thing that costs typing: approving a read needs your login password, so the
+# fewer windows you open, the less you type.
 cmd_unlock() {
-  log_unlock 'unlock'
-  open_window
-  printf 'unlocked — relocks %ss after unlock\n' "$TTL"
+  local ttl="$TTL"
+  if [ $# -gt 0 ]; then
+    { [ "$1" = "--for" ] && [ $# -eq 2 ]; } || die "usage: cred unlock [--for <seconds>]"
+    [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "--for takes a whole number of seconds"
+    ttl="$2"
+    log_unlock "unlock --for $ttl"
+  else
+    log_unlock 'unlock'
+  fi
+  open_window "$ttl"
+  printf 'unlocked — relocks %ss after unlock\n' "$ttl"
 }
 
 cmd_lock() { stop_holder && printf 'locked\n'; }
