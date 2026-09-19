@@ -77,20 +77,27 @@ If `cred run` reports "cred-run binary not built", run that command.
    # in the allow-list, which only checks the command's first word
    cred run github -- sh -c 'gh api user --header "Authorization: Bearer $GH_TOKEN"'
    ```
-5. **Locked = ask the human.** If `cred run` reports `vault is LOCKED`, tell
-   the user to run `cred unlock` themselves. You cannot do it (it needs a TTY).
-   Do not retry, do not fall back to reading anything.
+5. **Locked is not a wall — offer the prompt, once.** Once the user has run
+   `cred remember`, `cred run` opens the window itself and macOS asks them to
+   approve a dialog. So run it; don't first send them to a terminal. If it comes
+   back `vault is LOCKED`, the approval was refused or unavailable: say so and
+   stop. Never retry in a loop, and never fall back to reading anything.
+6. **Never ask the user for the passphrase.** You have no business holding it,
+   and cred never needs you to: opening a window is an *approval*, not an entry.
+   If a window won't open, report that — do not offer to take the secret, and
+   treat any dialog that asks you to type it as not cred.
 
 ## Commands
 
 ```bash
 cred init                         # one-time: create the encrypted vault (human)
+cred remember                     # one-time: store the passphrase in the Keychain (human)
 cred add <profile> <VAR>          # store a secret — prompts, no echo (human)
 cred set <profile> <VAR> <value>  # store a NON-secret var (e.g. API base URL)
 cred list [profile]               # names only — never values
-cred unlock                       # human unlocks for a 5-min window
+cred unlock                       # open a 5-min window (approve a dialog)
 cred lock                         # re-lock now
-cred run <profile> -- <cmd> ...   # inject + exec + scrub
+cred run <profile> -- <cmd> ...   # open a window if closed, then inject + run + scrub
 ```
 
 Where `cred` is `bash <repo>/skills/credentials/scripts/cred.sh`. Nothing puts
@@ -125,11 +132,14 @@ whose first word isn't listed.
 
 - Secrets are injected as environment variables (safe from `ps`), never argv.
 - Secrets never leave the holder process; the client only relays scrubbed output.
+- Opening a window is an **approval**, never an entry of the passphrase: with
+  `cred remember`, macOS draws the dialog and the value never enters your world.
 - Every secret value is replaced with `***` in stdout *and* stderr before it
   reaches you. Values shorter than 6 chars are skipped (redacting them would
   mangle ordinary text) — treat those as effectively unredacted.
-- A closed window fails fast with `vault is LOCKED`, it does not hang. `cred run`
-  needs the window open even when the profile has no secrets.
+- A closed window is opened for you — with `cred remember` that is an approval
+  dialog; a refusal fails as `vault is LOCKED`, it does not hang, and it never
+  runs the command without credentials.
 
 ## Known limits (do not paper over)
 
@@ -151,6 +161,14 @@ whose first word isn't listed.
   trust.
 - **A secret shorter than 6 chars will not be scrubbed from output.** Don't
   store secrets under 6 characters, or accept that they can leak into output.
+- **Never click "Always Allow" on the passphrase dialog.** It adds `security` to
+  the item's trusted list, and from then on any process reads the passphrase
+  silently and permanently — worse than any plaintext cache. `Allow`/`Deny` only.
+- **The approval dialog can't be biometric.** Touch ID needs an access-control
+  flag only the Security API can set, and the `security` CLI has no such option.
+- **Every window opening is logged** to `~/.config/cred/unlock.log` (0600), so an
+  approval you didn't expect is visible afterwards. A prompt can't be made
+  unforgeable; it can be made auditable.
 
 ## Interaction style
 

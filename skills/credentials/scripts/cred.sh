@@ -4,12 +4,13 @@
 #
 # Usage:
 #   cred init                          create the encrypted vault + profile dir
+#   cred remember                      store the vault passphrase in the Keychain (once)
 #   cred add <profile> <VAR>           store a secret (prompts, no echo)
 #   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
 #   cred list [profile]                list profiles / vars (names only)
-#   cred unlock                        hold the vault in memory for 5 min (needs a TTY)
+#   cred unlock                        hold the vault in memory for 5 min
 #   cred lock                          close that window now
-#   cred run <profile> -- <cmd> [args] run cmd with secrets injected + output scrubbed
+#   cred run <profile> -- <cmd> [args] run cmd, injecting secrets + scrubbing output
 #
 # Secrets live in an encrypted vault file (~/.config/cred/vault) at rest, behind a
 # passphrase the human sets. `cred unlock` decrypts it into a detached holder
@@ -18,7 +19,8 @@
 # decrypted vault is never written to disk, so nothing readable survives the
 # window. Non-secret vars live in a plaintext profile. There is deliberately no
 # `get` verb: a secret value is only ever placed into a child process environment,
-# never printed.
+# never printed. `cred remember` puts the passphrase in a Keychain item with no
+# trusted apps, so an agent can ask for a window and a human only has to approve.
 #
 # Env overrides (used by tests): CRED_DIR, CRED_RUN_BIN.
 
@@ -45,8 +47,15 @@ TTL=300
 # change.
 SECRET_MARKER='@secret'
 
+# The Keychain item that holds the vault passphrase, and the trail of every window
+# this script opens. `keychain_pass` explains why the item is created with -T "":
+# that one flag is the whole gate.
+KC_SERVICE='cred-vault-passphrase'
+KC_ACCOUNT='cred'
+UNLOCK_LOG="$CRED_DIR/unlock.log"
+
 err() { printf 'cred: %s\n' "$*" >&2; }
-die() { err "$*"; exit 1; }
+die() { err "$1"; exit "${2:-1}"; }
 
 require_tty() { [ -t 0 ] || die "this verb needs an interactive terminal (run it yourself)"; }
 valid_profile() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
@@ -62,22 +71,25 @@ cred — store and inject service credentials without ever printing a value.
 
 Usage:
   cred init                          create the encrypted vault + profile dir
+  cred remember                      store the vault passphrase in the Keychain (once)
   cred add <profile> <VAR>           store a secret (prompts, no echo)
   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
   cred list [profile]                list profiles / vars (names only)
-  cred unlock                        hold the vault in memory for 5 min (needs a TTY)
+  cred unlock                        hold the vault in memory for 5 min
   cred lock                          close that window now
-  cred run <profile> -- <cmd> [args] run cmd with secrets injected + output scrubbed
+  cred run <profile> -- <cmd> [args] run cmd, injecting secrets + scrubbing output
 
 Setup (once):
   cred init                          # sets the vault passphrase (human)
+  cred remember                      # so an agent can open a window by asking (human)
   cred add github GH_TOKEN           # prompts for the token, stores it hidden
   cred set github GH_API https://api.github.com
   cred set github allow "gh git"
 
 Use:
-  cred unlock                        # human opens a 5-min window (needs TTY)
-  cred run github -- gh api user     # token injected, output scrubbed
+  cred unlock                        # open a 5-min window
+  cred run github -- gh api user     # token injected, output scrubbed; opens the
+                                     # window itself if closed (asks for approval)
   cred list github                   # names only, never values
 
 There is no `get` verb — a secret value exists only inside the child process.
@@ -298,23 +310,101 @@ start_holder() {
   die "the holder did not come up — wrong passphrase, or a broken cred-run build"
 }
 
-cmd_unlock() {
-  require_tty
-  [ -f "$VAULT" ] || die "no vault yet — run 'cred init'"
+# ── The passphrase: the Keychain, then a terminal ───────────────────────
+#
+# `cred remember` stores the vault passphrase in a Keychain item created with
+# `-T ""` — no trusted applications at all. Every read of it then raises a dialog
+# that macOS draws itself, and that is the whole design: an agent cannot
+# impersonate that dialog and cannot read the value out of it; only a human
+# approving it gets the read through.
+#
+# So after `cred remember`, cred never asks anyone to TYPE the passphrase again —
+# it asks for approval. That makes the phishing question decidable by
+# construction: a dialog asking you to type the vault passphrase is not cred.
+
+# Read the passphrase from the Keychain into PASS_VALUE, and say how it went in
+# PASS_SOURCE. It reports rather than prints because a command substitution would
+# run it in a subshell, where PASS_SOURCE would not survive to the caller — and
+# with `set -u` that is not a silent bug but a crash.
+keychain_pass() {
+  PASS_VALUE=''
+  if ! command -v security >/dev/null 2>&1; then
+    PASS_SOURCE=absent # not macOS — the terminal path is the only one
+    return 0
+  fi
+  local rc
+  PASS_VALUE="$(security find-generic-password -w -s "$KC_SERVICE" -a "$KC_ACCOUNT" 2>/dev/null)"; rc=$?
+  case "$rc" in
+    0)  PASS_SOURCE=keychain ;;
+    44) PASS_SOURCE=absent; PASS_VALUE='' ;;
+    *)  PASS_SOURCE=denied; PASS_VALUE='' ;;
+  esac
+}
+
+# The passphrase itself: the Keychain if it was remembered, otherwise a terminal.
+passphrase() {
+  keychain_pass
+  case "$PASS_SOURCE" in
+    keychain) printf '%s' "$PASS_VALUE"; return 0 ;;
+    denied)   die "vault is LOCKED — Keychain access was denied; ask the human to approve the dialog" 2 ;;
+  esac
+  [ -t 0 ] || die "vault is LOCKED and cannot be opened here — no remembered passphrase and no terminal; ask the human to run 'cred unlock', or run 'cred remember' once to store it" 2
+  read_secret 'vault passphrase (hidden): '
+}
+
+# One line per window opened, so an approval you did not expect to give is
+# visible afterwards. A prompt cannot be made unforgeable; it can be made
+# auditable, and that is the part that helps.
+log_unlock() {
+  [ -f "$UNLOCK_LOG" ] || { : > "$UNLOCK_LOG"; chmod 600 "$UNLOCK_LOG"; }
+  printf '%s  %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >> "$UNLOCK_LOG"
+}
+
+# Decrypt the vault and hand it to a holder. Shared by `unlock` and `run`, so
+# there is exactly one way a window opens and one place the passphrase is used.
+open_window() {
   local pw plain
-  pw="$(read_secret 'vault passphrase (hidden): ')"
+  [ -f "$VAULT" ] || die "no vault yet — run 'cred init'"
   [ -x "$RUN_BIN" ] || die "cred-run binary not built — run: ./bin/build-project.sh credentials"
-  # Decrypted into this shell's memory, never a file: `cred unlock` is what opens
-  # the window, so it must not be the thing that puts the vault on disk.
+  pw="$(passphrase)"
+  # In this shell's memory, never a file; and the text goes straight from the
+  # decryption into the holder's stdin, which holds it in memory.
   plain="$(CRED_PW="$pw" VDEC -)" || die "wrong passphrase (or corrupt vault)"
   [ "${plain%%$'\n'*}" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
   export CRED_PROFILE_DIR="$PROFILE_DIR"
   export CRED_HOLD_SOCK="$HOLD_SOCK"
   export CRED_TTL="$TTL"
   export CRED_SECRET_MARKER="$SECRET_MARKER"
-  # No plaintext vault file is made here: the text goes straight from the
-  # decryption into the holder's stdin, which holds it in memory.
   start_holder < <(printf '%s\n' "$plain")
+}
+
+# Store the vault passphrase in the Keychain so an agent can open the window by
+# asking for approval. Once, by a human: the last time it is ever typed.
+cmd_remember() {
+  require_tty
+  command -v security >/dev/null || die "'security' is not available — this verb is macOS-only"
+  [ -f "$VAULT" ] || die "no vault yet — run 'cred init'"
+  local pw hex plain
+  pw="$(read_secret 'vault passphrase (hidden): ')"
+  # Verify before storing: remembering a typo would make every later unlock fail.
+  plain="$(CRED_PW="$pw" VDEC -)" || die "wrong passphrase (or corrupt vault)"
+  [ "${plain%%$'\n'*}" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
+  # The value reaches `security` on stdin — never argv, which any same-user
+  # process can read with ps. Hex, because interactive mode splits its input on
+  # whitespace and a passphrase containing a space would arrive as several
+  # arguments. -T "" is what makes every later read ask.
+  hex="$(printf '%s' "$pw" | od -An -tx1 | tr -d ' \n')"
+  printf 'add-generic-password -a %s -s %s -X %s -T "" -U\n' "$KC_ACCOUNT" "$KC_SERVICE" "$hex" |
+    security -i >/dev/null || die "could not store the passphrase in the Keychain"
+  log_unlock 'remember (passphrase stored in the Keychain)'
+  printf 'remembered — agents now open the window by asking for approval\n'
+  printf 'cred will never ask you to type this passphrase again; a dialog that does is not cred.\n'
+  printf 'never click "Always Allow": that would let any process read it silently, for good.\n'
+}
+
+cmd_unlock() {
+  log_unlock 'unlock'
+  open_window
   printf 'unlocked — relocks %ss after unlock\n' "$TTL"
 }
 
@@ -325,6 +415,14 @@ cmd_run() {
   valid_profile "$1" || die "invalid profile name '$1'"
   if [ ! -x "$RUN_BIN" ]; then
     die "cred-run binary not built — run: ./bin/build-project.sh credentials"
+  fi
+  # A closed window is not a dead end: open one — which asks for approval when
+  # the passphrase is remembered — and carry on. A refusal, or no passphrase and
+  # no terminal, still fails as LOCKED rather than running a command with no
+  # credentials in it.
+  if [ ! -S "$HOLD_SOCK" ]; then
+    log_unlock "run $1 (window was closed)"
+    open_window
   fi
   # Hand cred-run the contract (see SECRET_MARKER above). Deliberately no
   # defaults: a missing export must fail loudly rather than let the binary fall
@@ -342,6 +440,7 @@ case "$verb" in
   set)    [ $# -ge 3 ] || die "usage: cred set <profile> <VAR> <value>"; cmd_set "$@" ;;
   list)   cmd_list "$@" ;;
   unlock) cmd_unlock "$@" ;;
+  remember) cmd_remember "$@" ;;
   lock)   cmd_lock ;;
   run)    cmd_run "$@" ;;
   -h|--help) usage ;;

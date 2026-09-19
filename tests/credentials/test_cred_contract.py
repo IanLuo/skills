@@ -33,10 +33,12 @@ Usage: python3 tests/credentials/test_cred_contract.py     (run from anywhere)
 Exit: 0 all pass (or skipped, if cred-run is not built), 1 any fail.
 """
 
+import atexit
 import os
 import pathlib
 import pty
 import select
+import shutil
 import socket
 import struct
 import subprocess
@@ -49,11 +51,57 @@ CRED = REPO / "skills/credentials/scripts/cred.sh"
 RUN = REPO / "skills/credentials/scripts/cred-run"
 
 SECRET = "v3ry-s3cret-value"
+# A passphrase with a hyphen and digits, so the hex check below is unambiguous.
+PASSPHRASE = "vault-pass-9"
 VAULT_HEADER = "# cred-vault-v1"
 # An answer of this instead of a string closes the pty's input (Ctrl-D at the
 # start of a line), which is how a test ends a child that is reading its stdin.
 EOF_KEY = "<eof>"
 PASS, FAILS = 0, []
+
+# The suite never touches the real Keychain: a `security` shim goes first on
+# PATH, and every test that exercises the passphrase path drives this instead.
+# Its answers come from files, so no test has to thread env through a pty.
+SHIM_DIR = None
+
+SHIM = '''#!/usr/bin/env bash
+# test double for macOS `security` (see make_shim)
+d="${SHIM_DIR:?SHIM_DIR unset}"
+printf '%s\\n' "$@" > "$d/argv"
+if [ "${1:-}" = "-i" ]; then
+  cat > "$d/stdin" && exit 0
+fi
+case "$(cat "$d/mode" 2>/dev/null || echo value)" in
+  absent) exit 44 ;;
+  denied) exit 128 ;;
+  value)  printf '%s' "$(cat "$d/value" 2>/dev/null)" ;;
+esac
+'''
+
+
+def make_shim(d):
+    """Create the `security` shim and point the suite at it."""
+    global SHIM_DIR
+    SHIM_DIR = d
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "security").write_text(SHIM)
+    (d / "security").chmod(0o755)
+    set_keychain("absent")  # default: nothing remembered
+    return d
+
+
+def set_keychain(mode, value=""):
+    """absent = never remembered, denied = you clicked Deny, value = approved."""
+    (SHIM_DIR / "mode").write_text(mode)
+    (SHIM_DIR / "value").write_text(value)
+
+
+def base_env(cred_dir, extra=None):
+    e = dict(os.environ, CRED_DIR=str(cred_dir), SHIM_DIR=str(SHIM_DIR),
+             PATH=f"{SHIM_DIR}:{os.environ['PATH']}")
+    if extra:
+        e.update(extra)
+    return e
 
 
 def check(name, cond, detail=""):
@@ -67,12 +115,18 @@ def check(name, cond, detail=""):
 
 
 def cred(cred_dir, *args, env=None):
-    """Run cred.sh with CRED_DIR pointed at a throwaway directory."""
-    e = dict(os.environ, CRED_DIR=str(cred_dir))
-    if env:
-        e.update(env)
+    """Run cred.sh with CRED_DIR pointed at a throwaway directory.
+
+    stdin is /dev/null on purpose: the suite must never be able to satisfy a
+    passphrase prompt, or a test would hang on a terminal that happens to be
+    attached to whatever runs it.
+    """
     return subprocess.run(
-        ["bash", str(CRED), *args], env=e, capture_output=True, text=True
+        ["bash", str(CRED), *args],
+        env=base_env(cred_dir, env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -129,10 +183,10 @@ def stop_holder(cred_dir, proc):
 def on_a_real_tty(args, cred_dir, answers, timeout=30):
     """Run cred.sh on a controlling pty, answering its prompts in order.
 
-    `cred init` and `cred unlock` are human-gated — the only way to test them is
-    to actually be a terminal. A bare pty slave is not enough: bash's `read -s`
-    drives the *controlling* terminal and blocks forever without one, so this is
-    pty.fork() rather than Popen(stdin=slave).
+    `cred init`, `cred add` and `cred remember` are human-gated — the only way to
+    test them is to actually be a terminal. A bare pty slave is not enough:
+    bash's `read -s` drives the *controlling* terminal and blocks forever without
+    one, so this is pty.fork() rather than Popen(stdin=slave).
 
     Each answer is sent only once the child has gone quiet, i.e. is blocked on a
     prompt. Writing everything up front would let the terminal driver echo it
@@ -144,7 +198,7 @@ def on_a_real_tty(args, cred_dir, answers, timeout=30):
     """
     pid, master = pty.fork()
     if pid == 0:
-        os.execvpe("bash", ["bash", str(CRED), *args], dict(os.environ, CRED_DIR=str(cred_dir)))
+        os.execvpe("bash", ["bash", str(CRED), *args], base_env(cred_dir))
         os._exit(127)
 
     chunks, pending, quiet = [], list(answers), 0.0
@@ -218,9 +272,20 @@ def main():
         print(f"  skip cred-run is not built ({RUN}); run ./bin/build-project.sh credentials")
         return 0
 
+    # The shim has to outlive every section below, including the ones that open
+    # their own temporary directory. If it disappears mid-run then `security`
+    # resolves to the real binary again, and the tests start writing items into
+    # the real Keychain — which is exactly what happened before this comment.
+    make_shim(pathlib.Path(tempfile.mkdtemp(prefix="cred-shim-")))
+    atexit.register(shutil.rmtree, SHIM_DIR, ignore_errors=True)
+
     with tempfile.TemporaryDirectory() as td:
         cred_dir = pathlib.Path(td)
         profile(cred_dir, "p", "SECRET=@secret\nURL=https://api.example.com\nallow=printenv cat\n")
+        # A real vault, so that a locked window fails *at the window* — exit 2 with
+        # LOCKED — rather than at a missing vault. Those are different failures
+        # and the tests below assert the first.
+        on_a_real_tty(["init"], cred_dir, ["pw", "pw"])
         holder = start_holder(cred_dir, [("p", "SECRET", SECRET)])
         try:
             # 1 + 2. Injection, scrubbing, and passthrough of a non-secret var.
@@ -291,6 +356,7 @@ def main():
         # silently proceed without credentials is worse than a refusal.
         locked = cred_dir / "lockeddir"
         profile(locked, "q", "URL=https://api.example.com\nallow=printenv\n")
+        shutil.copy(cred_dir / "vault", locked / "vault")
         r = cred(locked, "run", "q", "--", "printenv", "URL")
         check("even a secret-free profile is refused while locked", r.returncode == 2, f"exit={r.returncode}")
         check("the locked refusal prints no env", "api.example.com" not in r.stdout, repr(r.stdout))
@@ -298,6 +364,7 @@ def main():
         # 7b. An expired holder reads as locked.
         ttl_dir = cred_dir / "ttldir"
         profile(ttl_dir, "p", "SECRET=@secret\nallow=printenv\n")
+        shutil.copy(cred_dir / "vault", ttl_dir / "vault")
         expired = start_holder(ttl_dir, [("p", "SECRET", SECRET)], ttl=1)
         time.sleep(2)
         r = cred(ttl_dir, "run", "p", "--", "printenv", "SECRET")
@@ -386,6 +453,57 @@ def main():
         check("lock kills the holder", r.returncode == 0 and not (e2e / "hold.sock").exists(), r.stdout + r.stderr)
         r = cred(e2e, "run", "typesafe", "--", "printenv", "API")
         check("end to end: locked after lock", r.returncode == 2, f"exit={r.returncode}")
+
+    # 14. Agent-initiated window. No terminal anywhere in this section: `cred run`
+    # is run by a client with stdin on /dev/null, and the shim stands in for a
+    # human approving the dialog macOS would draw.
+    with tempfile.TemporaryDirectory() as td:
+        kc = pathlib.Path(td)
+        profile(kc, "svc", "TOKEN=@secret\nURL=https://api.example.com\nallow=printenv\n")
+        on_a_real_tty(["init"], kc, [PASSPHRASE, PASSPHRASE])
+        on_a_real_tty(["add", "svc", "TOKEN"], kc, [SECRET, PASSPHRASE])
+
+        # remember: the value must reach `security` on stdin. Interactive mode's
+        # argv is just "-i", so the passphrase appearing anywhere at all would be
+        # the bug — only its hex is allowed to cross.
+        code, out = on_a_real_tty(["remember"], kc, [PASSPHRASE])
+        check("remember completes", code == 0, out)
+        # Guards the accident above: if the shim were absent, the real `security`
+        # would have been called and this file would not exist.
+        check("the security shim was used, not the real Keychain", (SHIM_DIR / "argv").exists(), str(SHIM_DIR))
+        argv = (SHIM_DIR / "argv").read_text() if (SHIM_DIR / "argv").exists() else ""
+        stdin = (SHIM_DIR / "stdin").read_text() if (SHIM_DIR / "stdin").exists() else ""
+        check("remember never puts the passphrase in argv", PASSPHRASE not in argv, argv)
+        check("the raw passphrase does not cross on stdin either", PASSPHRASE not in stdin, stdin)
+        check("it travels hex-encoded", PASSPHRASE.encode().hex() in stdin, stdin)
+        check("the item is created asking for approval (-T \"\")", '-T' in stdin and '""' in stdin, stdin)
+
+        set_keychain("value", PASSPHRASE)
+        r = cred(kc, "run", "svc", "--", "printenv", "TOKEN")
+        check(
+            "a locked run opens the window itself, with no terminal",
+            r.stdout.strip() == "***",
+            f"exit={r.returncode} out={r.stdout!r} err={r.stderr!r}",
+        )
+        check("the window opened", (kc / "hold.sock").exists())
+        log = (kc / "unlock.log").read_text()
+        check("the audit trail names what opened it", "run svc" in log, log)
+
+        # Denied must mean denied: no window, and no silent fallback to a prompt.
+        cred(kc, "lock")
+        set_keychain("denied")
+        r = cred(kc, "run", "svc", "--", "printenv", "TOKEN")
+        check("a denied approval fails as LOCKED", r.returncode == 2 and "LOCKED" in r.stderr, f"exit={r.returncode} err={r.stderr!r}")
+        check("a denial opens no window", not (kc / "hold.sock").exists())
+
+        # Nothing remembered and no terminal: LOCKED, never a run without credentials.
+        set_keychain("absent")
+        r = cred(kc, "run", "svc", "--", "printenv", "TOKEN")
+        check(
+            "no remembered passphrase and no terminal fails as LOCKED",
+            r.returncode == 2 and "LOCKED" in r.stderr,
+            f"exit={r.returncode} err={r.stderr!r}",
+        )
 
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

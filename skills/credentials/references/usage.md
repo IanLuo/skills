@@ -34,12 +34,13 @@ Creates:
 | Command | Who runs it | What it does |
 |---|---|---|
 | `cred init` | human, once | create encrypted vault + profile dir |
+| `cred remember` | human, once | store the vault passphrase in the Keychain |
 | `cred add <profile> <VAR>` | human | store a secret (hidden prompt) |
 | `cred set <profile> <VAR> <value>` | human | store a non-secret var |
 | `cred list [profile]` | anyone | names only, never values |
-| `cred unlock` | human | decrypt into a holder process for 5 min |
-| `cred lock` | human | close that window now |
-| `cred run <profile> -- <cmd> [args]` | agent or human | inject + exec + scrub |
+| `cred unlock` | human or agent | open a window (approve a dialog, or type on a TTY) |
+| `cred lock` | anyone | close that window now |
+| `cred run <profile> -- <cmd> [args]` | agent or human | open a window if closed, then inject + run + scrub |
 
 `cred help` / `cred --help` / `cred -h` print the same summary. `cred help run`
 delegates to `cred-run --help`.
@@ -52,6 +53,32 @@ cred init
 
 Idempotent: refuses to touch an existing vault. Prompts for the passphrase
 twice (hidden) to set it.
+
+### `cred remember`
+
+```bash
+cred remember
+# vault passphrase (hidden):  <type it one last time>
+```
+
+Stores the vault passphrase in a Keychain item created with **`-T ""`** — no
+trusted applications at all. Every later read therefore raises a dialog that
+macOS itself draws, and this is the point: an agent cannot impersonate that
+dialog and cannot read the passphrase out of it. Only a human approving it gets
+the read.
+
+That is what lets `cred run` open a window with no terminal involved. It also
+settles the phishing question structurally:
+
+> **After `cred remember`, cred never asks anyone to *type* the passphrase again
+> — it asks for *approval*. A dialog asking you to type your vault passphrase is
+> not cred.**
+
+- The value reaches `security` on **stdin**, hex-encoded — never argv (readable
+  by any same-user process via `ps`) and never a file.
+- It verifies the passphrase against the vault *before* storing, so a typo can't
+  be remembered.
+- macOS-only. Without it, everything still works exactly as before via the TTY.
 
 ### `cred add <profile> <VAR>`
 
@@ -102,8 +129,9 @@ until the window closes. `lock` kills the holder immediately.
 - The window is a fixed 300s from unlock; it does not extend on use. A command
   already running when it closes still finishes — only new commands are refused.
 - Every `cred run` reuses the same holder: you unlock once, not per command.
-- An agent **cannot** unlock it (needs a TTY); if `cred run` reports locked,
-  tell the human.
+- The passphrase comes from the Keychain if you ran `cred remember` — an approval
+  dialog, no terminal — and otherwise from a hidden TTY prompt. `cred run` opens
+  the window itself when it finds it closed.
 - `cred add` while a holder is live replaces it, so the new secret is visible.
 
 ### `cred run <profile> -- <cmd> [args]`
@@ -125,9 +153,10 @@ cred run github -- sh -c 'curl -s -H "Authorization: Bearer $GH_TOKEN" https://a
 - Enforces the profile's `allow =` list on the command's first word.
 - Gives the command your terminal as stdin when you have one, so an interactive
   command can still prompt; without a terminal it gets `/dev/null`.
-- Fails fast if the window is not open — no holder, a holder that has closed its
-  window, and a socket left behind by a killed one all read as locked. It does
-  not hang.
+- Opens the window itself when it is closed, so an agent never has to ask first:
+  with `cred remember` that is an approval dialog; on a TTY it is a hidden
+  prompt. A refusal — or no remembered passphrase and no terminal — fails as
+  `vault is LOCKED` rather than running the command without credentials.
 - Needs the window open even when the profile has no secrets: a run that
   silently proceeded without credentials would be worse than a refusal.
 
@@ -168,6 +197,9 @@ Rules:
 
 - Secrets go into the child via `envp` — the one Unix channel `ps` cannot see.
   They never appear in argv, in this process's output, or in the transcript.
+- **The passphrase is never typed after setup.** With `cred remember`, opening a
+  window is an *approval* of a dialog macOS draws, not an entry of the secret,
+  and the dialog is not something an agent can forge or read from.
 - **Secrets never leave the holder.** The holder is a separate process holding
   the decrypted vault; the client sends a command and gets scrubbed output back.
   The protocol has no request that returns a value, so a client that is not
@@ -201,6 +233,17 @@ Rules:
    is allowed; arguments are not screened. Keep the list tight.
 5. **Secrets shorter than 6 chars are not scrubbed.** They can leak into
    command output.
+6. **⚠️ Never click "Always Allow" on the passphrase dialog.** That one button
+   adds `security` to the item's trusted list, after which any process can read
+   the passphrase **silently, forever** — worse than the plaintext cache this
+design replaced. `Allow` and `Deny` are per-read and are the only safe answers.
+7. **The approval dialog cannot require a fingerprint.** Biometric gating needs
+   `kSecAccessControlUserPresence`, which only the Security API can set — the
+   `security` CLI has no flag for it. So this is an approval click, not Touch ID.
+8. **Window openings are logged.** `~/.config/cred/unlock.log` (0600) records a
+   timestamp and what opened the window. That is the defence against a prompt
+   you did not expect: a prompt cannot be made unforgeable, but it can be made
+   auditable.
 
 ## 6. Examples
 
@@ -234,10 +277,15 @@ cred run aws -- aws sts get-caller-identity
 
 | Symptom | Fix |
 |---|---|
-| `cred run` → `vault is LOCKED` | human runs `cred unlock` |
+| `cred run` → `vault is LOCKED` | nothing remembered and no terminal: run `cred unlock` yourself, or `cred remember` once |
+| a dialog asks for the passphrase **text** | that is not cred — `cred` only ever asks you to approve a read. Don't type it |
+| you clicked Always Allow | delete the item and run `cred remember` again: `security delete-generic-password -s cred-vault-passphrase -a cred` |
 | `cred unlock` → `the holder did not come up` | wrong passphrase, or a stale build: `./bin/build-project.sh credentials` |
 | `cred run` → `cred-run binary not built` | `./bin/build-project.sh credentials` |
 | `cred run` → `profile has no 'allow =' line` | add `allow = …` to the profile |
 | `cred run` → `'X' not in profile allow-list` | add `X` to `allow =`, or don't run `X` |
 | `cred run` → `no secret for svc/VAR` | `cred add svc VAR` first |
 | secret still shows in output | it's <6 chars (not scrubbed), or the command printed it in a form the scrubber can't match |
+
+The scrub list in §5 is deliberately blunt about what this is not. Read it before
+trusting a new workflow to it.
