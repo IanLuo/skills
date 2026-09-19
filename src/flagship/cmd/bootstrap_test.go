@@ -49,6 +49,55 @@ func fileStamp(body string) string {
 	return "# fs-default: sha256=" + hex.EncodeToString(sum[:]) + "\n"
 }
 
+// editedStepMarker is appended to a shipped step's body to make an edit whose
+// old and new text a diff must name.
+const editedStepMarker = " EDITED-BY-TEST"
+
+// shippedStep returns the body of the first step of the given kind in a shipped
+// playbook, so a test can mean "the playbook has a step about X" without
+// hardcoding the sentence that states it. A non-empty marker selects the first
+// step whose body contains it; an empty marker takes the first of that kind.
+// The shipped playbook stays editable: only removing the behaviour a test names
+// may break it, never rewording it.
+func shippedStep(t *testing.T, playbook, kind, marker string) string {
+	t.Helper()
+	prefix := "- " + kind + ": "
+	for _, line := range strings.Split(playbook, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		body := strings.TrimPrefix(line, prefix)
+		if marker == "" || strings.Contains(body, marker) {
+			return body
+		}
+	}
+	t.Fatalf("playbook has no %s step containing %q:\n%s", kind, marker, playbook)
+	return ""
+}
+
+// editFirstStep rewrites the body of the first step line in a playbook body —
+// the first "- <kind>: <body>" line — by appending editedStepMarker, and returns
+// the edited body plus the old and new step lines. Deriving the edit from the
+// shipped default keeps the caller about diffing, not about the default's
+// wording: an edit that named a sentence would match nothing after a reword,
+// write the file unedited, and fail a test that a legitimate edit may not fail.
+func editFirstStep(t *testing.T, body string) (edited, oldStep, newStep string) {
+	t.Helper()
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "- ") || !strings.Contains(line, ": ") {
+			continue
+		}
+		oldStep = line
+		newStep = line + editedStepMarker
+		lines[i] = newStep
+		return strings.Join(lines, "\n"), oldStep, newStep
+	}
+	t.Fatalf("shipped default has no step line to edit:\n%s", body)
+	return "", "", ""
+}
+
 // playbooksOf indexes a kb list or bootstrap response's playbooks by name.
 func playbooksOf(t *testing.T, resp map[string]any) map[string]map[string]any {
 	t.Helper()
@@ -207,8 +256,8 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 	}
 
 	body := shippedDefault(t, capPlaybook)
-	edited := fileStamp(body) + strings.Replace(body, "close only with fs close, never by hand",
-		"close however you like", 1)
+	editedBody, oldStep, newStep := editFirstStep(t, body)
+	edited := fileStamp(body) + editedBody
 	writeRaw(t, capPath, edited)
 
 	diff := diffOf(capPlaybook)
@@ -216,8 +265,8 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 		t.Fatal("an edited playbook must diff non-empty")
 	}
 	for _, want := range []string{
-		"-  - say: close only with fs close, never by hand",
-		"+  - say: close however you like",
+		"-" + oldStep,
+		"+" + newStep,
 		" name: cap", // unchanged lines are context
 	} {
 		if !strings.Contains(diff, want) {
@@ -281,7 +330,10 @@ func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 		t.Fatalf("kb get exit %d: %v", code, resp["error"])
 	}
 
-	const want = "bin/check-parallel.sh $FS_CARDS"
+	// The gate reads the batch from the dispatch itself: $FS_CARDS is the
+	// variable fs dispatch --cards exports. Naming the variable rather than the
+	// whole command pins the wiring while leaving the playbook's wording free.
+	want := shippedStep(t, shippedDefault(t, parPrePlaybook), "check", "$FS_CARDS")
 	var checks []string
 	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
 		step := raw.(map[string]any)
@@ -315,13 +367,15 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 	}
 
 	// The standing-rules line, one stamped header per cap-triggered procedure,
-	// and the rules themselves.
+	// and the rules themselves — read from the shipped default, so rewording the
+	// playbook cannot break a test that only means "the prompt carries the herdr
+	// rules".
 	for _, want := range []string{
 		"Standing rules for this session",
 		"not suggestions",
 		"# cap — procedure, trigger cap; default, stamp sha256:",
 		"# herdr — procedure, trigger cap; default, stamp sha256:",
-		"pick up finished workers at the top of every turn",
+		shippedStep(t, shippedDefault(t, herdrPlaybook), "say", ""),
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("kb prompt must contain %q; got:\n%s", want, stdout)

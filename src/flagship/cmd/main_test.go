@@ -1355,6 +1355,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), parPrePlaybook, shippedDefault(t, parPrePlaybook))
+	gateBody := shippedStep(t, shippedDefault(t, parPrePlaybook), "check", "$FS_CARDS")
 	env, _, _ := fakeHerdrOnPath(t)
 
 	// Disjoint cards pass, and the gate's output says what it intersected.
@@ -1362,7 +1363,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("disjoint cards must pass the gate, exit %d: %v", code, resp["error"])
 	}
-	if out := checkOutputOf(t, resp, "bin/check-parallel.sh $FS_CARDS"); !strings.Contains(out, "2 cards, no overlapping paths") {
+	if out := checkOutputOf(t, resp, gateBody); !strings.Contains(out, "2 cards, no overlapping paths") {
 		t.Errorf("gate output = %q, want the two cards it checked", out)
 	}
 
@@ -1372,7 +1373,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("--cards twice must name the same batch, exit %d: %v", code, repeated["error"])
 	}
-	if out := checkOutputOf(t, repeated, "bin/check-parallel.sh $FS_CARDS"); !strings.Contains(out, "2 cards") {
+	if out := checkOutputOf(t, repeated, gateBody); !strings.Contains(out, "2 cards") {
 		t.Errorf("gate output = %q, want two cards", out)
 	}
 
