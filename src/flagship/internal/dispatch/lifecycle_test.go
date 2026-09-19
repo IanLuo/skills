@@ -1,6 +1,7 @@
 package dispatch_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -19,10 +20,14 @@ type fakeHerdr struct {
 	promptErr error
 	closeErr  error
 
-	started  []string
-	prompted []string
-	closed   []string
+	started []string
+	prompts []promptCall
+	closed  []string
 }
+
+// promptCall is one brief handed to a pane, so a test can read the text the
+// worker would have received.
+type promptCall struct{ pane, text string }
 
 func (f *fakeHerdr) SplitPane(cwd string) (string, error) {
 	if f.splitErr != nil {
@@ -37,7 +42,7 @@ func (f *fakeHerdr) StartAgent(paneID, name string) error {
 }
 
 func (f *fakeHerdr) Prompt(paneID, text string) error {
-	f.prompted = append(f.prompted, paneID)
+	f.prompts = append(f.prompts, promptCall{pane: paneID, text: text})
 	return f.promptErr
 }
 
@@ -59,14 +64,39 @@ func addCapNode(t *testing.T, f *fixture, goal string) string {
 	return added.Data.(command.EventData).NodeID
 }
 
-// recordDelivery appends the structural pane binding, as Deliver does.
-func recordDelivery(t *testing.T, f *fixture, nodeID, paneID string) {
+// recordDelivery appends the structural binding as Deliver does: the pane and
+// agent carrying the brief, and the worker's node in the target project.
+func recordDelivery(t *testing.T, f *fixture, capNode, paneID, workerID string) {
 	t.Helper()
-	resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
+	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
 		PaneID: paneID, Agent: "dispatch-dev-task", Engine: "herdr",
+		Project: "skills", Node: workerID,
 	})
 	if !resp.OK {
 		t.Fatalf("RecordDelivery: %s", resp.Error)
+	}
+}
+
+// recordLegacyDelivery writes the pane binding the way the binary did before the
+// worker's node was part of it: pane, agent, and engine only.
+func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID string) {
+	t.Helper()
+	s, err := store.Open(f.storeDB)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+
+	payload, err := json.Marshal(map[string]string{
+		"pane_id": paneID, "agent": "dispatch-dev-task", "engine": "herdr",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(store.Event{
+		Type: store.DeliveryRecorded, ProjectID: "cap", NodeID: &capNode, Payload: payload,
+	}); err != nil {
+		t.Fatalf("append legacy delivery-recorded: %v", err)
 	}
 }
 
@@ -118,8 +148,8 @@ func TestDeliverRecordsThePaneBindingStructurally(t *testing.T) {
 	if len(herdr.started) != 1 || herdr.started[0] != "w1:p9/dispatch-dev-task" {
 		t.Errorf("started = %v, want the agent started in the new pane", herdr.started)
 	}
-	if len(herdr.prompted) != 1 || herdr.prompted[0] != "w1:p9" {
-		t.Errorf("prompted = %v, want the brief sent to the new pane", herdr.prompted)
+	if len(herdr.prompts) != 1 || herdr.prompts[0].pane != "w1:p9" {
+		t.Errorf("prompts = %v, want the brief sent to the new pane", herdr.prompts)
 	}
 
 	events := capEvents(t, f, store.DeliveryRecorded)
@@ -127,7 +157,10 @@ func TestDeliverRecordsThePaneBindingStructurally(t *testing.T) {
 		t.Fatalf("cap has %d delivery-recorded events, want 1", len(events))
 	}
 	payload := string(events[0].Payload)
-	for _, want := range []string{`"pane_id":"w1:p9"`, `"agent":"dispatch-dev-task"`, `"engine":"herdr"`} {
+	for _, want := range []string{
+		`"pane_id":"w1:p9"`, `"agent":"dispatch-dev-task"`, `"engine":"herdr"`,
+		`"project":"skills"`, `"node":"` + strings.TrimPrefix(brief.WorkerNode, "skills:") + `"`,
+	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("delivery payload %s must carry %s", payload, want)
 		}
@@ -143,11 +176,57 @@ func TestDeliverRecordsThePaneBindingStructurally(t *testing.T) {
 	}
 }
 
+// The delivery creates the worker's node in the target project — carrying the
+// cap node's goal — and the brief tells the worker that node is already its own.
+func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	capNode := addCapNode(t, f, "dispatch dev-task: sample")
+
+	herdr := &fakeHerdr{paneID: "w1:p9"}
+	resp := dispatch.Deliver(f.h, herdr, &dispatch.Brief{
+		Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: capNode,
+	})
+	if !resp.OK {
+		t.Fatalf("Deliver: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+
+	workerID, ok := strings.CutPrefix(brief.WorkerNode, "skills:")
+	if !ok || workerID == "" {
+		t.Fatalf("worker_node = %q, want skills:<node>", brief.WorkerNode)
+	}
+	worker, found := scopeTask(t, f, "skills", workerID)
+	if !found {
+		t.Fatalf("worker node %s is not in the skills scope", brief.WorkerNode)
+	}
+	if worker.Status != "pending" {
+		t.Errorf("worker node status = %q, want pending for the worker to pick up", worker.Status)
+	}
+	if worker.Goal != "dispatch dev-task: sample" {
+		t.Errorf("worker node goal = %q, want the cap node's goal", worker.Goal)
+	}
+
+	if len(herdr.prompts) != 1 {
+		t.Fatalf("prompts = %v, want the brief sent once", herdr.prompts)
+	}
+	briefText := herdr.prompts[0].text
+	if !strings.Contains(briefText, "Note your work on "+brief.WorkerNode) {
+		t.Errorf("the brief must name the worker's node; got:\n%s", briefText)
+	}
+	if !strings.Contains(briefText, "do not create another") {
+		t.Errorf("the brief must say the node is the worker's, not one to invent; got:\n%s", briefText)
+	}
+}
+
 func TestDeliverFailsLeavesNodePendingAndClosesPane(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
 
+	// A failure after the worker's node exists closes the pane and rolls the
+	// node back: the store cannot take an event back, so it is marked done with
+	// the reason, and nothing is left outstanding in the target project.
 	herdr := &fakeHerdr{paneID: "w1:p9", promptErr: errors.New("agent_prompt_stalled")}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
@@ -167,8 +246,26 @@ func TestDeliverFailsLeavesNodePendingAndClosesPane(t *testing.T) {
 	if status := nodeStatus(t, f, "cap", nodeID); status != "pending" {
 		t.Errorf("cap node status = %q, want pending", status)
 	}
+
+	unfinished, err := f.h.UnfinishedIn("skills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unfinished) != 0 {
+		t.Errorf("skills has %d outstanding nodes after a failed delivery, want 0: %v", len(unfinished), unfinished)
+	}
+	workers := scopeTasks(t, f, "skills")
+	if len(workers) != 1 || workers[0].Status != "done" {
+		t.Fatalf("skills nodes = %+v, want the one rolled-back node, done", workers)
+	}
+	want := "dispatch never delivered: send brief: agent_prompt_stalled"
+	if !contains(workers[0].Decisions, want) {
+		t.Errorf("rolled-back node decisions = %v, want %q", workers[0].Decisions, want)
+	}
 }
 
+// With herdr unavailable the failure precedes the worker's node, so there is
+// nothing to roll back and the target project stays untouched.
 func TestDeliverHerdrUnavailableLeavesNodePending(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
@@ -186,6 +283,9 @@ func TestDeliverHerdrUnavailableLeavesNodePending(t *testing.T) {
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "pending" {
 		t.Errorf("cap node status = %q, want pending", status)
+	}
+	if workers := scopeTasks(t, f, "skills"); len(workers) != 0 {
+		t.Errorf("skills nodes = %+v, want none: no node may be created for a delivery that never happened", workers)
 	}
 }
 
@@ -217,15 +317,15 @@ func TestCloseRefusesWithoutADeliveryRecord(t *testing.T) {
 	}
 }
 
+// The worker's node comes from the delivery record, so a cap that passes no
+// --worker still cannot close out work that is not done.
 func TestCloseRefusesAWorkerThatIsNotDone(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9")
 	workerID := addWorkerNode(t, f, "active")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
 
-	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "x",
-	})
+	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "x"})
 	if resp.OK {
 		t.Fatal("an unfinished worker must block close-out")
 	}
@@ -239,11 +339,9 @@ func TestCloseRefusesAWorkerThatIsNotDone(t *testing.T) {
 func TestCloseRefusesAnUnknownWorker(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9")
+	recordDelivery(t, f, nodeID, "w1:p9", "t-00000000")
 
-	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:t-00000000", Decision: "x",
-	})
+	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "x"})
 	if resp.OK {
 		t.Fatal("a worker node that does not exist must block close-out")
 	}
@@ -255,10 +353,10 @@ func TestCloseRefusesAnUnknownWorker(t *testing.T) {
 func TestCloseRefusesWithoutAVerdict(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9")
 	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
 
-	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Worker: "skills:" + workerID})
+	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID})
 	if resp.OK {
 		t.Fatal("a close-out without a verdict must be refused")
 	}
@@ -270,12 +368,12 @@ func TestCloseRefusesWithoutAVerdict(t *testing.T) {
 func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9")
 	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
 
 	herdr := &fakeHerdr{}
 	resp := dispatch.Close(f.h, herdr, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified the worker's node",
+		NodeID: nodeID, Decision: "verified the worker's node",
 	})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
@@ -283,6 +381,9 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	result, ok := resp.Data.(dispatch.CloseResult)
 	if !ok || result.PaneID != "w1:p9" || result.Warning != "" {
 		t.Fatalf("result = %#v, want the closed pane and no warning", resp.Data)
+	}
+	if result.Worker != "skills:"+workerID {
+		t.Errorf("result worker = %q, want the recorded node skills:%s", result.Worker, workerID)
 	}
 	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
 		t.Errorf("closed = %v, want w1:p9", herdr.closed)
@@ -295,14 +396,90 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	}
 }
 
+// --worker is still accepted; against a matching record it is a check that the
+// cap and the record agree, not a second source of truth.
+func TestCloseAcceptsAWorkerThatMatchesTheRecord(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
+	})
+	if !resp.OK {
+		t.Fatalf("a --worker that matches the record must close: %s", resp.Error)
+	}
+}
+
+// Two dispatches into one project must not be confusable: --worker naming a
+// different node is refused against the recorded one, before any pane is
+// touched.
+func TestCloseRefusesAMismatchedWorker(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	otherID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	herdr := &fakeHerdr{}
+	resp := dispatch.Close(f.h, herdr, dispatch.CloseRequest{
+		NodeID: nodeID, Worker: "skills:" + otherID, Decision: "verified",
+	})
+	if resp.OK {
+		t.Fatal("a --worker that is not the recorded node must be refused")
+	}
+	for _, want := range []string{"skills:" + otherID, "does not match", "skills:" + workerID, "wrong work"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if len(herdr.closed) != 0 {
+		t.Errorf("closed = %v, want no pane touched by a refused close", herdr.closed)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+		t.Errorf("cap node status = %q, a refused close must not close it", status)
+	}
+}
+
+// A record written before the link existed carries no node. Close without
+// --worker refuses and names the one way such a record can be closed; with
+// --worker it still works, so an old dispatch is not stranded.
+func TestCloseRefusesARecordWithNoNode(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordLegacyDelivery(t, f, nodeID, "w1:p9")
+
+	resp := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a record with no worker node must not be closed by guesswork")
+	}
+	for _, want := range []string{"carries no worker node", "--worker PROJECT:NODE"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+
+	migrated := dispatch.Close(f.h, &fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
+	})
+	if !migrated.OK {
+		t.Fatalf("the old --worker form must still close an old record: %s", migrated.Error)
+	}
+	if result := migrated.Data.(dispatch.CloseResult); result.Worker != "skills:"+workerID {
+		t.Errorf("result worker = %q, want the node the cap named", result.Worker)
+	}
+}
+
 func TestCloseSucceedsWhenThePaneIsAlreadyGone(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9")
 	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
 
 	resp := dispatch.Close(f.h, &fakeHerdr{closeErr: dispatch.ErrPaneGone}, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
+		NodeID: nodeID, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("an already-closed pane must not fail the close-out: %s", resp.Error)
@@ -315,12 +492,12 @@ func TestCloseSucceedsWhenThePaneIsAlreadyGone(t *testing.T) {
 func TestCloseWarnsButSucceedsWhenHerdrIsUnavailable(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9")
 	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
 
 	herdr := &fakeHerdr{closeErr: errors.New("herdr: server is down")}
 	resp := dispatch.Close(f.h, herdr, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
+		NodeID: nodeID, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("close-out must not depend on the dispatcher being up: %s", resp.Error)
@@ -370,20 +547,36 @@ func TestCloseAbandonedSkipsDeliveryAndWorkerGates(t *testing.T) {
 	}
 }
 
-// nodeStatus reads one node's derived status the same way fs status reports it.
-func nodeStatus(t *testing.T, f *fixture, scope, nodeID string) string {
+// scopeTasks returns every node in a scope, via derived state.
+func scopeTasks(t *testing.T, f *fixture, scope string) []command.TaskInfo {
 	t.Helper()
 	resp := f.h.Status(scope)
 	if !resp.OK {
 		t.Fatalf("Status: %s", resp.Error)
 	}
-	for _, task := range resp.Data.(command.StatusResult).Tasks {
+	return resp.Data.(command.StatusResult).Tasks
+}
+
+// scopeTask returns one node's derived state, or ok=false when the scope has no
+// such node.
+func scopeTask(t *testing.T, f *fixture, scope, nodeID string) (command.TaskInfo, bool) {
+	t.Helper()
+	for _, task := range scopeTasks(t, f, scope) {
 		if task.NodeID == nodeID {
-			return task.Status
+			return task, true
 		}
 	}
-	t.Fatalf("node %s not found in scope %s", nodeID, scope)
-	return ""
+	return command.TaskInfo{}, false
+}
+
+// nodeStatus reads one node's derived status the same way fs status reports it.
+func nodeStatus(t *testing.T, f *fixture, scope, nodeID string) string {
+	t.Helper()
+	task, ok := scopeTask(t, f, scope, nodeID)
+	if !ok {
+		t.Fatalf("node %s not found in scope %s", nodeID, scope)
+	}
+	return task.Status
 }
 
 func contains(values []string, want string) bool {

@@ -97,7 +97,7 @@ var cmdSpecs = map[string]cmdSpec{
 		},
 	},
 	"close": {
-		usage: "Usage: fs close --node CAP_NODE --worker PROJECT:NODE --decision TEXT | --abandoned --reason TEXT",
+		usage: "Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT | --abandoned --reason TEXT",
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
 			"--abandoned": false, "--reason": true,

@@ -43,11 +43,17 @@ type UpdateResult struct {
 }
 
 // DeliveryRecord is the payload of a delivery-recorded event: the structural
-// binding of a cap dispatch node to the pane and agent carrying its brief.
+// binding of a cap dispatch node to the pane and agent carrying its brief, and
+// to the node created for the worker in the target project.
+//
+// Project and Node are what let close-out name the worker without the cap
+// guessing. They are absent only on records written before the link existed.
 type DeliveryRecord struct {
-	PaneID string `json:"pane_id"`
-	Agent  string `json:"agent"`
-	Engine string `json:"engine"`
+	PaneID  string `json:"pane_id"`
+	Agent   string `json:"agent"`
+	Engine  string `json:"engine"`
+	Project string `json:"project"`
+	Node    string `json:"node"`
 }
 
 // TaskInfo represents derived task state for status output.
@@ -245,9 +251,10 @@ func (h *Handler) TaskUpdate(projectID, nodeID, status, decision string, commitS
 }
 
 // RecordDelivery appends a delivery-recorded event on a cap dispatch node,
-// binding it to the pane and agent that carry its brief. Recorded by the
-// dispatcher at delivery time, so close-out reads the binding rather than
-// whatever a decision happened to say.
+// binding it to the pane and agent that carry its brief and to the node created
+// for the worker in the target project. Recorded by the dispatcher at delivery
+// time, so close-out reads the binding rather than whatever a decision happened
+// to say.
 func (h *Handler) RecordDelivery(projectID, nodeID string, d DeliveryRecord) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
@@ -257,6 +264,12 @@ func (h *Handler) RecordDelivery(projectID, nodeID string, d DeliveryRecord) Res
 	}
 	if d.PaneID == "" {
 		return errResp("delivery pane_id is required")
+	}
+	if d.Project == "" {
+		return errResp("delivery project is required: it names the worker node's scope")
+	}
+	if d.Node == "" {
+		return errResp("delivery node is required: it names the node the worker was given")
 	}
 
 	payload, _ := json.Marshal(d)

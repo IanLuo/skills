@@ -55,6 +55,12 @@ type Brief struct {
 	CapNodeID   string   `json:"cap_node_id"`
 	NextCommand string   `json:"next_command"`
 
+	// WorkerNode is the node created for the worker in the target project, as
+	// "<project>:<node>". Deliver sets it before the brief is sent, because the
+	// brief has to name the node the worker owns. Without --deliver no such node
+	// exists and it stays empty.
+	WorkerNode string `json:"worker_node,omitempty"`
+
 	// Delivery is the pane binding, set only when fs dispatch --deliver handed
 	// the brief to a worker. It is recorded as a delivery-recorded event; this
 	// field is the same binding echoed back to the caller.
@@ -133,6 +139,13 @@ func isDispatchGoal(goal string) bool {
 	}
 	typ, _, ok := strings.Cut(rest, ": ")
 	return ok && typ != ""
+}
+
+// dispatchGoal is the goal text fs dispatch writes — on the cap's node, and on
+// the worker's node in the target project. Both ends of the link carry the same
+// text, so the two nodes read as one piece of work.
+func dispatchGoal(taskType, goal string) string {
+	return fmt.Sprintf("dispatch %s: %s", taskType, goal)
 }
 
 // unresolvedDispatches returns the cap's dispatch nodes that are not done.
@@ -282,7 +295,7 @@ func findLockedDocs(root string) []string {
 // and the decision naming the project the work went to. It returns the node id
 // so the cap can read its own dispatch back.
 func recordCapNode(h *command.Handler, taskType, goal, project string) (string, error) {
-	added := h.TaskAdd(capScope, fmt.Sprintf("dispatch %s: %s", taskType, goal), nil)
+	added := h.TaskAdd(capScope, dispatchGoal(taskType, goal), nil)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}
@@ -344,13 +357,16 @@ func nextCommand(b *Brief) string {
 		shellQuote(b.RootPath), name, name, shellQuote(renderBrief(b)))
 }
 
-// renderBrief is the text the cap hands the worker: goal, project root, the say
-// steps as context, the gate checklist with each check's output, and the locked
-// docs.
+// renderBrief is the text the cap hands the worker: goal, project root, the
+// node the worker owns, the say steps as context, the gate checklist with each
+// check's output, and the locked docs.
 func renderBrief(b *Brief) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Goal: %s\n", b.Goal)
 	fmt.Fprintf(&sb, "Project: %s (root %s)\n", b.Project, b.RootPath)
+	if b.WorkerNode != "" {
+		fmt.Fprintf(&sb, "Note your work on %s — that node already exists and is yours; do not create another.\n", b.WorkerNode)
+	}
 	if len(b.Context) > 0 {
 		sb.WriteString("Context:\n")
 		for _, say := range b.Context {

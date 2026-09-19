@@ -95,9 +95,12 @@ Commands:
   dispatch --project P --type TYPE --goal GOAL [--confirm] [--deliver]
                                                Prepare a dispatch brief; --deliver
                                                also hands it to a worker pane
-  close --node NODE --worker P:NODE --decision TEXT
+  close --node NODE [--worker P:NODE] --decision TEXT
                                                Close out a dispatch: close its
-                                               pane, then mark the node done
+                                               pane, then mark the node done.
+                                               The worker node comes from the
+                                               delivery record; --worker is only
+                                               a check against it
   close --node NODE --abandoned --reason TEXT  Close a never-delivered dispatch`)
 }
 

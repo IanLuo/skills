@@ -1367,14 +1367,33 @@ func writeKBPlaybook(t *testing.T, home, name, content string) {
 	}
 }
 
+// scopeTasks returns every task in a scope, via fs status.
+func scopeTasks(t *testing.T, bin, dir, project string) []any {
+	t.Helper()
+	resp, code := runFS(t, bin, dir, "status", "--project", project)
+	if code != 0 {
+		t.Fatalf("status %s exit %d: %v", project, code, resp["error"])
+	}
+	tasks, _ := resp["data"].(map[string]any)["tasks"].([]any)
+	return tasks
+}
+
+// scopeTaskByID returns one node from a scope, via fs status.
+func scopeTaskByID(t *testing.T, bin, dir, project, nodeID string) map[string]any {
+	t.Helper()
+	for _, raw := range scopeTasks(t, bin, dir, project) {
+		if task := raw.(map[string]any); task["node_id"] == nodeID {
+			return task
+		}
+	}
+	t.Fatalf("node %s not found in scope %s", nodeID, project)
+	return nil
+}
+
 // capTask returns the cap-scope task with the given goal, via fs status.
 func capTask(t *testing.T, bin, dir, goal string) map[string]any {
 	t.Helper()
-	resp, code := runFS(t, bin, dir, "status", "--project", "cap")
-	if code != 0 {
-		t.Fatalf("status cap exit %d: %v", code, resp["error"])
-	}
-	tasks, _ := resp["data"].(map[string]any)["tasks"].([]any)
+	tasks := scopeTasks(t, bin, dir, "cap")
 	for _, raw := range tasks {
 		if task := raw.(map[string]any); task["goal"] == goal {
 			return task
@@ -1618,6 +1637,8 @@ case "$cmd $sub" in
     printf '{"result":{"agent":{"name":"%s"}}}\n' "${1:-}"
     ;;
   "agent prompt")
+    # Keep the brief, so a probe can read what the worker was handed.
+    printf '%s' "${2:-}" > "$state/prompt"
     printf '{"result":{}}\n'
     ;;
   *)
@@ -1653,9 +1674,20 @@ func herdrPaneGet(t *testing.T, script string, env []string, paneID string) erro
 	return cmd.Run()
 }
 
-// deliverProbe runs fs dispatch --deliver against the fake herdr and returns
-// the cap node and the pane it was bound to.
-func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, paneID string) {
+// herdrPrompt returns the brief the fake herdr was handed, standing in for what
+// the worker pane received.
+func herdrPrompt(t *testing.T, state string) string {
+	t.Helper()
+	text, err := os.ReadFile(filepath.Join(state, "prompt"))
+	if err != nil {
+		t.Fatalf("reading the prompted brief: %v", err)
+	}
+	return string(text)
+}
+
+// deliverProbe runs fs dispatch --deliver against the fake herdr and returns the
+// cap node, the pane it was bound to, and the worker node it created.
+func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, paneID, workerRef string) {
 	t.Helper()
 	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
@@ -1666,7 +1698,24 @@ func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, paneID 
 	if !ok {
 		t.Fatalf("dispatch --deliver carried no delivery: %v", data)
 	}
-	return data["cap_node_id"].(string), delivery["pane_id"].(string)
+	worker, ok := data["worker_node"].(string)
+	if !ok || worker == "" {
+		t.Fatalf("dispatch --deliver carried no worker_node: %v", data)
+	}
+	return data["cap_node_id"].(string), delivery["pane_id"].(string), worker
+}
+
+// finishWorker marks the delivered worker's node done, so the close-out gate has
+// something to sign off.
+func finishWorker(t *testing.T, bin, root, workerRef string) {
+	t.Helper()
+	_, nodeID, ok := strings.Cut(workerRef, ":")
+	if !ok {
+		t.Fatalf("worker %q is not PROJECT:NODE", workerRef)
+	}
+	if _, code := runFS(t, bin, root, "task", "update", nodeID, "--status", "done", "--decision", "worker finished", "--project", "skills"); code != 0 {
+		t.Fatalf("marking worker %s done failed", workerRef)
+	}
 }
 
 // addWorkerNode adds a skills-scope node with the given status and returns it.
@@ -1685,21 +1734,35 @@ func addWorkerNode(t *testing.T, bin, root, status string) string {
 	return nodeID
 }
 
-// fs dispatch --deliver binds the cap node to a pane structurally; fs close
-// reads that binding to close the pane, and succeeds when it is already gone.
-func TestCLIDeliverRecordsTheBindingAndCloseUsesIt(t *testing.T) {
+// fs dispatch --deliver creates the worker's node in the target project, names
+// it in the brief, and binds it in the delivery record; fs close reads that
+// binding, so the cap never has to say which node it is closing.
+func TestCLIDeliverCreatesTheWorkerNodeAndCloseUsesIt(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
-	env, _, script := fakeHerdrOnPath(t)
+	env, state, script := fakeHerdrOnPath(t)
 
-	capNode, paneID := deliverProbe(t, bin, root, env)
+	capNode, paneID, workerRef := deliverProbe(t, bin, root, env)
 	if paneID == "" {
 		t.Fatal("delivery carried no pane id")
 	}
 
-	// The binding is structural: fs log returns the pane id as parseable JSON.
+	// The worker's node exists in the target project, pending, for the worker to
+	// pick up — the cap does not create it, and neither does the worker.
+	workerID := strings.TrimPrefix(workerRef, "skills:")
+	if task := scopeTaskByID(t, bin, root, "skills", workerID); task["status"] != "pending" {
+		t.Errorf("worker node status = %v, want pending", task["status"])
+	}
+
+	// The brief handed to the worker names that node and says not to invent one.
+	if prompt := herdrPrompt(t, state); !strings.Contains(prompt, "Note your work on "+workerRef) {
+		t.Errorf("the brief must name %s; got:\n%s", workerRef, prompt)
+	}
+
+	// The binding is structural: fs log returns the pane and the worker node as
+	// parseable JSON.
 	logResp, code := runFS(t, bin, root, "log", "--node", capNode, "--type", "delivery-recorded", "--project", "cap")
 	if code != 0 {
 		t.Fatalf("log exit %d: %v", code, logResp["error"])
@@ -1709,21 +1772,31 @@ func TestCLIDeliverRecordsTheBindingAndCloseUsesIt(t *testing.T) {
 		t.Fatalf("delivery-recorded events = %v, want exactly 1", events)
 	}
 	payload := events[0].(map[string]any)["payload"].(map[string]any)
-	if payload["pane_id"] != paneID || payload["agent"] != "dispatch-dev-task" || payload["engine"] != "herdr" {
-		t.Errorf("delivery payload = %v, want the pane, agent, and engine", payload)
+	for field, want := range map[string]any{
+		"pane_id": paneID, "agent": "dispatch-dev-task", "engine": "herdr",
+		"project": "skills", "node": workerID,
+	} {
+		if payload[field] != want {
+			t.Errorf("delivery payload %s = %v, want %v", field, payload[field], want)
+		}
 	}
 
 	if task := capTask(t, bin, root, "dispatch dev-task: sample"); task["status"] != "active" {
 		t.Errorf("cap node status = %v, want active once delivered", task["status"])
 	}
 
-	worker := addWorkerNode(t, bin, root, "done")
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker, "--decision", "read the worker node; verified")
+	// Closing needs no --worker: the recorded node is what the gate checks.
+	finishWorker(t, bin, root, workerRef)
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "read the worker node; verified")
 	if code != 0 {
 		t.Fatalf("close exit %d: %v", code, closed["error"])
 	}
-	if data := closed["data"].(map[string]any); data["pane_id"] != paneID {
+	data := closed["data"].(map[string]any)
+	if data["pane_id"] != paneID {
 		t.Errorf("close data = %v, want the closed pane %s", data, paneID)
+	}
+	if data["worker"] != workerRef {
+		t.Errorf("close worker = %v, want the recorded %s", data["worker"], workerRef)
 	}
 
 	task := capTask(t, bin, root, "dispatch dev-task: sample")
@@ -1741,12 +1814,40 @@ func TestCLIDeliverRecordsTheBindingAndCloseUsesIt(t *testing.T) {
 
 	// A pane that is already closed is not an error: close out again, with no
 	// warning — herdr reporting pane_not_found is success, not a failure.
-	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker, "--decision", "read the worker node; verified")
+	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "read the worker node; verified")
 	if code != 0 {
 		t.Fatalf("closing an already-closed dispatch must succeed, exit %d: %v", code, again["error"])
 	}
 	if warning, ok := again["data"].(map[string]any)["warning"]; ok {
 		t.Errorf("an already-closed pane must not warn, got %v", warning)
+	}
+}
+
+// With two dispatches into one project, --worker naming the wrong node is
+// refused against the recorded one rather than closing the wrong work.
+func TestCLICloseRefusesAMismatchedWorker(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, _ := fakeHerdrOnPath(t)
+
+	capNode, _, workerRef := deliverProbe(t, bin, root, env)
+	finishWorker(t, bin, root, workerRef)
+	other := addWorkerNode(t, bin, root, "done")
+
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+other, "--decision", "x")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"skills:" + other, "does not match", workerRef} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
+		}
+	}
+	if task := capTask(t, bin, root, "dispatch dev-task: sample"); task["status"] == "done" {
+		t.Errorf("cap node status = %v, a refused close must not close it", task["status"])
 	}
 }
 
@@ -1781,15 +1882,16 @@ func TestCLICloseRefusesWhileTheWorkerIsActive(t *testing.T) {
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
-	capNode, _ := deliverProbe(t, bin, root, env)
-	worker := addWorkerNode(t, bin, root, "active")
+	capNode, _, workerRef := deliverProbe(t, bin, root, env)
+	_, worker, _ := strings.Cut(workerRef, ":")
+	runFS(t, bin, root, "task", "update", worker, "--status", "active", "--project", "skills")
 
-	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker, "--decision", "x")
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "x")
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1: %v", code, resp)
 	}
 	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"worker skills:" + worker, "is active", "let it finish", "--abandoned"} {
+	for _, want := range []string{"worker " + workerRef, "is active", "let it finish", "--abandoned"} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}
@@ -1804,10 +1906,10 @@ func TestCLICloseRefusesWithoutAVerdict(t *testing.T) {
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
-	capNode, _ := deliverProbe(t, bin, root, env)
-	worker := addWorkerNode(t, bin, root, "done")
+	capNode, _, workerRef := deliverProbe(t, bin, root, env)
+	finishWorker(t, bin, root, workerRef)
 
-	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker)
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode)
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1: %v", code, resp)
 	}
@@ -1867,10 +1969,14 @@ func TestCLIDeliverHerdrUnavailable(t *testing.T) {
 		t.Errorf("error %q must say herdr failed and name the unresolved node", errMsg)
 	}
 
-	// The node is left pending — visible to fs unfinished, never claimed done.
+	// The node is left pending — visible to fs unfinished, never claimed done —
+	// and no worker node was created in the target project: the failure preceded it.
 	task := capTask(t, bin, root, "dispatch dev-task: sample")
 	if task["status"] != "pending" {
 		t.Errorf("cap node status = %v, want pending", task["status"])
+	}
+	if tasks := scopeTasks(t, bin, root, "skills"); len(tasks) != 0 {
+		t.Errorf("skills tasks = %v, want none: no node may be created for a delivery that never happened", tasks)
 	}
 	runFS(t, bin, root, "task", "update", task["node_id"].(string), "--status", "done", "--decision", "test cleanup", "--project", "cap")
 }

@@ -103,17 +103,11 @@ func resolveCapScope(h *command.Handler) {
 // same derived state fs status reports.
 func capDecisions(t *testing.T, f *fixture, nodeID string) []string {
 	t.Helper()
-	resp := f.h.Status("cap")
-	if !resp.OK {
-		t.Fatalf("Status: %s", resp.Error)
+	task, ok := scopeTask(t, f, "cap", nodeID)
+	if !ok {
+		t.Fatalf("cap node %s not found", nodeID)
 	}
-	for _, task := range resp.Data.(command.StatusResult).Tasks {
-		if task.NodeID == nodeID {
-			return task.Decisions
-		}
-	}
-	t.Fatalf("cap node %s not found", nodeID)
-	return nil
+	return task.Decisions
 }
 
 func (f *fixture) writePlaybook(t *testing.T, name, content string) {

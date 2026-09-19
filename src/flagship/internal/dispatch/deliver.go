@@ -42,12 +42,15 @@ type HerdrCLI interface {
 }
 
 // Deliver hands the prepared brief to a worker: it splits a sibling pane at the
-// project root, starts the agent, sends the brief, then records the binding as
-// a delivery-recorded event and marks the cap node active.
+// project root, starts the agent, creates the worker's node in the target
+// project, sends the brief naming that node, then records the binding as a
+// delivery-recorded event and marks the cap node active.
 //
-// Any failure before the record leaves the node pending and closes the pane it
-// opened, so a failed delivery neither leaks a worker nor claims a delivery
-// that did not happen.
+// The worker's node is created before the brief is sent because the brief has to
+// name it — the worker must not invent its own. That ordering is the only one
+// that works, so a failure after the node exists rolls it back (see
+// rollbackWorker): a failed delivery neither leaves outstanding work behind nor
+// claims a delivery that did not happen.
 func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 	agent := "dispatch-" + brief.TaskType
 
@@ -60,14 +63,29 @@ func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 		abandonPane(hc, paneID)
 		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
 	}
+
+	workerID, err := createWorkerNode(h, brief)
+	if err != nil {
+		abandonPane(hc, paneID)
+		return deliverErr(brief, err)
+	}
+
 	if err := hc.Prompt(paneID, renderBrief(brief)); err != nil {
 		abandonPane(hc, paneID)
+		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("send brief: %v", err))
 		return deliverErr(brief, fmt.Errorf("send brief: %w", err))
 	}
 
-	delivery := command.DeliveryRecord{PaneID: paneID, Agent: agent, Engine: herdrEngine}
+	delivery := command.DeliveryRecord{
+		PaneID:  paneID,
+		Agent:   agent,
+		Engine:  herdrEngine,
+		Project: brief.Project,
+		Node:    workerID,
+	}
 	if resp := h.RecordDelivery(capScope, brief.CapNodeID, delivery); !resp.OK {
 		abandonPane(hc, paneID)
+		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("record delivery: %s", resp.Error))
 		return deliverErr(brief, fmt.Errorf("record delivery: %s", resp.Error))
 	}
 	if err := recordDecision(h, brief.CapNodeID, fmt.Sprintf("delivered to pane %s, agent %s", paneID, agent)); err != nil {
@@ -79,6 +97,30 @@ func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 
 	brief.Delivery = &delivery
 	return command.Response{OK: true, Data: brief}
+}
+
+// createWorkerNode creates the worker's node in the target project and points
+// the brief at it, so the brief the worker receives names the node it owns
+// rather than leaving it to invent one.
+func createWorkerNode(h *command.Handler, brief *Brief) (string, error) {
+	added := h.TaskAdd(brief.Project, dispatchGoal(brief.TaskType, brief.Goal), nil)
+	if !added.OK {
+		return "", fmt.Errorf("create worker node in %s: %s", brief.Project, added.Error)
+	}
+	data, ok := added.Data.(command.EventData)
+	if !ok || data.NodeID == "" {
+		return "", fmt.Errorf("create worker node in %s: task-created response carried no node id", brief.Project)
+	}
+	brief.WorkerNode = brief.Project + ":" + data.NodeID
+	return data.NodeID, nil
+}
+
+// rollbackWorker resolves a worker node whose delivery did not complete. The
+// store is append-only, so the node cannot be deleted; marking it done with the
+// reason is the rollback — nothing is left outstanding, and the log says why the
+// node exists. Best-effort: the caller is already reporting a failure.
+func rollbackWorker(h *command.Handler, project, workerID, reason string) {
+	_ = h.TaskUpdate(project, workerID, "done", "dispatch never delivered: "+reason, nil)
 }
 
 // deliverErr reports a delivery that did not happen, naming the cap node it
