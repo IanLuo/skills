@@ -506,3 +506,57 @@ func TestPrepareRequiresArgs(t *testing.T) {
 		}
 	}
 }
+
+// A playbook's trigger must agree with the task type its name selects it for.
+// dispatch loads "<type>-prerequisites", so a trigger naming another type is a
+// contradiction: refuse, naming both values.
+func TestPrepareRefusesAPlaybookWhoseTriggerContradictsItsType(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", `name: dev-task-prerequisites
+type: prerequisite
+trigger: nonsense
+steps:
+  - check: true
+`)
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	if resp.OK {
+		t.Fatal("a contradictory trigger must refuse, not prepare a brief")
+	}
+	for _, want := range []string{"nonsense", `"dev-task"`, "empty"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+
+	// The refusal is a config error, not a gate: --confirm must not override it.
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true)
+	if confirmed.OK {
+		t.Fatal("--confirm must not override a contradictory trigger")
+	}
+
+	// And nothing was left behind to gate the next dispatch.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("cap scope has %d nodes after a refusal, want 0", len(nodes))
+	}
+}
+
+// The field is optional. The name is what selects a playbook, so an absent
+// trigger is a silence, not a contradiction — the shipped playbooks rely on it.
+func TestPrepareAcceptsAPlaybookWithNoTrigger(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", `name: dev-task-prerequisites
+type: prerequisite
+steps:
+  - check: true
+`)
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	if !resp.OK {
+		t.Fatalf("an empty trigger must be accepted: %s", resp.Error)
+	}
+}

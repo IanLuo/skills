@@ -179,7 +179,7 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 	if delivery.Type == "" {
 		return "no cleanup gate: the delivery record carries no task type", nil, nil
 	}
-	name := delivery.Type + "-cleanup"
+	name := knowledge.CleanupName(delivery.Type)
 	if !kc.Has(name) {
 		return fmt.Sprintf("no cleanup gate: no cleanup playbook %s.yaml", name), nil, nil
 	}
@@ -187,6 +187,9 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 	pb, err := kc.Get(name)
 	if err != nil {
 		return "", nil, fmt.Errorf("close: read cleanup playbook %s: %v", name, err)
+	}
+	if err := triggerError("cleanup", name, pb, delivery.Type); err != nil {
+		return "", nil, fmt.Errorf("close: %v", err)
 	}
 
 	var asks []string

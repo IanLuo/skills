@@ -42,14 +42,21 @@ type SeedOutcome struct {
 	Path   string `json:"path"`
 }
 
+// UsedByNone is the used_by value for a playbook no mechanism selects: it is
+// inert, and fs kb list says so rather than leaving it looking shipped.
+const UsedByNone = "none"
+
 // PlaybookState is one playbook on disk and how it relates to the shipped
 // defaults. Edited and stale are independent — a user's edit and an upstream
 // change can both be true — so both are reported, with State as the headline.
+// UsedBy names the mechanisms that select it; UsedByNone is the warning that
+// nothing does.
 type PlaybookState struct {
 	Name   string `json:"name"`
 	State  string `json:"state"`
 	Edited bool   `json:"edited"`
 	Stale  bool   `json:"stale"`
+	UsedBy string `json:"used_by"`
 	Path   string `json:"path"`
 }
 
@@ -165,7 +172,7 @@ func (c *Center) state(defaults fs.FS, name string) (PlaybookState, error) {
 		return PlaybookState{}, err
 	}
 
-	state := PlaybookState{Name: name, Path: c.path(name)}
+	state := PlaybookState{Name: name, Path: c.path(name), UsedBy: usedByFor(name, content)}
 	if !shipped {
 		state.State = StateLocal
 		return state, nil
@@ -189,6 +196,36 @@ func (c *Center) state(defaults fs.FS, name string) (PlaybookState, error) {
 		state.State = StateDefault
 	}
 	return state, nil
+}
+
+// usedByFor names every mechanism that selects a playbook, derived from the
+// playbook itself. Its order is the order the mechanisms are asked for:
+// dispatch, then close, then prompt. An empty result is the answer "nothing
+// selects it" — the playbook is inert.
+//
+// A file that does not parse is reported the same way rather than failing the
+// whole list: a malformed playbook declares nothing, so nothing selects it, and
+// fs kb get is where the parse error surfaces.
+func usedByFor(name string, content []byte) string {
+	pb, err := parsePlaybook(content)
+	if err != nil {
+		return UsedByNone
+	}
+
+	var selectors []string
+	if taskType, ok := strings.CutSuffix(name, prerequisiteSuffix); ok && taskType != "" && pb.TriggerAgrees(taskType) {
+		selectors = append(selectors, "dispatch:"+taskType)
+	}
+	if taskType, ok := strings.CutSuffix(name, cleanupSuffix); ok && taskType != "" && pb.TriggerAgrees(taskType) {
+		selectors = append(selectors, "close:"+taskType)
+	}
+	if pb.Type == "procedure" && pb.Trigger == capTrigger {
+		selectors = append(selectors, "prompt:"+capTrigger)
+	}
+	if len(selectors) == 0 {
+		return UsedByNone
+	}
+	return strings.Join(selectors, ", ")
 }
 
 // read returns one playbook's bytes, naming the file when it is absent.
