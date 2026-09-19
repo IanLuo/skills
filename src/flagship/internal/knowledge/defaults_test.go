@@ -282,3 +282,99 @@ func TestResetRestoresTheShippedDefault(t *testing.T) {
 		t.Error("resetting a playbook with no shipped default must fail")
 	}
 }
+
+// used_by answers "who loads this playbook?" — the question that makes an inert
+// playbook visible. The name is the selector for the two gates; type plus
+// trigger is the selector for the prompt; a name nothing looks up, or a trigger
+// that contradicts the name it is selected by, is `none`.
+func TestStatesReportsWhoUsesEachPlaybook(t *testing.T) {
+	dir := tempKB(t)
+	kc, err := knowledge.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, body := range map[string]string{
+		"dev-task-prerequisites": "name: dev-task-prerequisites\ntype: prerequisite\ntrigger: dev-task\nsteps:\n  - check: true\n",
+		"parallel-cleanup":       "name: parallel-cleanup\ntype: cleanup\ntrigger: parallel\nsteps:\n  - check: true\n",
+		"cap":                    "name: cap\ntype: procedure\ntrigger: cap\nsteps:\n  - say: hold the plan\n",
+		// An empty trigger is not a contradiction: the name is the selector, and
+		// the playbooks written before the field existed can only declare by name.
+		"legacy-prerequisites": "name: legacy-prerequisites\ntype: prerequisite\nsteps:\n  - check: true\n",
+		// The name matches a gate's pattern but its trigger names a different
+		// type, so the mechanism refuses it. It is inert, and says so.
+		"weird-prerequisites": "name: weird-prerequisites\ntype: prerequisite\ntrigger: nonsense\nsteps:\n  - check: true\n",
+		"weird-cleanup":       "name: weird-cleanup\ntype: cleanup\ntrigger: nonsense\nsteps:\n  - check: true\n",
+		// Right type and trigger, but a name no gate looks up: prompt only.
+		"cap-rules": "name: cap-rules\ntype: procedure\ntrigger: cap\nsteps:\n  - say: hold the plan\n",
+		// A name no mechanism selects at all.
+		"dev-task-checks": "name: dev-task-checks\ntype: prerequisite\ntrigger: dev-task\nsteps:\n  - check: true\n",
+		// Two mechanisms at once: the name puts it in the dispatch gate, and its
+		// procedure/cap declaration also puts it in the prompt.
+		"cap-prerequisites": "name: cap-prerequisites\ntype: procedure\ntrigger: cap\nsteps:\n  - say: hold the plan\n",
+		// Not a playbook at all: it declares nothing, so nothing selects it.
+		"broken": "prose that is not a playbook\n",
+	} {
+		writeFile(t, filepath.Join(dir, name+".yaml"), body)
+	}
+
+	// No shipped defaults: the fixtures are hand-written playbooks.
+	states, err := kc.States(fstest.MapFS{})
+	if err != nil {
+		t.Fatalf("States: %v", err)
+	}
+
+	for _, tc := range []struct{ name, usedBy string }{
+		{"dev-task-prerequisites", "dispatch:dev-task"},
+		{"parallel-cleanup", "close:parallel"},
+		{"cap", "prompt:cap"},
+		{"legacy-prerequisites", "dispatch:legacy"},
+		{"weird-prerequisites", knowledge.UsedByNone},
+		{"weird-cleanup", knowledge.UsedByNone},
+		{"cap-rules", "prompt:cap"},
+		{"dev-task-checks", knowledge.UsedByNone},
+		{"cap-prerequisites", "dispatch:cap, prompt:cap"},
+		{"broken", knowledge.UsedByNone},
+	} {
+		if got := stateOf(t, states, tc.name).UsedBy; got != tc.usedBy {
+			t.Errorf("%s used_by = %q, want %q", tc.name, got, tc.usedBy)
+		}
+	}
+}
+
+// Every playbook the binary ships is selected by some mechanism; one that
+// nothing loads is inert. The defaults are read from the tree the binary embeds
+// rather than restated, so a new shipped playbook nothing loads fails here.
+func TestEveryShippedPlaybookIsUsed(t *testing.T) {
+	shipped := os.DirFS(filepath.Join("..", "..", "defaults", "kb"))
+
+	kc, err := knowledge.Open(tempKB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kc.Seed(shipped); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+
+	states, err := kc.States(shipped)
+	if err != nil {
+		t.Fatalf("States: %v", err)
+	}
+	for _, state := range states {
+		if state.UsedBy == knowledge.UsedByNone {
+			t.Errorf("shipped playbook %s is inert: no mechanism selects it", state.Name)
+		}
+	}
+
+	for name, usedBy := range map[string]string{
+		"cap":                    "prompt:cap",
+		"herdr":                  "prompt:cap",
+		"dev-task-prerequisites": "dispatch:dev-task",
+		"parallel-prerequisites": "dispatch:parallel",
+		"parallel-cleanup":       "close:parallel",
+	} {
+		if got := stateOf(t, states, name).UsedBy; got != usedBy {
+			t.Errorf("shipped %s used_by = %q, want %q", name, got, usedBy)
+		}
+	}
+}

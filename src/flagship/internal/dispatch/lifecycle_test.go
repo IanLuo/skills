@@ -1029,3 +1029,33 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+// The trigger rule is the same at exit as at entry: fs close loads
+// "<type>-cleanup", so a cleanup playbook whose trigger names another type is
+// refused rather than run.
+func TestCloseRefusesACleanupPlaybookWhoseTriggerContradictsItsType(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
+type: cleanup
+trigger: nonsense
+steps:
+  - check: true
+`)
+
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a contradictory cleanup trigger must refuse the close")
+	}
+	for _, want := range []string{"nonsense", `"dev-task"`, "empty"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+		t.Errorf("a refused close must leave the node open, got %q", status)
+	}
+}

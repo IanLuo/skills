@@ -49,6 +49,30 @@ type Playbook struct {
 	EngineScope string `json:"engine_scope,omitempty" yaml:"engine_scope,omitempty"`
 }
 
+// A mechanism selects a playbook by name, not by its trigger: fs dispatch loads
+// "<type>-prerequisites" and fs close loads "<type>-cleanup". The names live
+// here, beside the schema, because the mechanism that loads a playbook and the
+// report that says who uses it have to derive them the same way.
+const (
+	prerequisiteSuffix = "-prerequisites"
+	cleanupSuffix      = "-cleanup"
+)
+
+// PrerequisiteName is the playbook fs dispatch loads for a task type.
+func PrerequisiteName(taskType string) string { return taskType + prerequisiteSuffix }
+
+// CleanupName is the playbook fs close loads for a task type.
+func CleanupName(taskType string) string { return taskType + cleanupSuffix }
+
+// TriggerAgrees reports whether a playbook's trigger is consistent with the
+// task type a mechanism selects it by. An empty trigger is consistent: the name
+// is the selector, so a playbook written before the field existed declares
+// itself by name alone. A non-empty trigger must equal that type — it states
+// intent, and one that disagrees is a mistake, not a second way to be selected.
+func (pb *Playbook) TriggerAgrees(taskType string) bool {
+	return pb.Trigger == "" || pb.Trigger == taskType
+}
+
 // Center manages playbook files on disk.
 type Center struct {
 	dir string

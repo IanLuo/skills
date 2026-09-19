@@ -93,12 +93,15 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 		return errResp("--goal is required")
 	}
 
-	playbookName := taskType + "-prerequisites"
+	playbookName := knowledge.PrerequisiteName(taskType)
 	pb, err := kc.Get(playbookName)
 	if err != nil {
 		return errResp(fmt.Sprintf(
 			"dispatch: prerequisite playbook %s.yaml is missing or unreadable (%v); tell the user and stop — never improvise a procedure for a worker",
 			playbookName, err))
+	}
+	if err := triggerError("prerequisite", playbookName, pb, taskType); err != nil {
+		return errResp("dispatch: " + err.Error())
 	}
 
 	proj, err := reg.Get(project)
@@ -135,6 +138,22 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	}
 
 	return command.Response{OK: true, Data: brief}
+}
+
+// triggerError refuses a playbook whose trigger contradicts the task type its
+// name selects it for. An empty trigger is not a contradiction: the name is
+// what selects a playbook, and the shipped playbooks predate the field.
+//
+// Entry and exit are held to the same rule, because both select by the same
+// kind of name. --confirm never overrides it: a contradiction is a
+// configuration mistake, not a failed gate.
+func triggerError(kind, name string, pb *knowledge.Playbook, taskType string) error {
+	if pb.TriggerAgrees(taskType) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s playbook %s.yaml carries trigger %q, which does not match the task type %q its name selects it for; set trigger to %q, or leave it empty — an empty trigger is valid and the shipped playbooks rely on it",
+		kind, name, pb.Trigger, taskType, taskType)
 }
 
 // isDispatchGoal reports whether a goal was written by fs dispatch, which always
