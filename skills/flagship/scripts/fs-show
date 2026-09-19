@@ -13,7 +13,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FS="${FS:-$(command -v fs || echo "$here/../skills/flagship/scripts/fs")}"
+FS="${FS:-$(command -v fs || echo "$here/fs")}"
 
 if [ $# -lt 1 ]; then
   sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

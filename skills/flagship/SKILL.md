@@ -129,6 +129,21 @@ fs query "search term" [--project ID]
 fs log [--project ID] [--node NODE_ID] [--type TYPE]
 ```
 
+### Reading events
+
+`fs log` returns raw event JSON. For reading:
+
+```bash
+skills/flagship/scripts/fs-show <project> [node] [event-type]
+
+fs-show skills t-7609aede              # one node's history
+fs-show skills t-7609aede status-changed
+fs-show cap                            # a whole scope
+```
+
+It finds `fs` via `$PATH` or falls back to this skill's `scripts/`, so it works
+from any directory.
+
 ### Knowledge center (global playbooks)
 
 ```bash
