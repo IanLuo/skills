@@ -170,12 +170,90 @@ if [ "$DOCTOR" -eq 1 ]; then
       fi
     done
   done
+  # Derived build artifacts. A skill's scripts/ folder holds binaries built from
+  # src/ by ./bin/build-project.sh. Because `nix build` writes into the store and
+  # does not install, an artifact that is stale or missing is invisible otherwise.
+  # Each is compared by content against the store output of the current source,
+  # which resolves without building anything.
+  log "Doctor: checking skill contents — derived artifacts and source files"
+  echo ""
+  sys="$(nix eval --raw --impure --expr builtins.currentSystem 2>/dev/null || true)"
+  projects="$("$REPO_ROOT/bin/build-project.sh" --list 2>/dev/null || true)"
+  artifacts_checked=0
+  dirty=0
+  if [ -z "$projects" ]; then
+    printf '  ~ cannot enumerate projects from the flake (is nix available?) — skipping\n'
+  fi
+  for project in $projects; do
+    artifacts_checked=$((artifacts_checked + 1))
+    dest="$REPO_ROOT/skills/$project/scripts"
+
+    # Provenance, a different fact from staleness: nix copies the working tree, so
+    # an artifact built while src/<project> had uncommitted edits cannot be
+    # reproduced from any commit. Tracked changes only — nix does not copy
+    # untracked files, so those cannot be inside the artifact. Reported as a
+    # caveat, never an issue: an edited working tree is the normal state.
+    provenance=""
+    if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no -- "src/$project" 2>/dev/null)" ]; then
+      provenance=" (uncommitted source)"
+      dirty=$((dirty + 1))
+    fi
+
+    out="$(nix eval --raw ".#packages.$sys.$project.outPath" 2>/dev/null || true)"
+    if [ -z "$out" ]; then
+      printf '  ~ [%s] cannot resolve its flake output for %s\n' "$project" "${sys:-this system}"
+      continue
+    fi
+    if [ ! -e "$out/bin" ]; then
+      printf '  ✖ [%s] not built from the current source%s — run ./bin/build-project.sh %s\n' "$project" "$provenance" "$project"
+      issues=$((issues + 1))
+      continue
+    fi
+    found=0
+    for f in "$dest"/*; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      [ -e "$out/bin/$base" ] || continue   # not a built artifact (cred.sh, helpers)
+      found=$((found + 1))
+      if cmp -s "$f" "$out/bin/$base"; then
+        printf '  ✓ [%s] %s matches the flake output%s\n' "$project" "$base" "$provenance"
+      else
+        printf '  ✖ [%s] %s is STALE — run ./bin/build-project.sh %s\n' "$project" "$base" "$project"
+        issues=$((issues + 1))
+      fi
+    done
+    if [ "$found" -eq 0 ]; then
+      printf '  ✖ [%s] no built binary in skills/%s/scripts — run ./bin/build-project.sh %s\n' "$project" "$project" "$project"
+      issues=$((issues + 1))
+    fi
+  done
+
+  # Source files that live only in a skill rather than being build output (see
+  # cred.sh). A hand-deleted one is invisible to the check above, which can only
+  # compare files that still exist — and it means the skill is broken, not that a
+  # refactor is in flight. Scoped to skills/*/scripts/ for exactly that reason: a
+  # repo-wide `git ls-files --deleted` would flag intentional removals, such as a
+  # retired build.sh, as breakage.
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    printf '  ✖ %s is tracked but missing — restore: git checkout -- %s\n' "$rel" "$rel"
+    issues=$((issues + 1))
+  done < <(git -C "$REPO_ROOT" ls-files --deleted -- 'skills/*/scripts/*' 2>/dev/null || true)
+
   echo ""
   if [ "$issues" -gt 0 ]; then
-    log "✖ $issues dangling symlink(s) found — re-run ./bin/deploy-skills.sh to repoint, or move the repo back."
+    log "✖ $issues issue(s) — dangling symlinks, stale or missing artifacts, and/or missing source files."
     exit 1
   fi
-  log "✓ No dangling symlinks. (~ = advisory; ✓ = healthy)"
+  if [ "$artifacts_checked" -eq 0 ]; then
+    # Say only what was verified: never claim the artifacts are good when the
+    # check could not run at all.
+    log "✓ Symlinks healthy. Derived artifacts NOT verified (no projects enumerated)."
+  elif [ "$dirty" -gt 0 ]; then
+    log "✓ Symlinks healthy; $artifacts_checked project(s) match their flake output, but $dirty were built from uncommitted source (not reproducible from a commit). (~ = advisory)"
+  else
+    log "✓ Symlinks healthy; $artifacts_checked project(s): every derived artifact matches its flake output. (~ = advisory)"
+  fi
   exit 0
 fi
 
