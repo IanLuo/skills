@@ -7,15 +7,18 @@
 #   cred add <profile> <VAR>           store a secret (prompts, no echo)
 #   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
 #   cred list [profile]                list profiles / vars (names only)
-#   cred unlock                        decrypt the vault into a 5-min cache
-#   cred lock                          wipe the cache now
+#   cred unlock                        hold the vault in memory for 5 min (needs a TTY)
+#   cred lock                          close that window now
 #   cred run <profile> -- <cmd> [args] run cmd with secrets injected + output scrubbed
 #
 # Secrets live in an encrypted vault file (~/.config/cred/vault) at rest, behind a
-# passphrase the human sets. `cred unlock` decrypts it into a transient plaintext
-# cache (0600, 300s TTL); `cred run` reads only that cache. Non-secret vars live in
-# a plaintext profile. There is deliberately no `get` verb: a secret value is only
-# ever placed into a child process environment, never printed.
+# passphrase the human sets. `cred unlock` decrypts it into a detached holder
+# process (cred-run hold) that keeps it in memory for 300s and owns every secret
+# operation; `cred run` is a thin client of that holder and never sees a value. The
+# decrypted vault is never written to disk, so nothing readable survives the
+# window. Non-secret vars live in a plaintext profile. There is deliberately no
+# `get` verb: a secret value is only ever placed into a child process environment,
+# never printed.
 #
 # Env overrides (used by tests): CRED_DIR, CRED_RUN_BIN.
 
@@ -26,16 +29,20 @@ CRED_DIR="${CRED_DIR:-$HOME/.config/cred}"
 export CRED_DIR
 PROFILE_DIR="$CRED_DIR/profiles"
 VAULT="$CRED_DIR/vault"
-UNLOCKED="$CRED_DIR/unlocked"
+HOLD_SOCK="$CRED_DIR/hold.sock"
+HOLD_PID="$CRED_DIR/hold.pid"
 RUN_BIN="${CRED_RUN_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/cred-run}"
 OPENSSL="${OPENSSL:-openssl}"
 HEADER='# cred-vault-v1'
 TTL=300
 
 # SECRET_MARKER is the token a profile value uses to mean "resolve this from the
-# vault". With the paths above and TTL it is the whole contract between this
-# script and cred-run, which is why cmd_run exports all four instead of letting
-# the binary re-derive them: each definition exists exactly once.
+# vault". These definitions are the whole contract between this script and
+# cred-run, and each is exported only to the half that uses it instead of being
+# re-derived on the other side: the holder gets the profile dir, the socket, the
+# window and the marker; the client gets the socket and nothing else. A hash of
+# the vault layout or the relock window in the binary would be a second place to
+# change.
 SECRET_MARKER='@secret'
 
 err() { printf 'cred: %s\n' "$*" >&2; }
@@ -58,8 +65,8 @@ Usage:
   cred add <profile> <VAR>           store a secret (prompts, no echo)
   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
   cred list [profile]                list profiles / vars (names only)
-  cred unlock                        decrypt the vault into a 5-min cache
-  cred lock                          wipe the cache now
+  cred unlock                        hold the vault in memory for 5 min (needs a TTY)
+  cred lock                          close that window now
   cred run <profile> -- <cmd> [args] run cmd with secrets injected + output scrubbed
 
 Setup (once):
@@ -199,10 +206,11 @@ cmd_add() {
   [[ "$got" == *"$profile"$'\t'"$var"$'\t'"$secret"* ]] \
     || die "verification failed — value not stored correctly"
 
-  # If the vault is unlocked, refresh the cache so `cred run` sees the new secret.
-  if [ -f "$UNLOCKED" ]; then
-    cp "$tmp" "$UNLOCKED"
-    chmod 600 "$UNLOCKED"
+  # A live holder is holding the *old* vault in memory, so it has to be replaced
+  # — not refreshed — or `cred run` keeps resolving the previous value.
+  if holder_running; then
+    start_holder < "$tmp"
+    rm -f "$tmp"
   fi
 
   local f; f="$(profile_file "$profile")"
@@ -242,21 +250,67 @@ cmd_list() {
   done < "$f"
 }
 
+# ── The holder ──────────────────────────────────────────────────────────
+#
+# `cred unlock` and `cred add` both need to (re)start it; nothing else does.
+# It is detached on purpose: it has to outlive the command that started it, or
+# the window would close the moment unlock returned.
+
+# Stop a live holder and drop its socket. Safe when there is none: a holder that
+# closed its own window on TTL leaves the pidfile behind, and the kill then
+# fails harmlessly.
+stop_holder() {
+  if [ -f "$HOLD_PID" ]; then
+    kill "$(cat "$HOLD_PID")" 2>/dev/null || true
+    rm -f "$HOLD_PID"
+  fi
+  rm -f "$HOLD_SOCK"
+}
+
+holder_running() { [ -S "$HOLD_SOCK" ] && [ -f "$HOLD_PID" ] && kill -0 "$(cat "$HOLD_PID")" 2>/dev/null; }
+
+# Start the holder on a decrypted vault arriving on stdin, and wait for its
+# socket. The holder binds only after reading and parsing the whole vault, so a
+# socket that exists means ready — no readiness protocol needed.
+start_holder() {
+  stop_holder
+  # `<&0` is load-bearing. An asynchronous list starts with stdin from /dev/null
+  # when the shell has nowhere to put it (no job control), and that default wins
+  # over a redirect placed on the call — so without re-redirecting here the
+  # holder reads an empty vault, comes up healthy, and fails every secret lookup
+  # with 'no secret for <profile>/<var>'.
+  nohup "$RUN_BIN" hold <&0 >/dev/null 2>&1 &
+  echo $! > "$HOLD_PID"
+  local i
+  for i in $(seq 1 100); do
+    [ -S "$HOLD_SOCK" ] && return 0
+    sleep 0.05
+  done
+  stop_holder
+  die "the holder did not come up — wrong passphrase, or a broken cred-run build"
+}
+
 cmd_unlock() {
   require_tty
   [ -f "$VAULT" ] || die "no vault yet — run 'cred init'"
-  local pw tmp
+  local pw plain
   pw="$(read_secret 'vault passphrase (hidden): ')"
-  tmp="$(mktemp "${TMPDIR:-/tmp}/cred.XXXXXX")"
-  _TMP_CLEANUP="$_TMP_CLEANUP $tmp"
-  CRED_PW="$pw" VDEC "$tmp" || die "wrong passphrase (or corrupt vault)"
-  [ "$(head -n1 "$tmp")" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
-  cp "$tmp" "$UNLOCKED"
-  chmod 600 "$UNLOCKED"
+  [ -x "$RUN_BIN" ] || die "cred-run binary not built — run: ./bin/build-project.sh credentials"
+  # Decrypted into this shell's memory, never a file: `cred unlock` is what opens
+  # the window, so it must not be the thing that puts the vault on disk.
+  plain="$(CRED_PW="$pw" VDEC -)" || die "wrong passphrase (or corrupt vault)"
+  [ "${plain%%$'\n'*}" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
+  export CRED_PROFILE_DIR="$PROFILE_DIR"
+  export CRED_HOLD_SOCK="$HOLD_SOCK"
+  export CRED_TTL="$TTL"
+  export CRED_SECRET_MARKER="$SECRET_MARKER"
+  # No plaintext vault file is made here: the text goes straight from the
+  # decryption into the holder's stdin, which holds it in memory.
+  start_holder < <(printf '%s\n' "$plain")
   printf 'unlocked — relocks %ss after unlock\n' "$TTL"
 }
 
-cmd_lock() { rm -f "$UNLOCKED" && printf 'locked\n'; }
+cmd_lock() { stop_holder && printf 'locked\n'; }
 
 cmd_run() {
   [ $# -ge 1 ] || die "usage: cred run <profile> -- <cmd> [args]"
@@ -267,10 +321,7 @@ cmd_run() {
   # Hand cred-run the contract (see SECRET_MARKER above). Deliberately no
   # defaults: a missing export must fail loudly rather than let the binary fall
   # back to a stale constant of its own.
-  export CRED_PROFILE_DIR="$PROFILE_DIR"
-  export CRED_UNLOCKED="$UNLOCKED"
-  export CRED_TTL="$TTL"
-  export CRED_SECRET_MARKER="$SECRET_MARKER"
+  export CRED_HOLD_SOCK="$HOLD_SOCK"
   exec "$RUN_BIN" run "$@"
 }
 

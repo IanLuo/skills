@@ -21,13 +21,27 @@ scrub — the `run` verb). Executing them is the whole point: run them, do not
 read their values into context.
 
 Two units, and the split is deliberate: `cred.sh` owns the whole vault/profile
-contract — where profiles live, where the unlocked cache is, the relock window,
+contract — where profiles live, where the holder socket is, the relock window,
 and `@secret` resolution — and is the only thing that defines it. `cred-run` in
-`src/credentials/` is a build project whose only job is to execute a command and
-scrub its output; it takes that contract from the environment, which `cred.sh`
-exports (`CRED_PROFILE_DIR`, `CRED_UNLOCKED`, `CRED_TTL`, `CRED_SECRET_MARKER`)
-before exec'ing it. So deploy ships `cred.sh` plus a binary, and the Rust source
-never has to agree with the shell by coincidence.
+`src/credentials/` is a build project with two halves that share one wire
+protocol:
+
+- **`cred-run hold`** — the executor. `cred unlock` starts it, it reads the
+decrypted vault from stdin, and it keeps it **in memory** for the relock window.
+  It owns everything that touches a secret: profile loading, the allow-list,
+injection into the child's `envp`, and scrubbing. Nothing decrypted is ever
+written to disk.
+- **`cred-run run`** — a thin client. It sends `{profile, argv, terminal}` to the
+holder, relays the scrubbed answer to its own stdout/stderr, and exits with the
+holder's code. It never sees a secret value, so a client that is *not* cred-run
+still gets scrubbed, allow-listed output — the scrub is not a property of the
+caller.
+
+cred.sh exports the contract as environment variables — `CRED_PROFILE_DIR`,
+`CRED_HOLD_SOCK`, `CRED_TTL`, `CRED_SECRET_MARKER` to the holder, and only
+`CRED_HOLD_SOCK` to the client — rather than letting either half re-derive it.
+Each definition exists exactly once. Deploy ships `cred.sh` plus a binary, and
+the Rust source never has to agree with the shell by coincidence.
 
 The `cred-run` binary is gitignored — a derived artifact. From the repo root,
 `bin/build-project.sh` builds it with nix and installs it into `scripts/`:
@@ -110,25 +124,28 @@ whose first word isn't listed.
 ## What `cred run` guarantees
 
 - Secrets are injected as environment variables (safe from `ps`), never argv.
+- Secrets never leave the holder process; the client only relays scrubbed output.
 - Every secret value is replaced with `***` in stdout *and* stderr before it
   reaches you. Values shorter than 6 chars are skipped (redacting them would
   mangle ordinary text) — treat those as effectively unredacted.
-- A locked vault fails fast with `vault is LOCKED`, it does not hang.
+- A closed window fails fast with `vault is LOCKED`, it does not hang. `cred run`
+  needs the window open even when the profile has no secrets.
 
 ## Known limits (do not paper over)
 
-- **The lock is the only real boundary.** At rest the vault is AES-256-CBC
-  (PBKDF2, `-iter 200000`) behind a passphrase the human sets at `cred init` —
-  there is no default password. While *unlocked*, the plaintext cache
-  `~/.config/cred/unlocked` (0600) is readable by any same-user process,
-  including an agent. The protection is that a *locked* vault has no such
-  cache and is encrypted. This stops accidental leaks and idle exfiltration; it
-  is not proof against an agent that reads the cache during an open window.
+- **Same-uid is not a boundary, and the holder does not pretend to be one.**
+  While the window is open the vault is in the holder's memory, so any process
+  running as you can use the holder (that is what `cred run` does) and a
+  debugger can read it. What the holder buys is that the vault is **never on
+  disk** — no plaintext cache, nothing surviving the window. It is not proof
+  against a determined same-user agent.
+- **The scrub stops accidents, not intent.** `cred run svc -- sh -c 'base64 <<< "$TOKEN"'`
+  prints the secret in a form the scrubber cannot match. Coming through
+  `cred run` does not make output safe to re-publish.
 - **`cred add` writes the plaintext secret to a 0600 temp file for ~ms** and
   passes the passphrase via `openssl`'s environment (never argv). A sibling
-  same-user process polling during that instant could catch either. `cred run`
-  and `cred unlock` never put the *secret* in argv or env (only the passphrase
-  briefly in `openssl`'s env on `add`/`unlock`).
+  same-user process polling during that instant could catch either. `cred unlock`
+  creates no temp file — it decrypts straight into the holder's stdin.
 - **The allow-list checks only the command's first word.** `cred run github -- gh api repo ...`
   is allowed; arguments are not screened. Keep the list tight to the tools you
   trust.

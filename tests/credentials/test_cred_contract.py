@@ -2,23 +2,32 @@
 """
 test_cred_contract.py — behaviour tests for the cred skill's shell↔binary contract.
 
-cred.sh owns the vault/profile contract — where profiles live, where the unlocked
-cache is, the relock window, and the `@secret` token — and exports it as CRED_*
+cred.sh owns the vault/profile contract — where profiles live, where the holder
+socket is, the relock window, and the `@secret` token — and exports it as CRED_*
 variables; cred-run consumes it and refuses to guess. Nothing else checks that the
 two halves agree, which is how a broken `cred run` can pass every other check in
 this repo: it happened, when cred.sh's exports were lost and validate/audit/tests
 all still reported success. These tests exist so that silence is not possible.
 
+The contract has two halves. `cred-run hold` is the executor: it owns the
+decrypted vault in process memory and does the profile loading, the allow-list,
+the injection, the scrubbing and the streaming. `cred-run run` is a thin client
+that connects, relays, and exits with the holder's code. So a client that is not
+cred-run — the raw-socket test below — cannot bypass the scrub.
+
 Rules under test:
 
   1. cred run injects a profile's non-secret var and scrubs the secret to ***
   2. the secret's value never survives into the output, in any form
-  3. the allow-list is enforced (exit 6)
-  4. a profile with no secrets works while the vault is locked
-  5. the relock window comes from cred.sh: a stale cache reads as locked (exit 2)
-  6. cred-run without the CRED_* contract fails loudly instead of guessing
-  7. upsert replaces a value containing & and | (the BSD-sed and & expansion bugs)
-  8. cred list shows @secret, never a value
+  3. the allow-list is enforced (exit 6) — by the holder, not the client
+  4. a secret-free profile runs while unlocked, and `cred run` never runs
+     without the window open (no silent uncredentialed run)
+  5. one holder serves many runs (unlock once, reuse until TTL)
+  6. the decrypted vault is never on disk while unlocked
+  7. a missing or expired holder reads as locked (exit 2), never hangs
+  8. cred-run without the CRED_* contract fails loudly instead of guessing
+  9. upsert replaces a value containing & and | (the BSD-sed and & expansion bugs)
+ 10. cred list shows @secret, never a value
 
 Usage: python3 tests/credentials/test_cred_contract.py     (run from anywhere)
 Exit: 0 all pass (or skipped, if cred-run is not built), 1 any fail.
@@ -26,15 +35,24 @@ Exit: 0 all pass (or skipped, if cred-run is not built), 1 any fail.
 
 import os
 import pathlib
+import pty
+import select
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 CRED = REPO / "skills/credentials/scripts/cred.sh"
 RUN = REPO / "skills/credentials/scripts/cred-run"
 
 SECRET = "v3ry-s3cret-value"
+VAULT_HEADER = "# cred-vault-v1"
+# An answer of this instead of a string closes the pty's input (Ctrl-D at the
+# start of a line), which is how a test ends a child that is reading its stdin.
+EOF_KEY = "<eof>"
 PASS, FAILS = 0, []
 
 
@@ -64,11 +82,135 @@ def profile(cred_dir, name, body):
     (d / f"{name}.env").write_text(body)
 
 
-def cache(cred_dir, rows):
-    """The plaintext cache `cred unlock` writes: the vault header + TSV rows."""
-    (cred_dir / "unlocked").write_text(
-        "# cred-vault-v1\n" + "".join(f"{p}\t{v}\t{val}\n" for p, v, val in rows)
+def vault_text(rows):
+    return VAULT_HEADER + "\n" + "".join(f"{p}\t{v}\t{val}\n" for p, v, val in rows)
+
+
+def start_holder(cred_dir, rows, ttl=300):
+    """Start `cred-run hold` the way cred.sh does: vault piped in on stdin.
+
+    The holder creates its socket only after it has read and parsed the whole
+    vault, so the socket's existence means ready.
+    """
+    sock = cred_dir / "hold.sock"
+    e = dict(
+        os.environ,
+        CRED_PROFILE_DIR=str(cred_dir / "profiles"),
+        CRED_HOLD_SOCK=str(sock),
+        CRED_TTL=str(ttl),
+        CRED_SECRET_MARKER="@secret",
     )
+    proc = subprocess.Popen(
+        [str(RUN), "hold"],
+        env=e,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    proc.stdin.write(vault_text(rows))
+    proc.stdin.close()
+    for _ in range(100):
+        if sock.exists():
+            return proc
+        time.sleep(0.05)
+    raise AssertionError(f"holder never created {sock}: {proc.stderr.read()}")
+
+
+def stop_holder(cred_dir, proc):
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait(timeout=5)
+    sock = cred_dir / "hold.sock"
+    if sock.exists():
+        sock.unlink()
+
+
+def on_a_real_tty(args, cred_dir, answers, timeout=30):
+    """Run cred.sh on a controlling pty, answering its prompts in order.
+
+    `cred init` and `cred unlock` are human-gated — the only way to test them is
+    to actually be a terminal. A bare pty slave is not enough: bash's `read -s`
+    drives the *controlling* terminal and blocks forever without one, so this is
+    pty.fork() rather than Popen(stdin=slave).
+
+    Each answer is sent only once the child has gone quiet, i.e. is blocked on a
+    prompt. Writing everything up front would let the terminal driver echo it
+    before `read -s` turns echo off, and the echo assertion below is the check
+    that the secret never crosses the screen.
+
+    Output comes back on one stream because the child's stdout, stderr and stdin
+    are all the pty.
+    """
+    pid, master = pty.fork()
+    if pid == 0:
+        os.execvpe("bash", ["bash", str(CRED), *args], dict(os.environ, CRED_DIR=str(cred_dir)))
+        os._exit(127)
+
+    chunks, pending, quiet = [], list(answers), 0.0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if select.select([master], [], [], 0.2)[0]:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:  # EIO — the child closed its side
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            quiet = 0.0
+            continue
+        quiet += 0.2
+        if pending and quiet >= 0.4:
+            answer = pending.pop(0)
+            os.write(master, b"\x04" if answer == EOF_KEY else (answer + "\n").encode())
+            quiet = 0.0
+    os.close(master)
+
+    wpid, status = os.waitpid(pid, os.WNOHANG)
+    if wpid != pid:  # still running: timed out, don't hang the suite
+        os.kill(pid, 9)
+        _, status = os.waitpid(pid, 0)
+        return -1, b"".join(chunks).decode(errors="replace")
+    return os.WEXITSTATUS(status), b"".join(chunks).decode(errors="replace")
+
+
+# ── The wire protocol, spoken directly ───────────────────────────────────
+# Pins the shell↔binary contract at the byte level, and proves the scrub runs in
+# the holder: a client that is not cred-run still gets scrubbed output.
+
+def frame(field):
+    b = field.encode()
+    return struct.pack(">I", len(b)) + b
+
+
+def raw_request(sock_path, profile, argv, tty=""):
+    """Send a request over the socket; return (stdout, stderr, exit_code)."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(str(sock_path))
+        req = frame(tty) + frame(profile) + struct.pack(">I", len(argv))
+        for a in argv:
+            req += frame(a)
+        s.sendall(req)
+
+        out, err, buf = [], [], b""
+        while True:
+            while len(buf) < 1:
+                buf += s.recv(4096)
+            tag, buf = buf[0], buf[1:]
+            if tag == ord("x"):
+                while len(buf) < 4:
+                    buf += s.recv(4096)
+                code = struct.unpack(">i", buf[:4])[0]
+                return "".join(out), "".join(err), code
+            while len(buf) < 4:
+                buf += s.recv(4096)
+            n = struct.unpack(">I", buf[:4])[0]
+            buf = buf[4:]
+            while len(buf) < n:
+                buf += s.recv(4096)
+            chunk, buf = buf[:n].decode(errors="replace"), buf[n:]
+            (out if tag == ord("o") else err).append(chunk)
 
 
 def main():
@@ -78,44 +220,92 @@ def main():
 
     with tempfile.TemporaryDirectory() as td:
         cred_dir = pathlib.Path(td)
-        profile(cred_dir, "p", f"SECRET=@secret\nURL=https://api.example.com\nallow=printenv list\n")
-        cache(cred_dir, [("p", "SECRET", SECRET)])
+        profile(cred_dir, "p", "SECRET=@secret\nURL=https://api.example.com\nallow=printenv cat\n")
+        holder = start_holder(cred_dir, [("p", "SECRET", SECRET)])
+        try:
+            # 1 + 2. Injection, scrubbing, and passthrough of a non-secret var.
+            r = cred(cred_dir, "run", "p", "--", "printenv", "SECRET")
+            check("run injects the secret and scrubs it", r.stdout.strip() == "***", repr(r.stdout))
+            check("the secret value never reaches output", SECRET not in r.stdout + r.stderr)
+            r = cred(cred_dir, "run", "p", "--", "printenv", "URL")
+            check("run passes a non-secret var through", r.stdout.strip() == "https://api.example.com", repr(r.stdout))
 
-        # 1 + 2. Injection, scrubbing, and passthrough of a non-secret var.
-        r = cred(cred_dir, "run", "p", "--", "printenv", "SECRET")
-        check("run injects the secret and scrubs it", r.stdout.strip() == "***", repr(r.stdout))
-        check("the secret value never reaches output", SECRET not in r.stdout + r.stderr)
-        r = cred(cred_dir, "run", "p", "--", "printenv", "URL")
-        check("run passes a non-secret var through", r.stdout.strip() == "https://api.example.com", repr(r.stdout))
+            # 3. Allow-list is the holder's, so it holds for any client.
+            r = cred(cred_dir, "run", "p", "--", "ls", "/etc/hosts")
+            check("allow-list refuses an unlisted command", r.returncode == 6, f"exit={r.returncode}")
+            check("the refusal names the allow-list", "allow-list" in r.stderr, r.stderr)
 
-        # 3. Allow-list.
-        r = cred(cred_dir, "run", "p", "--", "cat", "/etc/hosts")
-        check("allow-list refuses an unlisted command", r.returncode == 6, f"exit={r.returncode}")
-        check("the refusal names the allow-list", "allow-list" in r.stderr, r.stderr)
+            # 3b. Same over the wire, from a client that is not cred-run.
+            out, err, code = raw_request(cred_dir / "hold.sock", "p", ["printenv", "SECRET"])
+            check("a foreign client is still scrubbed by the holder", out.strip() == "***", repr(out))
+            _, err, code = raw_request(cred_dir / "hold.sock", "p", ["ls", "/etc/hosts"])
+            check("a foreign client is still allow-listed", code == 6, f"exit={code}")
+            check("the refusal reaches a foreign client", "allow-list" in err, err)
 
-        # 4. No secrets → works while locked (no cache at all).
-        locked = cred_dir / "locked"
+            # 4 + 5. The holder is reused: many runs, one unlock.
+            pids = set()
+            for _ in range(3):
+                r = cred(cred_dir, "run", "p", "--", "printenv", "SECRET")
+                check("reuse: each run against one holder succeeds", r.stdout.strip() == "***", repr(r.stdout))
+            check("reuse: the holder is still the same process", holder.poll() is None, "holder exited")
+            pids.add(holder.pid)
+
+            # 6. THE PROPERTY: nothing decrypted on disk while unlocked.
+            on_disk = [p for p in cred_dir.rglob("*") if p.is_file() and SECRET in p.read_text(errors="ignore")]
+            check("no plaintext vault anywhere under CRED_DIR while unlocked", not on_disk, str(on_disk))
+            check("the old plaintext cache file is gone", not (cred_dir / "unlocked").exists())
+
+            # 4. A profile with no secrets needs no vault entry — but it still
+            # needs the window: running here means running *with* credentials.
+            profile(cred_dir, "n", "URL=https://api.example.com\nallow=printenv\n")
+            r = cred(cred_dir, "run", "n", "--", "printenv", "URL")
+            check("a secret-free profile runs while unlocked", r.returncode == 0, r.stderr.strip())
+
+            # 7. A non-tty stdin must not hang the child (documented /dev/null fallback).
+            r = subprocess.run(
+                ["bash", str(CRED), "run", "p", "--", "cat"],
+                env=dict(os.environ, CRED_DIR=str(cred_dir)),
+                capture_output=True, text=True, timeout=10,
+            )
+            check("a non-tty stdin does not hang the child", r.returncode == 0, f"exit={r.returncode}")
+
+            # 7b. On a tty the child gets that tty back: the holder is detached,
+            # so without the passthrough an interactive child would read nowhere.
+            # Twice over — the terminal echoes the line, and `cat` writes what it
+            # read. Once means cat never read it.
+            typed = "typed-into-the-child"
+            code, out = on_a_real_tty(["run", "p", "--", "cat"], cred_dir, [typed, EOF_KEY])
+            check("the child's stdin is the client's tty", out.count(typed) >= 2, repr(out))
+
+            # 8. lock wipes it.
+            r = cred(cred_dir, "lock")
+            check("lock reports it relocked", "locked" in r.stdout, r.stdout)
+            check("lock removed the socket", not (cred_dir / "hold.sock").exists())
+            r = cred(cred_dir, "run", "p", "--", "printenv", "SECRET")
+            check("run after lock reads as locked", r.returncode == 2, f"exit={r.returncode}")
+            check("locked failure says so", "LOCKED" in r.stderr, r.stderr)
+        finally:
+            stop_holder(cred_dir, holder)
+
+        # 4b. Locked means locked, even with nothing to inject: a run that would
+        # silently proceed without credentials is worse than a refusal.
+        locked = cred_dir / "lockeddir"
         profile(locked, "q", "URL=https://api.example.com\nallow=printenv\n")
         r = cred(locked, "run", "q", "--", "printenv", "URL")
-        check("a secret-free profile runs while locked", r.returncode == 0, r.stderr.strip())
+        check("even a secret-free profile is refused while locked", r.returncode == 2, f"exit={r.returncode}")
+        check("the locked refusal prints no env", "api.example.com" not in r.stdout, repr(r.stdout))
 
-        # 5. The relock window is cred.sh's to define; cred-run reads it.
-        r = subprocess.run(
-            [str(RUN), "run", "p", "--", "printenv", "SECRET"],
-            env=dict(
-                os.environ,
-                CRED_PROFILE_DIR=str(cred_dir / "profiles"),
-                CRED_UNLOCKED=str(cred_dir / "unlocked"),
-                CRED_TTL="0",
-                CRED_SECRET_MARKER="@secret",
-            ),
-            capture_output=True,
-            text=True,
-        )
-        check("a stale cache reads as locked", r.returncode == 2, f"exit={r.returncode}")
-        check("locked failure says so", "LOCKED" in r.stderr, r.stderr)
+        # 7b. An expired holder reads as locked.
+        ttl_dir = cred_dir / "ttldir"
+        profile(ttl_dir, "p", "SECRET=@secret\nallow=printenv\n")
+        expired = start_holder(ttl_dir, [("p", "SECRET", SECRET)], ttl=1)
+        time.sleep(2)
+        r = cred(ttl_dir, "run", "p", "--", "printenv", "SECRET")
+        check("an expired holder reads as locked", r.returncode == 2, f"exit={r.returncode}")
+        check("expiry failure says LOCKED", "LOCKED" in r.stderr, r.stderr)
+        stop_holder(ttl_dir, expired)
 
-        # 6. The contract is required, not guessed — this is what broke silently.
+        # 8. The contract is required, not guessed — this is what broke silently.
         r = subprocess.run(
             [str(RUN), "run", "p", "--", "printenv", "SECRET"],
             env={k: v for k, v in os.environ.items() if not k.startswith("CRED_")},
@@ -123,9 +313,9 @@ def main():
             text=True,
         )
         check("cred-run without the contract fails", r.returncode == 1, f"exit={r.returncode}")
-        check("the failure names the missing variable", "CRED_PROFILE_DIR" in r.stderr, r.stderr)
+        check("the failure names the missing variable", "CRED_HOLD_SOCK" in r.stderr, r.stderr)
 
-        # 7. upsert: replace, not append; `&` and `|` are data, not syntax.
+        # 9. upsert: replace, not append; `&` and `|` are data, not syntax.
         cred(cred_dir, "set", "u", "URL", "https://a/b?c=1&d=2|x")
         cred(cred_dir, "set", "u", "URL", "https://a/b?c=9&d=8|x")
         body = (cred_dir / "profiles/u.env").read_text()
@@ -133,10 +323,40 @@ def main():
         check("a value with & and | survives intact", "URL=https://a/b?c=9&d=8|x" in body, body.strip())
         check("upsert leaves no temp file", not list((cred_dir / "profiles").glob("*.new")))
 
-        # 8. list.
+        # 10. list.
         r = cred(cred_dir, "list", "p")
         check("list shows the @secret reference", "SECRET -> @secret" in r.stdout, r.stdout)
         check("list never prints a value", SECRET not in r.stdout)
+
+    # 11. End to end through the real verbs, on a real pty: the half that no
+    # other test reaches, because init and unlock are human-gated.
+    with tempfile.TemporaryDirectory() as td:
+        e2e = pathlib.Path(td)
+        code, out = on_a_real_tty(["init"], e2e, ["e2e-passphrase", "e2e-passphrase"])
+        check("init creates a vault on a tty", code == 0 and (e2e / "vault").exists(), out)
+
+        code, out = on_a_real_tty(["add", "typesafe", "API"], e2e, [SECRET, "e2e-passphrase"])
+        check("add stores a secret on a tty", code == 0, out)
+        check("add never echoes the secret", SECRET not in out, out)
+        profile(e2e, "typesafe", "API=@secret\nURL=https://api.example.com\nallow=printenv\n")
+
+        code, out = on_a_real_tty(["unlock"], e2e, ["e2e-passphrase"])
+        check("unlock opens the window", code == 0 and (e2e / "hold.sock").exists(), out)
+        check("unlock records the holder pid", (e2e / "hold.pid").exists())
+
+        r = cred(e2e, "run", "typesafe", "--", "printenv", "API")
+        check(
+            "end to end: the stored secret is injected and scrubbed",
+            r.stdout.strip() == "***",
+            f"exit={r.returncode} out={r.stdout!r} err={r.stderr!r}",
+        )
+        on_disk = [p for p in e2e.rglob("*") if p.is_file() and SECRET in p.read_text(errors="ignore")]
+        check("end to end: nothing decrypted on disk while unlocked", not on_disk, str(on_disk))
+
+        r = cred(e2e, "lock")
+        check("lock kills the holder", r.returncode == 0 and not (e2e / "hold.sock").exists(), r.stdout + r.stderr)
+        r = cred(e2e, "run", "typesafe", "--", "printenv", "API")
+        check("end to end: locked after lock", r.returncode == 2, f"exit={r.returncode}")
 
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

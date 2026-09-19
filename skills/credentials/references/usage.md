@@ -37,8 +37,8 @@ Creates:
 | `cred add <profile> <VAR>` | human | store a secret (hidden prompt) |
 | `cred set <profile> <VAR> <value>` | human | store a non-secret var |
 | `cred list [profile]` | anyone | names only, never values |
-| `cred unlock` | human | decrypt vault into a 5-min cache |
-| `cred lock` | human | wipe the cache now |
+| `cred unlock` | human | decrypt into a holder process for 5 min |
+| `cred lock` | human | close that window now |
 | `cred run <profile> -- <cmd> [args]` | agent or human | inject + exec + scrub |
 
 `cred help` / `cred --help` / `cred -h` print the same summary. `cred help run`
@@ -92,9 +92,18 @@ cred unlock   # prompts for the vault passphrase (needs a TTY)
 cred lock
 ```
 
-`unlock` decrypts the vault into a plaintext cache (`~/.config/cred/unlocked`,
-0600) that auto-expires 300s after unlock; `lock` wipes it immediately. An agent
-**cannot** unlock it (no TTY); if `cred run` reports locked, tell the human.
+`unlock` decrypts the vault **in memory** and hands it to a detached holder
+process (`cred-run hold`) that keeps it for 300s and serves every `cred run`
+until the window closes. `lock` kills the holder immediately.
+
+- **Nothing decrypted is written to disk.** There is no plaintext cache file —
+  the holder's memory is the only place a secret exists between `unlock` and the
+  window closing.
+- The window is a fixed 300s from unlock; it does not extend on use.
+- Every `cred run` reuses the same holder: you unlock once, not per command.
+- An agent **cannot** unlock it (needs a TTY); if `cred run` reports locked,
+  tell the human.
+- `cred add` while a holder is live replaces it, so the new secret is visible.
 
 ### `cred run <profile> -- <cmd> [args]`
 
@@ -103,13 +112,23 @@ cred run github -- gh api user
 cred run github -- sh -c 'curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user'
 ```
 
-- Reads the profile, resolves every `@secret` from the unlocked cache, injects
-  all vars as environment variables, and `exec`s the command.
+- `cred run` is a thin client of the holder: it sends `{profile, command,
+  terminal}` and relays the answer. Loading the profile, checking `allow =`,
+  injecting, and scrubbing all happen inside the holder — so any client that can
+  open the socket, not just `cred run`, gets the same allow-list and the same
+  scrubbing.
+- Resolves every `@secret` from the vault held in the holder's memory and
+  injects all vars as environment variables.
 - Replaces every secret value with `***` in stdout **and** stderr before it
   reaches you.
 - Enforces the profile's `allow =` list on the command's first word.
-- Fails fast if the vault is locked (no unlocked cache, or its 300s TTL has
-  expired) — it does not hang.
+- Gives the command your terminal as stdin when you have one, so an interactive
+  command can still prompt; without a terminal it gets `/dev/null`.
+- Fails fast if the window is not open — no holder, a holder that has closed its
+  window, and a socket left behind by a killed one all read as locked. It does
+  not hang.
+- Needs the window open even when the profile has no secrets: a run that
+  silently proceeded without credentials would be worse than a refusal.
 
 Exit codes:
 
@@ -148,28 +167,38 @@ Rules:
 
 - Secrets go into the child via `envp` — the one Unix channel `ps` cannot see.
   They never appear in argv, in this process's output, or in the transcript.
-- Output is scrubbed on both streams. Values shorter than 6 chars are **not**
-  scrubbed (redacting them would mangle ordinary text) — don't store short
-  secrets.
-- A locked vault is a real boundary: the secrets exist only as ciphertext, and
-  the plaintext cache is gone. `cred run` converts that into a fast, clear
+- **Secrets never leave the holder.** The holder is a separate process holding
+  the decrypted vault; the client sends a command and gets scrubbed output back.
+  The protocol has no request that returns a value, so a client that is not
+  `cred run` cannot ask for one — and still gets scrubbed, allow-listed output.
+- Output is scrubbed on both streams, inside the holder. Values shorter than 6
+  chars are **not** scrubbed (redacting them would mangle ordinary text) — don't
+  store short secrets.
+- A closed window is a real boundary: the vault exists only as ciphertext, and
+  the holder's memory is gone. `cred run` converts that into a fast, clear
   failure.
 
 ## 5. Known limits (do not paper over)
 
-1. **The lock is the only real boundary.** At rest the vault is AES-256-CBC
-   (PBKDF2, `-iter 200000`) behind the passphrase you set at `init` — there is
-   no default. While *unlocked*, the plaintext cache `~/.config/cred/unlocked`
-   (0600) is readable by any same-user process, including an agent. A *locked*
-   vault has no cache and is ciphertext. This stops accidental leaks and idle
-   exfiltration; it is not proof against an agent that reads the cache during
-   an open window.
-2. **`cred add` writes the plaintext secret to a 0600 temp file for ~ms**, and
+1. **Same-uid is not a boundary, and the holder does not pretend to be one.**
+   While the window is open the decrypted vault is in the holder's memory. Any
+   process running as you can talk to the holder's socket
+   (`~/.config/cred/hold.sock`, 0600) and run commands through it — the same
+   authority `cred run` grants — and a debugger or `ptrace` gets the memory.
+   What the holder does buy is that the vault is **never written to disk**: a
+   plain `cat` of a cache file no longer yields every secret, and nothing
+   survives the window. It is not proof against a determined same-user agent.
+2. **The scrub stops accidents, not intent.** It replaces literal values in the
+   child's output. `cred run svc -- sh -c 'base64 <<< "$TOKEN"'` prints the
+   secret in a form the scrubber cannot match. Coming through `cred run` does
+   not make output safe to re-publish.
+3. **`cred add` writes the plaintext secret to a 0600 temp file for ~ms**, and
    the passphrase travels via `openssl`'s environment (never argv). A sibling
-   same-user process polling that instant could catch either.
-3. **Allow-list checks only the first word.** `cred run github -- gh api repo …`
+   same-user process polling that instant could catch either. `cred unlock`
+   creates no temp file — it decrypts straight into the holder's stdin.
+4. **Allow-list checks only the first word.** `cred run github -- gh api repo …`
    is allowed; arguments are not screened. Keep the list tight.
-4. **Secrets shorter than 6 chars are not scrubbed.** They can leak into
+5. **Secrets shorter than 6 chars are not scrubbed.** They can leak into
    command output.
 
 ## 6. Examples
@@ -205,6 +234,7 @@ cred run aws -- aws sts get-caller-identity
 | Symptom | Fix |
 |---|---|
 | `cred run` → `vault is LOCKED` | human runs `cred unlock` |
+| `cred unlock` → `the holder did not come up` | wrong passphrase, or a stale build: `./bin/build-project.sh credentials` |
 | `cred run` → `cred-run binary not built` | `./bin/build-project.sh credentials` |
 | `cred run` → `profile has no 'allow =' line` | add `allow = …` to the profile |
 | `cred run` → `'X' not in profile allow-list` | add `X` to `allow =`, or don't run `X` |
