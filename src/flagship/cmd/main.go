@@ -895,8 +895,9 @@ func dispatchCmd(args []string) {
 
 // closeCmd is the close-out gate: it refuses to close a dispatch whose worker
 // node is not done, runs the exit gate its task type declares, then closes the
-// pane, tab, and worktree from the recorded delivery and marks the cap's node
-// done.
+// pane, tab, and worktree from the recorded delivery — verifying with git that
+// the checkout is gone rather than trusting herdr to say so — and marks the
+// cap's node done.
 func closeCmd(args []string) {
 	req := dispatch.CloseRequest{
 		NodeID:    flagVal(args, "--node", ""),
@@ -927,7 +928,7 @@ func closeCmd(args []string) {
 		fatal(err.Error())
 	}
 
-	output(dispatch.Close(h, dispatch.NewHerdrCLI(), reg, kc, req))
+	output(dispatch.Close(h, dispatch.NewHerdrCLI(), dispatch.NewGitWorktrees(), reg, kc, req))
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.

@@ -1831,6 +1831,14 @@ case "$cmd $sub" in
     while [ $# -gt 0 ]; do
       if [ "$1" = "--workspace" ]; then ws="${2:-}"; shift 2 || true; else shift; fi
     done
+    # herdr's failure codes are modelled on request, so a gate that reads one as
+    # proof the worktree is gone can be exercised. not_git_worktree says the
+    # *caller* is not inside a git work tree, which is a statement about this
+    # environment and not about the worktree the record names.
+    if [ -n "${HERDR_TEST_WORKTREE_REMOVE_CODE:-}" ]; then
+      printf '{"error":{"code":"%s","message":"%s"}}\n' "$HERDR_TEST_WORKTREE_REMOVE_CODE" "$HERDR_TEST_WORKTREE_REMOVE_CODE" >&2
+      exit 1
+    fi
     [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$ws"
     printf '%s' "$ws" > "$state/worktree_removed"
     printf '{"result":{"removed":true}}\n'
@@ -2248,6 +2256,176 @@ steps:
 	if removed, err := os.ReadFile(filepath.Join(state, "worktree_removed")); err != nil || string(removed) != "wWT" {
 		t.Errorf("worktree removed = %q (err %v), want wWT", removed, err)
 	}
+}
+
+// realWorktree turns root into a real git repository with a real linked worktree
+// and returns the checkout path plus the path git itself reports for it: git
+// resolves symlinks, the delivery record holds what herdr reported.
+func realWorktree(t *testing.T, root string) (worktree, resolved string) {
+	t.Helper()
+	goGit(t, root, "init", "-q", "-b", "main")
+	writeFileIn(t, root, "seed.txt", "seed\n")
+	goGit(t, root, "add", "seed.txt")
+	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
+	worktree = filepath.Join(t.TempDir(), "wt")
+	goGit(t, root, "worktree", "add", "-q", worktree, "-b", "batch-test-a")
+
+	var err error
+	if resolved, err = filepath.EvalSymlinks(worktree); err != nil {
+		t.Fatalf("resolve worktree %s: %v", worktree, err)
+	}
+	return worktree, resolved
+}
+
+// assertWorktreeListed is the precondition the removal tests assert at the time,
+// so a close that passes proves something rather than assuming the leak.
+func assertWorktreeListed(t *testing.T, root, resolved string) {
+	t.Helper()
+	if listed := gitOut(t, root, "worktree", "list", "--porcelain"); !strings.Contains(listed, resolved) {
+		t.Fatalf("git does not list %s before close; the test would prove nothing:\n%s", resolved, listed)
+	}
+}
+
+// assertWorktreeGone is what "the worktree is gone" means: the checkout is gone
+// from disk, and git no longer lists it.
+func assertWorktreeGone(t *testing.T, root, worktree, resolved string) {
+	t.Helper()
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Errorf("worktree %s is still on disk (stat err = %v)", worktree, err)
+	}
+	if listed := gitOut(t, root, "worktree", "list", "--porcelain"); strings.Contains(listed, resolved) {
+		t.Errorf("git still lists the worktree %s:\n%s", resolved, listed)
+	}
+}
+
+// The acceptance check this whole path exists for: a dispatch runs in a real
+// worktree, close tears it down, and the checkout is gone afterwards. The fake
+// herdr reports the workspace removed and touches nothing on disk, so a close
+// that trusted that report would leave the worktree exactly where it was.
+func TestCLICloseRemovesTheWorktreeHerdrReportsRemoved(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	worktree, resolved := realWorktree(t, root)
+	assertWorktreeListed(t, root, resolved)
+
+	env, _, _ := fakeHerdrOnPath(t)
+	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+
+	delivered, code := runFSEnv(t, bin, root, env,
+		"dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", "wWT")
+	if code != 0 {
+		t.Fatalf("dispatch --deliver exit %d: %v", code, delivered["error"])
+	}
+	data := delivered["data"].(map[string]any)
+	// The record keeps the checkout path, not only the workspace id: the id is
+	// what herdr can forget before close, and the path is what close needs then.
+	if path, _ := data["delivery"].(map[string]any)["worktree_path"].(string); path != worktree {
+		t.Errorf("delivery worktree_path = %q, want the worktree %s", path, worktree)
+	}
+	finishWorker(t, bin, root, data["worker_node"].(string))
+
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", data["cap_node_id"].(string), "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v", code, closed["error"])
+	}
+	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
+		t.Errorf("warning = %v, want none: the worktree is verified gone", warning)
+	}
+	assertWorktreeGone(t, root, worktree, resolved)
+}
+
+// The state that leaked two checkouts: herdr no longer knows the workspace at
+// all — its agent having ended — while the git worktree is still there. Every
+// herdr call about it reports workspace_not_found, so the close runs without the
+// worktree's environment variables: the recorded path is what keeps the teardown
+// possible, and the git worktree is removed anyway.
+func TestCLICloseRemovesTheWorktreeWhenHerdrForgotTheWorkspace(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	worktree, resolved := realWorktree(t, root)
+	assertWorktreeListed(t, root, resolved)
+
+	env, _, _ := fakeHerdrOnPath(t)
+	deliverEnv := append(append([]string{}, env...), "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, deliverEnv, "sample", "--worktree", "wWT")
+	finishWorker(t, bin, root, workerRef)
+
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v — a forgotten workspace must not cost the close its footing", code, closed["error"])
+	}
+	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
+		t.Errorf("warning = %v, want none: the worktree is verified gone", warning)
+	}
+	assertWorktreeGone(t, root, worktree, resolved)
+}
+
+// A worktree git will not remove — here an untracked file — is a warning naming
+// the path, and the close still succeeds: the cap can act on what it is told,
+// and a leak is never silent.
+func TestCLICloseWarnsWhenTheWorktreeCannotBeRemoved(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	worktree, resolved := realWorktree(t, root)
+	// Untracked files make `git worktree remove` refuse without --force, which is
+	// the whole point: the teardown reports it rather than forcing past it.
+	writeFileIn(t, worktree, "untracked.txt", "left behind\n")
+
+	env, _, _ := fakeHerdrOnPath(t)
+	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
+	finishWorker(t, bin, root, workerRef)
+
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v — a worktree that cannot be removed is a warning, not a refusal", code, closed["error"])
+	}
+	warning, _ := closed["data"].(map[string]any)["warning"].(string)
+	for _, want := range []string{worktree, "could not remove"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("warning %q must mention %q", warning, want)
+		}
+	}
+	// The warning is the truth: the checkout is still registered with git.
+	if listed := gitOut(t, root, "worktree", "list", "--porcelain"); !strings.Contains(listed, resolved) {
+		t.Errorf("git no longer lists %s, so the warning claims a leak that is not there:\n%s", resolved, listed)
+	}
+}
+
+// `not_git_worktree` says the caller's environment is not a git work tree. It is
+// not evidence that the worktree is gone, and it must not be read as one: the
+// close still verifies with git and removes the checkout, and the herdr failure
+// is reported rather than swallowed.
+func TestCLICloseDoesNotReadNotGitWorktreeAsTheWorktreeBeingGone(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	worktree, resolved := realWorktree(t, root)
+	assertWorktreeListed(t, root, resolved)
+
+	env, _, _ := fakeHerdrOnPath(t)
+	env = append(env,
+		"HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree,
+		"HERDR_TEST_WORKTREE_REMOVE_CODE=not_git_worktree")
+	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
+	finishWorker(t, bin, root, workerRef)
+
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v", code, closed["error"])
+	}
+	warning, _ := closed["data"].(map[string]any)["warning"].(string)
+	if !strings.Contains(warning, "not_git_worktree") {
+		t.Errorf("warning %q must report the herdr failure", warning)
+	}
+	assertWorktreeGone(t, root, worktree, resolved)
 }
 
 // A worktree workspace herdr does not know is refused, naming it, before any

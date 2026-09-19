@@ -62,13 +62,14 @@ type CloseResult struct {
 // --abandoned skips the delivery and worker gates and records
 // "abandoned, never delivered: <reason>" instead of a verdict.
 //
-// reg, kc, and hc are how the exit gate finds its footing: kc holds the
+// reg, kc, hc, and gw are how the exit gate finds its footing: kc holds the
 // cleanup playbook named by the delivery record's type, reg says which project
-// root the checks would run in, and hc resolves the worktree when the record
-// names one — the checks run there instead, because that is the tree the
-// dispatch worked in. All three are needed only after the worker's node is
-// known to be done, so a refusal never reads any of them.
-func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, req CloseRequest) command.Response {
+// root the checks would run in, and hc and gw resolve and verify the worktree
+// when the record names one — the checks run there instead, because that is the
+// tree the dispatch worked in, and gw is what proves the tree is gone afterwards
+// rather than trusting the dispatcher to say so. All four are needed only after
+// the worker's node is known to be done, so a refusal never reads any of them.
+func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Registry, kc *knowledge.Center, req CloseRequest) command.Response {
 	if req.NodeID == "" {
 		return errResp("--node is required: fs close --node <cap node> ...")
 	}
@@ -150,7 +151,14 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 			warnings = append(warnings, warning)
 		}
 		if delivery.Worktree != "" {
-			if warning := tearDownWorktree(hc, delivery.Worktree); warning != "" {
+			// The repository the worktree was made from is what git has to be asked
+			// about it. A project whose registry row is gone leaves no repository
+			// to ask, which the teardown reports rather than skipping the check.
+			repo := ""
+			if proj, err := reg.Get(delivery.Project); err == nil {
+				repo = proj.RootPath
+			}
+			if warning := tearDownWorktree(hc, gw, repo, delivery); warning != "" {
 				warnings = append(warnings, warning)
 			}
 		}
@@ -259,16 +267,23 @@ func runCleanupGate(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, d
 // dispatch worked in when the record names one, and the worker project's root
 // otherwise.
 //
-// The worktree is resolved rather than taken on trust, because the record names
-// a workspace, not a path. And a workspace that cannot be resolved is an error
-// rather than a fall back to the project root: the shipped checks assert things
-// about the worktree — no uncommitted files, branch merged — and the project
-// root is routinely another agent's dirty tree, so checking it would fail or
-// pass for reasons that have nothing to do with the dispatch while reporting
-// that the gate ran.
+// The worktree comes from the delivery record, not from herdr: the recorded path
+// is the tree the dispatch itself worked in — resolved from herdr at delivery
+// time — and it outlives the workspace, which is exactly the case that matters.
+// A workspace that is gone by close would otherwise leave the gate with no
+// footing, and the close would refuse and leave the checkout behind. A record
+// written before the path was recorded falls back to resolving the workspace,
+// and one that cannot be resolved is an error rather than a fall back to the
+// project root: the shipped checks assert things about the worktree — no
+// uncommitted files, branch merged — and the project root is routinely another
+// agent's dirty tree, so checking it would fail or pass for reasons that have
+// nothing to do with the dispatch while reporting that the gate ran.
 func checkDir(hc HerdrCLI, delivery command.DeliveryRecord, root string) (string, error) {
 	if delivery.Worktree == "" {
 		return root, nil
+	}
+	if delivery.WorktreePath != "" {
+		return delivery.WorktreePath, nil
 	}
 	checkout, err := hc.WorktreeCheckout(delivery.Worktree)
 	if err != nil {
@@ -292,18 +307,61 @@ func tearDownPane(hc HerdrCLI, paneID string) string {
 	return ""
 }
 
-// tearDownWorktree removes the worktree workspace the delivery recorded, and
-// returns a warning for a worktree herdr would not remove.
+// tearDownWorktree makes the git worktree the dispatch worked in gone, and
+// returns a warning for one that is still there.
 //
-// The point is that a worktree must not outlive its node. So a worktree herdr
-// no longer knows is the goal state, not a failure, and herdr being unavailable
-// is a warning rather than a refusal — the same rule the pane teardown follows,
-// and the same reason: close-out must not depend on the dispatcher being up.
-func tearDownWorktree(hc HerdrCLI, wsID string) string {
-	if err := hc.RemoveWorktree(wsID); err != nil && !errors.Is(err, ErrWorktreeGone) {
-		return fmt.Sprintf("could not remove worktree %s: %v — remove it by hand", wsID, err)
+// The point is that a worktree must not outlive its node, and the only witness
+// that counts is git. herdr's removal is attempted first — it is what closes the
+// workspace and its panes — but its answer is not this gate's: a herdr worktree
+// and a git worktree are two artifacts that die separately, so a close that
+// removed the workspace and reported success can leave the checkout on disk,
+// which is how two worktrees leaked while the gate declared them clean. What
+// decides is removeLeakedWorktree, which asks git and removes what git still
+// lists.
+//
+// herdr being unavailable is a warning rather than a refusal — the same rule the
+// pane teardown follows, and the same reason: close-out must not depend on the
+// dispatcher being up. A worktree that cannot be verified, or cannot be removed,
+// is a warning naming the path, never silence and never a claimed success.
+func tearDownWorktree(hc HerdrCLI, gw GitWorktrees, repo string, d command.DeliveryRecord) string {
+	var warnings []string
+	if err := hc.RemoveWorktree(d.Worktree); err != nil && !errors.Is(err, ErrWorktreeGone) {
+		warnings = append(warnings, fmt.Sprintf("herdr could not remove worktree workspace %s: %v", d.Worktree, err))
 	}
-	return ""
+
+	path, err := teardownPath(hc, d)
+	if err != nil {
+		warnings = append(warnings, "could not verify worktree: "+err.Error()+" — check it by hand")
+		return strings.Join(warnings, "; ")
+	}
+	if repo == "" {
+		warnings = append(warnings, fmt.Sprintf(
+			"could not verify worktree %s: project %s is not registered, so no repository could be asked about it — check it by hand",
+			path, d.Project))
+		return strings.Join(warnings, "; ")
+	}
+	if warning := removeLeakedWorktree(gw, repo, path); warning != "" {
+		warnings = append(warnings, warning)
+	}
+	return strings.Join(warnings, "; ")
+}
+
+// teardownPath is the checkout the teardown has to see gone: the path the record
+// kept, or — for a record written before the path was recorded — the path herdr
+// still resolves the workspace to, which is the best answer left. When neither
+// exists the caller says so: a worktree nobody can name is a leak nobody has
+// looked at.
+func teardownPath(hc HerdrCLI, d command.DeliveryRecord) (string, error) {
+	if d.WorktreePath != "" {
+		return d.WorktreePath, nil
+	}
+	path, err := hc.WorktreeCheckout(d.Worktree)
+	if err != nil {
+		return "", fmt.Errorf(
+			"worktree %s: the record names no path and herdr cannot resolve the workspace: %w",
+			d.Worktree, err)
+	}
+	return path, nil
 }
 
 // workerFor resolves which node in the target project this close-out is about.

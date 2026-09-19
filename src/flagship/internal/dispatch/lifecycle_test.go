@@ -59,12 +59,12 @@ func (f *fakeHerdr) SplitPane(cwd string) (string, string, error) {
 	return f.paneID, f.tabID, nil
 }
 
-func (f *fakeHerdr) WorktreeRootPane(wsID string) (string, string, error) {
+func (f *fakeHerdr) WorktreeRootPane(wsID string) (string, string, string, error) {
 	f.rooted = append(f.rooted, wsID)
 	if f.rootPaneErr != nil {
-		return "", "", f.rootPaneErr
+		return "", "", "", f.rootPaneErr
 	}
-	return f.rootPaneID, f.rootPaneTab, nil
+	return f.rootPaneID, f.rootPaneTab, f.checkoutPath, nil
 }
 
 func (f *fakeHerdr) WorktreeCheckout(wsID string) (string, error) {
@@ -105,6 +105,47 @@ func (f *fakeHerdr) RemoveWorktree(wsID string) error {
 		return f.worktreeErr
 	}
 	f.removed = append(f.removed, wsID)
+	return nil
+}
+
+// fakeGitWorktrees stands in for git's worktree bookkeeping: it says which
+// worktrees the repository has registered and records what was removed, so the
+// teardown gate can be exercised against a leak — and against a removal that
+// leaves the worktree where it was — without a real repository.
+type fakeGitWorktrees struct {
+	// listed is what git reports. Remove clears the entry, unless keepListed
+	// models a removal that reports success and changes nothing.
+	listed     []string
+	keepListed bool
+	listErr    error
+	removeErr  error
+
+	lists   int
+	removed []string
+}
+
+func (f *fakeGitWorktrees) List(repo string) ([]string, error) {
+	f.lists++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listed, nil
+}
+
+func (f *fakeGitWorktrees) Remove(repo, path string) error {
+	if f.removeErr != nil {
+		return f.removeErr
+	}
+	f.removed = append(f.removed, path)
+	if !f.keepListed {
+		listed := f.listed[:0]
+		for _, candidate := range f.listed {
+			if candidate != path {
+				listed = append(listed, candidate)
+			}
+		}
+		f.listed = listed
+	}
 	return nil
 }
 
@@ -163,13 +204,15 @@ func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID string) {
 }
 
 // recordWorktreeDelivery writes a delivery record bound to a worktree workspace,
-// the shape a worktree dispatch records: a batch's workers ran in one, and the
-// cleanup gate has to find that tree.
-func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID string) {
+// the shape a worktree dispatch records: a batch's workers ran in one, the
+// cleanup gate has to find that tree, and the teardown has to verify it gone
+// afterwards. path is the checkout the workspace was made from — what the record
+// keeps so the worktree can be removed after the workspace is forgotten.
+func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path string) {
 	t.Helper()
 	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
 		PaneID: paneID, TabID: wsID + ":t1", Agent: "dispatch-parallel", Engine: "herdr",
-		Project: "skills", Node: workerID, Type: "parallel", Worktree: wsID,
+		Project: "skills", Node: workerID, Type: "parallel", Worktree: wsID, WorktreePath: path,
 	})
 	if !resp.OK {
 		t.Fatalf("RecordDelivery: %s", resp.Error)
@@ -410,24 +453,33 @@ func TestDeliverNamesEachAgentAfterItsOwnWorkerNode(t *testing.T) {
 	}
 }
 
-// A dispatch that ran in a worktree records the worktree workspace, so close
-// can remove it: the record, not the goal prose, is where close looks.
+// A dispatch that ran in a worktree records the worktree workspace and the
+// checkout it was made from, so close can remove it: the record, not the goal
+// prose, is where close looks. The path is recorded because the workspace id
+// can be gone by close — herdr forgetting it does not make the checkout
+// disappear — and then the id alone names nothing that can be removed.
 func TestDeliverRecordsTheWorktreeItRunsIn(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
 	capNode := addCapNode(t, f, "dispatch parallel: sample")
 
-	herdr := &fakeHerdr{rootPaneID: "w7:p1", rootPaneTab: "w7:t1"}
-	resp := dispatch.Deliver(f.h, herdr, &dispatch.Brief{
+	herdr := &fakeHerdr{rootPaneID: "w7:p1", rootPaneTab: "w7:t1", checkoutPath: "/checkouts/w7"}
+	brief := &dispatch.Brief{
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "w7",
-	})
+	}
+	resp := dispatch.Deliver(f.h, herdr, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
+	if brief.Delivery == nil || brief.Delivery.WorktreePath != "/checkouts/w7" {
+		t.Errorf("brief delivery = %+v, want the worktree's checkout path", brief.Delivery)
+	}
 
 	payload := string(capEvents(t, f, store.DeliveryRecorded)[0].Payload)
-	for _, want := range []string{`"type":"parallel"`, `"worktree":"w7"`} {
+	for _, want := range []string{
+		`"type":"parallel"`, `"worktree":"w7"`, `"worktree_path":"/checkouts/w7"`,
+	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("delivery payload %s must carry %s", payload, want)
 		}
@@ -443,7 +495,7 @@ func TestDeliverStartsTheWorkerInTheWorktreeRootPane(t *testing.T) {
 	f := newFixture(t, root)
 	capNode := addCapNode(t, f, "dispatch parallel: sample")
 
-	herdr := &fakeHerdr{rootPaneID: "wA:p1", rootPaneTab: "wA:t1"}
+	herdr := &fakeHerdr{rootPaneID: "wA:p1", rootPaneTab: "wA:t1", checkoutPath: "/checkouts/wA"}
 	brief := &dispatch.Brief{
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "wA",
@@ -852,6 +904,10 @@ steps:
 // agent's dirty tree, so a gate that runs there fails for reasons the dispatch
 // had nothing to do with. Here the root carries the file the worktree does not,
 // and the worktree the file the root does not: only the worktree passes both.
+//
+// The record is the legacy shape — it names the workspace but no path, as every
+// record written before the path was recorded does — so this also pins the
+// fallback: the workspace is resolved for the tree to check in.
 func TestCloseRunsCleanupChecksInTheWorktreeTheRecordNames(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()
@@ -869,14 +925,14 @@ steps:
 
 	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "")
 
 	herdr := &fakeHerdr{checkoutPath: worktree}
 	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
-	if len(herdr.checkouts) != 1 || herdr.checkouts[0] != "w7" {
+	if len(herdr.checkouts) == 0 || herdr.checkouts[0] != "w7" {
 		t.Errorf("worktrees resolved = %v, want the recorded w7", herdr.checkouts)
 	}
 	// The note names the tree the checks ran in: a gate whose footing is
@@ -884,6 +940,45 @@ steps:
 	note := resp.Data.(dispatch.CloseResult).Cleanup
 	if !strings.Contains(note, "2 checks passed") || !strings.Contains(note, "in worktree w7") {
 		t.Errorf("cleanup note = %q, want the checks and the tree they ran in", note)
+	}
+}
+
+// The recorded path is enough to run the gate, so a workspace herdr has already
+// forgotten does not cost the close its footing: the checks run in the tree the
+// dispatch worked in, and herdr is never asked. Refusing instead would leave the
+// checkout this work exists to remove.
+func TestCloseRunsCleanupChecksInTheRecordedPathWithoutAskingHerdr(t *testing.T) {
+	root := t.TempDir()
+	worktree := t.TempDir()
+	writeFile(t, filepath.Join(worktree, "clean.marker"), "")
+
+	f := newFixture(t, root)
+	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
+type: cleanup
+trigger: parallel
+steps:
+  - check: test -f clean.marker
+`)
+
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
+
+	// herdr has forgotten the workspace entirely: neither the checks' footing nor
+	// the teardown may depend on it.
+	herdr := &fakeHerdr{
+		checkoutErr: fmt.Errorf("%w: herdr has no workspace w7", dispatch.ErrNoWorktree),
+		worktreeErr: dispatch.ErrWorktreeGone,
+	}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if len(herdr.checkouts) != 0 {
+		t.Errorf("herdr was asked to resolve %v, want the recorded path used", herdr.checkouts)
+	}
+	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "1 checks passed") {
+		t.Errorf("cleanup note = %q, want the checks reported", note)
 	}
 }
 
@@ -906,7 +1001,7 @@ steps:
 
 	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
 
 	herdr := &fakeHerdr{checkoutPath: worktree}
 	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
@@ -943,7 +1038,7 @@ steps:
 
 	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "wZZ")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "wZZ", "")
 
 	herdr := &fakeHerdr{checkoutErr: fmt.Errorf("%w: herdr has no workspace wZZ", dispatch.ErrNoWorktree)}
 	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
@@ -1126,19 +1221,16 @@ steps:
 	}
 }
 
-// Close removes the worktree the record names, so a worktree cannot outlive a
-// closed node. One already gone is the goal state, and herdr being unavailable
-// is a warning — the same rules the pane teardown follows.
-func TestCloseRemovesTheRecordedWorktree(t *testing.T) {
+// Close makes the worktree the record names gone, and it decides that with git,
+// not with herdr. Here herdr reports the workspace removed and the checkout is
+// still registered — the shape of the leak, where a workspace teardown that
+// succeeded said nothing about the tree it was made from.
+func TestCloseRemovesTheWorktreeHerdrReportsRemovedButGitStillLists(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	if resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
-		PaneID: "w7:p1", TabID: "w7:t1", Agent: "dispatch-parallel", Engine: "herdr",
-		Project: "skills", Node: workerID, Type: "parallel", Worktree: "w7",
-	}); !resp.OK {
-		t.Fatalf("RecordDelivery: %s", resp.Error)
-	}
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
 
 	herdr := &fakeHerdr{}
 	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
@@ -1146,29 +1238,60 @@ func TestCloseRemovesTheRecordedWorktree(t *testing.T) {
 		t.Fatalf("Close: %s", resp.Error)
 	}
 	if len(herdr.removed) != 1 || herdr.removed[0] != "w7" {
-		t.Errorf("removed = %v, want the recorded worktree w7", herdr.removed)
+		t.Errorf("herdr removed = %v, want the recorded workspace w7", herdr.removed)
+	}
+	if len(f.git.removed) != 1 || f.git.removed[0] != "/checkouts/w7" {
+		t.Errorf("git removed = %v, want the checkout the workspace left behind", f.git.removed)
+	}
+	if len(f.git.listed) != 0 {
+		t.Errorf("git still lists %v, want the worktree gone", f.git.listed)
 	}
 	if result := resp.Data.(dispatch.CloseResult); result.Warning != "" {
-		t.Errorf("warning = %q, want none", result.Warning)
+		t.Errorf("warning = %q, want none: the worktree is verified gone", result.Warning)
 	}
 }
 
+// The workspace can be gone before close — its agent having ended — while the
+// checkout it was made from survives. herdr says as much with
+// workspace_not_found, and that is not evidence the worktree is gone: the close
+// still has to remove it.
+func TestCloseRemovesALeakedWorktreeWhenHerdrSaysTheWorkspaceIsAlreadyGone(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
+
+	resp := f.close(&fakeHerdr{worktreeErr: dispatch.ErrWorktreeGone}, dispatch.CloseRequest{
+		NodeID: nodeID, Decision: "verified",
+	})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if len(f.git.removed) != 1 || f.git.removed[0] != "/checkouts/w7" {
+		t.Errorf("git removed = %v, want the leaked checkout removed despite herdr saying it was gone", f.git.removed)
+	}
+	if result := resp.Data.(dispatch.CloseResult); result.Warning != "" {
+		t.Errorf("warning = %q, want none: the worktree is verified gone", result.Warning)
+	}
+}
+
+// A worktree that really is gone is the goal state, and git is what says so —
+// the verified path decides it, not herdr's error code.
 func TestCloseToleratesAnAlreadyRemovedWorktree(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	if resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
-		PaneID: "w7:p1", TabID: "w7:t1", Agent: "dispatch-parallel", Engine: "herdr",
-		Project: "skills", Node: workerID, Type: "parallel", Worktree: "w7",
-	}); !resp.OK {
-		t.Fatalf("RecordDelivery: %s", resp.Error)
-	}
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
 
 	resp := f.close(&fakeHerdr{worktreeErr: dispatch.ErrWorktreeGone}, dispatch.CloseRequest{
 		NodeID: nodeID, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("an already-removed worktree must not fail the close: %s", resp.Error)
+	}
+	if len(f.git.removed) != 0 {
+		t.Errorf("git removed %v, want nothing: no worktree was registered", f.git.removed)
 	}
 	if result := resp.Data.(dispatch.CloseResult); result.Warning != "" {
 		t.Errorf("warning = %q, want none for an already-removed worktree", result.Warning)
@@ -1178,16 +1301,14 @@ func TestCloseToleratesAnAlreadyRemovedWorktree(t *testing.T) {
 	}
 }
 
-func TestCloseWarnsButSucceedsWhenTheWorktreeCannotBeRemoved(t *testing.T) {
+// herdr being unable to remove the workspace is a warning, not a refusal —
+// close-out must not depend on the dispatcher being up — and the worktree is
+// still verified: here git reports none registered, so no leak is claimed.
+func TestCloseWarnsButSucceedsWhenHerdrCannotRemoveTheWorkspace(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	if resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
-		PaneID: "w7:p1", TabID: "w7:t1", Agent: "dispatch-parallel", Engine: "herdr",
-		Project: "skills", Node: workerID, Type: "parallel", Worktree: "w7",
-	}); !resp.OK {
-		t.Fatalf("RecordDelivery: %s", resp.Error)
-	}
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
 
 	resp := f.close(&fakeHerdr{worktreeErr: errors.New("herdr: server is down")}, dispatch.CloseRequest{
 		NodeID: nodeID, Decision: "verified",
@@ -1197,7 +1318,118 @@ func TestCloseWarnsButSucceedsWhenTheWorktreeCannotBeRemoved(t *testing.T) {
 	}
 	result := resp.Data.(dispatch.CloseResult)
 	if !strings.Contains(result.Warning, "server is down") || !strings.Contains(result.Warning, "w7") {
-		t.Errorf("warning = %q, want the worktree and the reason", result.Warning)
+		t.Errorf("warning = %q, want the workspace and the reason", result.Warning)
+	}
+}
+
+// A removal that reports success and leaves the worktree registered is exactly
+// the failure this gate exists to catch, so the gate re-checks instead of
+// believing the exit code: the warning names the path that is still there.
+func TestCloseWarnsWhenTheWorktreeIsStillRegisteredAfterRemoval(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
+	f.git.keepListed = true
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("a leaked worktree is a warning, not a refusal: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	if !strings.Contains(result.Warning, "/checkouts/w7") || !strings.Contains(result.Warning, "still registered") {
+		t.Errorf("warning = %q, want the path that is still there", result.Warning)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+		t.Errorf("cap node status = %q, want done: the warning is what the cap acts on", status)
+	}
+}
+
+// A worktree git will not remove — a dirty checkout, a lock — is a warning
+// naming the path, never silence and never a claimed success.
+func TestCloseWarnsWhenGitCannotRemoveTheWorktree(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
+	f.git.removeErr = errors.New("contains modified or untracked files")
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("a worktree that cannot be removed is a warning, not a refusal: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	for _, want := range []string{"/checkouts/w7", "could not remove", "modified or untracked"} {
+		if !strings.Contains(result.Warning, want) {
+			t.Errorf("warning = %q, must mention %q", result.Warning, want)
+		}
+	}
+}
+
+// When git cannot be asked, the close says so instead of reporting the worktree
+// gone: an unverifiable worktree is exactly what leaked silently before.
+func TestCloseWarnsWhenTheWorktreeCannotBeVerified(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listErr = errors.New("fatal: not a git repository")
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("an unverifiable worktree is a warning, not a refusal: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	for _, want := range []string{"/checkouts/w7", "could not verify", "not a git repository"} {
+		if !strings.Contains(result.Warning, want) {
+			t.Errorf("warning = %q, must mention %q", result.Warning, want)
+		}
+	}
+}
+
+// A record written before the path was recorded names only a workspace, and it
+// is still verified when herdr can resolve one. When herdr cannot, the warning
+// names the workspace: there is no path to check, and that is not success.
+func TestCloseWarnsWhenTheRecordNamesNoPathAndHerdrCannotResolveIt(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "")
+
+	resp := f.close(&fakeHerdr{checkoutErr: fmt.Errorf("%w: herdr has no workspace w7", dispatch.ErrNoWorktree)}, dispatch.CloseRequest{
+		NodeID: nodeID, Decision: "verified",
+	})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	for _, want := range []string{"w7", "could not verify"} {
+		if !strings.Contains(result.Warning, want) {
+			t.Errorf("warning = %q, must mention %q", result.Warning, want)
+		}
+	}
+}
+
+// A dispatch that ran in the project root has no worktree to verify, and the
+// teardown must not invent one: git is never asked.
+func TestCloseWithoutAWorktreeNeverAsksGit(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	f.git.listErr = errors.New("must not be asked")
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if f.git.lists != 0 {
+		t.Errorf("git was asked about worktrees %d time(s) for a dispatch that had none", f.git.lists)
+	}
+	if result := resp.Data.(dispatch.CloseResult); result.Warning != "" {
+		t.Errorf("warning = %q, want none", result.Warning)
 	}
 }
 

@@ -51,18 +51,25 @@ type UpdateResult struct {
 // guessing. They are absent only on records written before the link existed;
 // TabID likewise, on records written before it was recorded at all — it names
 // the cap's own tab, which the worker shares and which is never closed;
-// Type and Worktree, on records written before the cleanup gate and worktree
-// teardown existed. Type is what close-out reads to find the exit gate, and it
-// is structural — never recovered from the goal string, which is prose.
+// Type, Worktree, and WorktreePath, on records written before the cleanup gate
+// and worktree teardown existed. Type is what close-out reads to find the exit
+// gate, and it is structural — never recovered from the goal string, which is
+// prose.
+//
+// Worktree names the herdr workspace; WorktreePath names the checkout it was
+// made from. Both are recorded because they can die separately: herdr can
+// forget a workspace — its agent having ended — while the checkout survives on
+// disk, and then the workspace id alone names nothing that can be removed.
 type DeliveryRecord struct {
-	PaneID   string `json:"pane_id"`
-	TabID    string `json:"tab_id,omitempty"`
-	Agent    string `json:"agent"`
-	Engine   string `json:"engine"`
-	Project  string `json:"project"`
-	Node     string `json:"node"`
-	Type     string `json:"type,omitempty"`
-	Worktree string `json:"worktree,omitempty"`
+	PaneID       string `json:"pane_id"`
+	TabID        string `json:"tab_id,omitempty"`
+	Agent        string `json:"agent"`
+	Engine       string `json:"engine"`
+	Project      string `json:"project"`
+	Node         string `json:"node"`
+	Type         string `json:"type,omitempty"`
+	Worktree     string `json:"worktree,omitempty"`
+	WorktreePath string `json:"worktree_path,omitempty"`
 }
 
 // TaskInfo represents derived task state for status output.

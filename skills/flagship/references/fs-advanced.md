@@ -39,7 +39,7 @@ Every event is a JSON object with fixed envelope + type-specific payload:
 | `task-blocked` | `reason` (string) |
 | `task-unblocked` | (empty object) |
 | `metadata-changed` | `field` (string), `old_value` (string), `new_value` (string) |
-| `delivery-recorded` | `pane_id` (string), `tab_id` (string), `agent` (string), `engine` (string), `project` (string), `node` (string), `type` (string), `worktree` (string) |
+| `delivery-recorded` | `pane_id` (string), `tab_id` (string), `agent` (string), `engine` (string), `project` (string), `node` (string), `type` (string), `worktree` (string), `worktree_path` (string) |
 
 ### Composite operations
 
@@ -89,7 +89,7 @@ Each step is `kind: body`:
 
 | Kind | Meaning |
 |---|---|
-| `check` | A shell command `fs dispatch` runs with cwd = the project root, and `fs close` runs with cwd = the tree the worker ran in: the worktree the delivery record names, or the project root when the record names none. A worktree the record names but herdr cannot resolve refuses the close rather than checking the wrong tree. Pass/fail plus the command's output. |
+| `check` | A shell command `fs dispatch` runs with cwd = the project root, and `fs close` runs with cwd = the tree the worker ran in: the `worktree_path` the delivery record kept, the workspace herdr resolves for a record written before that path existed, or the project root when the record names no worktree at all. A worktree the record names but whose path can be resolved neither way refuses the close rather than checking the wrong tree. Pass/fail plus the command's output. |
 | `ask` | Only the cap can confirm it; dispatch reports `?`. |
 | `say` | Worker context, not part of the gate. Carried in the brief text. |
 
