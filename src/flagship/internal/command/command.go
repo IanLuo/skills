@@ -71,6 +71,7 @@ type TaskInfo struct {
 	Goal         string   `json:"goal"`
 	Status       string   `json:"status"`
 	ParentNodeID string   `json:"parent_node_id,omitempty"`
+	Orphan       bool     `json:"orphan,omitempty"`
 	Decisions    []string `json:"decisions,omitempty"`
 	Knowledge    []string `json:"knowledge,omitempty"`
 }
@@ -161,6 +162,22 @@ func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response
 	}
 	if goal == "" {
 		return errResp("goal is required")
+	}
+
+	// A parent that is not in the project would leave the node unreachable in
+	// the tree: not a root, never a child, invisible to fs status — and events
+	// are immutable, so the mistake could never be corrected. Refuse it here.
+	// The check uses the same derivation fs status and fs unfinished do, so an
+	// accepted parent is one those views show.
+	if parentNodeID != nil && *parentNodeID != "" {
+		events, err := h.store.Replay(projectID, nil)
+		if err != nil {
+			h.logger.Error("store replay failed", "command", "task-add", "error", err)
+			return errResp(err.Error())
+		}
+		if _, ok := query.BuildTree(projectID, events).Nodes[*parentNodeID]; !ok {
+			return errResp(fmt.Sprintf("parent %s does not exist in project %s", *parentNodeID, projectID))
+		}
 	}
 
 	nodeID := newNodeID()
@@ -402,6 +419,7 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 		Goal:         node.Goal,
 		Status:       node.Status,
 		ParentNodeID: node.ParentID,
+		Orphan:       node.Orphan,
 		Decisions:    node.Decisions,
 		Knowledge:    node.Knowledge,
 	})

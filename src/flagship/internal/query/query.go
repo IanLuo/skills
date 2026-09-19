@@ -17,6 +17,7 @@ type Node struct {
 	Goal      string   `json:"goal"`
 	Status    string   `json:"status"`
 	ParentID  string   `json:"parent_id,omitempty"`
+	Orphan    bool     `json:"orphan,omitempty"`
 	Children  []*Node  `json:"children,omitempty"`
 	Decisions []string `json:"decisions,omitempty"`
 	Knowledge []string `json:"knowledge,omitempty"`
@@ -121,13 +122,21 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 		}
 	}
 
-	// Link children to parents.
+	// Link children to parents. A node whose parent id is not present in the
+	// project is an orphan: no root reaches it, so it would vanish from any
+	// walk from the roots. Mark it and let it stand as a root of its own, so
+	// fs status agrees with fs unfinished about which nodes exist.
+	children := make(map[string]bool)
 	for _, node := range tree.Nodes {
-		if node.ParentID != "" {
-			if parent, ok := tree.Nodes[node.ParentID]; ok {
-				parent.Children = append(parent.Children, node)
-			}
+		if node.ParentID == "" {
+			continue
 		}
+		if parent, ok := tree.Nodes[node.ParentID]; ok {
+			parent.Children = append(parent.Children, node)
+			children[node.NodeID] = true
+			continue
+		}
+		node.Orphan = true
 	}
 
 	// Build roots list: nodes without a parent, preserving insertion order.
@@ -139,9 +148,10 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 			seen[nid] = true
 		}
 	}
-	// Add orphan nodes (events without task-created) that aren't children.
+	// Add every node that is not a child: orphan-event nodes (no task-created)
+	// and orphaned nodes (a parent id with no matching node).
 	for nid, node := range tree.Nodes {
-		if !seen[nid] && node.ParentID == "" {
+		if !seen[nid] && !children[nid] {
 			tree.Roots = append(tree.Roots, node)
 		}
 	}

@@ -26,6 +26,28 @@ func setup(t *testing.T) *command.Handler {
 	return h
 }
 
+func strPtr(s string) *string { return &s }
+
+// setupWithStore returns a handler plus a second store handle on the same
+// database, so a test can append an event straight through the store —
+// bypassing the write-time validation TaskAdd applies.
+func setupWithStore(t *testing.T) (*command.Handler, *store.Store) {
+	t.Helper()
+	dbPath := tempDB(t)
+	h, err := command.NewHandler(dbPath)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	t.Cleanup(func() { h.Close() })
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return h, s
+}
+
 func TestResponseEnvelope(t *testing.T) {
 	h := setup(t)
 	resp := h.ProjectCreate("test-project", "/tmp/test")
@@ -142,6 +164,26 @@ func TestTaskAddWithParent(t *testing.T) {
 	resp := h.TaskAdd("proj", "subtask", &parentData.NodeID)
 	if !resp.OK {
 		t.Fatalf("not OK: %s", resp.Error)
+	}
+}
+
+func TestTaskAddUnknownParentRefused(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	before := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+
+	resp := h.TaskAdd("proj", "subtask", strPtr("t-nonexistent"))
+	if resp.OK {
+		t.Fatal("a parent that does not exist must be refused")
+	}
+	if !strings.Contains(resp.Error, "t-nonexistent") || !strings.Contains(resp.Error, "proj") {
+		t.Errorf("error must name the parent and the project: %s", resp.Error)
+	}
+
+	after := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+	if after != before {
+		t.Fatalf("a refused add must write no event: %d -> %d", before, after)
 	}
 }
 
@@ -292,6 +334,70 @@ func TestStatusDecisions(t *testing.T) {
 	}
 	if data.Tasks[0].Decisions[0] != "chose JWT" {
 		t.Errorf("decision: %s", data.Tasks[0].Decisions[0])
+	}
+}
+
+// An orphan — a task-created whose parent never existed — is unreachable from
+// the roots, so fs status must surface it explicitly, marked.
+func TestStatusSurfacesOrphan(t *testing.T) {
+	h, s := setupWithStore(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	h.TaskAdd("proj", "root task", nil)
+
+	// Straight through the store, as the log allows: a task naming a parent
+	// that is not in the project. Pre-existing orphans must become visible.
+	orphanID := "t-orphan"
+	payload, _ := json.Marshal(map[string]string{"goal": "orphaned task"})
+	if _, err := s.Append(store.Event{
+		Type:         store.TaskCreated,
+		ProjectID:    "proj",
+		NodeID:       &orphanID,
+		ParentNodeID: strPtr("t-nonexistent"),
+		Payload:      payload,
+	}); err != nil {
+		t.Fatalf("append orphan: %v", err)
+	}
+
+	resp := h.Status("proj")
+	if !resp.OK {
+		t.Fatalf("Status: %s", resp.Error)
+	}
+	tasks := resp.Data.(command.StatusResult).Tasks
+	if len(tasks) != 2 {
+		t.Fatalf("status has %d tasks, want root + orphan: %+v", len(tasks), tasks)
+	}
+	var orphan *command.TaskInfo
+	for i := range tasks {
+		if tasks[i].NodeID == orphanID {
+			orphan = &tasks[i]
+		}
+	}
+	if orphan == nil {
+		t.Fatalf("orphan missing from status: %+v", tasks)
+	}
+	if !orphan.Orphan {
+		t.Errorf("orphan not marked: %+v", orphan)
+	}
+	if orphan.ParentNodeID != "t-nonexistent" {
+		t.Errorf("orphan parent_node_id: %s", orphan.ParentNodeID)
+	}
+
+	// fs status and fs unfinished must agree about which nodes exist.
+	unfinished, err := h.UnfinishedIn("proj")
+	if err != nil {
+		t.Fatalf("UnfinishedIn: %v", err)
+	}
+	unfinishedIDs := map[string]bool{}
+	for _, node := range unfinished {
+		unfinishedIDs[node.NodeID] = true
+	}
+	for i := range tasks {
+		if !unfinishedIDs[tasks[i].NodeID] {
+			t.Errorf("node %s is in status but not unfinished: %+v", tasks[i].NodeID, unfinished)
+		}
+	}
+	if len(unfinished) != len(tasks) {
+		t.Fatalf("status has %d nodes, unfinished has %d: %+v", len(tasks), len(unfinished), unfinished)
 	}
 }
 
