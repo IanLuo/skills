@@ -34,22 +34,37 @@ var ErrPaneGone = errors.New("pane is already gone")
 // removed it.
 var ErrWorktreeGone = errors.New("worktree is already gone")
 
+// ErrNoRootPane reports that a worktree workspace has no pane a worker can be
+// started in: herdr does not know the workspace, it is not a worktree, or none
+// of its panes sits at the worktree's checkout. A worktree dispatch is refused
+// rather than falling back to splitting the cap's pane, which would run the
+// worker in the main checkout while the record claimed isolation.
+var ErrNoRootPane = errors.New("worktree workspace has no root pane")
+
 // HerdrCLI is the slice of the herdr CLI the dispatch lifecycle uses: split a
 // pane for the worker, start an agent in it, send the brief, read what the
 // agents are doing, and tear the pane down again.
 //
-// The worker gets a sibling pane of the cap's own, not a tab. A tab created by
-// id carried no workspace, so a worker could land in another session's
-// workspace and herdr has no command to move it back; a split is anchored to
-// the cap's pane and so to the cap's workspace. And herdr no longer needs the
-// unseen-work signal a separate tab bought: pane_agent_status_changed fires per
-// pane regardless of visibility.
+// A dispatch in the project root gets a sibling pane of the cap's own, not a
+// tab. A tab created by id carried no workspace, so a worker could land in
+// another session's workspace and herdr has no command to move it back; a split
+// is anchored to the cap's pane and so to the cap's workspace. And herdr no
+// longer needs the unseen-work signal a separate tab bought:
+// pane_agent_status_changed fires per pane regardless of visibility.
+//
+// A worktree dispatch gets no pane at all: the worktree workspace already has
+// one, and splitting the cap's pane would put the worker in the main checkout.
 type HerdrCLI interface {
 	// SplitPane splits the pane the caller runs in — the cap's own — to the
 	// right, without moving focus, and returns the new pane's id along with the
 	// tab it landed in. cwd is where the worker starts, which is the project
 	// root: the split would inherit the cap's directory otherwise.
 	SplitPane(cwd string) (paneID, tabID string, err error)
+	// WorktreeRootPane returns the pane a worktree dispatch starts its worker
+	// in: the root pane herdr created with the workspace, whose cwd is the
+	// worktree's own checkout. It returns ErrNoRootPane — naming wsID — when
+	// there is no such pane.
+	WorktreeRootPane(wsID string) (paneID, tabID string, err error)
 	// StartAgent starts an interactive agent named name in an existing pane.
 	StartAgent(paneID, name string) error
 	// Prompt submits text to the agent hosted by paneID.
@@ -67,8 +82,9 @@ type HerdrCLI interface {
 	RemoveWorktree(wsID string) error
 }
 
-// Deliver hands the prepared brief to a worker: it splits a sibling pane of the
-// cap's own at the project root, starts the agent in it, creates the worker's
+// Deliver hands the prepared brief to a worker: it finds the pane the worker
+// starts in — a new sibling of the cap's own in the project root, or the
+// worktree's existing root pane — starts the agent there, creates the worker's
 // node in the target project, sends the brief naming that node, then records the
 // binding as a delivery-recorded event and marks the cap node active.
 //
@@ -78,9 +94,9 @@ type HerdrCLI interface {
 // rollbackWorker): a failed delivery neither leaves outstanding work behind nor
 // claims a delivery that did not happen.
 func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
-	paneID, tabID, err := hc.SplitPane(brief.RootPath)
+	paneID, tabID, err := workerPane(hc, brief)
 	if err != nil {
-		return deliverErr(brief, fmt.Errorf("split pane: %w", err))
+		return deliverErr(brief, err)
 	}
 
 	// The worker's node comes first because the agent is named after it: two
@@ -129,6 +145,25 @@ func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 
 	brief.Delivery = &delivery
 	return command.Response{OK: true, Data: brief}
+}
+
+// workerPane returns the pane the worker starts in: the worktree's own root pane
+// for a dispatch that names a worktree, and a new sibling of the cap's own for
+// one that does not.
+//
+// The worktree case must not split: the split inherits the cap's directory, so
+// the worker would run in the main checkout while the record claimed isolation.
+// And it must not fall back to a split when the worktree has no root pane — a
+// silent fallback is the same bug, only quieter.
+func workerPane(hc HerdrCLI, brief *Brief) (string, string, error) {
+	if brief.Worktree != "" {
+		return hc.WorktreeRootPane(brief.Worktree)
+	}
+	paneID, tabID, err := hc.SplitPane(brief.RootPath)
+	if err != nil {
+		return "", "", fmt.Errorf("split pane: %w", err)
+	}
+	return paneID, tabID, nil
 }
 
 // createWorkerNode creates the worker's node in the target project and points
@@ -212,6 +247,79 @@ func (herdrCLI) SplitPane(cwd string) (string, string, error) {
 func (herdrCLI) StartAgent(paneID, name string) error {
 	_, err := runHerdr("agent", "start", name, "--kind", agentKind, "--pane", paneID)
 	return err
+}
+
+// WorktreeRootPane finds the pane a worktree dispatch starts its worker in.
+//
+// herdr exposes no "root pane" flag, so the root pane is identified by where it
+// sits: herdr creates a worktree workspace with one pane already at the
+// worktree's checkout path, and that pane — not one split off later, and not the
+// root pane once someone has cd'd it elsewhere — is the workspace's own. If
+// several panes sit at the checkout, the first herdr lists is taken. A workspace
+// with no such pane is ErrNoRootPane rather than a guess, because starting the
+// worker anywhere else would be the very bug this avoids.
+func (herdrCLI) WorktreeRootPane(wsID string) (string, string, error) {
+	checkout, err := worktreeCheckout(wsID)
+	if err != nil {
+		return "", "", err
+	}
+
+	out, err := runHerdr("pane", "list", "--workspace", wsID)
+	if err != nil {
+		return "", "", fmt.Errorf("worktree %s: %w", wsID, err)
+	}
+	var resp struct {
+		Result struct {
+			Panes []struct {
+				PaneID        string `json:"pane_id"`
+				TabID         string `json:"tab_id"`
+				CWD           string `json:"cwd"`
+				ForegroundCWD string `json:"foreground_cwd"`
+			} `json:"panes"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return "", "", fmt.Errorf("herdr pane list --workspace %s: parse response: %w", wsID, err)
+	}
+
+	for _, pane := range resp.Result.Panes {
+		if pane.CWD == checkout || pane.ForegroundCWD == checkout {
+			return pane.PaneID, pane.TabID, nil
+		}
+	}
+	return "", "", fmt.Errorf(
+		"%w: workspace %s has %d pane(s) and none sits at the worktree checkout %s",
+		ErrNoRootPane, wsID, len(resp.Result.Panes), checkout)
+}
+
+// worktreeCheckout returns the checkout path of the worktree workspace wsID, or
+// ErrNoRootPane when herdr has no such workspace or it is not a worktree.
+func worktreeCheckout(wsID string) (string, error) {
+	out, err := runHerdr("workspace", "get", wsID)
+	if err != nil {
+		if herdrErrorCode(err) == "workspace_not_found" {
+			return "", fmt.Errorf("%w: herdr has no workspace %s", ErrNoRootPane, wsID)
+		}
+		return "", fmt.Errorf("herdr workspace get %s: %w", wsID, err)
+	}
+
+	var resp struct {
+		Result struct {
+			Workspace struct {
+				Worktree struct {
+					CheckoutPath string `json:"checkout_path"`
+				} `json:"worktree"`
+			} `json:"workspace"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return "", fmt.Errorf("herdr workspace get %s: parse response: %w", wsID, err)
+	}
+	checkout := resp.Result.Workspace.Worktree.CheckoutPath
+	if checkout == "" {
+		return "", fmt.Errorf("%w: workspace %s is not a worktree", ErrNoRootPane, wsID)
+	}
+	return checkout, nil
 }
 
 func (herdrCLI) Prompt(paneID, text string) error {

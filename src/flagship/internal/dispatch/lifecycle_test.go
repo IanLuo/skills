@@ -27,11 +27,18 @@ type fakeHerdr struct {
 	agentsErr   error
 	worktreeErr error
 
+	// rootPaneID/rootPaneTab/rootPaneErr stand in for the root pane a worktree
+	// workspace already has — the pane a worktree dispatch must start in.
+	rootPaneID  string
+	rootPaneTab string
+	rootPaneErr error
+
 	created []string
 	started []string
 	prompts []promptCall
 	closed  []string
 	removed []string
+	rooted  []string
 }
 
 // promptCall is one brief handed to a pane, so a test can read the text the
@@ -44,6 +51,14 @@ func (f *fakeHerdr) SplitPane(cwd string) (string, string, error) {
 	}
 	f.created = append(f.created, cwd)
 	return f.paneID, f.tabID, nil
+}
+
+func (f *fakeHerdr) WorktreeRootPane(wsID string) (string, string, error) {
+	f.rooted = append(f.rooted, wsID)
+	if f.rootPaneErr != nil {
+		return "", "", f.rootPaneErr
+	}
+	return f.rootPaneID, f.rootPaneTab, nil
 }
 
 func (f *fakeHerdr) StartAgent(paneID, name string) error {
@@ -374,7 +389,7 @@ func TestDeliverRecordsTheWorktreeItRunsIn(t *testing.T) {
 	f := newFixture(t, root)
 	capNode := addCapNode(t, f, "dispatch parallel: sample")
 
-	herdr := &fakeHerdr{tabID: "w7:t1", paneID: "w7:p1"}
+	herdr := &fakeHerdr{rootPaneID: "w7:p1", rootPaneTab: "w7:t1"}
 	resp := dispatch.Deliver(f.h, herdr, &dispatch.Brief{
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "w7",
@@ -388,6 +403,92 @@ func TestDeliverRecordsTheWorktreeItRunsIn(t *testing.T) {
 		if !strings.Contains(payload, want) {
 			t.Errorf("delivery payload %s must carry %s", payload, want)
 		}
+	}
+}
+
+// A worktree dispatch must start the worker inside the worktree, so it starts it
+// in the pane herdr already made for the workspace and splits nothing. Splitting
+// the cap's pane would run the worker in the main checkout — the record would
+// still claim isolation, which is worse than no isolation at all.
+func TestDeliverStartsTheWorkerInTheWorktreeRootPane(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	capNode := addCapNode(t, f, "dispatch parallel: sample")
+
+	herdr := &fakeHerdr{rootPaneID: "wA:p1", rootPaneTab: "wA:t1"}
+	brief := &dispatch.Brief{
+		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
+		CapNodeID: capNode, Worktree: "wA",
+	}
+	resp := dispatch.Deliver(f.h, herdr, brief)
+	if !resp.OK {
+		t.Fatalf("Deliver: %s", resp.Error)
+	}
+
+	if len(herdr.created) != 0 {
+		t.Errorf("a worktree dispatch split the cap's pane at %v; it must use the worktree's own pane", herdr.created)
+	}
+	if len(herdr.rooted) != 1 || herdr.rooted[0] != "wA" {
+		t.Errorf("root panes asked for = %v, want the worktree workspace wA", herdr.rooted)
+	}
+
+	workerID := strings.TrimPrefix(brief.WorkerNode, "skills:")
+	agent := "dispatch-parallel-" + workerID
+	if len(herdr.started) != 1 || herdr.started[0] != "wA:p1/"+agent {
+		t.Errorf("started = %v, want %s started in the worktree's root pane wA:p1", herdr.started, agent)
+	}
+	if len(herdr.prompts) != 1 || herdr.prompts[0].pane != "wA:p1" {
+		t.Errorf("prompts = %v, want the brief sent to wA:p1", herdr.prompts)
+	}
+
+	if brief.Delivery == nil || brief.Delivery.PaneID != "wA:p1" ||
+		brief.Delivery.TabID != "wA:t1" || brief.Delivery.Worktree != "wA" {
+		t.Fatalf("brief delivery = %+v, want the worktree's pane, tab, and workspace", brief.Delivery)
+	}
+	payload := string(capEvents(t, f, store.DeliveryRecorded)[0].Payload)
+	for _, want := range []string{
+		`"pane_id":"wA:p1"`, `"tab_id":"wA:t1"`, `"worktree":"wA"`, `"agent":"` + agent + `"`,
+	} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("delivery payload %s must carry %s", payload, want)
+		}
+	}
+}
+
+// A worktree workspace with no pane to start in is refused, and the refusal
+// names the workspace. The refusal must not fall back to splitting the cap's
+// pane: a silent fallback recreates the bug this fixes.
+func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	capNode := addCapNode(t, f, "dispatch parallel: sample")
+
+	herdr := &fakeHerdr{rootPaneErr: fmt.Errorf("%w: herdr has no workspace wZZ", dispatch.ErrNoRootPane)}
+	brief := &dispatch.Brief{
+		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
+		CapNodeID: capNode, Worktree: "wZZ",
+	}
+	resp := dispatch.Deliver(f.h, herdr, brief)
+	if resp.OK {
+		t.Fatal("a worktree with no root pane must be refused, not delivered")
+	}
+	for _, want := range []string{"wZZ", "no workspace", capNode, "unresolved"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+
+	if len(herdr.created) != 0 {
+		t.Errorf("the refusal split the cap's pane at %v", herdr.created)
+	}
+	if len(herdr.started) != 0 || len(herdr.prompts) != 0 {
+		t.Errorf("the refusal started work: started=%v prompts=%v", herdr.started, herdr.prompts)
+	}
+	if workers := scopeTasks(t, f, "skills"); len(workers) != 0 {
+		t.Errorf("skills nodes = %+v, want none: no worker node for a refused dispatch", workers)
+	}
+	if events := capEvents(t, f, store.DeliveryRecorded); len(events) != 0 {
+		t.Errorf("cap has %d delivery-recorded events, want none", len(events))
 	}
 }
 

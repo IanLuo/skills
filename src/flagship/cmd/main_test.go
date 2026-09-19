@@ -1761,13 +1761,39 @@ case "$cmd $sub" in
     printf '%s' "$*" > "$state/split_args"
     ws="${HERDR_TEST_WORKSPACE:-wTEST}"; tab="${HERDR_TEST_TAB:-wTEST:t0}"
     pane="$ws:p$n"
-    : > "$(id_file pane "$pane")"
+    # The pane's directory is kept, so a probe can read back where a worker
+    # actually starts rather than inferring it from the arguments.
+    cwd=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--cwd" ]; then cwd="${2:-}"; shift 2 || true; else shift; fi
+    done
+    printf '%s' "$cwd" > "$(id_file pane "$pane")"
     printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' "$pane" "$tab" "$ws"
     ;;
   "pane get")
     id="${1:-}"
     [ -f "$(id_file pane "$id")" ] || not_found pane "$id"
-    printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
+    cwd="$(cat "$(id_file pane "$id")" 2>/dev/null || true)"
+    printf '{"result":{"pane":{"pane_id":"%s","cwd":"%s","foreground_cwd":"%s"}}}\n' "$id" "$cwd" "$cwd"
+    ;;
+  "workspace get")
+    # A worktree workspace is named by HERDR_TEST_WORKTREE_WS; anything else is
+    # simply not there, the way a typo'd workspace id is not.
+    id="${1:-}"
+    [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$id"
+    printf '{"result":{"workspace":{"workspace_id":"%s","worktree":{"checkout_path":"%s","is_linked_worktree":true}}}}\n' "$id" "$HERDR_TEST_WORKTREE_CWD"
+    ;;
+  "pane list")
+    ws=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--workspace" ]; then ws="${2:-}"; shift 2 || true; else shift; fi
+    done
+    [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$ws"
+    # A worktree workspace has its root pane from the moment herdr made it, at
+    # the worktree's own checkout — no split needed to run a worker in it.
+    pane="$ws:p1"
+    printf '%s' "$HERDR_TEST_WORKTREE_CWD" > "$(id_file pane "$pane")"
+    printf '{"result":{"panes":[{"pane_id":"%s","tab_id":"%s:t1","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$pane" "$ws" "$ws" "$HERDR_TEST_WORKTREE_CWD" "$HERDR_TEST_WORKTREE_CWD"
     ;;
   "worktree list")
     printf '{"result":{"worktrees":[]}}\n'
@@ -1893,6 +1919,30 @@ func herdrPrompt(t *testing.T, state string) string {
 		t.Fatalf("reading the prompted brief: %v", err)
 	}
 	return string(text)
+}
+
+// herdrPaneProbe returns the cwd herdr reports for a pane, standing in for the
+// acceptance check's `herdr pane get <pane> → foreground_cwd`. The cwd is read
+// back from herdr rather than inferred from the arguments fs passed, because
+// the directory the worker actually starts in is the whole point.
+func herdrPaneProbe(t *testing.T, script string, env []string, paneID string) (cwd, foregroundCWD string) {
+	t.Helper()
+	out, err := herdrRun(t, script, env, "pane", "get", paneID)
+	if err != nil {
+		t.Fatalf("herdr pane get %s: %v", paneID, err)
+	}
+	var resp struct {
+		Result struct {
+			Pane struct {
+				CWD           string `json:"cwd"`
+				ForegroundCWD string `json:"foreground_cwd"`
+			} `json:"pane"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("herdr pane get %s: %v", paneID, err)
+	}
+	return resp.Result.Pane.CWD, resp.Result.Pane.ForegroundCWD
 }
 
 // herdrSplitArgs returns the arguments the fake herdr's last pane split was
@@ -2066,6 +2116,85 @@ func TestCLIDeliverSplitsASiblingPaneAndCloseTearsItDown(t *testing.T) {
 	}
 	if warning, ok := again["data"].(map[string]any)["warning"]; ok {
 		t.Errorf("an already-closed pane must not warn, got %v", warning)
+	}
+}
+
+// A worktree dispatch starts the worker inside the worktree, not the main
+// checkout. The worktree workspace already has a root pane at the worktree's own
+// checkout, so fs binds the worker to that pane and splits nothing: a split of
+// the cap's pane would inherit the cap's directory, run the worker in the main
+// checkout, and still be recorded as isolated.
+func TestCLIDeliverInAWorktreeStartsTheWorkerInTheWorktreeRootPane(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	worktree := t.TempDir()
+	env, state, script := fakeHerdrOnPath(t)
+	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+
+	capNode, tabID, paneID, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
+
+	// The binding is the worktree's own root pane, not a new one.
+	if paneID != "wWT:p1" || tabID != "wWT:t1" {
+		t.Errorf("delivery bound pane %s tab %s, want the worktree's own wWT:p1 in wWT:t1", paneID, tabID)
+	}
+	if _, err := os.Stat(filepath.Join(state, "split_args")); !os.IsNotExist(err) {
+		t.Errorf("a worktree dispatch split a pane: %s", herdrSplitArgs(t, state))
+	}
+
+	// The worker is in that pane, and that pane's cwd is the worktree — asserted
+	// from herdr, not inferred.
+	agent := "dispatch-dev-task-" + strings.TrimPrefix(workerRef, "skills:")
+	if got := herdrAgentPane(t, script, env, agent); got != paneID {
+		t.Errorf("agent %s is in pane %s, want %s", agent, got, paneID)
+	}
+	cwd, foreground := herdrPaneProbe(t, script, env, paneID)
+	if cwd != worktree || foreground != worktree {
+		t.Errorf("worker pane cwd = %q (foreground %q), want the worktree %s", cwd, foreground, worktree)
+	}
+	if foreground == root {
+		t.Errorf("the worker started in the main checkout %s; that is the bug this fixes", root)
+	}
+
+	// The record still carries the worktree, which is what close removes.
+	logResp, code := runFS(t, bin, root, "log", "--node", capNode, "--type", "delivery-recorded", "--project", "cap")
+	if code != 0 {
+		t.Fatalf("log exit %d: %v", code, logResp["error"])
+	}
+	events := logResp["data"].(map[string]any)["events"].([]any)
+	payload := events[0].(map[string]any)["payload"].(map[string]any)
+	if payload["worktree"] != "wWT" || payload["pane_id"] != paneID {
+		t.Errorf("delivery payload = %v, want the worktree wWT bound to %s", payload, paneID)
+	}
+}
+
+// A worktree workspace herdr does not know is refused, naming it, before any
+// worker node exists and without splitting the cap's pane. The refusal is the
+// point: a fallback split would put a worker in the main checkout under a record
+// that claimed otherwise.
+func TestCLIDeliverRefusesAnUnknownWorktreeWorkspace(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, state, _ := fakeHerdrOnPath(t)
+
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", "wNOPE")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"wNOPE", "root pane", "unresolved"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(state, "split_args")); !os.IsNotExist(err) {
+		t.Errorf("the refusal split the cap's pane: %s", herdrSplitArgs(t, state))
+	}
+	if tasks := scopeTasks(t, bin, root, "skills"); len(tasks) != 0 {
+		t.Errorf("skills nodes = %v, want none: a refused dispatch creates no worker node", tasks)
 	}
 }
 
