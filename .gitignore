@@ -29,3 +29,6 @@ skills/flagship/scripts/fs
 # Vendored third-party diagram library (~4MB). Fetch it with the curl line in
 # skills/canvas/SKILL.md; the canvas degrades to source text without it.
 skills/canvas/assets/mermaid.min.js
+
+# nix build output symlink
+/result

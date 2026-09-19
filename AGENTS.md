@@ -23,7 +23,7 @@ bash tests/run.sh
 ./bin/deploy-skills.sh
 ./bin/deploy-skills.sh --skill <name>   # one skill
 ./bin/deploy-skills.sh --dry-run        # preview
-./bin/deploy-skills.sh --doctor         # health-check symlinks
+./bin/deploy-skills.sh --doctor         # health-check symlinks, artifacts, skill sources
 
 # Global agent instructions (global/AGENTS.md → every agent's global instruction file)
 ./bin/deploy-instructions.sh           # link; --list / --doctor / --dry-run / --force
@@ -33,6 +33,14 @@ bash skills/skill-man/scripts/sync-check.sh
 
 # Create a new skill
 bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,references,assets]
+
+# Build projects under src/ into their skill's scripts/ folder (derived, gitignored)
+./bin/build-project.sh                 # every project; or name one
+./bin/build-project.sh credentials     # cred-run → skills/credentials/scripts/
+
+# Nix outputs: one pair per project, no `default` — name the project you want
+nix build .#credentials                # hermetic; cred-run has no dependencies
+nix develop                            # both toolchains; .#credentials / .#flagship for one
 ```
 
 ## Hot invariants
@@ -44,6 +52,7 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 - Validate before deploying (`validate.py` is the source of truth for the spec, pinned to `anthropics/skills` `5754626`). Audit quality with `audit.py` — it is the mechanized half of skill-man's evaluation rubric.
 - References resolve **against the skill's own dir** (the harness rule), never the skills root: use `references/x.md` for your own files, `../other-skill/references/x.md` for a sibling. The bare `other-skill/references/x.md` form is ambiguous and `audit.py` fails it.
 - Forward-test new skills with a fresh subagent (baseline-then-write: watch it fail without the skill first).
+- Each project under `src/` is a build unit with one output pair in the root flake (`packages.<project>` + `devShells.<project>`) — the flake owns every recipe. `./bin/build-project.sh` installs a project's binary into `skills/<project>/scripts/`. Those binaries are derived and gitignored — never edit them, and never restate a recipe outside `flake.nix`.
 
 ## Architecture elevator
 
