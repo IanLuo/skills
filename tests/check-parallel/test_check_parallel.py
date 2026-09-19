@@ -10,9 +10,12 @@ so each is asserted here:
   2. a path declared by two cards exits 1, naming the path
   3. a card with a "## Files" section listing nothing is refused
   4. a card with no "## Files" section at all is refused
-  5. naming no cards exits 2 (a check with no input must not pass)
+  5. naming no cards exits 2, with a message naming --cards (a check with no
+     input must not pass, and the caller has to be told what it forgot)
   6. a fenced block is parsed; trailing comments and annotations are dropped
   7. one card naming the same path twice is not an overlap with itself
+  8. a comma-separated list is the same batch as separate arguments: that is how
+     fs dispatch passes $FS_CARDS through one word
 
 Usage: python3 tests/check-parallel/test_check_parallel.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -52,6 +55,11 @@ def run(*cards):
     return p.returncode, p.stdout + p.stderr
 
 
+def run_fs_cards(cards):
+    """Run the way fs dispatch does: one $FS_CARDS word, comma-separated."""
+    return run(cards)
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="check-parallel-"))
     try:
@@ -84,6 +92,21 @@ def main():
 
         code, out = run()
         check("naming no cards exits 2", code == 2, f"exit {code}: {out}")
+        check("the refusal names --cards", "--cards" in out, out)
+
+        code, out = run("")
+        check("a blank card list exits 2", code == 2, f"exit {code}: {out}")
+        check("the blank-list refusal names --cards", "--cards" in out, out)
+
+        code, out = run_fs_cards(f"{a},{b}")
+        check("a comma-separated $FS_CARDS list is one batch", code == 0, f"exit {code}: {out}")
+
+        code, out = run_fs_cards(f"{a},{c}")
+        check("a comma-separated overlap exits 1", code == 1, f"exit {code}: {out}")
+        check("the comma-separated overlap names the path", "internal/registry/registry.go" in out, out)
+
+        code, out = run(f"{a},{b}")
+        check("whitespace around a comma is dropped", code == 0, f"exit {code}: {out}")
 
         code, out = run(annotated, b)
         check("comments and annotations are dropped", code == 0, f"exit {code}: {out}")

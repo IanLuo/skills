@@ -97,6 +97,13 @@ A step line with no recognized kind prefix defaults to `say` (split at the first
 so prose playbooks written before kinds existed still parse. `fs kb get` returns steps
 as `{kind, body}` objects.
 
+A dispatch's `check` steps also see the dispatch's own inputs in the environment,
+so a prerequisite can gate on *this* dispatch — which cards — and not only on the
+world: `FS_PROJECT`, `FS_TYPE`, `FS_GOAL`, and `FS_CARDS` (the `--cards` value,
+comma-separated, empty when none was given, and never unset). That is what
+`parallel-prerequisites.yaml` uses: `check: bin/check-parallel.sh $FS_CARDS`.
+`fs close`'s exit checks get no `FS_*`: a close-out has no batch to offer.
+
 ### Playbook types
 
 | Type | Purpose | Allowed step kinds |

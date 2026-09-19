@@ -91,10 +91,22 @@ var cmdSpecs = map[string]cmdSpec{
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
-		usage: "Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--confirm] [--deliver] [--worktree WORKSPACE_ID]",
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--confirm] [--deliver] [--worktree WORKSPACE_ID]
+
+Every check step the playbook declares runs with this dispatch's own inputs in
+its environment, so a prerequisite can ask about this dispatch and not only
+about the world:
+
+  FS_PROJECT  the resolved project
+  FS_TYPE     the task type
+  FS_GOAL     the goal text
+  FS_CARDS    the --cards value, comma-separated; empty when none was given
+
+--cards names the batch's cards. It is repeatable, and each value may be a
+comma-separated list.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--confirm": false, "--deliver": false, "--worktree": true,
+			"--cards": true, "--confirm": false, "--deliver": false, "--worktree": true,
 		},
 	},
 	"close": {

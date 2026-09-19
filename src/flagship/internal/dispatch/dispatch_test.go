@@ -136,7 +136,7 @@ func writeFile(t *testing.T, path, content string) {
 func TestPrepareMissingPlaybook(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", nil, false)
 	if resp.OK {
 		t.Fatal("expected failure for a missing playbook")
 	}
@@ -156,7 +156,7 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -216,10 +216,10 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	if len(brief.Notes) == 0 || !strings.Contains(strings.Join(brief.Notes, " "), "false positive") {
 		t.Errorf("notes must flag the known grep false positive, got %v", brief.Notes)
 	}
-	if !strings.Contains(brief.NextCommand, "herdr tab create") ||
+	if !strings.Contains(brief.NextCommand, "herdr pane split") ||
 		!strings.Contains(brief.NextCommand, "herdr agent start") ||
 		!strings.Contains(brief.NextCommand, "herdr agent prompt") {
-		t.Errorf("next_command must be the herdr tab/start/prompt line, got %q", brief.NextCommand)
+		t.Errorf("next_command must be the herdr split/start/prompt line, got %q", brief.NextCommand)
 	}
 }
 
@@ -228,7 +228,7 @@ func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
 	if resp.OK {
 		t.Fatal("a failing check must refuse, not prepare a brief")
 	}
@@ -257,7 +257,7 @@ func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", true)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true)
 	if !resp.OK {
 		t.Fatalf("--confirm must prepare despite the failure: %s", resp.Error)
 	}
@@ -279,13 +279,13 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", false)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false)
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
 	firstID := first.Data.(*dispatch.Brief).CapNodeID
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false)
 	if resp.OK {
 		t.Fatal("expected refusal while a dispatch is unresolved")
 	}
@@ -295,7 +295,7 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 		}
 	}
 
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", true)
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, true)
 	if !confirmed.OK {
 		t.Fatalf("--confirm dispatch: %s", confirmed.Error)
 	}
@@ -321,7 +321,7 @@ func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 		t.Fatalf("task block: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
 	if !resp.OK {
 		t.Fatalf("a non-dispatch cap node must not gate: %s", resp.Error)
 	}
@@ -339,7 +339,7 @@ steps:
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", reworded)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -363,6 +363,51 @@ steps:
 	}
 }
 
+// A check runs with the dispatch's own inputs in its environment, named FS_*.
+//
+// This is what makes the parallel gate possible at all: the batch's cards exist
+// nowhere a static shell string can read, so a prerequisite over them could not
+// be written without it. printenv rather than echo is deliberate — it fails on
+// an absent variable, so passing proves each one is set, while an empty FS_CARDS
+// must be visible as set-and-empty rather than mistaken for a missing env.
+func TestPrepareGivesEveryCheckTheDispatchEnv(t *testing.T) {
+	const envPlaybook = `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: printenv FS_PROJECT; printenv FS_TYPE; printenv FS_GOAL; printenv FS_CARDS
+`
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", envPlaybook)
+
+	withCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", []string{"a.md", "b.md"}, false)
+	if !withCards.OK {
+		t.Fatalf("Prepare with cards: %s", withCards.Error)
+	}
+	brief := withCards.Data.(*dispatch.Brief)
+	if len(brief.Checklist) != 1 {
+		t.Fatalf("checklist = %+v, want the one check", brief.Checklist)
+	}
+	if got, want := brief.Checklist[0].Output, "skills\ndev-task\nsample\na.md,b.md"; got != want {
+		t.Errorf("check saw %q, want %q", got, want)
+	}
+
+	// FS_CARDS is exported empty rather than left absent, so a gate that reads
+	// it can tell "this dispatch named no cards" from "this step has no env".
+	// The first dispatch has to be resolved first: an outstanding one gates the
+	// next unless --confirm overrides it.
+	if resp := f.h.TaskUpdate("cap", brief.CapNodeID, "done", "test cleanup", nil); !resp.OK {
+		t.Fatalf("resolving the first dispatch: %s", resp.Error)
+	}
+	noCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	if !noCards.OK {
+		t.Fatalf("Prepare without cards: %s", noCards.Error)
+	}
+	if got, want := noCards.Data.(*dispatch.Brief).Checklist[0].Output, "skills\ndev-task\nsample"; got != want {
+		t.Errorf("check saw %q, want %q", got, want)
+	}
+}
+
 // A say step is worker context, not a gate item: it never appears in the
 // checklist and never carries a status.
 func TestPrepareSayIsContextNotGate(t *testing.T) {
@@ -378,7 +423,7 @@ steps:
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", procedure)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -402,7 +447,7 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -455,7 +500,7 @@ func TestPrepareRequiresArgs(t *testing.T) {
 		{"skills", "", "x"},
 		{"skills", "dev-task", ""},
 	} {
-		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, false)
+		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, nil, false)
 		if resp.OK {
 			t.Errorf("Prepare(%q, %q, %q) should fail", tc.project, tc.taskType, tc.goal)
 		}

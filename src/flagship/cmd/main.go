@@ -104,21 +104,23 @@ Commands:
   kb reset NAME --yes                           Restore the shipped default
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
-  dispatch --project P --type TYPE --goal GOAL [--confirm] [--deliver] [--worktree WS]
+  dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
+                                               [--confirm] [--deliver] [--worktree WS]
                                                Prepare a dispatch brief; --deliver
                                                also hands it to a worker pane;
-                                               --worktree names the herdr
-                                               worktree workspace to tear down
-                                               at close
+                                               --cards names the batch's cards,
+                                               which every check step sees as
+                                               $FS_CARDS; --worktree names the
+                                               herdr worktree workspace to tear
+                                               down at close
   close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
                                                Close out a dispatch: run its
-                                               cleanup gate, then close its pane,
-                                               tab, and worktree, then mark the
-                                               node done. The worker node comes
-                                               from the delivery record; --worker
-                                               is only a check against it.
-                                               --confirm answers the gate's ask
-                                               steps
+                                               cleanup gate, then close its pane
+                                               and worktree, then mark the node
+                                               done. The worker node comes from
+                                               the delivery record; --worker is
+                                               only a check against it. --confirm
+                                               answers the gate's ask steps
   close --node NODE --abandoned --reason TEXT  Close a never-delivered dispatch`)
 }
 
@@ -851,6 +853,7 @@ func dispatchCmd(args []string) {
 	taskType := flagVal(args, "--type", "")
 	goal := flagVal(args, "--goal", "")
 	worktree := flagVal(args, "--worktree", "")
+	cards := cardsFlag(args)
 	confirm := hasFlag(args, "--confirm")
 	deliver := hasFlag(args, "--deliver")
 
@@ -879,7 +882,7 @@ func dispatchCmd(args []string) {
 	h := openHandler(registryRoot(reg, project))
 	defer h.Close()
 
-	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, confirm)
+	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, cards, confirm)
 	if resp.OK {
 		brief := resp.Data.(*dispatch.Brief)
 		brief.Worktree = worktree
@@ -956,6 +959,25 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// cardsFlag collects every --cards value in order. The flag is repeatable and
+// each value may be a comma-separated list, so --cards a.md,b.md and
+// --cards a.md --cards b.md name the same batch. Empty entries are dropped
+// rather than passed on as empty card names.
+func cardsFlag(args []string) []string {
+	var cards []string
+	for i, a := range args {
+		if a != "--cards" || i+1 >= len(args) {
+			continue
+		}
+		for _, card := range strings.Split(args[i+1], ",") {
+			if card = strings.TrimSpace(card); card != "" {
+				cards = append(cards, card)
+			}
+		}
+	}
+	return cards
 }
 
 // isHelp returns true if the arg is a help flag.

@@ -7,9 +7,11 @@
 // expensive, it does not make it impossible.
 //
 // Close-out also runs the exit gate its task type declares — a cleanup playbook
-// — and tears down whatever the delivery opened: the pane, its tab, and the
-// worktree the worker ran in. Prerequisites guard entry; without this, nothing
-// guards exit, and a worktree leaks exactly the way panes once did.
+// — and tears down whatever the delivery opened: the worker's pane, and the
+// worktree the worker ran in. The pane is all it owns: the worker sits in a
+// sibling pane of the cap's own tab, so no tab is ever closed. Prerequisites
+// guard entry; without this, nothing guards exit, and a worktree leaks exactly
+// the way panes once did.
 package dispatch
 
 import (
@@ -41,7 +43,6 @@ type CloseResult struct {
 	Decision string `json:"decision"`
 	Worker   string `json:"worker,omitempty"`
 	PaneID   string `json:"pane_id,omitempty"`
-	TabID    string `json:"tab_id,omitempty"`
 	Cleanup  string `json:"cleanup,omitempty"`
 	Warning  string `json:"warning,omitempty"`
 }
@@ -49,8 +50,9 @@ type CloseResult struct {
 // Close closes out a dispatch node. It refuses — naming what is missing — when
 // the node is not a dispatch, when no delivery was recorded (or, with
 // --abandoned, no reason was given), when the worker's node is missing or not
-// done, or when no verdict was given. On success it closes the pane and tab from
-// the delivery record and marks the cap node done with the verdict.
+// done, or when no verdict was given. On success it closes the worker's pane
+// and, when one was recorded, the worktree, and marks the cap node done with the
+// verdict.
 //
 // The worker's node comes from the delivery record, not from the caller: --worker
 // is optional and, when given, must name the recorded node. A record written
@@ -125,12 +127,11 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		Decision: decision,
 		Worker:   workerRef,
 		PaneID:   delivery.PaneID,
-		TabID:    delivery.TabID,
 	}
 	if !req.Abandoned {
 		// The exit gate runs before anything is torn down or marked done: a
-		// dispatch that fails it is still open work, and its pane, tab, and
-		// worktree must remain so it can be finished.
+		// dispatch that fails it is still open work, and its pane and worktree must
+		// remain so it can be finished.
 		gate, confirmations, err := runCleanupGate(reg, kc, delivery, req.Confirm)
 		if err != nil {
 			return errResp(err.Error())
@@ -143,7 +144,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		}
 
 		var warnings []string
-		if warning := tearDownWorker(hc, delivery.TabID, delivery.PaneID); warning != "" {
+		if warning := tearDownPane(hc, delivery.PaneID); warning != "" {
 			warnings = append(warnings, warning)
 		}
 		if delivery.Worktree != "" {
@@ -214,7 +215,10 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 		if step.Kind != knowledge.KindCheck {
 			continue
 		}
-		item := runCheck(step.Body, proj.RootPath)
+		// Exit checks get no FS_* environment: those carry the dispatch's own
+		// inputs (its cards, above all), and a close-out has none to offer — the
+		// delivery record names a pane and a node, not a batch.
+		item := runCheck(step.Body, proj.RootPath, nil)
 		if item.Status != "pass" {
 			return "", nil, fmt.Errorf(
 				"close: cleanup check failed: %q; output: %s; fix it, then close again",
@@ -235,27 +239,17 @@ func runCleanupGate(reg *registry.Registry, kc *knowledge.Center, delivery comma
 	return note, confirmations, nil
 }
 
-// tearDownWorker closes the pane a delivery opened, then its tab, and returns a
-// warning for whatever herdr would not close.
+// tearDownPane closes the pane a delivery split open, and returns a warning for
+// a pane herdr would not close.
 //
-// Closing a tab's last pane removes the tab, so the tab close that follows is
-// normally a no-op — and it is not decoration: it is what guarantees an empty
-// tab is not left behind, which is the state herdr cannot report on. A pane or
-// tab that is already gone is the goal state, not a failure.
-func tearDownWorker(hc HerdrCLI, tabID, paneID string) string {
-	var warnings []string
+// The pane is all the delivery owns: the worker sits in a sibling pane of the
+// cap's own tab, so the tab is the cap's and must never be closed with it. A
+// pane that is already gone is the goal state, not a failure.
+func tearDownPane(hc HerdrCLI, paneID string) string {
 	if err := hc.ClosePane(paneID); err != nil && !errors.Is(err, ErrPaneGone) {
-		warnings = append(warnings, fmt.Sprintf("could not close pane %s: %v", paneID, err))
+		return fmt.Sprintf("could not close pane %s: %v — close it by hand", paneID, err)
 	}
-	if tabID != "" {
-		if err := hc.CloseTab(tabID); err != nil && !errors.Is(err, ErrTabGone) {
-			warnings = append(warnings, fmt.Sprintf("could not close tab %s: %v", tabID, err))
-		}
-	}
-	if len(warnings) == 0 {
-		return ""
-	}
-	return strings.Join(warnings, "; ") + " — close it by hand"
+	return ""
 }
 
 // tearDownWorktree removes the worktree workspace the delivery recorded, and

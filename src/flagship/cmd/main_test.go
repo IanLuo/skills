@@ -1337,6 +1337,145 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 	}
 }
 
+// The parallel gate is what --cards exists for. The shipped
+// parallel-prerequisites playbook runs the repo's real check-parallel.sh with
+// $FS_CARDS, so the batch's disjointness is checked mechanically against *this*
+// dispatch's cards — the one thing a static shell string could not do.
+//
+// The shipped playbook is used as shipped, so a gate that stopped reading
+// $FS_CARDS would fail here rather than pass on a test-local stand-in.
+func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	goGit(t, root, "init", "-q")
+	installRepoFile(t, root, filepath.Join("..", "..", "..", "bin", "check-parallel.sh"), "bin/check-parallel.sh", 0o755)
+	writeFileIn(t, root, "a.md", "# A\n\n## Files\nsrc/a.go\n")
+	writeFileIn(t, root, "b.md", "# B\n\n## Files\nsrc/b.go\n")
+	writeFileIn(t, root, "c.md", "# C\n\n## Files\nsrc/a.go\n")
+
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), parPrePlaybook, shippedDefault(t, parPrePlaybook))
+	env, _, _ := fakeHerdrOnPath(t)
+
+	// Disjoint cards pass, and the gate's output says what it intersected.
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch", "--cards", "a.md,b.md")
+	if code != 0 {
+		t.Fatalf("disjoint cards must pass the gate, exit %d: %v", code, resp["error"])
+	}
+	if out := checkOutputOf(t, resp, "bin/check-parallel.sh $FS_CARDS"); !strings.Contains(out, "2 cards, no overlapping paths") {
+		t.Errorf("gate output = %q, want the two cards it checked", out)
+	}
+
+	// --cards is repeatable, and the two forms name the same batch.
+	resolveCapScope(t, bin, root)
+	repeated, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch", "--cards", "a.md", "--cards", "b.md")
+	if code != 0 {
+		t.Fatalf("--cards twice must name the same batch, exit %d: %v", code, repeated["error"])
+	}
+	if out := checkOutputOf(t, repeated, "bin/check-parallel.sh $FS_CARDS"); !strings.Contains(out, "2 cards") {
+		t.Errorf("gate output = %q, want two cards", out)
+	}
+
+	// Overlapping cards are refused, and the refusal names the shared path.
+	resolveCapScope(t, bin, root)
+	overlap, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch", "--cards", "a.md,c.md")
+	if code != 1 {
+		t.Fatalf("overlapping cards must be refused, exit %d: %v", code, overlap)
+	}
+	errMsg, _ := overlap["error"].(string)
+	for _, want := range []string{"src/a.go", "a.md", "c.md"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("refusal %q must name %q", errMsg, want)
+		}
+	}
+
+	// With no cards the gate refuses instead of passing vacuously, and the
+	// message names the flag the caller forgot.
+	resolveCapScope(t, bin, root)
+	noCards, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch")
+	if code != 1 {
+		t.Fatalf("a gate with no cards must refuse, exit %d: %v", code, noCards)
+	}
+	errMsg, _ = noCards["error"].(string)
+	if !strings.Contains(errMsg, "--cards") {
+		t.Errorf("refusal %q must name --cards", errMsg)
+	}
+}
+
+// checkOutputOf returns the output of the checklist item with the given body.
+func checkOutputOf(t *testing.T, resp map[string]any, body string) string {
+	t.Helper()
+	for _, raw := range resp["data"].(map[string]any)["checklist"].([]any) {
+		if item := raw.(map[string]any); item["body"] == body {
+			out, _ := item["output"].(string)
+			return out
+		}
+	}
+	t.Fatalf("checklist has no item %q: %v", body, resp["data"])
+	return ""
+}
+
+// resolveCapScope marks every open cap node done, so the next dispatch is not
+// gated by the previous one — tests here dispatch several times into one store.
+func resolveCapScope(t *testing.T, bin, root string) {
+	t.Helper()
+	for _, raw := range scopeTasks(t, bin, root, "cap") {
+		task := raw.(map[string]any)
+		if task["status"] == "done" {
+			continue
+		}
+		if _, code := runFS(t, bin, root, "task", "update", task["node_id"].(string), "--status", "done", "--decision", "test cleanup", "--project", "cap"); code != 0 {
+			t.Fatalf("resolving cap node %v failed", task["node_id"])
+		}
+	}
+}
+
+// installRepoFile copies a file out of the repo into root at rel, so a check
+// that runs from root runs the artifact the repo ships rather than a stand-in.
+//
+// The repo's bin/ is outside this module, so it is absent when the module is
+// built on its own — the nix check phase runs the tests from a copy of
+// src/flagship. There the test skips rather than failing on the sandbox's shape;
+// TestShippedParallelGateReadsTheDispatchedCards covers the wiring wherever the
+// module is built, and tests/check-parallel covers the script itself.
+func installRepoFile(t *testing.T, root, src, rel string, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skipf("the repo's %s is not reachable from this module copy (%v)", rel, err)
+	}
+	dst := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeFileIn writes a file under root, creating its parent directories.
+func writeFileIn(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// goGit runs git in dir. The prerequisite gate asks whether the root is a repo,
+// so a dispatch test needs one.
+func goGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
 // A missing playbook fails cleanly and names the file the cap must supply.
 func TestCLIDispatchMissingPlaybook(t *testing.T) {
 	bin := getFS(t)
@@ -1596,13 +1735,14 @@ steps:
 `
 
 const fakeHerdrScript = `#!/usr/bin/env bash
-# A fake herdr for CLI tests: models tab, pane, and agent lifecycle in
+# A fake herdr for CLI tests: models pane and agent lifecycle in
 # $HERDR_TEST_STATE so the deliver/close paths can be exercised without a
 # terminal.
 #
-# A real herdr removes a tab along with its last pane. The fake keeps a tab
-# until it is explicitly closed, so the close-out that guarantees no empty tab
-# is left behind is exercised rather than assumed.
+# A delivery splits a sibling pane of the cap's own, so the fake anchors every
+# split to the cap's workspace and tab ($HERDR_TEST_WORKSPACE / $HERDR_TEST_TAB)
+# and models no tab creation at all: a delivery that tried to create one would
+# hit the unknown-command branch and fail.
 set -euo pipefail
 state="${HERDR_TEST_STATE:?HERDR_TEST_STATE is required}"
 mkdir -p "$state"
@@ -1614,29 +1754,23 @@ id_file() { printf '%s/%s_%s' "$state" "$1" "${2//:/_}"; }
 not_found() { printf '{"error":{"code":"%s_not_found","message":"%s %s not found"}}\n' "$1" "$1" "$2" >&2; exit 1; }
 
 case "$cmd $sub" in
-  "tab create")
+  "pane split")
     n=$(( $(cat "$state/seq" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "$n" > "$state/seq"
-    tab="wTEST:t$n"; pane="wTEST:p$n"
-    : > "$(id_file tab "$tab")"
+    # Keep the split's arguments: which pane it was anchored to is the point.
+    printf '%s' "$*" > "$state/split_args"
+    ws="${HERDR_TEST_WORKSPACE:-wTEST}"; tab="${HERDR_TEST_TAB:-wTEST:t0}"
+    pane="$ws:p$n"
     : > "$(id_file pane "$pane")"
-    printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tab" "$pane"
-    ;;
-  "tab get")
-    id="${1:-}"
-    [ -f "$(id_file tab "$id")" ] || not_found tab "$id"
-    printf '{"result":{"tab":{"tab_id":"%s"}}}\n' "$id"
-    ;;
-  "tab close")
-    id="${1:-}"
-    [ -f "$(id_file tab "$id")" ] || not_found tab "$id"
-    rm -f "$(id_file tab "$id")"
-    printf '{"result":{"closed":true}}\n'
+    printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"%s"}}}\n' "$pane" "$tab" "$ws"
     ;;
   "pane get")
     id="${1:-}"
     [ -f "$(id_file pane "$id")" ] || not_found pane "$id"
     printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
+    ;;
+  "worktree list")
+    printf '{"result":{"worktrees":[]}}\n'
     ;;
   "pane close")
     id="${1:-}"
@@ -1761,6 +1895,17 @@ func herdrPrompt(t *testing.T, state string) string {
 	return string(text)
 }
 
+// herdrSplitArgs returns the arguments the fake herdr's last pane split was
+// called with, so a test can assert which pane it was anchored to.
+func herdrSplitArgs(t *testing.T, state string) string {
+	t.Helper()
+	args, err := os.ReadFile(filepath.Join(state, "split_args"))
+	if err != nil {
+		t.Fatalf("reading the split arguments: %v", err)
+	}
+	return string(args)
+}
+
 // deliverProbe runs fs dispatch --deliver against the fake herdr and returns the
 // cap node, the tab and pane it was bound to, and the worker node it created.
 func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, tabID, paneID, workerRef string) {
@@ -1820,11 +1965,11 @@ func addWorkerNode(t *testing.T, bin, root, status string) string {
 	return nodeID
 }
 
-// fs dispatch --deliver opens a tab of the worker's own, creates the worker's
-// node in the target project, names it in the brief, and binds tab, pane, and
+// fs dispatch --deliver splits a sibling pane of the cap's own, creates the
+// worker's node in the target project, names it in the brief, and binds pane and
 // node in the delivery record; fs close reads that binding, so the cap never has
 // to say which node it is closing.
-func TestCLIDeliverOpensATabAndCloseTearsItDown(t *testing.T) {
+func TestCLIDeliverSplitsASiblingPaneAndCloseTearsItDown(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
@@ -1832,15 +1977,18 @@ func TestCLIDeliverOpensATabAndCloseTearsItDown(t *testing.T) {
 	env, state, script := fakeHerdrOnPath(t)
 
 	capNode, tabID, paneID, workerRef := deliverProbe(t, bin, root, env)
-	if tabID == "" {
-		t.Fatal("delivery carried no tab id")
-	}
 	if paneID == "" {
 		t.Fatal("delivery carried no pane id")
 	}
-	// The worker runs in a tab of its own, not in a pane of the cap's tab.
-	if err := herdrGet(t, script, env, "tab", tabID); err != nil {
-		t.Errorf("tab %s does not exist after --deliver: %v", tabID, err)
+	// The pane is a split of the cap's own, so it lands in the cap's tab: the
+	// delivery creates no tab at all. The split is anchored with --current, not
+	// with a pane id, which is what keeps it inside the cap's workspace.
+	if tabID != "wTEST:t0" {
+		t.Errorf("delivery tab = %q, want the cap's own wTEST:t0", tabID)
+	}
+	if args := herdrSplitArgs(t, state); !strings.Contains(args, "--current") ||
+		!strings.Contains(args, "--direction right") || !strings.Contains(args, "--no-focus") {
+		t.Errorf("split was called with %q, want a --current right split with no focus", args)
 	}
 	if err := herdrGet(t, script, env, "pane", paneID); err != nil {
 		t.Errorf("pane %s does not exist after --deliver: %v", paneID, err)
@@ -1892,9 +2040,6 @@ func TestCLIDeliverOpensATabAndCloseTearsItDown(t *testing.T) {
 	if data["pane_id"] != paneID {
 		t.Errorf("close data = %v, want the closed pane %s", data, paneID)
 	}
-	if data["tab_id"] != tabID {
-		t.Errorf("close data tab_id = %v, want the closed tab %s", data["tab_id"], tabID)
-	}
 	if data["worker"] != workerRef {
 		t.Errorf("close worker = %v, want the recorded %s", data["worker"], workerRef)
 	}
@@ -1907,23 +2052,20 @@ func TestCLIDeliverOpensATabAndCloseTearsItDown(t *testing.T) {
 		t.Errorf("cap decisions = %v, want the verdict", task["decisions"])
 	}
 
-	// Neither the pane nor the tab it belonged to is left behind: an empty tab
-	// would be invisible in the record and would hold the workspace open.
+	// The worker's pane is gone. Its tab is the cap's own and is untouched —
+	// nothing in fs can close a tab, which is the strongest form of that.
 	if err := herdrGet(t, script, env, "pane", paneID); err == nil {
 		t.Errorf("pane %s still exists after fs close", paneID)
 	}
-	if err := herdrGet(t, script, env, "tab", tabID); err == nil {
-		t.Errorf("tab %s still exists after fs close — an empty tab was left behind", tabID)
-	}
 
-	// A pane and tab that are already closed are not an error: close out again,
-	// with no warning — herdr reporting not_found is success, not a failure.
+	// A pane that is already closed is not an error: close out again, with no
+	// warning — herdr reporting not_found is success, not a failure.
 	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "read the worker node; verified")
 	if code != 0 {
 		t.Fatalf("closing an already-closed dispatch must succeed, exit %d: %v", code, again["error"])
 	}
 	if warning, ok := again["data"].(map[string]any)["warning"]; ok {
-		t.Errorf("an already-closed pane and tab must not warn, got %v", warning)
+		t.Errorf("an already-closed pane must not warn, got %v", warning)
 	}
 }
 

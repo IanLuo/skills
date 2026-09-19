@@ -3,11 +3,13 @@
 //
 // Prepare reads the task-type's prerequisite playbook, runs the mechanical
 // prerequisites against the target project's root, records the cap's own node,
-// and returns the brief. Deliver (fs dispatch --deliver) is the only step that
-// spawns: it opens a tab of the worker's own, starts the agent in its root pane,
-// sends the brief, and records the pane and tab binding structurally. Close
+// and returns the brief. Every check step sees the dispatch's own inputs as
+// FS_* (see checkEnv), so a gate can ask about this dispatch — which cards —
+// and not only about the world. Deliver (fs dispatch --deliver) is the only
+// step that spawns: it splits a sibling pane of the cap's own, starts the agent
+// in it, sends the brief, and records the pane binding structurally. Close
 // (fs close) is the close-out gate: it refuses to close a dispatch whose worker
-// node is not done, then closes the pane and tab from the recorded binding.
+// node is not done, then closes the pane from the recorded binding.
 //
 // It also gates preparation: a failing prerequisite check or an earlier dispatch
 // that was never delivered stops it, unless the cap passes --confirm.
@@ -80,7 +82,7 @@ type Brief struct {
 // It refuses in two cases rather than preparing work in a bad state: an earlier
 // dispatch is still unresolved, or a prerequisite check failed. confirm overrides
 // both refusals and records the override as a decision on the cap's node.
-func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, confirm bool) command.Response {
+func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, cards []string, confirm bool) command.Response {
 	if project == "" {
 		return errResp("--project is required")
 	}
@@ -114,7 +116,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 		return errResp(unresolvedError(unresolved))
 	}
 
-	brief, err := buildBrief(pb, proj, taskType, goal, confirm)
+	brief, err := buildBrief(pb, proj, taskType, goal, cards, confirm)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
@@ -187,7 +189,10 @@ func unresolvedError(unresolved []command.UnfinishedNode) string {
 //
 // Checks run in order and stop at the first failure unless confirm is set. The
 // user fixes one thing at a time; a list of failures buries the decision.
-func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string, confirm bool) (*Brief, error) {
+//
+// Each check runs with env, so a prerequisite over the batch's own inputs —
+// which cards, which type — is a mechanical gate rather than a judgement call.
+func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string, cards []string, confirm bool) (*Brief, error) {
 	info, err := os.Stat(proj.RootPath)
 	if err != nil {
 		return nil, fmt.Errorf("project %q root %s is unreadable: %w", proj.Name, proj.RootPath, err)
@@ -197,13 +202,14 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 	}
 
 	lockedDocs := findLockedDocs(proj.RootPath)
+	env := checkEnv(proj.Name, taskType, goal, cards)
 
 	checklist := make([]Item, 0, len(pb.Steps))
 	var context []string
 	for _, step := range pb.Steps {
 		switch step.Kind {
 		case knowledge.KindCheck:
-			item := runCheck(step.Body, proj.RootPath)
+			item := runCheck(step.Body, proj.RootPath, env)
 			checklist = append(checklist, item)
 			if item.Status == "fail" && !confirm {
 				return nil, fmt.Errorf(
@@ -232,11 +238,30 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 	}, nil
 }
 
+// checkEnv is the dispatch's own inputs, exposed to every check step as FS_*.
+//
+// It exists because a prerequisite is otherwise a static shell string: it could
+// ask about the world (is this a git repo?) but never about *this* dispatch
+// (which cards?). A gate over the batch's cards cannot be written without it.
+// FS_CARDS is the --cards value, comma-separated, and empty when none was named
+// — a check that needs cards must refuse on empty rather than pass vacuously.
+func checkEnv(project, taskType, goal string, cards []string) []string {
+	return []string{
+		"FS_PROJECT=" + project,
+		"FS_TYPE=" + taskType,
+		"FS_GOAL=" + goal,
+		"FS_CARDS=" + strings.Join(cards, ","),
+	}
+}
+
 // runCheck executes a check's body as a shell command with cwd = the project
-// root, and reports pass/fail plus the command's combined output.
-func runCheck(body, root string) Item {
+// root, and reports pass/fail plus the command's combined output. env is added
+// to this process's environment rather than replacing it, so the shell keeps
+// PATH and the rest of what a command needs.
+func runCheck(body, root string, env []string) Item {
 	cmd := exec.Command("sh", "-c", body)
 	cmd.Dir = root
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
 	return Item{
 		Kind:   knowledge.KindCheck,
@@ -355,13 +380,13 @@ func recordDecision(h *command.Handler, nodeID, summary string) error {
 // nextCommand is the herdr line the cap runs to deliver the brief to a worker.
 // dispatch does not run it.
 //
-// It opens a tab rather than a sibling pane, because a worker in the cap's own
-// tab is always seen and so reads `idle` when it finishes; only an unseen tab
-// reads `done`.
+// It splits a sibling pane of the cap's own rather than creating a tab: the
+// split is anchored to the cap's pane, and therefore to the cap's workspace, so
+// there is no workspace to get wrong. It is the same line Deliver runs.
 func nextCommand(b *Brief) string {
 	name := "dispatch-" + b.TaskType
 	return fmt.Sprintf(
-		`P=$(herdr tab create --cwd %s --no-focus | jq -r '.result.root_pane.pane_id') && `+
+		`P=$(herdr pane split --current --direction right --no-focus --cwd %s | jq -r '.result.pane.pane_id') && `+
 			`herdr agent start %s --kind pi --pane "$P" && `+
 			`herdr agent prompt %s %s --wait --timeout 120000`,
 		shellQuote(b.RootPath), name, name, shellQuote(renderBrief(b)))

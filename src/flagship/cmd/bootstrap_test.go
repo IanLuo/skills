@@ -264,6 +264,36 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 // fs kb prompt is the delivery path for the playbooks: the cap's standing rules
 // come out as plain text on stdout, so a session starts from the rules the
 // binary ships rather than from a prompt retyped by hand.
+// The parallel gate must read the batch's cards from the dispatch that runs it,
+// not from a list someone edits per batch: parallel-prerequisites.yaml runs
+// bin/check-parallel.sh with $FS_CARDS, the variable fs dispatch --cards exports.
+// This pins that wiring wherever the module is built, including where the repo's
+// bin/ is out of reach; tests/check-parallel covers the script's own behaviour.
+func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
+	bin := getFS(t)
+	writeKBPlaybook(t, testHome(t), parPrePlaybook, shippedDefault(t, parPrePlaybook))
+
+	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", parPrePlaybook)
+	if code != 0 {
+		t.Fatalf("kb get exit %d: %v", code, resp["error"])
+	}
+
+	const want = "bin/check-parallel.sh $FS_CARDS"
+	var checks []string
+	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
+		step := raw.(map[string]any)
+		if step["kind"] != "check" {
+			continue
+		}
+		body := step["body"].(string)
+		checks = append(checks, body)
+		if body == want {
+			return
+		}
+	}
+	t.Errorf("the parallel gate's checks are %v, want one running %q", checks, want)
+}
+
 func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()

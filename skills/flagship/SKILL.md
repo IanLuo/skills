@@ -94,13 +94,15 @@ fs task knowledge NODE_ID --summary "JWT refresh tokens expire after 7 days" [--
 ### Dispatch and close-out
 
 ```bash
-# Prepare a brief only — the response carries the herdr line to run
-fs dispatch --project P --type T --goal "Implement auth" [--confirm]
+# Prepare a brief only — the response carries the herdr line to run.
+# --cards names the batch's cards (comma-separated, and repeatable); every check
+# step sees them as $FS_CARDS.
+fs dispatch --project P --type T --goal "Implement auth" [--cards CARD[,CARD…]] [--confirm]
 
-# Prepare and deliver: open the worker's own tab, start the worker, send the
-# brief, record it. --worktree names the herdr worktree workspace the dispatch
-# runs in, so close can remove it.
-fs dispatch --deliver --project P --type T --goal "Implement auth" [--worktree WS]
+# Prepare and deliver: split a sibling pane of your own, start the worker, send
+# the brief, record it. --worktree names the herdr worktree workspace the
+# dispatch runs in, so close can remove it.
+fs dispatch --deliver --project P --type T --goal "Implement auth" [--cards CARD[,CARD…]] [--worktree WS]
 
 # Close out a dispatch: refuses unless the worker's node is done and the exit
 # gate passes. The worker's node comes from the delivery record; --worker only
@@ -114,12 +116,13 @@ fs close --node CAP_NODE --abandoned --reason "why"
 fs pending
 ```
 
-`--deliver` gives the worker a **tab of its own**, not a sibling pane in yours,
-and records `pane_id`, `tab_id`, `project`, `node`, and the task `type`. That
-layout is what makes the dispatch readable at all: herdr's `done` means *idle
-after work nobody has looked at*, and a pane in your own tab is always seen — so
-a finished worker in a sibling pane reads `idle` forever, and the signal you pick
-up on never fires.
+`--deliver` splits a **sibling pane of your own** — `pane split --current
+--direction right --no-focus`, recorded as `pane_id`, `tab_id`, `project`,
+`node`, and the task `type`. The split is anchored to the pane you run in, so the
+worker lands in *your* workspace and your tab; a tab created by id carried no
+workspace, and a worker that wandered into another session's workspace could not
+be moved back. The worker's pane is the only thing close-out tears down: the tab
+in the record is yours.
 
 Start every turn with `fs pending`; never wait on one and never poll with a
 sleep. It answers "what is waiting on me" in one read: it takes no arguments,
@@ -135,9 +138,11 @@ reads the cap scope and every project a delivery names, and writes nothing.
 
 herdr is a hint about *when to look*, never the truth about whether the work is
 done — a worker whose pane you happened to look at reads `idle`, not `done`, and
-is still finished. So a done node is `ready` whatever herdr says. When herdr
-cannot be asked at all, the states that need it are reported as `running` with a
-`warning`: unreadable is not the same as gone.
+is still finished. So `ready` — the worker's node is done — is the state to act
+on, and a sibling pane in your own tab reads `idle` rather than `done`; pick a
+finished worker up from its node. When herdr cannot be asked at all, the states
+that need it are reported as `running` with a `warning`: unreadable is not the
+same as gone.
 
 `fs close` runs the exit gate its task type declares — the `<type>-cleanup`
 playbook — before it touches anything. Checks run in order with cwd set to the
@@ -145,10 +150,10 @@ worker project's root and stop at the first failure; `ask` steps are questions
 only the user can answer and are refused until `--confirm` says they have been,
 at which point each is recorded as its own decision. A type with no cleanup
 playbook has no gate, and close says so; a record written before types existed
-says that too. Then close removes the recorded pane, tab, and worktree and marks
-the cap node done with your verdict. A worktree that is already gone is the goal
-state, and herdr being unavailable is a warning — close-out never depends on the
-dispatcher being up.
+says that too. Then close closes the recorded pane and removes the recorded
+worktree, and marks the cap node done with your verdict. A worktree that is
+already gone is the goal state, and herdr being unavailable is a warning —
+close-out never depends on the dispatcher being up.
 
 **Parallel batches.** A parallel dispatch declares its cards' files so the batch
 can be checked mechanically rather than judged:
@@ -162,7 +167,10 @@ internal/registry/registry.go
 `bin/check-parallel.sh <card…>` intersects the cards' declared sets and refuses
 an overlap — or a card with no file list, which is the point: without a
 declaration, disjointness is a judgement call. The shipped `parallel-prerequisites`
-and `parallel-cleanup` playbooks put it in the entry and exit gates.
+playbook puts it in the entry gate, and that gate reads the batch from the
+dispatch itself: `fs dispatch --cards` exports the cards as `$FS_CARDS`, so one
+playbook covers every batch instead of being edited per batch. `parallel-cleanup`
+guards the exit.
 
 ### Task status
 
@@ -312,6 +320,21 @@ command exits non-zero, names the failing command and its output, and says what
 to do. Fix it, or pass `--confirm` to run every check anyway — the override is
 recorded as a decision on the cap's dispatch node.
 
+Every check step runs with the dispatch's own inputs in its environment, so a
+prerequisite can ask about *this* dispatch and not only about the world:
+
+| variable | value |
+|---|---|
+| `FS_PROJECT` | the resolved project |
+| `FS_TYPE` | the task type |
+| `FS_GOAL` | the goal text |
+| `FS_CARDS` | the `--cards` value, comma-separated; empty when none was given |
+
+This is what makes a gate over the batch's cards possible: the cards exist
+nowhere else a static shell string can read. `FS_CARDS` is exported empty rather
+than left absent, so a check can tell "no cards" from "no environment". The exit
+gate gets no `FS_*`: a close-out has no batch to offer.
+
 Dispatch also refuses while an earlier dispatch node is still unresolved
 (`pending`/`active`/`blocked`): the cap must resolve it or pass `--confirm`,
 which records `user confirmed proceeding with unresolved dispatches: <ids>`.
@@ -320,14 +343,14 @@ Only `dispatch <type>: ` nodes gate this way — the cap's own backlog does not.
 ### Delivering
 
 `fs dispatch --deliver` delivers the brief itself instead of handing the cap a
-herdr line: it opens a tab of the worker's own at the project root, creates the
-worker's node in the target project, starts a `pi` agent named
-`dispatch-<type>-<node>` in the tab's root pane, sends the brief, records the
-binding as a `delivery-recorded` event (`{pane_id, tab_id, agent, engine,
-project, node, type, worktree}`), appends the decision `delivered to pane <id> in
-tab <id>, agent <name>`, and marks the cap node `active`. The name carries the
-worker's node, so two dispatches of one type running at once are two agents — one
-name in two panes is what made `herdr agent get <name>` ambiguous.
+herdr line: it splits a sibling pane of the cap's own at the project root,
+creates the worker's node in the target project, starts a `pi` agent named
+`dispatch-<type>-<node>` in that pane, sends the brief, records the binding as a
+`delivery-recorded` event (`{pane_id, tab_id, agent, engine, project, node, type,
+worktree}`), appends the decision `delivered to pane <id>, agent <name>`, and
+marks the cap node `active`. The name carries the worker's node, so two
+dispatches of one type running at once are two agents — one name in two panes is
+what made `herdr agent get <name>` ambiguous.
 
 The worker's node carries the cap node's goal — one text for both ends of the
 link — and is created **before** the agent starts and the brief is sent, because
@@ -347,8 +370,9 @@ node is not a dispatch, when no `delivery-recorded` event exists, when the
 worker's node is missing or not `done` (it names the actual status), or when
 `--decision` is missing. It then runs the exit gate named by the record's `type`
 — the `<type>-cleanup` playbook — refusing at the first failing check, or when an
-`ask` step has not been confirmed with `--confirm`. It finally removes the
-recorded pane, tab, and worktree. A type with no cleanup playbook has no gate,
+`ask` step has not been confirmed with `--confirm`. It finally closes the
+recorded pane and removes the recorded worktree. A type with no cleanup playbook
+has no gate,
 and close says so in its `cleanup` field rather than skipping silently. The
 worker's node comes from the **delivery record**, so the cap does not name it:
 `--worker <project>:<node>` is optional and, when given, must match the record. A
@@ -362,7 +386,8 @@ On success it closes the pane from the delivery record, returns the worker node
 it rested on, and marks the cap node `done` with the verdict. A pane that is
 already closed is not an error, and herdr being unavailable is a `warning` in the
 response rather than a refusal — close-out must not depend on the dispatcher
-being up.
+being up. Only the worker's pane is torn down, never a tab: the worker sits in a
+sibling pane of the cap's own tab.
 
 `--abandoned --reason <why>` skips the delivery and worker gates and closes with
 the decision `abandoned, never delivered: <why>`.

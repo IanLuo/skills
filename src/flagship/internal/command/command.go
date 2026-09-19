@@ -43,12 +43,14 @@ type UpdateResult struct {
 }
 
 // DeliveryRecord is the payload of a delivery-recorded event: the structural
-// binding of a cap dispatch node to the pane, its tab, and the agent carrying
-// its brief, and to the node created for the worker in the target project.
+// binding of a cap dispatch node to the pane, the tab that pane sits in, and the
+// agent carrying its brief, and to the node created for the worker in the target
+// project.
 //
 // Project and Node are what let close-out name the worker without the cap
 // guessing. They are absent only on records written before the link existed;
-// TabID likewise, on records written before the worker got a tab of its own;
+// TabID likewise, on records written before it was recorded at all — it names
+// the cap's own tab, which the worker shares and which is never closed;
 // Type and Worktree, on records written before the cleanup gate and worktree
 // teardown existed. Type is what close-out reads to find the exit gate, and it
 // is structural — never recovered from the goal string, which is prose.

@@ -14,30 +14,35 @@
 #
 # Usage:
 #   bin/check-parallel.sh <card.md> [card.md ...]
+#   bin/check-parallel.sh a.md,b.md
+#
+# The second form is the one fs dispatch uses: parallel-prerequisites.yaml runs
+# this with $FS_CARDS, which fs dispatch sets from --cards, comma-separated.
 #
 # Exit: 0 disjoint · 1 overlap, or a card with no file list · 2 no cards named.
 
 set -euo pipefail
 
-usage() {
+# Cards are collected before anything is checked, so "named no cards" and "named
+# nothing but blanks" are the same refusal. An argument may list several cards,
+# comma-separated; surrounding whitespace is dropped.
+cards="$(
+  printf '%s\n' "$@" | tr ',' '\n' |
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'
+)"
+
+if [ -z "$cards" ]; then
   cat >&2 <<'EOF'
-check-parallel.sh — assert a batch of dispatch cards declares disjoint files.
+check-parallel: no cards were named — pass --cards a.md,b.md to fs dispatch.
 
-Usage: bin/check-parallel.sh <card.md> [card.md ...]
-
-Each card must carry a "## Files" section listing the paths it will touch, one
-per line; a fenced block and trailing # comments are fine. The batch is safe in
-parallel only when no path appears in two cards.
-
-With no cards named, this refuses rather than passing vacuously: a check whose
-input is missing must not report success.
+This check reads the batch from $FS_CARDS, which fs dispatch sets from --cards.
+With no cards there is nothing to intersect, and a check with no input must
+refuse rather than pass vacuously.
 EOF
-}
-
-if [ "$#" -eq 0 ]; then
-  usage
   exit 2
 fi
+
+count="$(printf '%s\n' "$cards" | wc -l | tr -d ' ')"
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
@@ -61,7 +66,7 @@ declaredPaths() {
   ' "$1"
 }
 
-for card in "$@"; do
+while IFS= read -r card; do
   if [ ! -f "$card" ]; then
     echo "check-parallel: no such card: $card" >&2
     exit 1
@@ -73,7 +78,7 @@ for card in "$@"; do
     echo "check-parallel: $card declares no files — add a '## Files' section listing every path this card will touch" >&2
     exit 1
   fi
-done
+done <<< "$cards"
 
 # Group the unique (path, card) pairs by path; any path claimed by more than one
 # card is an overlap. sort -u collapses a card that names one path twice.
@@ -96,4 +101,4 @@ if [ -n "$overlaps" ]; then
   exit 1
 fi
 
-echo "check-parallel: $# cards, no overlapping paths"
+echo "check-parallel: $count cards, no overlapping paths"
