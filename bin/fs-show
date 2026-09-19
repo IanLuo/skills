@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# fs-show — read fs events without drowning in raw JSON.
+#
+#   fs-show <project>                 every event in a scope
+#   fs-show <project> <node>          one node's events
+#   fs-show <project> <node> <type>   filtered by event type
+#
+# `fs log` returns raw event JSON. Every human reader ends up writing the same
+# formatter; this is that formatter, once. Events are immutable, so old events
+# never change — only what you know about them.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FS="${FS:-$(command -v fs || echo "$here/../skills/flagship/scripts/fs")}"
+
+if [ $# -lt 1 ]; then
+  sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 2
+fi
+
+project="$1"; node="${2:-}"; etype="${3:-}"
+
+args=(log --project "$project")
+[ -n "$node" ] && args+=(--node "$node")
+[ -n "$etype" ] && args+=(--type "$etype")
+
+"$FS" "${args[@]}" 2>/dev/null | python3 -c '
+import json, sys
+
+try:
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
+    sys.exit("fs-show: could not parse fs output")
+
+if not payload.get("ok"):
+    sys.exit("fs-show: " + payload.get("error", "unknown error"))
+
+events = payload["data"].get("events") or []
+if not events:
+    print("no events")
+    sys.exit(0)
+
+for e in events:
+    p = e.get("payload") or {}
+    if isinstance(p, str):
+        try:
+            p = json.loads(p)
+        except json.JSONDecodeError:
+            p = {}
+    body = p.get("summary") or p.get("goal") or p.get("to") or p.get("reason") or json.dumps(p)
+    ts = e["timestamp"][:19]
+    typ = e["type"]
+    where = e.get("node_id") or "-"
+    sha = (e.get("commit_sha") or "-")[:7]
+    print(f"{ts}  {typ:<19} {where:<13} {sha}")
+    print(f"    {body}")
+
+pid = payload["data"].get("project_id", "?")
+print("")
+print(f"{len(events)} event(s) in {pid}")
+'
