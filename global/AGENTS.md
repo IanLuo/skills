@@ -80,6 +80,16 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - **Commit authorship.** When committing, do NOT add the agent as an author or
   co-author in the commit message — no `Co-Authored-By: <agent>` trailer, no
   attribution to the tool.
+- **Never discard uncommitted work.** `git checkout -- <path>`, `git restore`,
+  `git reset --hard`, `git stash drop` and `git clean -f` destroy work with no
+  recovery path. Before touching any path, read `git status --short <path>` — a
+  dirty file looks exactly like a clean one, and the work you would erase may be
+  another agent's in the same checkout. Restoring from HEAD is almost never the
+  fix. If you do clobber something, say what was lost rather than quietly
+  rebuilding it.
+- **Stage by name, not by sweep.** `git add -A` and `git add .` pick up
+  everything in the tree — another agent's in-flight work, generated files, and
+  paths you never looked at. Stage the paths you changed, by name.
 - **Response style — short, clear, accurate.** Lead with the answer; no preamble,
   no re-stating the question, no filler. Bullets for lists. Concrete over vague.
   Say "I don't know" rather than hedge or fabricate. Verify claims against what
