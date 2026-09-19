@@ -16,12 +16,19 @@ The `fs` binary lives at `skills/flagship/scripts/fs` after building:
 
 ```bash
 # Build (from the skills repo root)
-nix develop -c bash src/flagship/build.sh
+./bin/build-project.sh flagship
 ```
 
-The build script compiles the Go source in `src/flagship/` and copies the binary to `skills/flagship/scripts/fs`. Ensure this path is on PATH, or use the full path.
+That builds `packages.flagship` with nix — Go 1.27, named because `go.mod`
+requires >= 1.26.7 and nixpkgs' default `go` is older, with dependencies vendored
+in `src/flagship/vendor` so the build is hermetic and offline — and installs the
+binary at `skills/flagship/scripts/fs`. Nothing installs it on your `PATH`: either
+add that directory yourself or `nix profile install .#flagship` for a
+nix-managed entry. In every example below, `fs` means one of those.
 
 If the binary doesn't exist, the skill can't function — run the build first.
+Then `fs bootstrap` seeds `~/.fs/kb/` with the playbooks shipped inside the
+binary (see Knowledge center below).
 
 ## The rule: always read context first
 
@@ -90,15 +97,48 @@ fs task knowledge NODE_ID --summary "JWT refresh tokens expire after 7 days" [--
 # Prepare a brief only — the response carries the herdr line to run
 fs dispatch --project P --type T --goal "Implement auth" [--confirm]
 
-# Prepare and deliver: split a pane, start the worker, send the brief, record it
+# Prepare and deliver: open the worker's own tab, start the worker, send the
+# brief, record it
 fs dispatch --deliver --project P --type T --goal "Implement auth"
 
-# Close out a dispatch: refuses unless the worker's node is done
-fs close --node CAP_NODE --worker PROJECT:NODE --decision "verdict"
+# Close out a dispatch: refuses unless the worker's node is done. The worker's
+# node comes from the delivery record; --worker only checks against it.
+fs close --node CAP_NODE --decision "verdict"
 
 # Close a dispatch that was never delivered
 fs close --node CAP_NODE --abandoned --reason "why"
+
+# What is waiting on you: every open dispatch, classified. Writes nothing
+fs pending
 ```
+
+`--deliver` gives the worker a **tab of its own**, not a sibling pane in yours,
+and records `pane_id`, `tab_id`, `project`, and `node`. That layout is what makes
+the dispatch readable at all: herdr's `done` means *idle after work nobody has
+looked at*, and a pane in your own tab is always seen — so a finished worker in a
+sibling pane reads `idle` forever, and the signal you pick up on never fires.
+
+Start every turn with `fs pending`; never wait on one and never poll with a
+sleep. It answers "what is waiting on me" in one read: it takes no arguments,
+reads the cap scope and every project a delivery names, and writes nothing.
+
+| state | meaning | what to do |
+|---|---|---|
+| `ready` | the worker's node is done | read the node, then `fs close` |
+| `running` | the node is not done and herdr still has the agent | let it work |
+| `unseen` | the node is not done but herdr reports the agent `done` | finished unseen — go look |
+| `gone` | the node is not done and herdr has no such agent | the worker died; needs the user |
+| `unlinked` | no delivery record, or one written before it carried a node | close it with `--abandoned`, or `--worker` for an old record |
+
+herdr is a hint about *when to look*, never the truth about whether the work is
+done — a worker whose pane you happened to look at reads `idle`, not `done`, and
+is still finished. So a done node is `ready` whatever herdr says. When herdr
+cannot be asked at all, the states that need it are reported as `running` with a
+`warning`: unreadable is not the same as gone.
+
+`fs close` then closes the recorded pane and tab (an empty tab is the one thing
+herdr cannot report on, so it is closed explicitly) and marks the cap node done
+with your verdict.
 
 ### Task status
 
@@ -135,28 +175,63 @@ fs log [--project ID] [--node NODE_ID] [--type TYPE]
 
 ### Reading events
 
-`fs log` returns raw event JSON. For reading:
+`fs status` and `fs query` answer most questions with far less output — reach for
+them first. `fs log` is the raw history, one JSON envelope per event, meant for
+machines; filter it with `jq`:
 
 ```bash
-skills/flagship/scripts/fs-show <project> [node] [event-type]
-
-fs-show skills t-7609aede              # one node's history
-fs-show skills t-7609aede status-changed
-fs-show cap                            # a whole scope
+fs log --project skills --node t-7609aede | jq -r '
+  .data.events[] | "\(.timestamp)  \(.type)  \(.node_id // "-")\n    \(.payload)"'
 ```
-
-It finds `fs` via `$PATH` or falls back to this skill's `scripts/`, so it works
-from any directory.
 
 ### Knowledge center (global playbooks)
 
 ```bash
 fs kb add --name NAME --file PATH     # add YAML playbook
 fs kb get NAME                         # read a playbook
-fs kb list                             # list all
+fs kb list                             # list playbooks and their state
+fs kb prompt                           # the cap's standing rules, as plain text
 fs kb edit --name NAME --file PATH     # update
 fs kb remove NAME                      # delete
 ```
+
+`fs kb prompt` is how a playbook reaches the agent that has to follow it: it
+concatenates every `procedure` playbook whose trigger is `cap`, in name order,
+each under a header naming the playbook and its state and stamp. Plain text on
+stdout and nothing else, so it pipes straight into a prompt:
+
+```bash
+pi --append-system-prompt "$(fs kb prompt)"
+```
+
+No blank lines, deliberately: line breaks would split it into separate blocks.
+The headers are what make a stale prompt detectable — they say which playbooks
+went in and where each came from.
+
+Three playbooks ship **inside the binary** — `cap`, `dev-task-prerequisites`,
+and `herdr` — and are seeded into `~/.fs/kb/`:
+
+```bash
+fs bootstrap                           # seed ~/.fs/kb from the binary's playbooks
+fs kb diff NAME                        # shipped default vs the playbook on disk
+fs kb reset NAME --yes                 # restore the shipped default
+```
+
+`bootstrap` is idempotent and never overwrites: an absent playbook is reported
+`created`, an existing one `kept` and left byte-for-byte alone. Each seeded file
+carries `# fs-default: sha256=<hash of the default body>`, which is what lets
+`kb list` tell a user's edit from a change to the shipped default:
+
+| state | meaning |
+|---|---|
+| `default` | unedited, and identical to the shipped default |
+| `edited` | differs from the default it was seeded from |
+| `stale` | the shipped default has moved on since it was seeded |
+| `local` | no shipped default with that name — hand-written |
+
+A new binary never rewrites a playbook the cap is reading: a moved default shows
+as `stale` and is applied only by `kb reset`. Playbooks the binary does not ship
+are written by hand or with `kb add`.
 
 Playbooks are YAML at `~/.fs/kb/<name>.yaml`. Each step is `kind: body`, and `fs kb get` returns steps as `{kind, body}` objects:
 
@@ -195,7 +270,7 @@ These are non-negotiable:
 | `task-blocked` | `task block` | `{reason}` |
 | `task-unblocked` | `task unblock` | `{}` |
 | `metadata-changed` | `task edit` | `{field, old_value, new_value}` |
-| `delivery-recorded` | `dispatch --deliver` | `{pane_id, agent, engine}` |
+| `delivery-recorded` | `dispatch --deliver` | `{pane_id, tab_id, agent, engine, project, node}` |
 
 Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`. `commit_sha` is the git HEAD of the project the event is about — the resolved project's registered `root_path` (`status`/`query`/`log`/`task *`), the dispatched-to project (`dispatch`), the worker's project (`close`), or the root being created (`project create`); the cwd's HEAD only when no project is referenced (`unfinished`), and null when that is not a git repo.
 
@@ -221,23 +296,44 @@ Only `dispatch <type>: ` nodes gate this way — the cap's own backlog does not.
 ### Delivering
 
 `fs dispatch --deliver` delivers the brief itself instead of handing the cap a
-herdr line: it splits a sibling pane at the project root, starts a `pi` agent
-named `dispatch-<type>`, sends the brief, records the pane binding as a
-`delivery-recorded` event (`{pane_id, agent, engine}`), appends the decision
-`delivered to pane <id>, agent <name>`, and marks the cap node `active`. If
-herdr is unavailable the command fails and the node stays `pending` — nothing is
-claimed that did not happen.
+herdr line: it opens a tab of the worker's own at the project root, creates the
+worker's node in the target project, starts a `pi` agent named
+`dispatch-<type>-<node>` in the tab's root pane, sends the brief, records the
+binding as a `delivery-recorded` event (`{pane_id, tab_id, agent, engine,
+project, node}`), appends the decision `delivered to pane <id> in tab <id>,
+agent <name>`, and marks the cap node `active`. The name carries the worker's
+node, so two dispatches of one type running at once are two agents — one name in
+two panes is what made `herdr agent get <name>` ambiguous.
+
+The worker's node carries the cap node's goal — one text for both ends of the
+link — and is created **before** the agent starts and the brief is sent, because
+the brief has to name it and the agent is named after it: *note your work on
+`<project>:<node>` — that node already exists and is yours; do not create
+another.* A worker that invents its own node breaks the
+link, so the brief says so outright. That ordering is the only one that works, so
+a failure after the node exists marks it `done` with the reason instead of
+leaving it outstanding. If herdr is unavailable nothing is created at all: the
+command fails, the cap node stays `pending`, and the target project is untouched
+— nothing is claimed that did not happen.
 
 ### Closing out
 
 `fs close` is the gate that makes an omission fail. In order it refuses when the
-node is not a dispatch, when no `delivery-recorded` event exists, when
-`--worker <project>:<node>` is missing or that node is not `done` (it names the
-actual status), or when `--decision` is missing. On success it closes the pane
-from the delivery record and marks the cap node `done` with the verdict. A pane
-that is already closed is not an error, and herdr being unavailable is a
-`warning` in the response rather than a refusal — close-out must not depend on
-the dispatcher being up.
+node is not a dispatch, when no `delivery-recorded` event exists, when the
+worker's node is missing or not `done` (it names the actual status), or when
+`--decision` is missing. The worker's node comes from the **delivery record**, so
+the cap does not name it: `--worker <project>:<node>` is optional and, when given,
+must match the record. A mismatch is refused, naming the recorded node — with two
+dispatches into one project, that is the difference between closing the right
+work and closing something else. A record written before the link existed carries
+no node; closing one of those refuses and asks for `--worker`, the only way such a
+record can be closed.
+
+On success it closes the pane from the delivery record, returns the worker node
+it rested on, and marks the cap node `done` with the verdict. A pane that is
+already closed is not an error, and herdr being unavailable is a `warning` in the
+response rather than a refusal — close-out must not depend on the dispatcher
+being up.
 
 `--abandoned --reason <why>` skips the delivery and worker gates and closes with
 the decision `abandoned, never delivered: <why>`.
