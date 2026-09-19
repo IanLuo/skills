@@ -14,26 +14,31 @@ import (
 // fakeHerdr stands in for the herdr CLI: it records what was asked of it and
 // returns canned results, so the gates run without a live terminal.
 type fakeHerdr struct {
+	tabID     string
 	paneID    string
-	splitErr  error
+	createErr error
 	startErr  error
 	promptErr error
 	closeErr  error
+	tabClose  error
 
+	created []string
 	started []string
 	prompts []promptCall
 	closed  []string
+	tabs    []string
 }
 
 // promptCall is one brief handed to a pane, so a test can read the text the
 // worker would have received.
 type promptCall struct{ pane, text string }
 
-func (f *fakeHerdr) SplitPane(cwd string) (string, error) {
-	if f.splitErr != nil {
-		return "", f.splitErr
+func (f *fakeHerdr) CreateTab(cwd string) (string, string, error) {
+	if f.createErr != nil {
+		return "", "", f.createErr
 	}
-	return f.paneID, nil
+	f.created = append(f.created, cwd)
+	return f.tabID, f.paneID, nil
 }
 
 func (f *fakeHerdr) StartAgent(paneID, name string) error {
@@ -54,6 +59,14 @@ func (f *fakeHerdr) ClosePane(paneID string) error {
 	return nil
 }
 
+func (f *fakeHerdr) CloseTab(tabID string) error {
+	if f.tabClose != nil {
+		return f.tabClose
+	}
+	f.tabs = append(f.tabs, tabID)
+	return nil
+}
+
 // addCapNode records a cap node the way Prepare does, without a playbook.
 func addCapNode(t *testing.T, f *fixture, goal string) string {
 	t.Helper()
@@ -65,11 +78,11 @@ func addCapNode(t *testing.T, f *fixture, goal string) string {
 }
 
 // recordDelivery appends the structural binding as Deliver does: the pane and
-// agent carrying the brief, and the worker's node in the target project.
+// tab carrying the brief, and the worker's node in the target project.
 func recordDelivery(t *testing.T, f *fixture, capNode, paneID, workerID string) {
 	t.Helper()
 	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
-		PaneID: paneID, Agent: "dispatch-dev-task", Engine: "herdr",
+		PaneID: paneID, TabID: "w1:t9", Agent: "dispatch-dev-task", Engine: "herdr",
 		Project: "skills", Node: workerID,
 	})
 	if !resp.OK {
@@ -130,26 +143,32 @@ func capEvents(t *testing.T, f *fixture, eventType store.EventType) []store.Even
 	return events
 }
 
-func TestDeliverRecordsThePaneBindingStructurally(t *testing.T) {
+func TestDeliverRecordsTheTabPaneAndWorkerBindingStructurally(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
 
-	herdr := &fakeHerdr{paneID: "w1:p9"}
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
 	resp := dispatch.Deliver(f.h, herdr, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
-	if brief.Delivery == nil || brief.Delivery.PaneID != "w1:p9" || brief.Delivery.Engine != "herdr" {
+	// The worker gets a tab of its own, at the project root, and the agent runs
+	// in that tab's root pane.
+	if len(herdr.created) != 1 || herdr.created[0] != root {
+		t.Errorf("created tabs = %v, want one rooted at %s", herdr.created, root)
+	}
+	if brief.Delivery == nil || brief.Delivery.PaneID != "w1:p9" ||
+		brief.Delivery.TabID != "w1:t9" || brief.Delivery.Engine != "herdr" {
 		t.Fatalf("brief delivery = %+v, want the recorded binding", brief.Delivery)
 	}
 	if len(herdr.started) != 1 || herdr.started[0] != "w1:p9/dispatch-dev-task" {
-		t.Errorf("started = %v, want the agent started in the new pane", herdr.started)
+		t.Errorf("started = %v, want the agent started in the new tab's root pane", herdr.started)
 	}
 	if len(herdr.prompts) != 1 || herdr.prompts[0].pane != "w1:p9" {
-		t.Errorf("prompts = %v, want the brief sent to the new pane", herdr.prompts)
+		t.Errorf("prompts = %v, want the brief sent to the new tab's root pane", herdr.prompts)
 	}
 
 	events := capEvents(t, f, store.DeliveryRecorded)
@@ -158,8 +177,9 @@ func TestDeliverRecordsThePaneBindingStructurally(t *testing.T) {
 	}
 	payload := string(events[0].Payload)
 	for _, want := range []string{
-		`"pane_id":"w1:p9"`, `"agent":"dispatch-dev-task"`, `"engine":"herdr"`,
-		`"project":"skills"`, `"node":"` + strings.TrimPrefix(brief.WorkerNode, "skills:") + `"`,
+		`"pane_id":"w1:p9"`, `"tab_id":"w1:t9"`, `"agent":"dispatch-dev-task"`,
+		`"engine":"herdr"`, `"project":"skills"`,
+		`"node":"` + strings.TrimPrefix(brief.WorkerNode, "skills:") + `"`,
 	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("delivery payload %s must carry %s", payload, want)
@@ -167,7 +187,7 @@ func TestDeliverRecordsThePaneBindingStructurally(t *testing.T) {
 	}
 
 	// The prose decision is for the reader; the binding above is for the program.
-	want := "delivered to pane w1:p9, agent dispatch-dev-task"
+	want := "delivered to pane w1:p9 in tab w1:t9, agent dispatch-dev-task"
 	if decisions := capDecisions(t, f, nodeID); !contains(decisions, want) {
 		t.Errorf("decisions = %v, want %q", decisions, want)
 	}
@@ -183,7 +203,7 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	f := newFixture(t, root)
 	capNode := addCapNode(t, f, "dispatch dev-task: sample")
 
-	herdr := &fakeHerdr{paneID: "w1:p9"}
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
 	resp := dispatch.Deliver(f.h, herdr, &dispatch.Brief{
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: capNode,
 	})
@@ -219,15 +239,15 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	}
 }
 
-func TestDeliverFailsLeavesNodePendingAndClosesPane(t *testing.T) {
+func TestDeliverFailsLeavesNodePendingAndClosesTheWorkerTab(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
 
-	// A failure after the worker's node exists closes the pane and rolls the
-	// node back: the store cannot take an event back, so it is marked done with
-	// the reason, and nothing is left outstanding in the target project.
-	herdr := &fakeHerdr{paneID: "w1:p9", promptErr: errors.New("agent_prompt_stalled")}
+	// A failure after the worker's node exists closes the tab and rolls the node
+	// back: the store cannot take an event back, so it is marked done with the
+	// reason, and nothing is left outstanding in the target project.
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9", promptErr: errors.New("agent_prompt_stalled")}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
 	resp := dispatch.Deliver(f.h, herdr, brief)
@@ -239,6 +259,11 @@ func TestDeliverFailsLeavesNodePendingAndClosesPane(t *testing.T) {
 	}
 	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
 		t.Errorf("closed = %v, want the pane this delivery opened", herdr.closed)
+	}
+	// Closing the pane is not enough on its own: the tab this delivery opened
+	// must not be left behind.
+	if len(herdr.tabs) != 1 || herdr.tabs[0] != "w1:t9" {
+		t.Errorf("closed tabs = %v, want the tab this delivery opened", herdr.tabs)
 	}
 	if len(capEvents(t, f, store.DeliveryRecorded)) != 0 {
 		t.Error("a failed delivery must not record a binding")
@@ -271,7 +296,7 @@ func TestDeliverHerdrUnavailableLeavesNodePending(t *testing.T) {
 	f := newFixture(t, root)
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
 
-	herdr := &fakeHerdr{splitErr: errors.New("exec: herdr: executable file not found in $PATH")}
+	herdr := &fakeHerdr{createErr: errors.New("exec: herdr: executable file not found in $PATH")}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
 	resp := dispatch.Deliver(f.h, herdr, brief)
@@ -279,7 +304,7 @@ func TestDeliverHerdrUnavailableLeavesNodePending(t *testing.T) {
 		t.Fatal("herdr being unavailable must fail the delivery")
 	}
 	if len(capEvents(t, f, store.DeliveryRecorded)) != 0 {
-		t.Error("no binding may be recorded when the pane was never created")
+		t.Error("no binding may be recorded when the tab was never created")
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "pending" {
 		t.Errorf("cap node status = %q, want pending", status)
@@ -382,11 +407,19 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	if !ok || result.PaneID != "w1:p9" || result.Warning != "" {
 		t.Fatalf("result = %#v, want the closed pane and no warning", resp.Data)
 	}
+	if result.TabID != "w1:t9" {
+		t.Errorf("result tab = %q, want the recorded tab w1:t9", result.TabID)
+	}
 	if result.Worker != "skills:"+workerID {
 		t.Errorf("result worker = %q, want the recorded node skills:%s", result.Worker, workerID)
 	}
 	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
 		t.Errorf("closed = %v, want w1:p9", herdr.closed)
+	}
+	// Closing the pane is not the whole teardown: an empty tab must not be left
+	// behind, so the tab from the record is closed too.
+	if len(herdr.tabs) != 1 || herdr.tabs[0] != "w1:t9" {
+		t.Errorf("closed tabs = %v, want w1:t9", herdr.tabs)
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done", status)
@@ -508,6 +541,51 @@ func TestCloseWarnsButSucceedsWhenHerdrIsUnavailable(t *testing.T) {
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done despite the warning", status)
+	}
+}
+
+// A record written before the worker got a tab of its own carries no tab, and
+// must still close: there is nothing to assert the absence of.
+func TestCloseToleratesARecordWithNoTab(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	if resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
+		PaneID: "w1:p9", Agent: "dispatch-dev-task", Engine: "herdr",
+		Project: "skills", Node: workerID,
+	}); !resp.OK {
+		t.Fatalf("RecordDelivery: %s", resp.Error)
+	}
+
+	herdr := &fakeHerdr{}
+	resp := dispatch.Close(f.h, herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("a pre-tab record must still close: %s", resp.Error)
+	}
+	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
+		t.Errorf("closed = %v, want w1:p9", herdr.closed)
+	}
+	if len(herdr.tabs) != 0 {
+		t.Errorf("closed tabs = %v, want none for a record that names no tab", herdr.tabs)
+	}
+}
+
+// Closing the pane of a tab can remove the tab with it, so a tab herdr no
+// longer knows about is the goal state — not a warning.
+func TestCloseSucceedsWhenTheTabIsAlreadyGone(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := dispatch.Close(f.h, &fakeHerdr{tabClose: dispatch.ErrTabGone}, dispatch.CloseRequest{
+		NodeID: nodeID, Decision: "verified",
+	})
+	if !resp.OK {
+		t.Fatalf("an already-closed tab must not fail the close-out: %s", resp.Error)
+	}
+	if result := resp.Data.(dispatch.CloseResult); result.Warning != "" {
+		t.Errorf("warning = %q, want none for an already-closed tab", result.Warning)
 	}
 }
 

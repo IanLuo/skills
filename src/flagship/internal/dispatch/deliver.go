@@ -28,23 +28,37 @@ const herdrEngine = "herdr"
 // pane is a success, not a failure: the dispatch is simply already torn down.
 var ErrPaneGone = errors.New("pane is already gone")
 
-// HerdrCLI is the slice of the herdr CLI the dispatch lifecycle uses: split a
-// sibling pane, start an agent in it, send the brief, close it again.
+// ErrTabGone reports that a tab no longer exists. Like a gone pane, it is
+// success rather than failure: closing a tab's last pane removes the tab.
+var ErrTabGone = errors.New("tab is already gone")
+
+// HerdrCLI is the slice of the herdr CLI the dispatch lifecycle uses: open a
+// tab for the worker, start an agent in its root pane, send the brief, and tear
+// the tab down again.
+//
+// The worker gets a tab of its own rather than a sibling pane in the cap's.
+// herdr reports `done` only for work nobody has looked at, and a pane in the
+// cap's own tab is always seen — so in a sibling pane a worker that has already
+// finished reads `idle`, and the signal the cap picks up on can never fire.
 type HerdrCLI interface {
-	// SplitPane creates a sibling pane with cwd and returns its pane id.
-	SplitPane(cwd string) (string, error)
+	// CreateTab opens a tab rooted at cwd and returns its tab id along with the
+	// id of the pane the tab opens with.
+	CreateTab(cwd string) (tabID, rootPaneID string, err error)
 	// StartAgent starts an interactive agent named name in an existing pane.
 	StartAgent(paneID, name string) error
 	// Prompt submits text to the agent hosted by paneID.
 	Prompt(paneID, text string) error
 	// ClosePane closes paneID, returning ErrPaneGone if it no longer exists.
 	ClosePane(paneID string) error
+	// CloseTab closes tabID, returning ErrTabGone if it no longer exists.
+	CloseTab(tabID string) error
 }
 
-// Deliver hands the prepared brief to a worker: it splits a sibling pane at the
-// project root, starts the agent, creates the worker's node in the target
-// project, sends the brief naming that node, then records the binding as a
-// delivery-recorded event and marks the cap node active.
+// Deliver hands the prepared brief to a worker: it opens a tab of the worker's
+// own at the project root, starts the agent in the tab's root pane, creates the
+// worker's node in the target project, sends the brief naming that node, then
+// records the binding as a delivery-recorded event and marks the cap node
+// active.
 //
 // The worker's node is created before the brief is sent because the brief has to
 // name it — the worker must not invent its own. That ordering is the only one
@@ -54,41 +68,42 @@ type HerdrCLI interface {
 func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 	agent := "dispatch-" + brief.TaskType
 
-	paneID, err := hc.SplitPane(brief.RootPath)
+	tabID, paneID, err := hc.CreateTab(brief.RootPath)
 	if err != nil {
-		return deliverErr(brief, fmt.Errorf("split pane: %w", err))
+		return deliverErr(brief, fmt.Errorf("create tab: %w", err))
 	}
 
 	if err := hc.StartAgent(paneID, agent); err != nil {
-		abandonPane(hc, paneID)
+		abandonWorker(hc, tabID, paneID)
 		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
 	}
 
 	workerID, err := createWorkerNode(h, brief)
 	if err != nil {
-		abandonPane(hc, paneID)
+		abandonWorker(hc, tabID, paneID)
 		return deliverErr(brief, err)
 	}
 
 	if err := hc.Prompt(paneID, renderBrief(brief)); err != nil {
-		abandonPane(hc, paneID)
+		abandonWorker(hc, tabID, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("send brief: %v", err))
 		return deliverErr(brief, fmt.Errorf("send brief: %w", err))
 	}
 
 	delivery := command.DeliveryRecord{
 		PaneID:  paneID,
+		TabID:   tabID,
 		Agent:   agent,
 		Engine:  herdrEngine,
 		Project: brief.Project,
 		Node:    workerID,
 	}
 	if resp := h.RecordDelivery(capScope, brief.CapNodeID, delivery); !resp.OK {
-		abandonPane(hc, paneID)
+		abandonWorker(hc, tabID, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("record delivery: %s", resp.Error))
 		return deliverErr(brief, fmt.Errorf("record delivery: %s", resp.Error))
 	}
-	if err := recordDecision(h, brief.CapNodeID, fmt.Sprintf("delivered to pane %s, agent %s", paneID, agent)); err != nil {
+	if err := recordDecision(h, brief.CapNodeID, fmt.Sprintf("delivered to pane %s in tab %s, agent %s", paneID, tabID, agent)); err != nil {
 		return deliverErr(brief, err)
 	}
 	if resp := h.TaskUpdate(capScope, brief.CapNodeID, "active", "", nil); !resp.OK {
@@ -131,9 +146,10 @@ func deliverErr(brief *Brief, err error) command.Response {
 		err, brief.CapNodeID))
 }
 
-// abandonPane best-effort closes a pane whose dispatch is not being recorded.
-func abandonPane(hc HerdrCLI, paneID string) {
-	_ = hc.ClosePane(paneID)
+// abandonWorker best-effort tears down a worker whose dispatch is not being
+// recorded, so a failed delivery leaves neither its pane nor its tab behind.
+func abandonWorker(hc HerdrCLI, tabID, paneID string) {
+	_ = tearDownWorker(hc, tabID, paneID)
 }
 
 // herdrCLI shells out to the herdr binary on PATH.
@@ -142,26 +158,32 @@ type herdrCLI struct{}
 // NewHerdrCLI returns the herdr CLI adapter used by the fs commands.
 func NewHerdrCLI() HerdrCLI { return herdrCLI{} }
 
-func (herdrCLI) SplitPane(cwd string) (string, error) {
-	out, err := runHerdr("pane", "split", "--current", "--direction", "right", "--cwd", cwd, "--no-focus")
+func (herdrCLI) CreateTab(cwd string) (string, string, error) {
+	out, err := runHerdr("tab", "create", "--cwd", cwd, "--no-focus")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var resp struct {
 		Result struct {
-			Pane struct {
+			Tab struct {
+				TabID string `json:"tab_id"`
+			} `json:"tab"`
+			RootPane struct {
 				PaneID string `json:"pane_id"`
-			} `json:"pane"`
+			} `json:"root_pane"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return "", fmt.Errorf("herdr pane split: parse response: %w", err)
+		return "", "", fmt.Errorf("herdr tab create: parse response: %w", err)
 	}
-	if resp.Result.Pane.PaneID == "" {
-		return "", errors.New("herdr pane split: response carried no pane id")
+	if resp.Result.Tab.TabID == "" {
+		return "", "", errors.New("herdr tab create: response carried no tab id")
 	}
-	return resp.Result.Pane.PaneID, nil
+	if resp.Result.RootPane.PaneID == "" {
+		return "", "", errors.New("herdr tab create: response carried no root pane id")
+	}
+	return resp.Result.Tab.TabID, resp.Result.RootPane.PaneID, nil
 }
 
 func (herdrCLI) StartAgent(paneID, name string) error {
@@ -178,6 +200,14 @@ func (herdrCLI) ClosePane(paneID string) error {
 	_, err := runHerdr("pane", "close", paneID)
 	if herdrErrorCode(err) == "pane_not_found" {
 		return ErrPaneGone
+	}
+	return err
+}
+
+func (herdrCLI) CloseTab(tabID string) error {
+	_, err := runHerdr("tab", "close", tabID)
+	if herdrErrorCode(err) == "tab_not_found" {
+		return ErrTabGone
 	}
 	return err
 }

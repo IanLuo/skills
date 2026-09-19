@@ -31,14 +31,15 @@ type CloseResult struct {
 	Decision string `json:"decision"`
 	Worker   string `json:"worker,omitempty"`
 	PaneID   string `json:"pane_id,omitempty"`
+	TabID    string `json:"tab_id,omitempty"`
 	Warning  string `json:"warning,omitempty"`
 }
 
 // Close closes out a dispatch node. It refuses — naming what is missing — when
 // the node is not a dispatch, when no delivery was recorded (or, with
 // --abandoned, no reason was given), when the worker's node is missing or not
-// done, or when no verdict was given. On success it closes the pane from the
-// delivery record and marks the cap node done with the verdict.
+// done, or when no verdict was given. On success it closes the pane and tab from
+// the delivery record and marks the cap node done with the verdict.
 //
 // The worker's node comes from the delivery record, not from the caller: --worker
 // is optional and, when given, must name the recorded node. A record written
@@ -103,13 +104,16 @@ func Close(h *command.Handler, hc HerdrCLI, req CloseRequest) command.Response {
 		}
 	}
 
-	result := CloseResult{NodeID: req.NodeID, Decision: decision, Worker: workerRef, PaneID: delivery.PaneID}
+	result := CloseResult{
+		NodeID:   req.NodeID,
+		Decision: decision,
+		Worker:   workerRef,
+		PaneID:   delivery.PaneID,
+		TabID:    delivery.TabID,
+	}
 	if !req.Abandoned {
-		switch err := hc.ClosePane(delivery.PaneID); {
-		case err == nil, errors.Is(err, ErrPaneGone):
-			// Already gone is the goal state, not a failure.
-		default:
-			result.Warning = fmt.Sprintf("could not close pane %s: %v — close it by hand", delivery.PaneID, err)
+		if warning := tearDownWorker(hc, delivery.TabID, delivery.PaneID); warning != "" {
+			result.Warning = warning
 		}
 	}
 
@@ -117,6 +121,29 @@ func Close(h *command.Handler, hc HerdrCLI, req CloseRequest) command.Response {
 		return errResp("mark node done: " + resp.Error)
 	}
 	return command.Response{OK: true, Data: result}
+}
+
+// tearDownWorker closes the pane a delivery opened, then its tab, and returns a
+// warning for whatever herdr would not close.
+//
+// Closing a tab's last pane removes the tab, so the tab close that follows is
+// normally a no-op — and it is not decoration: it is what guarantees an empty
+// tab is not left behind, which is the state herdr cannot report on. A pane or
+// tab that is already gone is the goal state, not a failure.
+func tearDownWorker(hc HerdrCLI, tabID, paneID string) string {
+	var warnings []string
+	if err := hc.ClosePane(paneID); err != nil && !errors.Is(err, ErrPaneGone) {
+		warnings = append(warnings, fmt.Sprintf("could not close pane %s: %v", paneID, err))
+	}
+	if tabID != "" {
+		if err := hc.CloseTab(tabID); err != nil && !errors.Is(err, ErrTabGone) {
+			warnings = append(warnings, fmt.Sprintf("could not close tab %s: %v", tabID, err))
+		}
+	}
+	if len(warnings) == 0 {
+		return ""
+	}
+	return strings.Join(warnings, "; ") + " — close it by hand"
 }
 
 // workerFor resolves which node in the target project this close-out is about.

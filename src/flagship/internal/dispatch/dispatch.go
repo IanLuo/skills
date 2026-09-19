@@ -4,10 +4,10 @@
 // Prepare reads the task-type's prerequisite playbook, runs the mechanical
 // prerequisites against the target project's root, records the cap's own node,
 // and returns the brief. Deliver (fs dispatch --deliver) is the only step that
-// spawns: it splits a pane, starts the agent, sends the brief, and records the
-// pane binding structurally. Close (fs close) is the close-out gate: it refuses
-// to close a dispatch whose worker node is not done, then closes the pane from
-// the recorded binding.
+// spawns: it opens a tab of the worker's own, starts the agent in its root pane,
+// sends the brief, and records the pane and tab binding structurally. Close
+// (fs close) is the close-out gate: it refuses to close a dispatch whose worker
+// node is not done, then closes the pane and tab from the recorded binding.
 //
 // It also gates preparation: a failing prerequisite check or an earlier dispatch
 // that was never delivered stops it, unless the cap passes --confirm.
@@ -348,10 +348,14 @@ func recordDecision(h *command.Handler, nodeID, summary string) error {
 
 // nextCommand is the herdr line the cap runs to deliver the brief to a worker.
 // dispatch does not run it.
+//
+// It opens a tab rather than a sibling pane, because a worker in the cap's own
+// tab is always seen and so reads `idle` when it finishes; only an unseen tab
+// reads `done`.
 func nextCommand(b *Brief) string {
 	name := "dispatch-" + b.TaskType
 	return fmt.Sprintf(
-		`P=$(herdr pane split --current --direction right --cwd %s --no-focus | jq -r '.result.pane.pane_id') && `+
+		`P=$(herdr tab create --cwd %s --no-focus | jq -r '.result.root_pane.pane_id') && `+
 			`herdr agent start %s --kind pi --pane "$P" && `+
 			`herdr agent prompt %s %s --wait --timeout 120000`,
 		shellQuote(b.RootPath), name, name, shellQuote(renderBrief(b)))

@@ -897,6 +897,7 @@ func TestCLIRejectsUnknownFlags(t *testing.T) {
 		"project create": {"project", "create", "--name", "q", "--bogus"},
 		"kb add":         {"kb", "add", "--name", "n", "--file", "f", "--bogus"},
 		"kb diff":        {"kb", "diff", "n", "--bogus"},
+		"kb prompt":      {"kb", "prompt", "--bogus"},
 		"kb reset":       {"kb", "reset", "n", "--bogus"},
 		"bootstrap":      {"bootstrap", "--bogus"},
 		"close":          {"close", "--node", "n", "--bogus"},
@@ -1595,8 +1596,13 @@ steps:
 `
 
 const fakeHerdrScript = `#!/usr/bin/env bash
-# A fake herdr for CLI tests: models pane lifecycle in $HERDR_TEST_STATE so the
-# "pane already closed" path can be exercised without a terminal.
+# A fake herdr for CLI tests: models tab, pane, and agent lifecycle in
+# $HERDR_TEST_STATE so the deliver/close paths can be exercised without a
+# terminal.
+#
+# A real herdr removes a tab along with its last pane. The fake keeps a tab
+# until it is explicitly closed, so the close-out that guarantees no empty tab
+# is left behind is exercised rather than assumed.
 set -euo pipefail
 state="${HERDR_TEST_STATE:?HERDR_TEST_STATE is required}"
 mkdir -p "$state"
@@ -1604,34 +1610,39 @@ mkdir -p "$state"
 cmd="${1:-}"; shift || true
 sub="${1:-}"; shift || true
 
-pane_file() { printf '%s/pane_%s' "$state" "${1##*:p}"; }
+id_file() { printf '%s/%s_%s' "$state" "$1" "${2//:/_}"; }
+not_found() { printf '{"error":{"code":"%s_not_found","message":"%s %s not found"}}\n' "$1" "$1" "$2" >&2; exit 1; }
 
 case "$cmd $sub" in
-  "pane split")
+  "tab create")
     n=$(( $(cat "$state/seq" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "$n" > "$state/seq"
-    id="wTEST:p$n"
-    : > "$(pane_file "$id")"
-    printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
+    tab="wTEST:t$n"; pane="wTEST:p$n"
+    : > "$(id_file tab "$tab")"
+    : > "$(id_file pane "$pane")"
+    printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tab" "$pane"
+    ;;
+  "tab get")
+    id="${1:-}"
+    [ -f "$(id_file tab "$id")" ] || not_found tab "$id"
+    printf '{"result":{"tab":{"tab_id":"%s"}}}\n' "$id"
+    ;;
+  "tab close")
+    id="${1:-}"
+    [ -f "$(id_file tab "$id")" ] || not_found tab "$id"
+    rm -f "$(id_file tab "$id")"
+    printf '{"result":{"closed":true}}\n'
     ;;
   "pane get")
     id="${1:-}"
-    if [ -f "$(pane_file "$id")" ]; then
-      printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
-    else
-      printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$id" >&2
-      exit 1
-    fi
+    [ -f "$(id_file pane "$id")" ] || not_found pane "$id"
+    printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
     ;;
   "pane close")
     id="${1:-}"
-    if [ -f "$(pane_file "$id")" ]; then
-      rm -f "$(pane_file "$id")"
-      printf '{"result":{"closed":true}}\n'
-    else
-      printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$id" >&2
-      exit 1
-    fi
+    [ -f "$(id_file pane "$id")" ] || not_found pane "$id"
+    rm -f "$(id_file pane "$id")"
+    printf '{"result":{"closed":true}}\n'
     ;;
   "agent start")
     printf '{"result":{"agent":{"name":"%s"}}}\n' "${1:-}"
@@ -1665,11 +1676,12 @@ func fakeHerdrOnPath(t *testing.T) (env []string, state, script string) {
 	return env, state, script
 }
 
-// herdrPaneGet runs the fake herdr's pane get, standing in for the real
-// `herdr pane get <id>` the acceptance check runs.
-func herdrPaneGet(t *testing.T, script string, env []string, paneID string) error {
+// herdrGet runs the fake herdr's get for one object, standing in for the real
+// `herdr pane get` / `herdr tab get` the acceptance check runs. A non-nil error
+// means the object no longer exists.
+func herdrGet(t *testing.T, script string, env []string, kind, id string) error {
 	t.Helper()
-	cmd := exec.Command(script, "pane", "get", paneID)
+	cmd := exec.Command(script, kind, "get", id)
 	cmd.Env = append(os.Environ(), env...)
 	return cmd.Run()
 }
@@ -1686,8 +1698,8 @@ func herdrPrompt(t *testing.T, state string) string {
 }
 
 // deliverProbe runs fs dispatch --deliver against the fake herdr and returns the
-// cap node, the pane it was bound to, and the worker node it created.
-func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, paneID, workerRef string) {
+// cap node, the tab and pane it was bound to, and the worker node it created.
+func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, tabID, paneID, workerRef string) {
 	t.Helper()
 	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
@@ -1702,7 +1714,8 @@ func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, paneID,
 	if !ok || worker == "" {
 		t.Fatalf("dispatch --deliver carried no worker_node: %v", data)
 	}
-	return data["cap_node_id"].(string), delivery["pane_id"].(string), worker
+	tab, _ := delivery["tab_id"].(string)
+	return data["cap_node_id"].(string), tab, delivery["pane_id"].(string), worker
 }
 
 // finishWorker marks the delivered worker's node done, so the close-out gate has
@@ -1734,19 +1747,30 @@ func addWorkerNode(t *testing.T, bin, root, status string) string {
 	return nodeID
 }
 
-// fs dispatch --deliver creates the worker's node in the target project, names
-// it in the brief, and binds it in the delivery record; fs close reads that
-// binding, so the cap never has to say which node it is closing.
-func TestCLIDeliverCreatesTheWorkerNodeAndCloseUsesIt(t *testing.T) {
+// fs dispatch --deliver opens a tab of the worker's own, creates the worker's
+// node in the target project, names it in the brief, and binds tab, pane, and
+// node in the delivery record; fs close reads that binding, so the cap never has
+// to say which node it is closing.
+func TestCLIDeliverOpensATabAndCloseTearsItDown(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
 	env, state, script := fakeHerdrOnPath(t)
 
-	capNode, paneID, workerRef := deliverProbe(t, bin, root, env)
+	capNode, tabID, paneID, workerRef := deliverProbe(t, bin, root, env)
+	if tabID == "" {
+		t.Fatal("delivery carried no tab id")
+	}
 	if paneID == "" {
 		t.Fatal("delivery carried no pane id")
+	}
+	// The worker runs in a tab of its own, not in a pane of the cap's tab.
+	if err := herdrGet(t, script, env, "tab", tabID); err != nil {
+		t.Errorf("tab %s does not exist after --deliver: %v", tabID, err)
+	}
+	if err := herdrGet(t, script, env, "pane", paneID); err != nil {
+		t.Errorf("pane %s does not exist after --deliver: %v", paneID, err)
 	}
 
 	// The worker's node exists in the target project, pending, for the worker to
@@ -1773,8 +1797,8 @@ func TestCLIDeliverCreatesTheWorkerNodeAndCloseUsesIt(t *testing.T) {
 	}
 	payload := events[0].(map[string]any)["payload"].(map[string]any)
 	for field, want := range map[string]any{
-		"pane_id": paneID, "agent": "dispatch-dev-task", "engine": "herdr",
-		"project": "skills", "node": workerID,
+		"pane_id": paneID, "tab_id": tabID, "agent": "dispatch-dev-task",
+		"engine": "herdr", "project": "skills", "node": workerID,
 	} {
 		if payload[field] != want {
 			t.Errorf("delivery payload %s = %v, want %v", field, payload[field], want)
@@ -1795,6 +1819,9 @@ func TestCLIDeliverCreatesTheWorkerNodeAndCloseUsesIt(t *testing.T) {
 	if data["pane_id"] != paneID {
 		t.Errorf("close data = %v, want the closed pane %s", data, paneID)
 	}
+	if data["tab_id"] != tabID {
+		t.Errorf("close data tab_id = %v, want the closed tab %s", data["tab_id"], tabID)
+	}
 	if data["worker"] != workerRef {
 		t.Errorf("close worker = %v, want the recorded %s", data["worker"], workerRef)
 	}
@@ -1807,19 +1834,23 @@ func TestCLIDeliverCreatesTheWorkerNodeAndCloseUsesIt(t *testing.T) {
 		t.Errorf("cap decisions = %v, want the verdict", task["decisions"])
 	}
 
-	// The pane is actually gone.
-	if err := herdrPaneGet(t, script, env, paneID); err == nil {
+	// Neither the pane nor the tab it belonged to is left behind: an empty tab
+	// would be invisible in the record and would hold the workspace open.
+	if err := herdrGet(t, script, env, "pane", paneID); err == nil {
 		t.Errorf("pane %s still exists after fs close", paneID)
 	}
+	if err := herdrGet(t, script, env, "tab", tabID); err == nil {
+		t.Errorf("tab %s still exists after fs close — an empty tab was left behind", tabID)
+	}
 
-	// A pane that is already closed is not an error: close out again, with no
-	// warning — herdr reporting pane_not_found is success, not a failure.
+	// A pane and tab that are already closed are not an error: close out again,
+	// with no warning — herdr reporting not_found is success, not a failure.
 	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "read the worker node; verified")
 	if code != 0 {
 		t.Fatalf("closing an already-closed dispatch must succeed, exit %d: %v", code, again["error"])
 	}
 	if warning, ok := again["data"].(map[string]any)["warning"]; ok {
-		t.Errorf("an already-closed pane must not warn, got %v", warning)
+		t.Errorf("an already-closed pane and tab must not warn, got %v", warning)
 	}
 }
 
@@ -1832,7 +1863,7 @@ func TestCLICloseRefusesAMismatchedWorker(t *testing.T) {
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
-	capNode, _, workerRef := deliverProbe(t, bin, root, env)
+	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
 	finishWorker(t, bin, root, workerRef)
 	other := addWorkerNode(t, bin, root, "done")
 
@@ -1882,7 +1913,7 @@ func TestCLICloseRefusesWhileTheWorkerIsActive(t *testing.T) {
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
-	capNode, _, workerRef := deliverProbe(t, bin, root, env)
+	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
 	_, worker, _ := strings.Cut(workerRef, ":")
 	runFS(t, bin, root, "task", "update", worker, "--status", "active", "--project", "skills")
 
@@ -1906,7 +1937,7 @@ func TestCLICloseRefusesWithoutAVerdict(t *testing.T) {
 	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
-	capNode, _, workerRef := deliverProbe(t, bin, root, env)
+	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
 	finishWorker(t, bin, root, workerRef)
 
 	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode)

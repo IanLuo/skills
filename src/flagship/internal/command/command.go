@@ -43,13 +43,15 @@ type UpdateResult struct {
 }
 
 // DeliveryRecord is the payload of a delivery-recorded event: the structural
-// binding of a cap dispatch node to the pane and agent carrying its brief, and
-// to the node created for the worker in the target project.
+// binding of a cap dispatch node to the pane, its tab, and the agent carrying
+// its brief, and to the node created for the worker in the target project.
 //
 // Project and Node are what let close-out name the worker without the cap
-// guessing. They are absent only on records written before the link existed.
+// guessing. They are absent only on records written before the link existed;
+// TabID likewise, on records written before the worker got a tab of its own.
 type DeliveryRecord struct {
 	PaneID  string `json:"pane_id"`
+	TabID   string `json:"tab_id,omitempty"`
 	Agent   string `json:"agent"`
 	Engine  string `json:"engine"`
 	Project string `json:"project"`

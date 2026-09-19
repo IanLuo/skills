@@ -86,6 +86,7 @@ var cmdSpecs = map[string]cmdSpec{
 	"kb reset":  {usage: "Usage: fs kb reset NAME --yes", flags: map[string]bool{"--yes": false}, positionals: 1},
 	"kb edit":   {usage: "Usage: fs kb edit --name NAME --file PATH", flags: map[string]bool{"--name": true, "--file": true}},
 	"kb remove": {usage: "Usage: fs kb remove NAME", positionals: 1},
+	"kb prompt": {usage: "Usage: fs kb prompt"},
 
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 

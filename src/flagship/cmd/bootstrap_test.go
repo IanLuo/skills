@@ -13,9 +13,14 @@ import (
 )
 
 const (
-	capPlaybook = "cap"
-	devPlaybook = "dev-task-prerequisites"
+	capPlaybook   = "cap"
+	devPlaybook   = "dev-task-prerequisites"
+	herdrPlaybook = "herdr"
 )
+
+// shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
+// of them; the cap's standing rules are built from the procedure ones.
+var shippedPlaybooks = []string{capPlaybook, devPlaybook, herdrPlaybook}
 
 // shippedDefault is a default the binary is expected to carry. The test process
 // runs in this package's directory, so the module's defaults/ is one level up:
@@ -90,10 +95,16 @@ func TestCLIBootstrapSeedsThenKeeps(t *testing.T) {
 	}
 
 	seeded := playbooksOf(t, resp)
-	if len(seeded) != 2 {
-		t.Fatalf("bootstrap seeded %d playbooks, want the 2 shipped: %v", len(seeded), seeded)
+	if len(seeded) != len(shippedPlaybooks) {
+		t.Fatalf("bootstrap seeded %d playbooks, want the %d shipped: %v",
+			len(seeded), len(shippedPlaybooks), seeded)
 	}
-	for name, pb := range seeded {
+	for _, name := range shippedPlaybooks {
+		pb, shipped := seeded[name]
+		if !shipped {
+			t.Errorf("bootstrap did not seed %s: %v", name, seeded)
+			continue
+		}
 		if pb["action"] != "created" {
 			t.Errorf("%s action = %v, want created", name, pb["action"])
 		}
@@ -243,5 +254,86 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 		if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "no-such-default") {
 			t.Errorf("fs %s error %q must name the missing default", strings.Join(args, " "), errMsg)
 		}
+	}
+}
+
+// fs kb prompt is the delivery path for the playbooks: the cap's standing rules
+// come out as plain text on stdout, so a session starts from the rules the
+// binary ships rather than from a prompt retyped by hand.
+func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	home := testHome(t)
+	runFSOK(t, bin, dir, "bootstrap")
+
+	stdout, stderr, code := rawFS(t, bin, dir, home, "kb", "prompt")
+	if code != 0 {
+		t.Fatalf("kb prompt exit = %d, want 0 (stderr: %s)", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("kb prompt wrote to stderr: %q", stderr)
+	}
+	if strings.HasPrefix(stdout, "{") {
+		t.Errorf("kb prompt must be plain text, not the JSON envelope: %q", stdout)
+	}
+
+	// The standing-rules line, one stamped header per cap-triggered procedure,
+	// and the rules themselves.
+	for _, want := range []string{
+		"Standing rules for this session",
+		"not suggestions",
+		"# cap — procedure, trigger cap; default, stamp sha256:",
+		"# herdr — procedure, trigger cap; default, stamp sha256:",
+		"pick up finished workers at the top of every turn",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("kb prompt must contain %q; got:\n%s", want, stdout)
+		}
+	}
+	// A prerequisite playbook is a gate the dispatcher runs, not a standing rule.
+	if strings.Contains(stdout, devPlaybook) {
+		t.Errorf("a prerequisite playbook must not be part of the prompt:\n%s", stdout)
+	}
+
+	// Piped whole into one --append-system-prompt argument: a blank line would
+	// break it into separate blocks.
+	if strings.Contains(stdout, "\n\n") {
+		t.Errorf("kb prompt must contain no blank lines:\n%q", stdout)
+	}
+}
+
+// A prompt built from a playbook whose shipped default has moved on says so, so
+// the cap can tell its rules are stale without a second command.
+func TestCLIKBPromptMarksAStalePlaybook(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	home := testHome(t)
+	runFSOK(t, bin, dir, "bootstrap")
+
+	older := "name: cap\ntype: procedure\ntrigger: cap\nsteps:\n  - say: older\n"
+	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
+
+	stdout, _, code := rawFS(t, bin, dir, home, "kb", "prompt")
+	if code != 0 {
+		t.Fatalf("kb prompt exit = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "# cap — procedure, trigger cap; stale, stamp sha256:") {
+		t.Errorf("a stale playbook must be marked stale in the prompt:\n%s", stdout)
+	}
+}
+
+// An empty knowledge center is not an error: a fresh HOME has no playbooks yet,
+// and the prompt says what to run rather than coming out empty.
+func TestCLIKBPromptOnAFreshHomeSaysToBootstrap(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	home := t.TempDir()
+
+	stdout, _, code := rawFS(t, bin, dir, home, "kb", "prompt")
+	if code != 0 {
+		t.Fatalf("kb prompt exit = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "fs bootstrap") {
+		t.Errorf("an unseeded knowledge center must say how to fill it:\n%s", stdout)
 	}
 }

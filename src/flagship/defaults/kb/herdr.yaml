@@ -1,0 +1,9 @@
+name: herdr
+type: procedure
+trigger: cap
+engine_scope: herdr
+steps:
+  - say: herdr state is a seen/unseen signal, not a finished signal; done means nobody has looked, and a pane in your own tab is always seen
+  - say: a worker runs in its own tab so its completion is unseen and herdr reports done; a sibling pane in your tab never can
+  - say: the worker's node in the project is the truth about whether the work finished; herdr only says when to look
+  - say: pick up finished workers at the top of every turn; never wait and never poll with a sleep

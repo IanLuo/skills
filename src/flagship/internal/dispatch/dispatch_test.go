@@ -210,10 +210,10 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	if len(brief.Notes) == 0 || !strings.Contains(strings.Join(brief.Notes, " "), "false positive") {
 		t.Errorf("notes must flag the known grep false positive, got %v", brief.Notes)
 	}
-	if !strings.Contains(brief.NextCommand, "herdr pane split") ||
+	if !strings.Contains(brief.NextCommand, "herdr tab create") ||
 		!strings.Contains(brief.NextCommand, "herdr agent start") ||
 		!strings.Contains(brief.NextCommand, "herdr agent prompt") {
-		t.Errorf("next_command must be the herdr split/start/prompt line, got %q", brief.NextCommand)
+		t.Errorf("next_command must be the herdr tab/start/prompt line, got %q", brief.NextCommand)
 	}
 }
 

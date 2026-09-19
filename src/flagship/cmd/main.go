@@ -87,6 +87,11 @@ Commands:
   kb add --name NAME --file PATH                Add a playbook
   kb get NAME                                   Get a playbook
   kb list                                       List playbooks and their state
+  kb prompt                                     Print the cap's standing rules:
+                                                the procedure playbooks with
+                                                trigger cap, concatenated. Plain
+                                                text on stdout, for
+                                                pi --append-system-prompt
   kb diff NAME                                  Diff the shipped default against
                                                 the playbook on disk
   kb reset NAME --yes                           Restore the shipped default
@@ -468,6 +473,10 @@ Subcommands:
   get NAME                      Get a playbook
   list                          List playbooks and their state against the
                                 shipped defaults
+  prompt                        Print the cap's standing rules: the procedure
+                                playbooks with trigger cap, concatenated as
+                                plain text on stdout — pipe it into a single
+                                pi --append-system-prompt argument
   diff NAME                     Diff the shipped default against the playbook
                                 on disk
   reset NAME --yes              Restore the shipped default
@@ -488,6 +497,9 @@ Subcommands:
 	case "list":
 		checkArgs("kb list", args[1:])
 		kbList(args[1:])
+	case "prompt":
+		checkArgs("kb prompt", args[1:])
+		kbPrompt(args[1:])
 	case "diff":
 		checkArgs("kb diff", args[1:])
 		kbDiff(args[1:])
@@ -566,6 +578,32 @@ func kbList(_ []string) {
 		return
 	}
 	output(command.Response{OK: true, Data: map[string]any{"playbooks": states}})
+}
+
+// kbPrompt prints the cap's standing rules — the procedure playbooks with
+// trigger cap, concatenated. It is the delivery path for the playbooks: piping
+// it into `pi --append-system-prompt` is the entire integration, so stdout
+// carries the prompt and nothing else, and a failure goes to stderr rather than
+// the JSON envelope every other command uses.
+func kbPrompt(_ []string) {
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		promptError(err)
+	}
+
+	prompt, err := kc.Prompt(shippedKB())
+	if err != nil {
+		promptError(err)
+	}
+	fmt.Print(prompt)
+}
+
+// promptError reports a failed command whose stdout is a payload the caller
+// pipes onward. The JSON envelope would land in the prompt, so the error goes
+// to stderr instead.
+func promptError(err error) {
+	fmt.Fprintln(os.Stderr, "fs kb prompt: "+err.Error())
+	os.Exit(1)
 }
 
 // kbDiff shows what a playbook on disk has that its shipped default does not,
