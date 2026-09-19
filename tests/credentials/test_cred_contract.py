@@ -305,6 +305,35 @@ def main():
         check("expiry failure says LOCKED", "LOCKED" in r.stderr, r.stderr)
         stop_holder(ttl_dir, expired)
 
+        # 12. Closing the window must not cut a command that is already running:
+        # the holder stops accepting, then waits for what is in flight.
+        slow = cred_dir / "slowdir"
+        profile(slow, "p", "SECRET=@secret\nallow=sleep\n")
+        slow_holder = start_holder(slow, [("p", "SECRET", SECRET)], ttl=2)
+        r = cred(slow, "run", "p", "--", "sleep", "4")
+        check(
+            "a run in flight survives the window closing",
+            r.returncode == 0,
+            f"exit={r.returncode} err={r.stderr!r}",
+        )
+        stop_holder(slow, slow_holder)
+
+        # 13. A pidfile outlives its holder, and a recycled PID must not be killed.
+        recyc = cred_dir / "recycdir"
+        recyc.mkdir(exist_ok=True)
+        bystander = subprocess.Popen(["sleep", "30"])
+        try:
+            (recyc / "hold.pid").write_text(str(bystander.pid))
+            cred(recyc, "lock")
+            check(
+                "lock does not kill whatever inherited a stale PID",
+                bystander.poll() is None,
+                "bystander was killed",
+            )
+        finally:
+            bystander.terminate()
+            bystander.wait(timeout=5)
+
         # 8. The contract is required, not guessed — this is what broke silently.
         r = subprocess.run(
             [str(RUN), "run", "p", "--", "printenv", "SECRET"],

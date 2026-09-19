@@ -32,6 +32,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -460,11 +461,19 @@ fn hold() -> ! {
 
     let sock = cfg.hold_sock.clone();
     let ttl = cfg.ttl;
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let serving = in_flight.clone();
     thread::spawn(move || {
         // The window is fixed, not sliding: a holder that refreshed on use would
         // stay unlocked for as long as anything kept using it.
         thread::sleep(ttl);
+        // Stop accepting first, so no new command can start, then wait for the
+        // ones already running. Exiting mid-answer would look like a crash to
+        // whoever is watching that output, and the window is closed either way.
         let _ = fs::remove_file(&sock);
+        while serving.load(Ordering::SeqCst) > 0 {
+            thread::sleep(Duration::from_millis(50));
+        }
         std::process::exit(0);
     });
 
@@ -476,8 +485,11 @@ fn hold() -> ! {
             Ok(stream) => {
                 let cfg = cfg.clone();
                 let vault = vault.clone();
+                let serving = in_flight.clone();
                 thread::spawn(move || {
+                    serving.fetch_add(1, Ordering::SeqCst);
                     serve(stream, &cfg, &vault);
+                    serving.fetch_sub(1, Ordering::SeqCst);
                 });
             }
             Err(e) => eprintln!("cred: accept failed: {e}"),

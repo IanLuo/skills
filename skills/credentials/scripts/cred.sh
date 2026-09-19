@@ -257,11 +257,19 @@ cmd_list() {
 # the window would close the moment unlock returned.
 
 # Stop a live holder and drop its socket. Safe when there is none: a holder that
-# closed its own window on TTL leaves the pidfile behind, and the kill then
-# fails harmlessly.
+# closed its own window on TTL leaves the pidfile behind.
+#
+# The identity check is load-bearing. A pidfile outlives the holder it names, so
+# after a TTL expiry the PID in it may belong to an unrelated process that was
+# handed the same number — and `cred lock` would kill that instead. Signal only a
+# PID whose command line is still this holder.
 stop_holder() {
   if [ -f "$HOLD_PID" ]; then
-    kill "$(cat "$HOLD_PID")" 2>/dev/null || true
+    local pid
+    pid="$(cat "$HOLD_PID")"
+    case "$(ps -o command= -p "$pid" 2>/dev/null)" in
+      *cred-run*hold) kill "$pid" 2>/dev/null || true ;;
+    esac
     rm -f "$HOLD_PID"
   fi
   rm -f "$HOLD_SOCK"

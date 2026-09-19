@@ -99,7 +99,8 @@ until the window closes. `lock` kills the holder immediately.
 - **Nothing decrypted is written to disk.** There is no plaintext cache file —
   the holder's memory is the only place a secret exists between `unlock` and the
   window closing.
-- The window is a fixed 300s from unlock; it does not extend on use.
+- The window is a fixed 300s from unlock; it does not extend on use. A command
+  already running when it closes still finishes — only new commands are refused.
 - Every `cred run` reuses the same holder: you unlock once, not per command.
 - An agent **cannot** unlock it (needs a TTY); if `cred run` reports locked,
   tell the human.
