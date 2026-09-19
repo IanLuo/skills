@@ -145,7 +145,7 @@ def main() -> int:
         print(json.dumps(ans, indent=2))
     else:
         report(ans)
-        print("\nnow append a row to ~/.fs/jev/observations.md (see SKILL.md)")
+        print(f"\nnow append a row to {RUBRICS.parent / 'observations.md'} (see SKILL.md)")
     return 0
 
 

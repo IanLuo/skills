@@ -74,7 +74,7 @@ conclusion if your state already contains it.
 
 - **Whether it ever disagrees usefully with a human on a real gate.** No ground truth
   exists for real gates, so this can only be learned by recording disagreements and
-  outcomes over time — the `~/.fs/jev/observations.md` protocol in `SKILL.md`.
+  outcomes over time — the `references/observations.md` protocol in `SKILL.md`.
 - **Whether confidence < 0.9 is the right cut.** It fits these eight points (clear cases
   0.99–1.00, the arguable one 0.79) and nothing more.
 - **Anything about a model other than `jev-1.13.0`.** Version changes are worth noticing;

@@ -68,21 +68,17 @@ At each real gate (`ask` steps in `~/.fs/kb/*-prerequisites.yaml`, and any judge
 call you would otherwise make alone):
 
 1. Ask Jev, with the rubric for that gate.
-2. Append one row to `~/.fs/jev/observations.md`:
+2. Append one row to [references/observations.md](references/observations.md) — the
+   format is at the top of that file.
+3. Re-read it after ~10 gates. **Only the last column matters.** If it is empty every
+   time, Jev is well-grounded, cheap and redundant — stop, and say so. If it changed a
+   call even once, that is the evidence for building the integration, and the rubric that
+   gate used is the shape it should take.
 
-```markdown
-| date | gate | my answer | jev score | conf | changed my answer? |
-|---|---|---|---|---|---|
-| 2026-09-19 | acceptance_stated | stated | 1.91 | 0.94 | no |
-```
-
-3. Re-read the log after ~10 gates. **Only the last column matters.** If it is empty
-   every time, Jev is well-grounded, cheap and redundant — stop, and say so. If it
-   changed a call even once, that is the evidence for building the integration, and the
-   rubric you wrote twice by hand is the shape it should take.
-
-Do not put the log in `fs` yet: mixing the experiment into the thing being tested makes
-it impossible to tell which one failed.
+The log lives in the skill, not in `fs`. This is an experiment, and mixing it into the
+system under test would make it impossible to tell which one failed — while a directory
+somewhere else, that `fs` cannot see and nothing else knows about, is just a place for
+observations to get lost.
 
 ## Writing a rubric
 
@@ -109,4 +105,5 @@ disagree — which is exactly why the experiment above exists. Numbers, method a
 
 - `scripts/jev.py` — the only way to call the API (token via `cred`).
 - `references/rubrics.json` — gate → rubric.
+- `references/observations.md` — the log: one row per real gate.
 - `references/evidence.md` — what was measured, and how.
