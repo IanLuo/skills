@@ -41,6 +41,8 @@ func main() {
 		kbCmd(os.Args[2:])
 	case "dispatch":
 		dispatchCmd(os.Args[2:])
+	case "close":
+		closeCmd(os.Args[2:])
 	case "unfinished":
 		unfinishedCmd()
 	case "help", "--help", "-h":
@@ -74,8 +76,13 @@ Commands:
   kb list                                       List playbooks
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
-  dispatch --project P --type TYPE --goal GOAL [--confirm]
-                                               Prepare a dispatch brief (does not spawn)`)
+  dispatch --project P --type TYPE --goal GOAL [--confirm] [--deliver]
+                                               Prepare a dispatch brief; --deliver
+                                               also hands it to a worker pane
+  close --node NODE --worker P:NODE --decision TEXT
+                                               Close out a dispatch: close its
+                                               pane, then mark the node done
+  close --node NODE --abandoned --reason TEXT  Close a never-delivered dispatch`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives
@@ -628,12 +635,15 @@ func unfinishedCmd() {
 }
 
 // dispatchCmd prepares the cap's dispatch brief and records the cap's node.
-// It never spawns: the brief carries the herdr command for the cap to run.
+// Without --deliver it stops there, and the brief carries the herdr command for
+// the cap to run. With --deliver it also splits the pane, starts the worker,
+// sends the brief, and records the pane binding.
 func dispatchCmd(args []string) {
 	project := flagVal(args, "--project", "")
 	taskType := flagVal(args, "--type", "")
 	goal := flagVal(args, "--goal", "")
 	confirm := hasFlag(args, "--confirm")
+	deliver := hasFlag(args, "--deliver")
 
 	if project == "" {
 		fatal("--project is required")
@@ -657,7 +667,29 @@ func dispatchCmd(args []string) {
 	h, _ := handler("cap")
 	defer h.Close()
 
-	output(dispatch.Prepare(h, reg, kc, project, taskType, goal, confirm))
+	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, confirm)
+	if resp.OK && deliver {
+		resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), resp.Data.(*dispatch.Brief))
+	}
+	output(resp)
+}
+
+// closeCmd is the close-out gate: it refuses to close a dispatch whose worker
+// node is not done, then closes the pane from the recorded delivery and marks
+// the cap's node done.
+func closeCmd(args []string) {
+	req := dispatch.CloseRequest{
+		NodeID:    flagVal(args, "--node", ""),
+		Worker:    flagVal(args, "--worker", ""),
+		Decision:  flagVal(args, "--decision", ""),
+		Abandoned: hasFlag(args, "--abandoned"),
+		Reason:    flagVal(args, "--reason", ""),
+	}
+
+	h, _ := handler("cap")
+	defer h.Close()
+
+	output(dispatch.Close(h, dispatch.NewHerdrCLI(), req))
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.

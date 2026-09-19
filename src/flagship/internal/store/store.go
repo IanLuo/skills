@@ -28,6 +28,9 @@ const (
 	TaskBlocked      EventType = "task-blocked"
 	TaskUnblocked    EventType = "task-unblocked"
 	MetadataChanged  EventType = "metadata-changed"
+	// DeliveryRecorded binds a cap dispatch node to the pane and agent carrying
+	// its brief. Structural, so close-out never has to read a prose decision.
+	DeliveryRecorded EventType = "delivery-recorded"
 )
 
 var validTypes = map[EventType]bool{
@@ -39,6 +42,7 @@ var validTypes = map[EventType]bool{
 	TaskBlocked:      true,
 	TaskUnblocked:    true,
 	MetadataChanged:  true,
+	DeliveryRecorded: true,
 }
 
 // Event is the core persistent entity (SYSTEM-DESIGN R2).

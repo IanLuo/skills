@@ -1,13 +1,16 @@
-// Package dispatch prepares the cap's dispatch brief for a task type. It reads
-// the task-type's prerequisite playbook, runs the mechanical prerequisites
-// against the target project's root, records the cap's own node, and returns
-// the brief the cap hands to a worker.
+// Package dispatch owns the cap's dispatch lifecycle for a task type: prepare
+// the brief, deliver it to a worker, and close it out.
 //
-// It prepares only: it never spawns an agent. Spawning is the cap's step, and
-// the brief carries the herdr command for it.
+// Prepare reads the task-type's prerequisite playbook, runs the mechanical
+// prerequisites against the target project's root, records the cap's own node,
+// and returns the brief. Deliver (fs dispatch --deliver) is the only step that
+// spawns: it splits a pane, starts the agent, sends the brief, and records the
+// pane binding structurally. Close (fs close) is the close-out gate: it refuses
+// to close a dispatch whose worker node is not done, then closes the pane from
+// the recorded binding.
 //
-// It also gates: a failing prerequisite check or an earlier dispatch that was
-// never delivered stops preparation, unless the cap passes --confirm.
+// It also gates preparation: a failing prerequisite check or an earlier dispatch
+// that was never delivered stops it, unless the cap passes --confirm.
 package dispatch
 
 import (
@@ -51,6 +54,11 @@ type Brief struct {
 	Notes       []string `json:"notes"`
 	CapNodeID   string   `json:"cap_node_id"`
 	NextCommand string   `json:"next_command"`
+
+	// Delivery is the pane binding, set only when fs dispatch --deliver handed
+	// the brief to a worker. It is recorded as a delivery-recorded event; this
+	// field is the same binding echoed back to the caller.
+	Delivery *command.DeliveryRecord `json:"delivery,omitempty"`
 }
 
 // Prepare composes the brief for a task type and records the cap's node. It

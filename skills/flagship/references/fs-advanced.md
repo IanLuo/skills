@@ -39,6 +39,7 @@ Every event is a JSON object with fixed envelope + type-specific payload:
 | `task-blocked` | `reason` (string) |
 | `task-unblocked` | (empty object) |
 | `metadata-changed` | `field` (string), `old_value` (string), `new_value` (string) |
+| `delivery-recorded` | `pane_id` (string), `agent` (string), `engine` (string) |
 
 ### Composite operations
 

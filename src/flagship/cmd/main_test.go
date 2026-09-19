@@ -60,9 +60,16 @@ func testHome(t *testing.T) string {
 // runFS runs the fs binary in a directory.
 func runFS(t *testing.T, bin, dir string, args ...string) (map[string]any, int) {
 	t.Helper()
+	return runFSEnv(t, bin, dir, nil, args...)
+}
+
+// runFSEnv is runFS with extra environment variables (later entries win), for
+// tests that shadow the herdr binary on PATH.
+func runFSEnv(t *testing.T, bin, dir string, extraEnv []string, args ...string) (map[string]any, int) {
+	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "HOME="+testHome(t))
+	cmd.Env = append(append(os.Environ(), "HOME="+testHome(t)), extraEnv...)
 	out, err := cmd.Output()
 	exitCode := 0
 	if err != nil {
@@ -1280,4 +1287,326 @@ steps:
 	for _, id := range []string{firstID, secondID} {
 		runFS(t, bin, root, "task", "update", id, "--status", "done", "--decision", "test cleanup", "--project", "cap")
 	}
+}
+
+// --- fs dispatch --deliver and fs close -----------------------------------
+//
+// The tests below shadow the herdr binary on PATH with fakeHerdrScript, so the
+// dispatch lifecycle runs end to end — split, start, prompt, record, close —
+// without a live terminal. Pane state lives in $HERDR_TEST_STATE.
+
+const herdrTestPlaybook = `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - check: true
+`
+
+// noCheckPlaybook has no check step, so dispatch needs nothing from PATH. Used
+// to reach --deliver with herdr deliberately missing.
+const noCheckPlaybook = `name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - ask: is this one deliverable
+`
+
+const fakeHerdrScript = `#!/usr/bin/env bash
+# A fake herdr for CLI tests: models pane lifecycle in $HERDR_TEST_STATE so the
+# "pane already closed" path can be exercised without a terminal.
+set -euo pipefail
+state="${HERDR_TEST_STATE:?HERDR_TEST_STATE is required}"
+mkdir -p "$state"
+
+cmd="${1:-}"; shift || true
+sub="${1:-}"; shift || true
+
+pane_file() { printf '%s/pane_%s' "$state" "${1##*:p}"; }
+
+case "$cmd $sub" in
+  "pane split")
+    n=$(( $(cat "$state/seq" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "$state/seq"
+    id="wTEST:p$n"
+    : > "$(pane_file "$id")"
+    printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
+    ;;
+  "pane get")
+    id="${1:-}"
+    if [ -f "$(pane_file "$id")" ]; then
+      printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "$id"
+    else
+      printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$id" >&2
+      exit 1
+    fi
+    ;;
+  "pane close")
+    id="${1:-}"
+    if [ -f "$(pane_file "$id")" ]; then
+      rm -f "$(pane_file "$id")"
+      printf '{"result":{"closed":true}}\n'
+    else
+      printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$id" >&2
+      exit 1
+    fi
+    ;;
+  "agent start")
+    printf '{"result":{"agent":{"name":"%s"}}}\n' "${1:-}"
+    ;;
+  "agent prompt")
+    printf '{"result":{}}\n'
+    ;;
+  *)
+    printf '{"error":{"code":"unknown_command","message":"%s %s"}}\n' "$cmd" "$sub" >&2
+    exit 2
+    ;;
+esac
+`
+
+// fakeHerdrOnPath installs the fake herdr first on PATH and returns the
+// environment, its pane-state directory, and the script path.
+func fakeHerdrOnPath(t *testing.T) (env []string, state, script string) {
+	t.Helper()
+	binDir := t.TempDir()
+	script = filepath.Join(binDir, "herdr")
+	if err := os.WriteFile(script, []byte(fakeHerdrScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state = t.TempDir()
+	env = []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HERDR_TEST_STATE=" + state,
+	}
+	return env, state, script
+}
+
+// herdrPaneGet runs the fake herdr's pane get, standing in for the real
+// `herdr pane get <id>` the acceptance check runs.
+func herdrPaneGet(t *testing.T, script string, env []string, paneID string) error {
+	t.Helper()
+	cmd := exec.Command(script, "pane", "get", paneID)
+	cmd.Env = append(os.Environ(), env...)
+	return cmd.Run()
+}
+
+// deliverProbe runs fs dispatch --deliver against the fake herdr and returns
+// the cap node and the pane it was bound to.
+func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, paneID string) {
+	t.Helper()
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	if code != 0 {
+		t.Fatalf("dispatch --deliver exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	delivery, ok := data["delivery"].(map[string]any)
+	if !ok {
+		t.Fatalf("dispatch --deliver carried no delivery: %v", data)
+	}
+	return data["cap_node_id"].(string), delivery["pane_id"].(string)
+}
+
+// addWorkerNode adds a skills-scope node with the given status and returns it.
+func addWorkerNode(t *testing.T, bin, root, status string) string {
+	t.Helper()
+	resp, code := runFS(t, bin, root, "task", "add", "--goal", "worker node", "--project", "skills")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, resp["error"])
+	}
+	nodeID := resp["data"].(map[string]any)["node_id"].(string)
+	if status != "pending" {
+		if _, code := runFS(t, bin, root, "task", "update", nodeID, "--status", status, "--project", "skills"); code != 0 {
+			t.Fatalf("task update to %s failed", status)
+		}
+	}
+	return nodeID
+}
+
+// fs dispatch --deliver binds the cap node to a pane structurally; fs close
+// reads that binding to close the pane, and succeeds when it is already gone.
+func TestCLIDeliverRecordsTheBindingAndCloseUsesIt(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, script := fakeHerdrOnPath(t)
+
+	capNode, paneID := deliverProbe(t, bin, root, env)
+	if paneID == "" {
+		t.Fatal("delivery carried no pane id")
+	}
+
+	// The binding is structural: fs log returns the pane id as parseable JSON.
+	logResp, code := runFS(t, bin, root, "log", "--node", capNode, "--type", "delivery-recorded", "--project", "cap")
+	if code != 0 {
+		t.Fatalf("log exit %d: %v", code, logResp["error"])
+	}
+	events := logResp["data"].(map[string]any)["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("delivery-recorded events = %v, want exactly 1", events)
+	}
+	payload := events[0].(map[string]any)["payload"].(map[string]any)
+	if payload["pane_id"] != paneID || payload["agent"] != "dispatch-dev-task" || payload["engine"] != "herdr" {
+		t.Errorf("delivery payload = %v, want the pane, agent, and engine", payload)
+	}
+
+	if task := capTask(t, bin, root, "dispatch dev-task: sample"); task["status"] != "active" {
+		t.Errorf("cap node status = %v, want active once delivered", task["status"])
+	}
+
+	worker := addWorkerNode(t, bin, root, "done")
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker, "--decision", "read the worker node; verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v", code, closed["error"])
+	}
+	if data := closed["data"].(map[string]any); data["pane_id"] != paneID {
+		t.Errorf("close data = %v, want the closed pane %s", data, paneID)
+	}
+
+	task := capTask(t, bin, root, "dispatch dev-task: sample")
+	if task["status"] != "done" {
+		t.Errorf("cap node status = %v, want done", task["status"])
+	}
+	if !containsString(task["decisions"].([]any), "read the worker node; verified") {
+		t.Errorf("cap decisions = %v, want the verdict", task["decisions"])
+	}
+
+	// The pane is actually gone.
+	if err := herdrPaneGet(t, script, env, paneID); err == nil {
+		t.Errorf("pane %s still exists after fs close", paneID)
+	}
+
+	// A pane that is already closed is not an error: close out again, with no
+	// warning — herdr reporting pane_not_found is success, not a failure.
+	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker, "--decision", "read the worker node; verified")
+	if code != 0 {
+		t.Fatalf("closing an already-closed dispatch must succeed, exit %d: %v", code, again["error"])
+	}
+	if warning, ok := again["data"].(map[string]any)["warning"]; ok {
+		t.Errorf("an already-closed pane must not warn, got %v", warning)
+	}
+}
+
+// Without a delivery record the close-out refuses and says what to do instead.
+func TestCLICloseRefusesWithoutADeliveryRecord(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, _ := fakeHerdrOnPath(t)
+
+	prep, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "undelivered")
+	if code != 0 {
+		t.Fatalf("dispatch exit %d: %v", code, prep["error"])
+	}
+	capNode := prep["data"].(map[string]any)["cap_node_id"].(string)
+
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:x", "--decision", "x")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "no delivery recorded") {
+		t.Errorf("error %q must say no delivery was recorded", errMsg)
+	}
+}
+
+// A worker node that is not done blocks the close-out, which names its status.
+func TestCLICloseRefusesWhileTheWorkerIsActive(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, _ := fakeHerdrOnPath(t)
+
+	capNode, _ := deliverProbe(t, bin, root, env)
+	worker := addWorkerNode(t, bin, root, "active")
+
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker, "--decision", "x")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"worker skills:" + worker, "is active", "let it finish", "--abandoned"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
+		}
+	}
+}
+
+// A done worker is not enough: the cap must record a verdict.
+func TestCLICloseRefusesWithoutAVerdict(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, _ := fakeHerdrOnPath(t)
+
+	capNode, _ := deliverProbe(t, bin, root, env)
+	worker := addWorkerNode(t, bin, root, "done")
+
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--worker", "skills:"+worker)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--decision is required") {
+		t.Errorf("error %q must require --decision", errMsg)
+	}
+}
+
+// Abandoning skips the delivery and worker gates, but demands a reason.
+func TestCLICloseAbandoned(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, _ := fakeHerdrOnPath(t)
+
+	prep, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "undelivered")
+	if code != 0 {
+		t.Fatalf("dispatch exit %d: %v", code, prep["error"])
+	}
+	capNode := prep["data"].(map[string]any)["cap_node_id"].(string)
+
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--abandoned")
+	if code != 1 {
+		t.Fatalf("--abandoned without --reason must fail, exit %d: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--reason") {
+		t.Errorf("error %q must require --reason", errMsg)
+	}
+
+	resp, code = runFSEnv(t, bin, root, env, "close", "--node", capNode, "--abandoned", "--reason", "the user withdrew the request")
+	if code != 0 {
+		t.Fatalf("close --abandoned exit %d: %v", code, resp["error"])
+	}
+	task := capTask(t, bin, root, "dispatch dev-task: undelivered")
+	if task["status"] != "done" {
+		t.Errorf("cap node status = %v, want done", task["status"])
+	}
+	if !containsString(task["decisions"].([]any), "abandoned, never delivered: the user withdrew the request") {
+		t.Errorf("cap decisions = %v, want the never-delivered record", task["decisions"])
+	}
+}
+
+// With herdr missing, --deliver fails and leaves the node pending.
+func TestCLIDeliverHerdrUnavailable(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", noCheckPlaybook)
+
+	resp, code := runFSEnv(t, bin, root, []string{"PATH=/nonexistent"}, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "herdr") || !strings.Contains(errMsg, "unresolved") {
+		t.Errorf("error %q must say herdr failed and name the unresolved node", errMsg)
+	}
+
+	// The node is left pending — visible to fs unfinished, never claimed done.
+	task := capTask(t, bin, root, "dispatch dev-task: sample")
+	if task["status"] != "pending" {
+		t.Errorf("cap node status = %v, want pending", task["status"])
+	}
+	runFS(t, bin, root, "task", "update", task["node_id"].(string), "--status", "done", "--decision", "test cleanup", "--project", "cap")
 }

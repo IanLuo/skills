@@ -80,6 +80,22 @@ fs task unblock NODE_ID [--project ID]
 fs task knowledge NODE_ID --summary "JWT refresh tokens expire after 7 days" [--project ID]
 ```
 
+### Dispatch and close-out
+
+```bash
+# Prepare a brief only — the response carries the herdr line to run
+fs dispatch --project P --type T --goal "Implement auth" [--confirm]
+
+# Prepare and deliver: split a pane, start the worker, send the brief, record it
+fs dispatch --deliver --project P --type T --goal "Implement auth"
+
+# Close out a dispatch: refuses unless the worker's node is done
+fs close --node CAP_NODE --worker PROJECT:NODE --decision "verdict"
+
+# Close a dispatch that was never delivered
+fs close --node CAP_NODE --abandoned --reason "why"
+```
+
 ### Task status
 
 Status is derived by replaying events: a task's status is the `to` of its last
@@ -160,6 +176,7 @@ These are non-negotiable:
 | `task-blocked` | `task block` | `{reason}` |
 | `task-unblocked` | `task unblock` | `{}` |
 | `metadata-changed` | `task edit` | `{field, old_value, new_value}` |
+| `delivery-recorded` | `dispatch --deliver` | `{pane_id, agent, engine}` |
 
 Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`.
 
@@ -181,6 +198,34 @@ Dispatch also refuses while an earlier dispatch node is still unresolved
 (`pending`/`active`/`blocked`): the cap must resolve it or pass `--confirm`,
 which records `user confirmed proceeding with unresolved dispatches: <ids>`.
 Only `dispatch <type>: ` nodes gate this way — the cap's own backlog does not.
+
+### Delivering
+
+`fs dispatch --deliver` delivers the brief itself instead of handing the cap a
+herdr line: it splits a sibling pane at the project root, starts a `pi` agent
+named `dispatch-<type>`, sends the brief, records the pane binding as a
+`delivery-recorded` event (`{pane_id, agent, engine}`), appends the decision
+`delivered to pane <id>, agent <name>`, and marks the cap node `active`. If
+herdr is unavailable the command fails and the node stays `pending` — nothing is
+claimed that did not happen.
+
+### Closing out
+
+`fs close` is the gate that makes an omission fail. In order it refuses when the
+node is not a dispatch, when no `delivery-recorded` event exists, when
+`--worker <project>:<node>` is missing or that node is not `done` (it names the
+actual status), or when `--decision` is missing. On success it closes the pane
+from the delivery record and marks the cap node `done` with the verdict. A pane
+that is already closed is not an error, and herdr being unavailable is a
+`warning` in the response rather than a refusal — close-out must not depend on
+the dispatcher being up.
+
+`--abandoned --reason <why>` skips the delivery and worker gates and closes with
+the decision `abandoned, never delivered: <why>`.
+
+The gate can check that the worker's node exists and is `done`, and that a
+verdict was recorded. It **cannot** check that the cap actually read that node;
+reading it is still the cap's job.
 
 ## Data locations
 

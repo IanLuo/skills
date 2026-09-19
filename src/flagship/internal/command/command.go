@@ -42,6 +42,14 @@ type UpdateResult struct {
 	Events []EventData `json:"events"`
 }
 
+// DeliveryRecord is the payload of a delivery-recorded event: the structural
+// binding of a cap dispatch node to the pane and agent carrying its brief.
+type DeliveryRecord struct {
+	PaneID string `json:"pane_id"`
+	Agent  string `json:"agent"`
+	Engine string `json:"engine"`
+}
+
 // TaskInfo represents derived task state for status output.
 type TaskInfo struct {
 	NodeID       string   `json:"node_id"`
@@ -233,6 +241,66 @@ func (h *Handler) TaskUpdate(projectID, nodeID, status, decision string, commitS
 
 	h.logger.Info("command executed", "command", "task-update", "project", projectID, "node_id", nodeID, "events", len(events))
 	return okResp(UpdateResult{Events: events})
+}
+
+// RecordDelivery appends a delivery-recorded event on a cap dispatch node,
+// binding it to the pane and agent that carry its brief. Recorded by the
+// dispatcher at delivery time, so close-out reads the binding rather than
+// whatever a decision happened to say.
+func (h *Handler) RecordDelivery(projectID, nodeID string, d DeliveryRecord) Response {
+	if projectID == "" {
+		return errResp("project_id is required")
+	}
+	if nodeID == "" {
+		return errResp("node_id is required")
+	}
+	if d.PaneID == "" {
+		return errResp("delivery pane_id is required")
+	}
+
+	payload, _ := json.Marshal(d)
+	id, err := h.store.Append(store.Event{
+		Type:      store.DeliveryRecorded,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		CommitSHA: h.commitSHA,
+		Payload:   payload,
+	})
+	if err != nil {
+		h.logger.Error("store append failed", "command", "record-delivery", "error", err)
+		return errResp(err.Error())
+	}
+
+	h.logger.Info("command executed", "command", "record-delivery", "project", projectID, "node_id", nodeID, "pane_id", d.PaneID, "event_id", id)
+	return okResp(EventData{
+		EventID:   id,
+		EventType: store.DeliveryRecorded,
+		NodeID:    nodeID,
+		CommitSHA: h.commitSHA,
+	})
+}
+
+// DeliveryFor returns the pane binding recorded for a node, and ok=false when
+// the node has no delivery-recorded event. It reads the event payload, never
+// the prose decision recorded beside it.
+func (h *Handler) DeliveryFor(projectID, nodeID string) (DeliveryRecord, bool, error) {
+	filter := &store.ReplayFilter{
+		Types:  []store.EventType{store.DeliveryRecorded},
+		NodeID: &nodeID,
+	}
+	events, err := h.store.Replay(projectID, filter)
+	if err != nil {
+		return DeliveryRecord{}, false, err
+	}
+	if len(events) == 0 {
+		return DeliveryRecord{}, false, nil
+	}
+
+	var d DeliveryRecord
+	if err := json.Unmarshal(events[len(events)-1].Payload, &d); err != nil {
+		return DeliveryRecord{}, false, fmt.Errorf("delivery-recorded payload: %w", err)
+	}
+	return d, true, nil
 }
 
 // TaskEdit appends a metadata-changed event. AC11.
