@@ -114,13 +114,24 @@ func (c *Center) List() ([]string, error) {
 		if e.IsDir() {
 			continue
 		}
-		n := e.Name()
-		if strings.HasSuffix(n, ".yaml") || strings.HasSuffix(n, ".yml") {
-			names = append(names, strings.TrimSuffix(strings.TrimSuffix(n, ".yaml"), ".yml"))
+		if name := playbookName(e.Name()); name != "" {
+			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// playbookName is a file name's playbook name, or "" when the file is not a
+// playbook. It is the one definition of which files are playbooks, shared with
+// the shipped defaults so a name means the same thing on both sides.
+func playbookName(fileName string) string {
+	for _, ext := range []string{".yaml", ".yml"} {
+		if name, ok := strings.CutSuffix(fileName, ext); ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // Edit overwrites an existing playbook. Returns error if it doesn't exist.

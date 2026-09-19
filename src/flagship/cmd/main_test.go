@@ -785,7 +785,7 @@ func TestCLIHelpTopLevel(t *testing.T) {
 func TestCLIHelpSubcommands(t *testing.T) {
 	bin := getFS(t)
 
-	for _, sub := range []string{"project", "task", "status", "query", "log", "kb", "dispatch", "close", "unfinished"} {
+	for _, sub := range []string{"project", "task", "status", "query", "log", "kb", "dispatch", "close", "unfinished", "bootstrap"} {
 		t.Run(sub, func(t *testing.T) {
 			for _, form := range []string{"--help", "-h", "help"} {
 				home := t.TempDir()
@@ -896,6 +896,9 @@ func TestCLIRejectsUnknownFlags(t *testing.T) {
 		"task add":       {"task", "add", "--goal", "g", "--bogus"},
 		"project create": {"project", "create", "--name", "q", "--bogus"},
 		"kb add":         {"kb", "add", "--name", "n", "--file", "f", "--bogus"},
+		"kb diff":        {"kb", "diff", "n", "--bogus"},
+		"kb reset":       {"kb", "reset", "n", "--bogus"},
+		"bootstrap":      {"bootstrap", "--bogus"},
 		"close":          {"close", "--node", "n", "--bogus"},
 		"unfinished":     {"unfinished", "--bogus"},
 	}

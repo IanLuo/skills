@@ -5,11 +5,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/flagship-dev/flagship"
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/knowledge"
@@ -27,6 +29,9 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "bootstrap":
+		checkArgs("bootstrap", os.Args[2:])
+		bootstrapCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
 	case "task":
@@ -77,9 +82,14 @@ Commands:
   unfinished                                   Every task not done, across every scope
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
+  bootstrap                                     Seed ~/.fs/kb from the playbooks
+                                                shipped in the binary
   kb add --name NAME --file PATH                Add a playbook
   kb get NAME                                   Get a playbook
-  kb list                                       List playbooks
+  kb list                                       List playbooks and their state
+  kb diff NAME                                  Diff the shipped default against
+                                                the playbook on disk
+  kb reset NAME --yes                           Restore the shipped default
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--confirm] [--deliver]
@@ -453,7 +463,11 @@ func kbCmd(args []string) {
 Subcommands:
   add --name NAME --file PATH   Add a playbook
   get NAME                      Get a playbook
-  list                          List playbooks
+  list                          List playbooks and their state against the
+                                shipped defaults
+  diff NAME                     Diff the shipped default against the playbook
+                                on disk
+  reset NAME --yes              Restore the shipped default
   edit --name NAME --file PATH  Edit a playbook
   remove NAME                   Remove a playbook`)
 		if len(args) < 1 {
@@ -471,6 +485,12 @@ Subcommands:
 	case "list":
 		checkArgs("kb list", args[1:])
 		kbList(args[1:])
+	case "diff":
+		checkArgs("kb diff", args[1:])
+		kbDiff(args[1:])
+	case "reset":
+		checkArgs("kb reset", args[1:])
+		kbReset(args[1:])
 	case "edit":
 		checkArgs("kb edit", args[1:])
 		kbEdit(args[1:])
@@ -529,18 +549,98 @@ func kbGet(args []string) {
 	output(command.Response{OK: true, Data: pb})
 }
 
+// kbList reports every playbook and how it relates to the shipped defaults, so
+// a drifted contract is visible without anyone remembering to check.
 func kbList(_ []string) {
 	kc, err := knowledge.Open(kbDir())
 	if err != nil {
 		fatal(err.Error())
 	}
 
-	names, err := kc.List()
+	states, err := kc.States(shippedKB())
 	if err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
 		return
 	}
-	output(command.Response{OK: true, Data: map[string]any{"playbooks": names}})
+	output(command.Response{OK: true, Data: map[string]any{"playbooks": states}})
+}
+
+// kbDiff shows what a playbook on disk has that its shipped default does not,
+// and the other way around. An empty diff is a playbook that has not drifted.
+func kbDiff(args []string) {
+	if len(args) < 1 {
+		fatal("fs kb diff: NAME required")
+	}
+	name := args[0]
+
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	diff, err := kc.Diff(shippedKB(), name)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"name": name, "diff": diff}})
+}
+
+// kbReset puts the shipped default back. It refuses without --yes: resetting
+// discards the user's edits, which is not something to do by accident.
+func kbReset(args []string) {
+	if len(args) < 1 {
+		fatal("fs kb reset: NAME required")
+	}
+	name := args[0]
+	if !hasFlag(args, "--yes") {
+		output(command.Response{OK: false, Error: fmt.Sprintf(
+			"fs kb reset: refusing to overwrite the playbook %q without --yes; run fs kb diff %s to see what would be discarded",
+			name, name)})
+		return
+	}
+
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	path, err := kc.Reset(shippedKB(), name)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "reset", "path": path}})
+}
+
+// bootstrapCmd materialises the playbooks shipped in the binary into ~/.fs/kb.
+// It is safe on every install: what is absent is created and what is there is
+// left alone, so a playbook the user edited is never quietly replaced.
+func bootstrapCmd(_ []string) {
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	outcomes, err := kc.Seed(shippedKB())
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]any{
+		"kb_path":   kbDir(),
+		"playbooks": outcomes,
+	}})
+}
+
+// shippedKB is the playbooks embedded in the binary, rooted at the KB
+// directory. They are the reference every kb command compares against.
+func shippedKB() fs.FS {
+	kb, err := flagship.KB()
+	if err != nil {
+		fatal("fs: embedded playbooks: " + err.Error())
+	}
+	return kb
 }
 
 func kbEdit(args []string) {

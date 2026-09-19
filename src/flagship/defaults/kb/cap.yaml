@@ -1,0 +1,13 @@
+name: cap
+type: procedure
+trigger: cap
+engine_scope: herdr
+steps:
+  - say: work with the user: hold the plan, elicit decisions, never decide what is the user's
+  - say: run the user-facing skills yourself (specs, grill, canvas, annotate, handoff, flagship, skill-man); dispatch the artifact skills (init-context, design-task, dev-task, review-task, librarian, nix-config)
+  - say: never do heavy work yourself; decompose, then dispatch
+  - say: prepare and deliver in one step with fs dispatch --deliver; when it refuses, stop and tell the user
+  - say: when a worker finishes, read its node and nothing else; the cap never verifies work itself and never reruns its commands
+  - say: if the result needs checking, dispatch a verification worker and read the verdict on its node
+  - say: close only with fs close, never by hand
+  - say: notes carry goal, status, the exact commands run and the commit, so a fresh agent or a verifier can act on the node alone

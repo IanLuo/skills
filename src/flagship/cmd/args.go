@@ -82,8 +82,12 @@ var cmdSpecs = map[string]cmdSpec{
 	},
 	"kb get":    {usage: "Usage: fs kb get NAME", positionals: 1},
 	"kb list":   {usage: "Usage: fs kb list"},
+	"kb diff":   {usage: "Usage: fs kb diff NAME", positionals: 1},
+	"kb reset":  {usage: "Usage: fs kb reset NAME --yes", flags: map[string]bool{"--yes": false}, positionals: 1},
 	"kb edit":   {usage: "Usage: fs kb edit --name NAME --file PATH", flags: map[string]bool{"--name": true, "--file": true}},
 	"kb remove": {usage: "Usage: fs kb remove NAME", positionals: 1},
+
+	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
 		usage: "Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--confirm] [--deliver]",

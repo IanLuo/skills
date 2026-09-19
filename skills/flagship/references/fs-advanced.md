@@ -128,9 +128,8 @@ fs kb add --name dev-task-prerequisites --file /tmp/playbook.yaml
 fs kb get dev-task-prerequisites
 # Returns the parsed playbook: steps are {kind, body} objects
 
-# List all
+# List all, with each playbook's state against the shipped default
 fs kb list
-# Returns names and types of all playbooks
 
 # Update
 fs kb edit --name dev-task-prerequisites --file /tmp/updated.yaml
@@ -138,6 +137,47 @@ fs kb edit --name dev-task-prerequisites --file /tmp/updated.yaml
 # Remove
 fs kb remove dev-task-prerequisites
 ```
+
+### Shipped defaults and drift
+
+Two playbooks ship inside the binary and are seeded into `~/.fs/kb/`: `cap` and
+`dev-task-prerequisites` (every other task-type playbook is written by hand).
+They live in `src/flagship/defaults/kb/` and are embedded with `//go:embed`, so
+the contract is versioned with the code and survives a wipe.
+
+```bash
+fs bootstrap                  # create ~/.fs/kb and write every absent playbook
+fs kb list                    # each playbook's state against the shipped default
+fs kb diff NAME               # shipped default vs the playbook on disk
+fs kb reset NAME --yes        # restore the shipped default
+```
+
+`bootstrap` is idempotent and never overwrites: each file is reported `created`
+(absent, written) or `kept` (present, untouched). A seeded file starts with
+the stamp line
+
+```yaml
+# fs-default: sha256=<sha256 of the shipped default's body>
+```
+
+which is what lets `kb list` separate the two ways a playbook can differ from
+the binary:
+
+| state | meaning |
+|---|---|
+| `default` | unedited, and identical to the shipped default |
+| `edited` | its body differs from the default it was seeded from |
+| `stale` | the shipped default has moved on since it was seeded |
+| `local` | no shipped default with that name — hand-written |
+
+The comparison is `edited` = body hash ≠ stamp, `stale` = stamp ≠ the current
+default's hash; both can hold at once and both are reported as flags alongside
+the headline `state` (stale wins). A playbook with no stamp is compared to the
+shipped default as it is now, so an identical hand-written file reads `default`.
+
+A new binary never rewrites a playbook its reader depends on: a moved default is
+reported `stale` and applied only by `kb reset --yes`. `kb diff` ignores the
+stamp line, so a freshly seeded playbook diffs empty.
 
 ## Project registry
 
