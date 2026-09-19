@@ -301,6 +301,43 @@ func TestDeriveTreeOrphanEvents(t *testing.T) {
 	}
 }
 
+func TestDeriveTreeOrphanedParent(t *testing.T) {
+	// A task-created whose parent id is not in the project is unreachable from
+	// any root. It must surface as an orphan root, not be dropped, so fs status
+	// and fs unfinished agree that it exists.
+	s := openStore(t)
+	seedProject(t, s, "proj")
+	seedTask(t, s, "proj", "t1", "root task", nil)
+	seedTask(t, s, "proj", "t2", "orphaned task", strPtr("t-nonexistent"))
+
+	e := query.NewEngine(s)
+	tree, err := e.DeriveTree("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tree.Roots) != 2 {
+		t.Fatalf("expected 2 roots (root + orphan), got %d", len(tree.Roots))
+	}
+	byID := map[string]*query.Node{}
+	for _, root := range tree.Roots {
+		byID[root.NodeID] = root
+	}
+	orphan, ok := byID["t2"]
+	if !ok {
+		t.Fatalf("orphaned node missing from roots: %+v", tree.Roots)
+	}
+	if !orphan.Orphan {
+		t.Error("a node with a missing parent must be marked orphan")
+	}
+	if orphan.ParentID != "t-nonexistent" {
+		t.Errorf("orphan keeps its recorded parent id: %s", orphan.ParentID)
+	}
+	if byID["t1"].Orphan {
+		t.Error("a node with a present parent, or none, is not an orphan")
+	}
+}
+
 func TestDeriveTreeNonexistentProject(t *testing.T) {
 	s := openStore(t)
 
