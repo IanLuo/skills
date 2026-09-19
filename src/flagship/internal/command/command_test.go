@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/flagship-dev/flagship/internal/command"
@@ -291,6 +292,36 @@ func TestStatusDecisions(t *testing.T) {
 	}
 	if data.Tasks[0].Decisions[0] != "chose JWT" {
 		t.Errorf("decision: %s", data.Tasks[0].Decisions[0])
+	}
+}
+
+// Status carries the knowledge recorded on a node, and a node with none carries
+// no knowledge key at all rather than an empty list.
+func TestStatusCarriesKnowledge(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	withKnowledge := h.TaskAdd("proj", "task with knowledge", nil).Data.(command.EventData).NodeID
+	without := h.TaskAdd("proj", "task without knowledge", nil).Data.(command.EventData).NodeID
+	h.KnowledgeAdd("proj", withKnowledge, "JWT refresh tokens expire after 7 days")
+
+	resp := h.Status("proj")
+	if !resp.OK {
+		t.Fatalf("Status: %s", resp.Error)
+	}
+	byID := map[string]command.TaskInfo{}
+	for _, task := range resp.Data.(command.StatusResult).Tasks {
+		byID[task.NodeID] = task
+	}
+	if got := byID[withKnowledge].Knowledge; len(got) != 1 || got[0] != "JWT refresh tokens expire after 7 days" {
+		t.Errorf("knowledge = %v, want the recorded summary", got)
+	}
+
+	b, err := json.Marshal(byID[without])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), `"knowledge"`) {
+		t.Errorf("a node with no knowledge must omit the key: %s", b)
 	}
 }
 

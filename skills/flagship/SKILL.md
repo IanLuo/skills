@@ -50,6 +50,8 @@ In a fresh session, `fs project list` is always the first command — it shows a
 
 All commands return JSON to stdout: `{"ok": true, "data": {...}}` or `{"ok": false, "error": "..."}`. Exit codes: 0=success, 1=app error, 2=usage. Logs go to stderr.
 
+Exit 2 means the command line itself was wrong: an unknown flag, a flag missing its value, or a stray positional where the subcommand takes none. It is refused, never ignored — a typo'd flag is an error, not a no-op that reports success. Every subcommand answers `--help` / `-h` / `help` with its usage on stderr and exit 0, without touching the store, the registry, or `~/.fs`.
+
 ### Project
 
 ```bash
@@ -59,6 +61,8 @@ fs project get NAME                              # single project lookup
 ```
 
 `--root` defaults to git repo root or cwd. `--name` derives from directory if omitted. All projects are registered in the global registry at `~/.fs/registry.db`.
+
+Commands that take a scope (`status`, `query`, `log`, `task *`) resolve it from the cwd's registered project. Run from a directory that is no registered project's root, they refuse with exit 1 rather than inventing a partition named after the directory. Pass `--project <name>` to target any scope explicitly — registered or not, the implicit `cap` scope included — or run `fs project create` to register the directory.
 
 ### Tasks
 
@@ -115,7 +119,7 @@ the drop instead of hiding it.
 ### Querying
 
 ```bash
-# Task tree with statuses, goals, decisions
+# Task tree with statuses, goals, decisions, knowledge
 fs status [--project ID]
 
 # Every task not done, across every scope — reads the store's scopes, not the
@@ -193,7 +197,7 @@ These are non-negotiable:
 | `metadata-changed` | `task edit` | `{field, old_value, new_value}` |
 | `delivery-recorded` | `dispatch --deliver` | `{pane_id, agent, engine}` |
 
-Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`.
+Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`. `commit_sha` is the git HEAD of the project the event is about — the resolved project's registered `root_path` (`status`/`query`/`log`/`task *`), the dispatched-to project (`dispatch`), the worker's project (`close`), or the root being created (`project create`); the cwd's HEAD only when no project is referenced (`unfinished`), and null when that is not a git repo.
 
 ## Prerequisite checking
 

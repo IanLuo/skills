@@ -780,21 +780,282 @@ func TestCLIHelpTopLevel(t *testing.T) {
 	}
 }
 
+// Every subcommand answers --help / -h / help with its usage on stderr, exit 0,
+// and no state touched at all — not even the ~/.fs directory.
 func TestCLIHelpSubcommands(t *testing.T) {
 	bin := getFS(t)
-	dir := t.TempDir()
 
-	for _, sub := range []string{"project", "task", "kb"} {
-		cmd := exec.Command(bin, sub, "--help")
-		cmd.Dir = dir
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		_ = cmd.Run()
+	for _, sub := range []string{"project", "task", "status", "query", "log", "kb", "dispatch", "close", "unfinished"} {
+		t.Run(sub, func(t *testing.T) {
+			for _, form := range []string{"--help", "-h", "help"} {
+				home := t.TempDir()
+				dir := t.TempDir()
+				stdout, stderr, code := rawFS(t, bin, dir, home, sub, form)
+				if code != 0 {
+					t.Fatalf("%s %s exit = %d, want 0 (stderr: %s)", sub, form, code, stderr)
+				}
+				if !strings.Contains(stderr, sub) {
+					t.Errorf("%s %s usage must name it; stderr = %q", sub, form, stderr)
+				}
+				if stdout != "" {
+					t.Errorf("%s %s wrote to stdout: %q", sub, form, stdout)
+				}
+				if _, err := os.Stat(filepath.Join(home, ".fs")); !os.IsNotExist(err) {
+					t.Errorf("%s %s must not create ~/.fs: %v", sub, form, err)
+				}
+			}
+		})
+	}
+}
 
-		out := stderr.String()
-		if !strings.Contains(out, "Subcommands:") {
-			t.Errorf("%s --help missing 'Subcommands:': %s", sub, out)
+// rawFS runs the fs binary and returns stdout, stderr, and the exit code, for
+// probes whose output is not the JSON envelope (--help writes usage to stderr).
+func rawFS(t *testing.T, bin, dir, home string, args ...string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("exec: %v", err)
 		}
+	}
+	return stdout.String(), stderr.String(), code
+}
+
+// gitRepo initializes a git repo at dir with one commit and returns its HEAD
+// sha, so a probe can tell one project's HEAD from another's.
+func gitRepo(t *testing.T, dir, msg string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte(msg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "seed.txt"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", msg},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return gitHead(t, dir)
+}
+
+// gitHead returns the HEAD sha of the repo at dir.
+func gitHead(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// A typo'd flag must not be read as success: it is refused with exit 2, naming
+// the flag, and records nothing.
+func TestCLIRejectsUnknownFlags(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	resp, code := runFS(t, bin, dir, "dispatch", "--project", "p", "--type", "dev-task", "--goal", "x", "--deliverr")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2: %v", code, resp)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--deliverr") {
+		t.Errorf("error %q must name the offending flag", errMsg)
+	}
+
+	// The refused dispatch recorded nothing (and split no pane).
+	capResp, code := runFS(t, bin, dir, "log", "--project", "cap")
+	if code != 0 {
+		t.Fatalf("log cap exit %d: %v", code, capResp["error"])
+	}
+	if events := capResp["data"].(map[string]any)["events"]; events != nil {
+		t.Errorf("an unknown flag must record nothing, got %v", events)
+	}
+
+	probes := map[string][]string{
+		"status":         {"status", "--bogus"},
+		"query":          {"query", "term", "--bogus"},
+		"log":            {"log", "--bogus"},
+		"task add":       {"task", "add", "--goal", "g", "--bogus"},
+		"project create": {"project", "create", "--name", "q", "--bogus"},
+		"kb add":         {"kb", "add", "--name", "n", "--file", "f", "--bogus"},
+		"close":          {"close", "--node", "n", "--bogus"},
+		"unfinished":     {"unfinished", "--bogus"},
+	}
+	for name, args := range probes {
+		resp, code := runFS(t, bin, dir, args...)
+		if code != 2 {
+			t.Errorf("%s: exit = %d, want 2: %v", name, code, resp)
+		}
+		if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--bogus") {
+			t.Errorf("%s: error %q must name --bogus", name, errMsg)
+		}
+	}
+}
+
+// A stray positional is refused with exit 2 where the subcommand accepts none,
+// and the subcommands that do take positionals keep working.
+func TestCLIRejectsStrayPositionals(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	resp, code := runFS(t, bin, dir, "status", "bogus", "--project", "p")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2: %v", code, resp)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "bogus") {
+		t.Errorf("error %q must name the stray argument", errMsg)
+	}
+
+	// Positional-taking subcommands keep working unchanged.
+	addResp, code := runFS(t, bin, dir, "task", "add", "--goal", "positional probe", "--project", "p")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, addResp["error"])
+	}
+	nodeID := addResp["data"].(map[string]any)["node_id"].(string)
+	if _, code := runFS(t, bin, dir, "task", "update", nodeID, "--status", "active", "--project", "p"); code != 0 {
+		t.Errorf("task update exit %d, want 0", code)
+	}
+	if _, code := runFS(t, bin, dir, "query", "positional", "--project", "p"); code != 0 {
+		t.Errorf("query exit %d, want 0", code)
+	}
+	if _, code := runFS(t, bin, dir, "project", "get", "p"); code != 0 {
+		t.Errorf("project get exit %d, want 0", code)
+	}
+}
+
+// An unregistered working directory must not silently invent a scope: the
+// derived scope is refused with exit 1, and an explicit --project still works —
+// including the unregistered cap scope.
+func TestCLIUnregisteredDirectoryRefusesDerivedScope(t *testing.T) {
+	bin := getFS(t)
+	registered := t.TempDir()
+	runFS(t, bin, registered, "project", "create", "--name", "p", "--root", registered)
+
+	nowhere := t.TempDir()
+	resp, code := runFS(t, bin, nowhere, "status")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{nowhere, "--project", "fs project create"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
+		}
+	}
+
+	// No partition named after the directory was invented.
+	logResp, code := runFS(t, bin, nowhere, "log", "--project", filepath.Base(nowhere))
+	if code != 0 {
+		t.Fatalf("log exit %d: %v", code, logResp["error"])
+	}
+	if events := logResp["data"].(map[string]any)["events"]; events != nil {
+		t.Errorf("derived-scope refusal must not invent a partition, got %v", events)
+	}
+
+	// An explicit --project is always allowed, registered or not: cap is
+	// unregistered by design and must not be locked out of its own table.
+	for _, project := range []string{"p", "cap"} {
+		resp, code := runFS(t, bin, nowhere, "status", "--project", project)
+		if code != 0 {
+			t.Errorf("status --project %s exit %d: %v", project, code, resp["error"])
+		}
+	}
+}
+
+// commit_sha describes the project the event is about, not the terminal's
+// location: it is read from the resolved project's root_path.
+func TestCLICommitSHAFromProjectRoot(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	want := gitRepo(t, root, "root commit")
+	runFS(t, bin, root, "project", "create", "--name", "p", "--root", root)
+
+	other := t.TempDir()
+	otherSHA := gitRepo(t, other, "other commit")
+	if otherSHA == want {
+		t.Fatalf("probe repos must differ; both are %s", want)
+	}
+
+	addResp, code := runFS(t, bin, other, "task", "add", "--goal", "sha probe", "--project", "p")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, addResp["error"])
+	}
+	data := addResp["data"].(map[string]any)
+	if sha, _ := data["commit_sha"].(string); sha != want {
+		t.Errorf("task-created commit_sha = %q, want the project root's %q", sha, want)
+	}
+	nodeID := data["node_id"].(string)
+
+	logResp, code := runFS(t, bin, other, "log", "--project", "p", "--node", nodeID)
+	if code != 0 {
+		t.Fatalf("log exit %d: %v", code, logResp["error"])
+	}
+	events := logResp["data"].(map[string]any)["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("log returned %d events, want 1", len(events))
+	}
+	if sha, _ := events[0].(map[string]any)["commit_sha"].(string); sha != want {
+		t.Errorf("event commit_sha = %q, want %q (not the cwd repo's %q)", sha, want, otherSHA)
+	}
+}
+
+// fs status must carry the knowledge recorded on a node; a node without
+// knowledge must not gain an empty key.
+func TestCLIStatusCarriesKnowledge(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	addResp, _ := runFS(t, bin, dir, "task", "add", "--goal", "k probe", "--project", "p")
+	nodeID := addResp["data"].(map[string]any)["node_id"].(string)
+	plainResp, _ := runFS(t, bin, dir, "task", "add", "--goal", "plain probe", "--project", "p")
+	plainID := plainResp["data"].(map[string]any)["node_id"].(string)
+
+	want := "JWT refresh tokens expire after 7 days"
+	if _, code := runFS(t, bin, dir, "task", "knowledge", nodeID, "--summary", want, "--project", "p"); code != 0 {
+		t.Fatalf("task knowledge exit %d", code)
+	}
+
+	resp, code := runFS(t, bin, dir, "status", "--project", "p")
+	if code != 0 {
+		t.Fatalf("status exit %d: %v", code, resp["error"])
+	}
+	byID := map[string]map[string]any{}
+	for _, raw := range resp["data"].(map[string]any)["tasks"].([]any) {
+		task := raw.(map[string]any)
+		byID[task["node_id"].(string)] = task
+	}
+	knowledge, ok := byID[nodeID]["knowledge"].([]any)
+	if !ok || len(knowledge) != 1 || knowledge[0] != want {
+		t.Errorf("node knowledge = %v, want [%q]", byID[nodeID]["knowledge"], want)
+	}
+	if _, ok := byID[plainID]["knowledge"]; ok {
+		t.Errorf("a node with no knowledge must not carry a knowledge key: %v", byID[plainID])
 	}
 }
 

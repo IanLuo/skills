@@ -32,18 +32,24 @@ func main() {
 	case "task":
 		taskCmd(os.Args[2:])
 	case "status":
+		checkArgs("status", os.Args[2:])
 		statusCmd(os.Args[2:])
 	case "query":
+		checkArgs("query", os.Args[2:])
 		queryCmd(os.Args[2:])
 	case "log":
+		checkArgs("log", os.Args[2:])
 		logCmd(os.Args[2:])
 	case "kb":
 		kbCmd(os.Args[2:])
 	case "dispatch":
+		checkArgs("dispatch", os.Args[2:])
 		dispatchCmd(os.Args[2:])
 	case "close":
+		checkArgs("close", os.Args[2:])
 		closeCmd(os.Args[2:])
 	case "unfinished":
+		checkArgs("unfinished", os.Args[2:])
 		unfinishedCmd()
 	case "help", "--help", "-h":
 		usage()
@@ -117,36 +123,57 @@ func projectRoot() string {
 	return wd
 }
 
-// resolveProjectID returns the project a command targets: an explicit name wins,
-// else the registered project whose root owns the working directory, else the
-// working directory's name.
-func resolveProjectID(explicit string) string {
-	if explicit != "" {
-		return explicit
+// registryRoot is the registered root_path of a project, or "" when the
+// project is not registered — the implicit cap scope and abandoned scopes never
+// are.
+func registryRoot(reg *registry.Registry, name string) string {
+	if p, err := reg.Get(name); err == nil {
+		return p.RootPath
 	}
-	root := projectRoot()
+	return ""
+}
+
+// resolveProject returns the project a command targets and the root its events
+// belong to. An explicit name wins — an unregistered scope such as cap is
+// allowed, it simply has no known root. Otherwise it is the registered project
+// owning the working directory. A directory that resolves to no registered
+// project is refused rather than named into existence: falling back to the
+// directory's basename would silently target a partition that was never created.
+func resolveProject(explicit string) (name, root string) {
 	reg := openRegistry()
 	defer reg.Close()
-	name, ok, err := reg.Resolve(root)
-	if err != nil {
-		// Falling back to the directory name would silently target another
-		// partition, so say so before doing it.
-		logger.Error("registry resolve failed", "root", root, "error", err)
-	} else if ok {
-		return name
+
+	if explicit != "" {
+		return explicit, registryRoot(reg, explicit)
 	}
-	return filepath.Base(root)
+
+	cwdRoot := projectRoot()
+	name, ok, err := reg.Resolve(cwdRoot)
+	if err != nil {
+		fatal("cannot resolve the project for " + cwdRoot + ": " + err.Error())
+	}
+	if !ok {
+		fatal("no project is registered for " + cwdRoot +
+			": pass --project <name> to target one, or run fs project create to register this directory")
+	}
+	if root := registryRoot(reg, name); root != "" {
+		return name, root
+	}
+	return name, cwdRoot
 }
 
-// handler opens the shared store and returns a handler plus the resolved project.
+// handler opens the shared store and resolves the project a command targets,
+// with the commit sha read from that project's root.
 func handler(projectID string) (*command.Handler, string) {
-	return openHandler(), resolveProjectID(projectID)
+	name, root := resolveProject(projectID)
+	return openHandler(root), name
 }
 
-// openHandler opens the shared store with the CLI's logger and commit sha. It
+// openHandler opens the shared store with the CLI's logger and the commit sha
+// of root — the project the event is about, not the terminal's location. It
 // deliberately does not touch the registry: commands such as fs unfinished must
-// keep working after a registry wipe.
-func openHandler() *command.Handler {
+// keep working after a registry wipe. An empty root means the process cwd.
+func openHandler(root string) *command.Handler {
 	h, err := command.NewHandler(storePath())
 	if err != nil {
 		fatal(err.Error())
@@ -155,8 +182,8 @@ func openHandler() *command.Handler {
 	// Inject structured logger (ARCHITECTURE R4: JSON to stderr).
 	h.SetLogger(logger)
 
-	// Auto-capture git HEAD (ARCHITECTURE R4).
-	h.SetCommitSHA(command.DetectCommitSHA())
+	// Auto-capture the referenced project's git HEAD (ARCHITECTURE R4).
+	h.SetCommitSHA(command.DetectCommitSHAIn(root))
 
 	return h
 }
@@ -176,10 +203,13 @@ Subcommands:
 	}
 	switch args[0] {
 	case "create":
+		checkArgs("project create", args[1:])
 		projectCreate(args[1:])
 	case "list":
+		checkArgs("project list", args[1:])
 		projectList()
 	case "get":
+		checkArgs("project get", args[1:])
 		projectGet(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "fs project: unknown subcommand %q\n", args[0])
@@ -199,7 +229,9 @@ func projectCreate(args []string) {
 		name = filepath.Base(root)
 	}
 
-	h, _ := handler(name)
+	// The event describes the project being created, so its sha comes from the
+	// root being created.
+	h := openHandler(root)
 	defer h.Close()
 
 	resp := h.ProjectCreate(name, root)
@@ -261,16 +293,22 @@ Subcommands:
 	}
 	switch args[0] {
 	case "add":
+		checkArgs("task add", args[1:])
 		taskAdd(args[1:])
 	case "update":
+		checkArgs("task update", args[1:])
 		taskUpdate(args[1:])
 	case "edit":
+		checkArgs("task edit", args[1:])
 		taskEdit(args[1:])
 	case "block":
+		checkArgs("task block", args[1:])
 		taskBlock(args[1:])
 	case "unblock":
+		checkArgs("task unblock", args[1:])
 		taskUnblock(args[1:])
 	case "knowledge":
+		checkArgs("task knowledge", args[1:])
 		taskKnowledge(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "fs task: unknown subcommand %q\n", args[0])
@@ -425,14 +463,19 @@ Subcommands:
 	}
 	switch args[0] {
 	case "add":
+		checkArgs("kb add", args[1:])
 		kbAdd(args[1:])
 	case "get":
+		checkArgs("kb get", args[1:])
 		kbGet(args[1:])
 	case "list":
+		checkArgs("kb list", args[1:])
 		kbList(args[1:])
 	case "edit":
+		checkArgs("kb edit", args[1:])
 		kbEdit(args[1:])
 	case "remove":
+		checkArgs("kb remove", args[1:])
 		kbRemove(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "fs kb: unknown subcommand %q\n", args[0])
@@ -628,7 +671,8 @@ func logCmd(args []string) {
 // come from the store's events, so a scope that was never registered — or whose
 // registry row was lost — still reports its unfinished work.
 func unfinishedCmd() {
-	h := openHandler()
+	// Nothing is referenced, so the sha is the cwd's — nil when it is not a repo.
+	h := openHandler("")
 	defer h.Close()
 
 	output(h.Unfinished())
@@ -663,8 +707,11 @@ func dispatchCmd(args []string) {
 	reg := openRegistry()
 	defer reg.Close()
 
+	// The cap's events describe the project being dispatched to, so the sha
+	// comes from that project's root, not the cap's terminal. An unregistered
+	// target leaves the root empty and is reported by Prepare below.
 	// The cap's scope is implicit — a project_id, never a registry row.
-	h, _ := handler("cap")
+	h := openHandler(registryRoot(reg, project))
 	defer h.Close()
 
 	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, confirm)
@@ -686,7 +733,15 @@ func closeCmd(args []string) {
 		Reason:    flagVal(args, "--reason", ""),
 	}
 
-	h, _ := handler("cap")
+	// The close-out's events describe the worker's project, so the sha comes
+	// from that project's root when the worker names a registered one.
+	root := ""
+	if workerProject, _, ok := strings.Cut(req.Worker, ":"); ok {
+		reg := openRegistry()
+		defer reg.Close()
+		root = registryRoot(reg, workerProject)
+	}
+	h := openHandler(root)
 	defer h.Close()
 
 	output(dispatch.Close(h, dispatch.NewHerdrCLI(), req))

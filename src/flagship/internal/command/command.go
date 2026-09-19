@@ -57,6 +57,7 @@ type TaskInfo struct {
 	Status       string   `json:"status"`
 	ParentNodeID string   `json:"parent_node_id,omitempty"`
 	Decisions    []string `json:"decisions,omitempty"`
+	Knowledge    []string `json:"knowledge,omitempty"`
 }
 
 // StatusResult is the data payload for fs status.
@@ -380,6 +381,7 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 		Status:       node.Status,
 		ParentNodeID: node.ParentID,
 		Decisions:    node.Decisions,
+		Knowledge:    node.Knowledge,
 	})
 	for _, child := range node.Children {
 		collectTasks(child, out)
