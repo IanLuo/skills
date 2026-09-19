@@ -67,12 +67,19 @@ macOS itself draws, and this is the point: an agent cannot impersonate that
 dialog and cannot read the passphrase out of it. Only a human approving it gets
 the read.
 
+Approving is **not** a bare click. macOS asks you to authorize the read, which
+means typing your **login keychain password** into the dialog (your macOS
+password — *not* your vault passphrase). That password is what lets macOS modify
+the item's access list, so it cannot be skipped. The dialog offers Allow,
+Always Allow and Deny; see §5.6 before touching Always Allow.
+
 That is what lets `cred run` open a window with no terminal involved. It also
 settles the phishing question structurally:
 
-> **After `cred remember`, cred never asks anyone to *type* the passphrase again
-> — it asks for *approval*. A dialog asking you to type your vault passphrase is
-> not cred.**
+> **After `cred remember`, cred never asks you to type the vault passphrase
+> again.** Approving a read asks for your *login password*; setup asks for the
+> vault passphrase in a *terminal*. So a dialog asking for your vault passphrase
+> is not cred — cred only ever asks for it on a TTY, during `init`/`add`/`remember`.
 
 - The value reaches `security` on **stdin**, hex-encoded — never argv (readable
   by any same-user process via `ps`) and never a file.
@@ -197,9 +204,10 @@ Rules:
 
 - Secrets go into the child via `envp` — the one Unix channel `ps` cannot see.
   They never appear in argv, in this process's output, or in the transcript.
-- **The passphrase is never typed after setup.** With `cred remember`, opening a
-  window is an *approval* of a dialog macOS draws, not an entry of the secret,
-  and the dialog is not something an agent can forge or read from.
+- **The vault passphrase is never typed after setup.** With `cred remember`,
+  opening a window is an *approval*: you enter your **login keychain password**
+  so macOS will authorize the read. The vault passphrase itself only ever goes
+  into a terminal prompt, during `init`/`add`/`remember`.
 - **Secrets never leave the holder.** The holder is a separate process holding
   the decrypted vault; the client sends a command and gets scrubbed output back.
   The protocol has no request that returns a value, so a client that is not
@@ -237,9 +245,11 @@ Rules:
    adds `security` to the item's trusted list, after which any process can read
    the passphrase **silently, forever** — worse than the plaintext cache this
 design replaced. `Allow` and `Deny` are per-read and are the only safe answers.
-7. **The approval dialog cannot require a fingerprint.** Biometric gating needs
-   `kSecAccessControlUserPresence`, which only the Security API can set — the
-   `security` CLI has no flag for it. So this is an approval click, not Touch ID.
+7. **The approval dialog asks for your login password, not a fingerprint.**
+   Biometric gating needs `kSecAccessControlUserPresence`, which only the
+   Security API can set — the `security` CLI has no flag for it. So approving a
+   read costs a password entry; if the dialog itself offers Touch ID, that is
+   macOS's own setting and not something cred controls.
 8. **Window openings are logged.** `~/.config/cred/unlock.log` (0600) records a
    timestamp and what opened the window. That is the defence against a prompt
    you did not expect: a prompt cannot be made unforgeable, but it can be made
@@ -278,7 +288,8 @@ cred run aws -- aws sts get-caller-identity
 | Symptom | Fix |
 |---|---|
 | `cred run` → `vault is LOCKED` | nothing remembered and no terminal: run `cred unlock` yourself, or `cred remember` once |
-| a dialog asks for the passphrase **text** | that is not cred — `cred` only ever asks you to approve a read. Don't type it |
+| a dialog asks for the passphrase **text** | that is not cred — `cred` only asks for the vault passphrase on a TTY, during setup. Don't type it |
+| the approval dialog wants a password | that's your **login keychain password** (macOS), which authorizes the read — not your vault passphrase |
 | you clicked Always Allow | delete the item and run `cred remember` again: `security delete-generic-password -s cred-vault-passphrase -a cred` |
 | `cred unlock` → `the holder did not come up` | wrong passphrase, or a stale build: `./bin/build-project.sh credentials` |
 | `cred run` → `cred-run binary not built` | `./bin/build-project.sh credentials` |

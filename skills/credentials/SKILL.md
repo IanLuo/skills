@@ -132,8 +132,10 @@ whose first word isn't listed.
 
 - Secrets are injected as environment variables (safe from `ps`), never argv.
 - Secrets never leave the holder process; the client only relays scrubbed output.
-- Opening a window is an **approval**, never an entry of the passphrase: with
-  `cred remember`, macOS draws the dialog and the value never enters your world.
+- Opening a window is an **approval of a read**, not an entry of the vault
+  passphrase: with `cred remember`, macOS draws the dialog and you confirm it
+  with your **login keychain password**. The vault passphrase is only ever typed
+  on a TTY, during setup.
 - Every secret value is replaced with `***` in stdout *and* stderr before it
   reaches you. Values shorter than 6 chars are skipped (redacting them would
   mangle ordinary text) — treat those as effectively unredacted.
@@ -164,6 +166,10 @@ whose first word isn't listed.
 - **Never click "Always Allow" on the passphrase dialog.** It adds `security` to
   the item's trusted list, and from then on any process reads the passphrase
   silently and permanently — worse than any plaintext cache. `Allow`/`Deny` only.
+- **Approving a read costs a password entry, not a click.** macOS requires your
+  login keychain password to authorize the ACL change, so each window you open
+  means typing it once. Touch ID would need an access-control flag only the
+  Security API can set; the `security` CLI has no flag for it.
 - **The approval dialog can't be biometric.** Touch ID needs an access-control
   flag only the Security API can set, and the `security` CLI has no such option.
 - **Every window opening is logged** to `~/.config/cred/unlock.log` (0600), so an

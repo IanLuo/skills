@@ -397,8 +397,9 @@ cmd_remember() {
   printf 'add-generic-password -a %s -s %s -X %s -T "" -U\n' "$KC_ACCOUNT" "$KC_SERVICE" "$hex" |
     security -i >/dev/null || die "could not store the passphrase in the Keychain"
   log_unlock 'remember (passphrase stored in the Keychain)'
-  printf 'remembered — agents now open the window by asking for approval\n'
-  printf 'cred will never ask you to type this passphrase again; a dialog that does is not cred.\n'
+  printf 'remembered — agents now open the window by asking you to approve a read\n'
+  printf 'approving means entering your LOGIN keychain password in that dialog (not the vault one)\n'
+  printf 'cred will never ask you to type the vault passphrase again; a dialog that does is not cred.\n'
   printf 'never click "Always Allow": that would let any process read it silently, for good.\n'
 }
 
