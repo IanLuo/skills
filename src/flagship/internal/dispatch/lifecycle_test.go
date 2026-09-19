@@ -21,6 +21,8 @@ type fakeHerdr struct {
 	promptErr error
 	closeErr  error
 	tabClose  error
+	agents    map[string]string
+	agentsErr error
 
 	created []string
 	started []string
@@ -49,6 +51,13 @@ func (f *fakeHerdr) StartAgent(paneID, name string) error {
 func (f *fakeHerdr) Prompt(paneID, text string) error {
 	f.prompts = append(f.prompts, promptCall{pane: paneID, text: text})
 	return f.promptErr
+}
+
+func (f *fakeHerdr) Agents() (map[string]string, error) {
+	if f.agentsErr != nil {
+		return nil, f.agentsErr
+	}
+	return f.agents, nil
 }
 
 func (f *fakeHerdr) ClosePane(paneID string) error {
@@ -164,8 +173,12 @@ func TestDeliverRecordsTheTabPaneAndWorkerBindingStructurally(t *testing.T) {
 		brief.Delivery.TabID != "w1:t9" || brief.Delivery.Engine != "herdr" {
 		t.Fatalf("brief delivery = %+v, want the recorded binding", brief.Delivery)
 	}
-	if len(herdr.started) != 1 || herdr.started[0] != "w1:p9/dispatch-dev-task" {
-		t.Errorf("started = %v, want the agent started in the new tab's root pane", herdr.started)
+	// The agent is named after the node it owns, so two dispatches of one type
+	// running at once are two names rather than one name in two panes.
+	workerID := strings.TrimPrefix(brief.WorkerNode, "skills:")
+	wantAgent := "dispatch-dev-task-" + workerID
+	if len(herdr.started) != 1 || herdr.started[0] != "w1:p9/"+wantAgent {
+		t.Errorf("started = %v, want the agent %s started in the new tab's root pane", herdr.started, wantAgent)
 	}
 	if len(herdr.prompts) != 1 || herdr.prompts[0].pane != "w1:p9" {
 		t.Errorf("prompts = %v, want the brief sent to the new tab's root pane", herdr.prompts)
@@ -177,9 +190,9 @@ func TestDeliverRecordsTheTabPaneAndWorkerBindingStructurally(t *testing.T) {
 	}
 	payload := string(events[0].Payload)
 	for _, want := range []string{
-		`"pane_id":"w1:p9"`, `"tab_id":"w1:t9"`, `"agent":"dispatch-dev-task"`,
+		`"pane_id":"w1:p9"`, `"tab_id":"w1:t9"`, `"agent":"` + wantAgent + `"`,
 		`"engine":"herdr"`, `"project":"skills"`,
-		`"node":"` + strings.TrimPrefix(brief.WorkerNode, "skills:") + `"`,
+		`"node":"` + workerID + `"`,
 	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("delivery payload %s must carry %s", payload, want)
@@ -187,7 +200,7 @@ func TestDeliverRecordsTheTabPaneAndWorkerBindingStructurally(t *testing.T) {
 	}
 
 	// The prose decision is for the reader; the binding above is for the program.
-	want := "delivered to pane w1:p9 in tab w1:t9, agent dispatch-dev-task"
+	want := "delivered to pane w1:p9 in tab w1:t9, agent " + wantAgent
 	if decisions := capDecisions(t, f, nodeID); !contains(decisions, want) {
 		t.Errorf("decisions = %v, want %q", decisions, want)
 	}
@@ -311,6 +324,40 @@ func TestDeliverHerdrUnavailableLeavesNodePending(t *testing.T) {
 	}
 	if workers := scopeTasks(t, f, "skills"); len(workers) != 0 {
 		t.Errorf("skills nodes = %+v, want none: no node may be created for a delivery that never happened", workers)
+	}
+}
+
+// Two dispatches of one type running at once are two agents, not one name in
+// two panes: the name carries the worker's node, and the record carries the
+// name herdr knows.
+func TestDeliverNamesEachAgentAfterItsOwnWorkerNode(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+
+	first := &dispatch.Brief{Goal: "first", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: addCapNode(t, f, "dispatch dev-task: first")}
+	second := &dispatch.Brief{Goal: "second", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: addCapNode(t, f, "dispatch dev-task: second")}
+
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
+	for _, brief := range []*dispatch.Brief{first, second} {
+		if resp := dispatch.Deliver(f.h, herdr, brief); !resp.OK {
+			t.Fatalf("Deliver %s: %s", brief.Goal, resp.Error)
+		}
+	}
+
+	if len(herdr.started) != 2 {
+		t.Fatalf("started = %v, want two agents", herdr.started)
+	}
+	if herdr.started[0] == herdr.started[1] {
+		t.Fatalf("both dispatches started the same agent name %q", herdr.started[0])
+	}
+	for _, brief := range []*dispatch.Brief{first, second} {
+		agent := "dispatch-dev-task-" + strings.TrimPrefix(brief.WorkerNode, "skills:")
+		if !contains(herdr.started, "w1:p9/"+agent) {
+			t.Errorf("started = %v, want %s", herdr.started, agent)
+		}
+		if brief.Delivery == nil || brief.Delivery.Agent != agent {
+			t.Errorf("delivery for %q = %+v, want agent %s", brief.Goal, brief.Delivery, agent)
+		}
 	}
 }
 

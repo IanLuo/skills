@@ -33,8 +33,8 @@ var ErrPaneGone = errors.New("pane is already gone")
 var ErrTabGone = errors.New("tab is already gone")
 
 // HerdrCLI is the slice of the herdr CLI the dispatch lifecycle uses: open a
-// tab for the worker, start an agent in its root pane, send the brief, and tear
-// the tab down again.
+// tab for the worker, start an agent in its root pane, send the brief, read
+// what the agents are doing, and tear the tab down again.
 //
 // The worker gets a tab of its own rather than a sibling pane in the cap's.
 // herdr reports `done` only for work nobody has looked at, and a pane in the
@@ -48,6 +48,11 @@ type HerdrCLI interface {
 	StartAgent(paneID, name string) error
 	// Prompt submits text to the agent hosted by paneID.
 	Prompt(paneID, text string) error
+	// Agents reports every agent herdr knows, by name, with the state herdr
+	// reports for it. fs pending reads it to tell a worker that is still going
+	// from one that finished unseen or died; an error means herdr could not be
+	// asked, which is not the same as no agent being there.
+	Agents() (map[string]string, error)
 	// ClosePane closes paneID, returning ErrPaneGone if it no longer exists.
 	ClosePane(paneID string) error
 	// CloseTab closes tabID, returning ErrTabGone if it no longer exists.
@@ -66,22 +71,25 @@ type HerdrCLI interface {
 // rollbackWorker): a failed delivery neither leaves outstanding work behind nor
 // claims a delivery that did not happen.
 func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
-	agent := "dispatch-" + brief.TaskType
-
 	tabID, paneID, err := hc.CreateTab(brief.RootPath)
 	if err != nil {
 		return deliverErr(brief, fmt.Errorf("create tab: %w", err))
 	}
 
-	if err := hc.StartAgent(paneID, agent); err != nil {
-		abandonWorker(hc, tabID, paneID)
-		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
-	}
-
+	// The worker's node comes first because the agent is named after it: two
+	// workers of one task type dispatched at once would otherwise share the name
+	// "dispatch-<type>", and herdr could not tell one's pane from the other's.
 	workerID, err := createWorkerNode(h, brief)
 	if err != nil {
 		abandonWorker(hc, tabID, paneID)
 		return deliverErr(brief, err)
+	}
+
+	agent := workerAgent(brief.TaskType, workerID)
+	if err := hc.StartAgent(paneID, agent); err != nil {
+		abandonWorker(hc, tabID, paneID)
+		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("start agent %s: %v", agent, err))
+		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
 	}
 
 	if err := hc.Prompt(paneID, renderBrief(brief)); err != nil {
@@ -128,6 +136,13 @@ func createWorkerNode(h *command.Handler, brief *Brief) (string, error) {
 	}
 	brief.WorkerNode = brief.Project + ":" + data.NodeID
 	return data.NodeID, nil
+}
+
+// workerAgent names the agent that carries a dispatch's brief: the task type
+// plus the worker's node. Two dispatches of one type running at once are two
+// names, so herdr's record of one cannot be read as the other's.
+func workerAgent(taskType, workerID string) string {
+	return "dispatch-" + taskType + "-" + workerID
 }
 
 // rollbackWorker resolves a worker node whose delivery did not complete. The
@@ -194,6 +209,34 @@ func (herdrCLI) StartAgent(paneID, name string) error {
 func (herdrCLI) Prompt(paneID, text string) error {
 	_, err := runHerdr("agent", "prompt", paneID, text)
 	return err
+}
+
+func (herdrCLI) Agents() (map[string]string, error) {
+	out, err := runHerdr("agent", "list")
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Result struct {
+			Agents []struct {
+				Name  string `json:"name"`
+				State string `json:"agent_status"`
+			} `json:"agents"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return nil, fmt.Errorf("herdr agent list: parse response: %w", err)
+	}
+
+	states := make(map[string]string, len(resp.Result.Agents))
+	for _, a := range resp.Result.Agents {
+		if a.Name == "" {
+			continue // an unnamed agent cannot be addressed by a delivery record
+		}
+		states[a.Name] = a.State
+	}
+	return states, nil
 }
 
 func (herdrCLI) ClosePane(paneID string) error {

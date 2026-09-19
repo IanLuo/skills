@@ -56,6 +56,9 @@ func main() {
 	case "unfinished":
 		checkArgs("unfinished", os.Args[2:])
 		unfinishedCmd()
+	case "pending":
+		checkArgs("pending", os.Args[2:])
+		pendingCmd()
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -80,6 +83,10 @@ Commands:
   task knowledge NODE_ID --summary TEXT         Add knowledge to a task
   status [--project PROJECT_ID]                 Show project status
   unfinished                                   Every task not done, across every scope
+  pending                                      Every dispatch not closed out, with
+                                                what the cap should do about each:
+                                                ready, running, unseen, gone,
+                                                unlinked
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   bootstrap                                     Seed ~/.fs/kb from the playbooks
@@ -817,6 +824,16 @@ func unfinishedCmd() {
 	defer h.Close()
 
 	output(h.Unfinished())
+}
+
+// pendingCmd answers "what is waiting on the cap": every dispatch in the cap's
+// scope that is not done, classified against its delivery record, its worker's
+// node, and herdr. It is a read — it writes nothing.
+func pendingCmd() {
+	h := openHandler("")
+	defer h.Close()
+
+	output(dispatch.Pending(h, dispatch.NewHerdrCLI()))
 }
 
 // dispatchCmd prepares the cap's dispatch brief and records the cap's node.

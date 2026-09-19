@@ -105,6 +105,7 @@ var cmdSpecs = map[string]cmdSpec{
 		},
 	},
 	"unfinished": {usage: "Usage: fs unfinished"},
+	"pending":    {usage: "Usage: fs pending"},
 }
 
 // checkArgs enforces name's spec. A leading help token prints that subcommand's

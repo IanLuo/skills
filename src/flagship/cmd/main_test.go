@@ -1641,11 +1641,48 @@ case "$cmd $sub" in
   "pane close")
     id="${1:-}"
     [ -f "$(id_file pane "$id")" ] || not_found pane "$id"
+    # Closing a pane kills the agents in it. The worker's node is then the only
+    # trace left, which is exactly what fs pending has to report as gone.
+    for f in "$state"/agent_*; do
+      [ -e "$f" ] || continue
+      read -r pane _ < "$f"
+      if [ "$pane" = "$id" ]; then rm -f "$f"; fi
+    done
     rm -f "$(id_file pane "$id")"
     printf '{"result":{"closed":true}}\n'
     ;;
   "agent start")
-    printf '{"result":{"agent":{"name":"%s"}}}\n' "${1:-}"
+    # args: <name> --kind <kind> --pane <pane>
+    name="${1:-}"; shift || true
+    pane=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--pane" ]; then pane="${2:-}"; shift 2 || true; else shift; fi
+    done
+    [ -f "$(id_file pane "$pane")" ] || not_found pane "$pane"
+    # The status is recorded at start and reported by agent list later; a test
+    # pins it with HERDR_TEST_AGENT_STATE (working by default).
+    printf '%s %s\n' "$pane" "${HERDR_TEST_AGENT_STATE:-working}" > "$state/agent_$name"
+    printf '{"result":{"agent":{"name":"%s","pane_id":"%s"}}}\n' "$name" "$pane"
+    ;;
+  "agent get")
+    name="${1:-}"
+    f="$state/agent_$name"
+    [ -f "$f" ] || not_found agent "$name"
+    read -r pane status < "$f"
+    printf '{"result":{"agent":{"name":"%s","pane_id":"%s","agent_status":"%s"}}}\n' "$name" "$pane" "$status"
+    ;;
+  "agent list")
+    printf '{"result":{"agents":['
+    first=1
+    for f in "$state"/agent_*; do
+      [ -e "$f" ] || continue
+      name="${f##*/agent_}"
+      read -r pane status < "$f"
+      [ "$first" -eq 1 ] || printf ','
+      first=0
+      printf '{"name":"%s","pane_id":"%s","agent_status":"%s"}' "$name" "$pane" "$status"
+    done
+    printf ']}}\n'
     ;;
   "agent prompt")
     # Keep the brief, so a probe can read what the worker was handed.
@@ -1681,9 +1718,36 @@ func fakeHerdrOnPath(t *testing.T) (env []string, state, script string) {
 // means the object no longer exists.
 func herdrGet(t *testing.T, script string, env []string, kind, id string) error {
 	t.Helper()
-	cmd := exec.Command(script, kind, "get", id)
+	_, err := herdrRun(t, script, env, kind, "get", id)
+	return err
+}
+
+// herdrRun runs the fake herdr and returns its stdout.
+func herdrRun(t *testing.T, script string, env []string, args ...string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command(script, args...)
 	cmd.Env = append(os.Environ(), env...)
-	return cmd.Run()
+	return cmd.Output()
+}
+
+// herdrAgentPane returns the pane herdr says an agent is in.
+func herdrAgentPane(t *testing.T, script string, env []string, name string) string {
+	t.Helper()
+	out, err := herdrRun(t, script, env, "agent", "get", name)
+	if err != nil {
+		t.Fatalf("herdr agent get %s: %v", name, err)
+	}
+	var resp struct {
+		Result struct {
+			Agent struct {
+				PaneID string `json:"pane_id"`
+			} `json:"agent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("herdr agent get %s: %v", name, err)
+	}
+	return resp.Result.Agent.PaneID
 }
 
 // herdrPrompt returns the brief the fake herdr was handed, standing in for what
@@ -1701,7 +1765,16 @@ func herdrPrompt(t *testing.T, state string) string {
 // cap node, the tab and pane it was bound to, and the worker node it created.
 func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, tabID, paneID, workerRef string) {
 	t.Helper()
-	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	return deliverProbeGoal(t, bin, root, env, "sample")
+}
+
+// deliverProbeGoal is deliverProbe with the goal and extra dispatch flags named,
+// for a second concurrent dispatch (which needs --confirm to get past the
+// unresolved-dispatch gate).
+func deliverProbeGoal(t *testing.T, bin, root string, env []string, goal string, extra ...string) (nodeID, tabID, paneID, workerRef string) {
+	t.Helper()
+	args := append([]string{"dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", goal}, extra...)
+	resp, code := runFSEnv(t, bin, root, env, args...)
 	if code != 0 {
 		t.Fatalf("dispatch --deliver exit %d: %v", code, resp["error"])
 	}
@@ -1797,7 +1870,7 @@ func TestCLIDeliverOpensATabAndCloseTearsItDown(t *testing.T) {
 	}
 	payload := events[0].(map[string]any)["payload"].(map[string]any)
 	for field, want := range map[string]any{
-		"pane_id": paneID, "tab_id": tabID, "agent": "dispatch-dev-task",
+		"pane_id": paneID, "tab_id": tabID, "agent": "dispatch-dev-task-" + workerID,
 		"engine": "herdr", "project": "skills", "node": workerID,
 	} {
 		if payload[field] != want {
@@ -2010,4 +2083,164 @@ func TestCLIDeliverHerdrUnavailable(t *testing.T) {
 		t.Errorf("skills tasks = %v, want none: no node may be created for a delivery that never happened", tasks)
 	}
 	runFS(t, bin, root, "task", "update", task["node_id"].(string), "--status", "done", "--decision", "test cleanup", "--project", "cap")
+}
+
+// --- fs pending -------------------------------------------------------------
+//
+// fs pending is the one command that answers "what is waiting on me?". It reads
+// the cap's nodes, each delivery record, and each worker's node — herdr only
+// says when to look.
+
+// pendingEntry finds one dispatch in fs pending's data by cap node.
+func pendingEntry(t *testing.T, data map[string]any, capNode string) map[string]any {
+	t.Helper()
+	entries, ok := data["pending"].([]any)
+	if !ok {
+		t.Fatalf("pending data = %v, want a pending list", data)
+	}
+	for _, e := range entries {
+		entry := e.(map[string]any)
+		if entry["cap_node"] == capNode {
+			return entry
+		}
+	}
+	t.Fatalf("pending %v has no entry for %s", entries, capNode)
+	return nil
+}
+
+// Two dispatches of one type running at once are two agents with two names, and
+// each name resolves in herdr to its own pane. A colliding name is what made a
+// dispatch unresolvable in the first place.
+func TestCLIDeliverNamesEachWorkerAgentUniquely(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, script := fakeHerdrOnPath(t)
+
+	_, _, firstPane, firstWorker := deliverProbe(t, bin, root, env)
+	_, _, secondPane, secondWorker := deliverProbeGoal(t, bin, root, env, "second", "--confirm")
+
+	first := "dispatch-dev-task-" + strings.TrimPrefix(firstWorker, "skills:")
+	second := "dispatch-dev-task-" + strings.TrimPrefix(secondWorker, "skills:")
+	if first == second {
+		t.Fatalf("both dispatches named the same agent %s", first)
+	}
+	for agent, pane := range map[string]string{first: firstPane, second: secondPane} {
+		if err := herdrGet(t, script, env, "agent", agent); err != nil {
+			t.Errorf("herdr has no agent %s: %v", agent, err)
+		}
+		if got := herdrAgentPane(t, script, env, agent); got != pane {
+			t.Errorf("agent %s is in pane %s, want %s", agent, got, pane)
+		}
+	}
+}
+
+// fs pending walks a dispatch's whole life: running while the worker works,
+// ready once its node is done whatever herdr reads, and gone once the pane is
+// killed without the node being touched.
+func TestCLIPendingReportsWhatIsWaiting(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, script := fakeHerdrOnPath(t)
+
+	firstNode, _, _, firstWorker := deliverProbe(t, bin, root, env)
+	secondNode, _, secondPane, secondWorker := deliverProbeGoal(t, bin, root, env, "second", "--confirm")
+	if firstWorker == secondWorker {
+		t.Fatalf("both dispatches created worker %s", firstWorker)
+	}
+
+	pending, code := runFSEnv(t, bin, root, env, "pending")
+	if code != 0 {
+		t.Fatalf("pending exit %d: %v", code, pending["error"])
+	}
+	data := pending["data"].(map[string]any)
+	if counts := data["counts"].(map[string]any); counts["running"] != float64(2) {
+		t.Errorf("counts = %v, want two running", counts)
+	}
+	for _, node := range []string{firstNode, secondNode} {
+		entry := pendingEntry(t, data, node)
+		if entry["state"] != "running" || entry["project"] != "skills" {
+			t.Errorf("dispatch %s = %v, want a running dispatch in skills", node, entry)
+		}
+	}
+
+	// The worker's node is the truth: a done node reads ready even though herdr
+	// still calls the agent working — herdr only says when to look.
+	finishWorker(t, bin, root, firstWorker)
+	pending, _ = runFSEnv(t, bin, root, env, "pending")
+	data = pending["data"].(map[string]any)
+	if entry := pendingEntry(t, data, firstNode); entry["state"] != "ready" {
+		t.Errorf("finished dispatch = %v, want ready", entry)
+	}
+	if entry := pendingEntry(t, data, secondNode); entry["state"] != "running" {
+		t.Errorf("unfinished dispatch = %v, want running", entry)
+	}
+
+	// Close the first out; kill the second's pane without marking its node done.
+	if _, code := runFSEnv(t, bin, root, env, "close", "--node", firstNode, "--decision", "read the worker node; verified"); code != 0 {
+		t.Fatalf("close exit %d", code)
+	}
+	if _, err := herdrRun(t, script, env, "pane", "close", secondPane); err != nil {
+		t.Fatalf("closing the second pane: %v", err)
+	}
+
+	pending, _ = runFSEnv(t, bin, root, env, "pending")
+	data = pending["data"].(map[string]any)
+	if entry := pendingEntry(t, data, secondNode); entry["state"] != "gone" {
+		t.Errorf("dispatch whose pane died = %v, want gone", entry)
+	}
+	if counts := data["counts"].(map[string]any); counts["ready"] != float64(0) {
+		t.Errorf("counts = %v, want nothing ready once the worker is closed", counts)
+	}
+}
+
+// A dispatch prepared but never delivered has no record to read, so it is
+// unlinked rather than a worker that looks gone. Reading it appends no event.
+func TestCLIPendingReportsAnUndeliveredDispatchUnlinked(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	env, _, _ := fakeHerdrOnPath(t)
+
+	prep, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "never delivered")
+	if code != 0 {
+		t.Fatalf("dispatch exit %d: %v", code, prep["error"])
+	}
+	capNode := prep["data"].(map[string]any)["cap_node_id"].(string)
+
+	before, _ := runFSEnv(t, bin, root, env, "log", "--project", "cap")
+	beforeCount := len(before["data"].(map[string]any)["events"].([]any))
+
+	pending, code := runFSEnv(t, bin, root, env, "pending")
+	if code != 0 {
+		t.Fatalf("pending exit %d: %v", code, pending["error"])
+	}
+	entry := pendingEntry(t, pending["data"].(map[string]any), capNode)
+	if entry["state"] != "unlinked" {
+		t.Errorf("never-delivered dispatch = %v, want unlinked", entry)
+	}
+
+	after, _ := runFSEnv(t, bin, root, env, "log", "--project", "cap")
+	afterCount := len(after["data"].(map[string]any)["events"].([]any))
+	if afterCount != beforeCount {
+		t.Errorf("cap events = %d, want %d: fs pending must write nothing", afterCount, beforeCount)
+	}
+}
+
+// fs pending takes no arguments: a flag is a usage error, refused before any
+// work begins.
+func TestCLIPendingRefusesArguments(t *testing.T) {
+	bin := getFS(t)
+
+	resp, code := runFS(t, bin, t.TempDir(), "pending", "--project", "skills")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--project") {
+		t.Errorf("error %q must name the rejected flag", errMsg)
+	}
 }
