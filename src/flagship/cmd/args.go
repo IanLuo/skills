@@ -119,6 +119,7 @@ comma-separated list.`,
 	"unfinished": {usage: "Usage: fs unfinished"},
 	"gaps":       {usage: "Usage: fs gaps"},
 	"pending":    {usage: "Usage: fs pending"},
+	"sweep":      {usage: "Usage: fs sweep"},
 }
 
 // checkArgs enforces name's spec. A leading help token prints that subcommand's

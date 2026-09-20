@@ -88,11 +88,18 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 	}
 	result.UndispatchedGaps = gaps
 	if herdrErr != nil {
-		result.Warning = fmt.Sprintf(
-			"herdr is unavailable (%v): an unfinished worker's state cannot be read, and is reported as %q",
-			herdrErr, StateRunning)
+		result.Warning = herdrWarning(herdrErr)
 	}
 	return command.Response{OK: true, Data: result}
+}
+
+// herdrWarning says why a state that depends on herdr is reported as running
+// rather than guessed at. fs pending and fs sweep both read herdr as a hint, so
+// both report its absence the same way.
+func herdrWarning(err error) string {
+	return fmt.Sprintf(
+		"herdr is unavailable (%v): an unfinished worker's state cannot be read, and is reported as %q",
+		err, StateRunning)
 }
 
 // pendingEntry reads one dispatch node's delivery record and the worker node it
