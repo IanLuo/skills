@@ -1877,7 +1877,7 @@ steps:
 	}
 
 	task := capTask(t, bin, root, "dispatch dev-task: sample")
-	want := "user confirmed proceeding past a failing check: false"
+	want := `--confirm overrode the failing check "false" (output: (no output))`
 	if !containsString(task["decisions"].([]any), want) {
 		t.Errorf("cap decisions = %v, want %q", task["decisions"], want)
 	}
@@ -1887,8 +1887,8 @@ steps:
 	runFS(t, bin, root, "task", "update", nodeID, "--status", "done", "--decision", "test cleanup", "--project", "cap")
 }
 
-// An unresolved dispatch stops the next one, and --confirm overrides it while
-// naming the dispatch it left open.
+// An unresolved dispatch stops the next one, and --allow-unresolved overrides
+// that gate — and only that gate — while naming the dispatch it left open.
 func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
@@ -1914,18 +1914,27 @@ steps:
 		t.Errorf("ok = %v, want false", resp["ok"])
 	}
 	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"unresolved dispatches", firstID, "--confirm"} {
+	for _, want := range []string{"unresolved dispatches", firstID, "--allow-unresolved"} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}
 	}
 
-	confirmed, code := runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "second")
+	// --confirm is the failing-check override and must not pass this gate.
+	byConfirm, code := runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "second")
+	if code != 1 {
+		t.Fatalf("--confirm must not override an unresolved dispatch: exit %d: %v", code, byConfirm)
+	}
+	if msg, _ := byConfirm["error"].(string); !strings.Contains(msg, "unresolved dispatches") {
+		t.Errorf("--confirm refusal %q must still be about the unresolved dispatch", msg)
+	}
+
+	confirmed, code := runFS(t, bin, root, "dispatch", "--allow-unresolved", "--project", "skills", "--type", "dev-task", "--goal", "second")
 	if code != 0 {
-		t.Fatalf("--confirm exit = %d: %v", code, confirmed["error"])
+		t.Fatalf("--allow-unresolved exit = %d: %v", code, confirmed["error"])
 	}
 	task := capTask(t, bin, root, "dispatch dev-task: second")
-	want := "user confirmed proceeding with unresolved dispatches: " + firstID
+	want := "--allow-unresolved proceeded with unresolved dispatches: " + firstID
 	if !containsString(task["decisions"].([]any), want) {
 		t.Errorf("cap decisions = %v, want %q", task["decisions"], want)
 	}
@@ -2208,8 +2217,8 @@ func deliverProbe(t *testing.T, bin, root string, env []string) (nodeID, tabID, 
 }
 
 // deliverProbeGoal is deliverProbe with the goal and extra dispatch flags named,
-// for a second concurrent dispatch (which needs --confirm to get past the
-// unresolved-dispatch gate).
+// for a second concurrent dispatch (which needs --allow-unresolved to get past
+// the unresolved-dispatch gate).
 func deliverProbeGoal(t *testing.T, bin, root string, env []string, goal string, extra ...string) (nodeID, tabID, paneID, workerRef string) {
 	t.Helper()
 	args := append([]string{"dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", goal}, extra...)
@@ -2861,7 +2870,7 @@ func TestCLIDeliverNamesEachWorkerAgentUniquely(t *testing.T) {
 	env, _, script := fakeHerdrOnPath(t)
 
 	_, _, firstPane, firstWorker := deliverProbe(t, bin, root, env)
-	_, _, secondPane, secondWorker := deliverProbeGoal(t, bin, root, env, "second", "--confirm")
+	_, _, secondPane, secondWorker := deliverProbeGoal(t, bin, root, env, "second", "--allow-unresolved")
 
 	first := "dispatch-dev-task-" + strings.TrimPrefix(firstWorker, "skills:")
 	second := "dispatch-dev-task-" + strings.TrimPrefix(secondWorker, "skills:")
@@ -2889,7 +2898,7 @@ func TestCLIPendingReportsWhatIsWaiting(t *testing.T) {
 	env, _, script := fakeHerdrOnPath(t)
 
 	firstNode, _, _, firstWorker := deliverProbe(t, bin, root, env)
-	secondNode, _, secondPane, secondWorker := deliverProbeGoal(t, bin, root, env, "second", "--confirm")
+	secondNode, _, secondPane, secondWorker := deliverProbeGoal(t, bin, root, env, "second", "--allow-unresolved")
 	if firstWorker == secondWorker {
 		t.Fatalf("both dispatches created worker %s", firstWorker)
 	}

@@ -3,6 +3,7 @@ package command_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -534,7 +535,7 @@ func TestUnfinishedGroupsByKind(t *testing.T) {
 	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", nil)
 	h.TaskAddKind("proj", "a gap", query.KindGap, "skills:t-found", nil)
 
-	resp := h.Unfinished()
+	resp := h.Unfinished(nil)
 	if !resp.OK {
 		t.Fatalf("Unfinished: %s", resp.Error)
 	}
@@ -1063,6 +1064,93 @@ func TestTaskUnblockAtomic(t *testing.T) {
 	}
 }
 
+// A block reason is prose, so nothing re-verifies it — unless the block records
+// the command that would show the condition is over. fs unfinished re-runs it in
+// the node's scope root: plain blocked while it fails, and a status that says so
+// once it passes. A block with no check keeps its prose and claims nothing.
+func TestUnfinishedReRunsARecordedBlockCheck(t *testing.T) {
+	h := setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker")
+	check := "test -f " + marker
+
+	h.ProjectCreate("proj", root)
+	checked := h.TaskAdd("proj", "waiting on the marker", nil).Data.(command.EventData).NodeID
+	if resp := h.TaskBlockWithCheck("proj", checked, "waiting on the marker", check); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+	prose := h.TaskAdd("proj", "waiting on a person", nil).Data.(command.EventData).NodeID
+	if resp := h.TaskBlock("proj", prose, "waiting on a person"); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	rootOf := func(scope string) string {
+		if scope == "proj" {
+			return root
+		}
+		return ""
+	}
+	statuses := func() map[string]string {
+		t.Helper()
+		resp := h.Unfinished(rootOf)
+		if !resp.OK {
+			t.Fatalf("Unfinished: %s", resp.Error)
+		}
+		groups := resp.Data.(map[string]any)["unfinished"].(map[string][]command.UnfinishedNode)
+		got := make(map[string]string)
+		for _, node := range groups[string(query.KindWork)] {
+			got[node.NodeID] = node.Status
+		}
+		return got
+	}
+
+	if got := statuses()[checked]; got != "blocked" {
+		t.Errorf("checked block while the condition holds = %q, want blocked", got)
+	}
+	if got := statuses()[prose]; got != "blocked" {
+		t.Errorf("prose block = %q, want blocked", got)
+	}
+
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "blocked (condition no longer holds — " + check + " exited 0)"
+	if got := statuses()[checked]; got != want {
+		t.Errorf("checked block once the condition is over = %q, want %q", got, want)
+	}
+	if got := statuses()[prose]; got != "blocked" {
+		t.Errorf("prose block = %q, want plain blocked: there is nothing to re-verify", got)
+	}
+}
+
+// A later block replaces the previous one's check: the record is the last
+// block, not an accumulation of every condition the node was ever under.
+func TestTaskBlockReplacesTheRecordedCheck(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	nodeID := h.TaskAdd("proj", "task", nil).Data.(command.EventData).NodeID
+
+	if resp := h.TaskBlockWithCheck("proj", nodeID, "first", "test -f /tmp/never-there"); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+	if resp := h.TaskUnblock("proj", nodeID); !resp.OK {
+		t.Fatalf("unblock: %s", resp.Error)
+	}
+	if resp := h.TaskBlock("proj", nodeID, "second"); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	nodes, err := h.UnfinishedIn("proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range nodes {
+		if node.NodeID == nodeID && node.BlockCheck != "" {
+			t.Errorf("block_check = %q, want empty after a checkless re-block", node.BlockCheck)
+		}
+	}
+}
+
 func TestKnowledgeAddSearchable(t *testing.T) {
 	// Knowledge added events should be searchable via FTS5.
 	h := setup(t)
@@ -1117,7 +1205,7 @@ func TestUnfinishedAcrossScopes(t *testing.T) {
 	add("cap", "cap backlog")
 	add("never-registered", "orphan thing")
 
-	resp := h.Unfinished()
+	resp := h.Unfinished(nil)
 	if !resp.OK {
 		t.Fatalf("Unfinished: %s", resp.Error)
 	}

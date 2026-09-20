@@ -101,6 +101,10 @@ type UnfinishedNode struct {
 	Goal      string     `json:"goal"`
 	Kind      query.Kind `json:"kind"`
 	FoundBy   string     `json:"found_by,omitempty"`
+	// BlockCheck is the command the node's last block recorded, when one did:
+	// what fs pending and fs unfinished re-run to tell a live block from one
+	// whose condition is over. Empty for a block with no check.
+	BlockCheck string `json:"block_check,omitempty"`
 }
 
 // GapNode is one kind=gap node: something noticed and not dispatched, with
@@ -574,7 +578,13 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 // visible without reading goals. Scopes come from the events themselves, not
 // the registry: a node in a scope that was never registered, or whose registry
 // row was lost, still reports here.
-func (h *Handler) Unfinished() Response {
+//
+// rootOf resolves a scope to the directory a recorded block check runs in — the
+// project root — so a block whose condition is over reads as such instead of as
+// current truth. A nil rootOf, or a scope it cannot resolve, runs the check in
+// this process's own directory. Nothing is unblocked: the node's record still
+// says blocked, and only the report notes that the condition no longer holds.
+func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 	scopes, err := h.store.Scopes()
 	if err != nil {
 		h.logger.Error("store scopes failed", "command", "unfinished", "error", err)
@@ -596,6 +606,7 @@ func (h *Handler) Unfinished() Response {
 			h.logger.Error("store replay failed", "command", "unfinished", "scope", scope, "error", err)
 			return errResp(err.Error())
 		}
+		refreshBlockChecks(nodes, rootOf)
 		for _, node := range nodes {
 			grouped[string(node.Kind)] = append(grouped[string(node.Kind)], node)
 			total++
@@ -694,12 +705,13 @@ func (h *Handler) UnfinishedIn(scope string) ([]UnfinishedNode, error) {
 			continue
 		}
 		unfinished = append(unfinished, UnfinishedNode{
-			ProjectID: scope,
-			NodeID:    node.NodeID,
-			Status:    node.Status,
-			Goal:      node.Goal,
-			Kind:      node.Kind,
-			FoundBy:   node.FoundBy,
+			ProjectID:  scope,
+			NodeID:     node.NodeID,
+			Status:     node.Status,
+			Goal:       node.Goal,
+			Kind:       node.Kind,
+			FoundBy:    node.FoundBy,
+			BlockCheck: node.BlockCheck,
 		})
 	}
 	return unfinished, nil
@@ -786,7 +798,17 @@ func (h *Handler) deriveGoal(projectID, nodeID string) string {
 }
 
 // TaskBlock appends a task-blocked event and a status-changed event atomically.
+// It records no check: the reason stands as prose. TaskBlockWithCheck is the
+// same block with a condition a reader can re-run.
 func (h *Handler) TaskBlock(projectID, nodeID, reason string) Response {
+	return h.TaskBlockWithCheck(projectID, nodeID, reason, "")
+}
+
+// TaskBlockWithCheck appends a task-blocked event and a status-changed event
+// atomically, recording the optional check: the shell command that would show
+// the blocking condition is over. Recording it is what lets fs pending and fs
+// unfinished re-verify the block instead of repeating stale prose.
+func (h *Handler) TaskBlockWithCheck(projectID, nodeID, reason, check string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -804,7 +826,7 @@ func (h *Handler) TaskBlock(projectID, nodeID, reason string) Response {
 
 	from := h.deriveStatus(projectID, nodeID)
 
-	blockedPayload, _ := json.Marshal(map[string]string{"reason": reason})
+	blockedPayload, _ := json.Marshal(map[string]string{"reason": reason, "check": check})
 	statusPayload, _ := json.Marshal(map[string]string{"from": from, "to": "blocked"})
 
 	batch := []store.Event{

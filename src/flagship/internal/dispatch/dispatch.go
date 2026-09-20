@@ -12,7 +12,9 @@
 // node is not done, then closes the pane from the recorded binding.
 //
 // It also gates preparation: a failing prerequisite check or an earlier dispatch
-// that was never delivered stops it, unless the cap passes --confirm.
+// that was never delivered stops it. Each gate has its own override — --confirm
+// for a failing check, --allow-unresolved for an unresolved dispatch — so saying
+// yes to one can never wave the other through.
 package dispatch
 
 import (
@@ -20,7 +22,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -81,9 +82,12 @@ type Brief struct {
 // every other command's.
 //
 // It refuses in two cases rather than preparing work in a bad state: an earlier
-// dispatch is still unresolved, or a prerequisite check failed. confirm overrides
-// both refusals and records the override as a decision on the cap's node.
-func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, cards []string, confirm bool) command.Response {
+// dispatch is still unresolved, or a prerequisite check failed. The two gates
+// have one override each: allowUnresolved for the unresolved dispatch, confirm
+// for the failing check. Neither overrides the other — a cap answering "go ahead
+// with the other dispatch open" has not seen, and so cannot have accepted, a
+// failing prerequisite the other flag would have short-circuited.
+func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, cards []string, confirm, allowUnresolved bool) command.Response {
 	if project == "" {
 		return errResp("--project is required")
 	}
@@ -112,11 +116,13 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 
 	// Gate: a dispatch the cap prepared but never delivered is still open work.
 	// Refuse to pile another one on top of it unless the cap says to proceed.
+	// --allow-unresolved is this gate's only override: --confirm is about a
+	// failing check and must not pass this one.
 	unresolved, err := unresolvedDispatches(h)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
-	if len(unresolved) > 0 && !confirm {
+	if len(unresolved) > 0 && !allowUnresolved {
 		return errResp(unresolvedError(unresolved))
 	}
 
@@ -132,8 +138,16 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	brief.CapNodeID = nodeID
 	brief.NextCommand = nextCommand(brief)
 
+	// Each override is recorded by the flag that granted it, on the node it
+	// granted it for. A refusal above leaves no node and no override: nothing
+	// proceeded, so there is nothing to record.
 	if confirm {
-		if err := recordOverrides(h, nodeID, brief, unresolved); err != nil {
+		if err := recordCheckOverrides(h, nodeID, brief); err != nil {
+			return errResp(fmt.Sprintf("dispatch: %v", err))
+		}
+	}
+	if allowUnresolved && len(unresolved) > 0 {
+		if err := recordUnresolvedOverride(h, nodeID, unresolved); err != nil {
 			return errResp(fmt.Sprintf("dispatch: %v", err))
 		}
 	}
@@ -190,7 +204,7 @@ func unresolvedError(unresolved []command.UnfinishedNode) string {
 		named[i] = fmt.Sprintf("%s (%q)", node.NodeID, node.Goal)
 	}
 	return fmt.Sprintf(
-		"dispatch: unresolved dispatches in scope %s: %s; resolve them (fs task update ID --status done --decision ...) or re-run with --confirm to proceed",
+		"dispatch: unresolved dispatches in scope %s: %s; resolve them (fs task update ID --status done --decision ...) or re-run with --allow-unresolved to proceed",
 		capScope, strings.Join(named, ", "))
 }
 
@@ -265,20 +279,15 @@ func checkEnv(project, taskType, goal string, cards []string) []string {
 	}
 }
 
-// runCheck executes a check's body as a shell command with cwd = the project
-// root, and reports pass/fail plus the command's combined output. env is added
-// to this process's environment rather than replacing it, so the shell keeps
-// PATH and the rest of what a command needs.
+// runCheck runs a check's body through the shared shell runner and reports
+// pass/fail plus the command's combined output.
 func runCheck(body, root string, env []string) Item {
-	cmd := exec.Command("sh", "-c", body)
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), env...)
-	out, err := cmd.CombinedOutput()
+	out, err := command.RunShell(body, root, env)
 	return Item{
 		Kind:   knowledge.KindCheck,
 		Body:   body,
 		Status: passFail(err == nil),
-		Output: strings.TrimRight(string(out), "\n"),
+		Output: strings.TrimRight(out, "\n"),
 	}
 }
 
@@ -353,31 +362,33 @@ func recordCapNode(h *command.Handler, taskType, goal, project string) (string, 
 	return data.NodeID, nil
 }
 
-// recordOverrides records the cap's --confirm overrides on its own dispatch node:
-// one decision per failing check, plus one naming the dispatches that were
-// already unresolved. Without them the refusal leaves no trace in the log.
-func recordOverrides(h *command.Handler, nodeID string, brief *Brief, unresolved []command.UnfinishedNode) error {
+// recordCheckOverrides records the cap's --confirm override: one decision per
+// failing check, naming the check and the output it failed with. Without it the
+// refusal leaves no trace in the log, and a bare "user confirmed" would not say
+// what was overridden or the value it was over.
+func recordCheckOverrides(h *command.Handler, nodeID string, brief *Brief) error {
 	for _, item := range brief.Checklist {
 		if item.Status != "fail" {
 			continue
 		}
-		summary := "user confirmed proceeding past a failing check: " + item.Body
-		if err := recordDecision(h, nodeID, summary); err != nil {
-			return err
-		}
-	}
-
-	if len(unresolved) > 0 {
-		ids := make([]string, len(unresolved))
-		for i, node := range unresolved {
-			ids[i] = node.NodeID
-		}
-		summary := "user confirmed proceeding with unresolved dispatches: " + strings.Join(ids, ", ")
+		summary := fmt.Sprintf(
+			"--confirm overrode the failing check %q (output: %s)", item.Body, checkOutput(item))
 		if err := recordDecision(h, nodeID, summary); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// recordUnresolvedOverride records the cap's --allow-unresolved override, naming
+// the dispatches it proceeded past — the value the flag was over.
+func recordUnresolvedOverride(h *command.Handler, nodeID string, unresolved []command.UnfinishedNode) error {
+	named := make([]string, len(unresolved))
+	for i, node := range unresolved {
+		named[i] = node.NodeID
+	}
+	summary := "--allow-unresolved proceeded with unresolved dispatches: " + strings.Join(named, ", ")
+	return recordDecision(h, nodeID, summary)
 }
 
 func recordDecision(h *command.Handler, nodeID, summary string) error {

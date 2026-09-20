@@ -935,6 +935,16 @@ func TestCloseAbandonedTearsDownTheDeliveredPaneAndWorktree(t *testing.T) {
 	if result.Warning != "" {
 		t.Errorf("warning = %q, want none", result.Warning)
 	}
+	// The durable record has to agree with what was just done: a delivered
+	// dispatch abandoned and torn down must not read "never delivered".
+	want := "abandoned after delivery to skills:" + workerID +
+		": the user withdrew the request (pane w7:p1 and worktree w7 torn down)"
+	if decisions := capDecisions(t, f, nodeID); !contains(decisions, want) {
+		t.Errorf("decisions = %v, want %q", decisions, want)
+	}
+	if result.Decision != want {
+		t.Errorf("result.Decision = %q, want %q", result.Decision, want)
+	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done", status)
 	}
@@ -992,6 +1002,17 @@ func TestCloseAbandonedWarnsButStillMarksDoneWhenTeardownFails(t *testing.T) {
 	}
 	if len(result.TornDown) != 0 {
 		t.Errorf("torn_down = %v, want nothing: a failed teardown is a warning, not a claim", result.TornDown)
+	}
+	// The record says the delivery happened and that the teardown did not
+	// finish, rather than claiming a clean-up or denying the delivery.
+	if !strings.Contains(result.Decision, "abandoned after delivery to skills:"+workerID) {
+		t.Errorf("decision = %q, must name the delivery", result.Decision)
+	}
+	if strings.Contains(result.Decision, "torn down") {
+		t.Errorf("decision = %q, must not claim a teardown that failed", result.Decision)
+	}
+	if !strings.Contains(result.Decision, "teardown reported") {
+		t.Errorf("decision = %q, must say the teardown did not finish", result.Decision)
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done despite the warning", status)

@@ -41,6 +41,11 @@ type PendingEntry struct {
 	Tab        string `json:"tab,omitempty"`
 	Agent      string `json:"agent,omitempty"`
 	State      string `json:"state"`
+	// Status is the node's own status when it is blocked: plain "blocked", or
+	// "blocked (condition no longer holds …)" when the check the block recorded
+	// now exits 0. It is empty for a node that is not blocked, where State is the
+	// whole answer.
+	Status string `json:"status,omitempty"`
 }
 
 // PendingResult is the data payload of fs pending: one entry per dispatch, a
@@ -76,6 +81,14 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 		entry, err := pendingEntry(h, node.NodeID, agents, herdrErr)
 		if err != nil {
 			return errResp("pending: " + err.Error())
+		}
+		// A blocked dispatch is still a dispatch the cap has not closed out, so
+		// its block is re-verified here: the recorded check runs in the cap
+		// scope's directory, which is this process's own — cap is never a
+		// registered project. Nothing is unblocked; the entry just says the
+		// reason has expired instead of repeating it as current truth.
+		if node.Status == "blocked" {
+			entry.Status = command.BlockStatus(node, "")
 		}
 		counts[entry.State]++
 		entries = append(entries, entry)

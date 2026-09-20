@@ -2,6 +2,8 @@ package dispatch_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,6 +47,53 @@ func pendingEntryFor(t *testing.T, result dispatch.PendingResult, capNode string
 	}
 	t.Fatalf("pending %+v has no entry for %s", result.Pending, capNode)
 	return dispatch.PendingEntry{}
+}
+
+// A blocked dispatch is still a dispatch waiting on the cap, so fs pending
+// re-runs the check its block recorded: while the condition holds it reads plain
+// blocked, and once it is over the entry says so instead of repeating an expired
+// reason as current truth. Nothing is unblocked.
+func TestPendingReRunsABlockedDispatchCheck(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	capNode := addCapNode(t, f, "dispatch dev-task: sample")
+	marker := filepath.Join(t.TempDir(), "marker")
+	check := "test -f " + marker
+	if resp := f.h.TaskBlockWithCheck("cap", capNode, "waiting on the marker", check); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	before := scopeEventCount(t, f, "cap")
+	entry := pendingEntryFor(t, pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{})), capNode)
+	if entry.Status != "blocked" {
+		t.Errorf("status while the condition holds = %q, want blocked", entry.Status)
+	}
+	if got := scopeEventCount(t, f, "cap"); got != before {
+		t.Errorf("cap events = %d, want %d: fs pending must write nothing", got, before)
+	}
+
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "blocked (condition no longer holds — " + check + " exited 0)"
+	entry = pendingEntryFor(t, pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{})), capNode)
+	if entry.Status != want {
+		t.Errorf("status once the condition is over = %q, want %q", entry.Status, want)
+	}
+}
+
+// A block with no check is prose: fs pending makes no claim about it, however
+// stale the reason is.
+func TestPendingLeavesAChecklessBlockAsProse(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	capNode := addCapNode(t, f, "dispatch dev-task: sample")
+	if resp := f.h.TaskBlock("cap", capNode, "waiting on the user"); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	entry := pendingEntryFor(t, pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{})), capNode)
+	if entry.Status != "blocked" {
+		t.Errorf("status = %q, want plain blocked", entry.Status)
+	}
 }
 
 // scopeEventCount counts the events in a scope, so a test can prove a command

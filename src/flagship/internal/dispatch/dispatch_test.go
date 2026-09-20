@@ -139,7 +139,7 @@ func writeFile(t *testing.T, path, content string) {
 func TestPrepareMissingPlaybook(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", nil, false, false)
 	if resp.OK {
 		t.Fatal("expected failure for a missing playbook")
 	}
@@ -159,7 +159,7 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -237,7 +237,7 @@ func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if resp.OK {
 		t.Fatal("a failing check must refuse, not prepare a brief")
 	}
@@ -266,7 +266,7 @@ func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true, false)
 	if !resp.OK {
 		t.Fatalf("--confirm must prepare despite the failure: %s", resp.Error)
 	}
@@ -278,7 +278,7 @@ func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 		t.Errorf("--confirm must run every check; check 3 did not run: %v", err)
 	}
 
-	want := "user confirmed proceeding past a failing check: false"
+	want := `--confirm overrode the failing check "false" (output: (no output))`
 	if decisions := capDecisions(t, f, brief.CapNodeID); !slices.Contains(decisions, want) {
 		t.Errorf("cap node decisions = %v, want %q", decisions, want)
 	}
@@ -288,30 +288,78 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false, false)
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
 	firstID := first.Data.(*dispatch.Brief).CapNodeID
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, false)
 	if resp.OK {
 		t.Fatal("expected refusal while a dispatch is unresolved")
 	}
-	for _, want := range []string{"unresolved dispatches", firstID, "--confirm"} {
+	for _, want := range []string{"unresolved dispatches", firstID, "--allow-unresolved"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
 	}
 
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, true)
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, true)
 	if !confirmed.OK {
-		t.Fatalf("--confirm dispatch: %s", confirmed.Error)
+		t.Fatalf("--allow-unresolved dispatch: %s", confirmed.Error)
 	}
 	brief := confirmed.Data.(*dispatch.Brief)
-	want := "user confirmed proceeding with unresolved dispatches: " + firstID
+	want := "--allow-unresolved proceeded with unresolved dispatches: " + firstID
 	if decisions := capDecisions(t, f, brief.CapNodeID); !slices.Contains(decisions, want) {
 		t.Errorf("cap node decisions = %v, want %q", decisions, want)
+	}
+}
+
+// Each override belongs to its own gate, and to nothing else. Answering "go
+// ahead with the other dispatch open" must not wave through a failing check the
+// cap never saw, and answering "go ahead despite the failing check" must not
+// wave through an unresolved dispatch — the two failures the single --confirm
+// flag had.
+func TestPrepareOverridesDoNotCoverEachOther(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false, false)
+	if !first.OK {
+		t.Fatalf("first dispatch: %s", first.Error)
+	}
+	firstID := first.Data.(*dispatch.Brief).CapNodeID
+
+	// Now the checks fail: the fixture holds an unresolved dispatch and a
+	// failing prerequisite at the same time.
+	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(filepath.Join(t.TempDir(), "check3-ran")))
+
+	byUnresolved := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, true)
+	if byUnresolved.OK {
+		t.Fatal("--allow-unresolved must not override a failing check")
+	}
+	for _, want := range []string{"prerequisite check failed", "--confirm"} {
+		if !strings.Contains(byUnresolved.Error, want) {
+			t.Errorf("--allow-unresolved refusal %q must mention %q", byUnresolved.Error, want)
+		}
+	}
+
+	byConfirm := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, true, false)
+	if byConfirm.OK {
+		t.Fatal("--confirm must not override an unresolved dispatch")
+	}
+	for _, want := range []string{"unresolved dispatches", firstID, "--allow-unresolved"} {
+		if !strings.Contains(byConfirm.Error, want) {
+			t.Errorf("--confirm refusal %q must mention %q", byConfirm.Error, want)
+		}
+	}
+
+	// Neither refusal proceeded: the only cap node is still the first dispatch.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeID != firstID {
+		t.Errorf("cap nodes = %v, want only the first dispatch %s", nodes, firstID)
 	}
 }
 
@@ -321,7 +369,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false, false)
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
@@ -330,7 +378,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 		t.Fatalf("task edit: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, false)
 	if resp.OK {
 		t.Fatal("a dispatch whose goal was rewritten must still gate")
 	}
@@ -354,7 +402,7 @@ func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 		t.Fatalf("task block: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !resp.OK {
 		t.Fatalf("a non-dispatch cap node must not gate: %s", resp.Error)
 	}
@@ -372,7 +420,7 @@ steps:
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", reworded)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -413,7 +461,7 @@ steps:
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", envPlaybook)
 
-	withCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", []string{"a.md", "b.md"}, false)
+	withCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", []string{"a.md", "b.md"}, false, false)
 	if !withCards.OK {
 		t.Fatalf("Prepare with cards: %s", withCards.Error)
 	}
@@ -432,7 +480,7 @@ steps:
 	if resp := f.h.TaskUpdate("cap", brief.CapNodeID, "done", "test cleanup", nil); !resp.OK {
 		t.Fatalf("resolving the first dispatch: %s", resp.Error)
 	}
-	noCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	noCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !noCards.OK {
 		t.Fatalf("Prepare without cards: %s", noCards.Error)
 	}
@@ -456,7 +504,7 @@ steps:
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", procedure)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -480,7 +528,7 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -533,7 +581,7 @@ func TestPrepareRequiresArgs(t *testing.T) {
 		{"skills", "", "x"},
 		{"skills", "dev-task", ""},
 	} {
-		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, nil, false)
+		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, nil, false, false)
 		if resp.OK {
 			t.Errorf("Prepare(%q, %q, %q) should fail", tc.project, tc.taskType, tc.goal)
 		}
@@ -552,7 +600,7 @@ steps:
   - check: true
 `)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if resp.OK {
 		t.Fatal("a contradictory trigger must refuse, not prepare a brief")
 	}
@@ -563,7 +611,7 @@ steps:
 	}
 
 	// The refusal is a config error, not a gate: --confirm must not override it.
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true)
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true, false)
 	if confirmed.OK {
 		t.Fatal("--confirm must not override a contradictory trigger")
 	}
@@ -588,7 +636,7 @@ steps:
   - check: true
 `)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
 	if !resp.OK {
 		t.Fatalf("an empty trigger must be accepted: %s", resp.Error)
 	}

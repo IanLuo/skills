@@ -67,13 +67,16 @@ type CloseResult struct {
 // before the link existed carries no node, and is the one case --worker is still
 // the only way to name it.
 //
-// --abandoned skips the delivery and worker gates and records
-// "abandoned, never delivered: <reason>" instead of a verdict. It skips the
-// cleanup gate too, but not the teardown: the delivery record, when there is
-// one, is still read, and what it names is still removed. Abandoning is a
-// decision about the work, not a licence to leak a pane — a delivered dispatch
-// closed this way is still a successful close, and its pane and worktree would
-// otherwise outlive it silently.
+// --abandoned skips the delivery and worker gates and records an abandonment —
+// "abandoned, never delivered: <reason>" when no delivery was recorded, and
+// "abandoned after delivery to <project>:<node>: <reason>" naming the pane and
+// worktree the teardown removed when one was. It skips the cleanup gate too, but
+// not the teardown: the delivery record, when there is one, is still read, and
+// what it names is still removed. Abandoning is a decision about the work, not a
+// licence to leak a pane — a delivered dispatch closed this way is still a
+// successful close, and its pane and worktree would otherwise outlive it
+// silently. The record is written after the teardown, so it can only claim what
+// actually happened.
 //
 // reg, kc, hc, and gw are how the exit gate finds its footing: kc holds the
 // cleanup playbook named by the delivery record's type, reg says which project
@@ -99,11 +102,12 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 
 	decision := req.Decision
 	var delivery command.DeliveryRecord
+	delivered := false
 	workerRef := ""
 
 	if req.Abandoned {
 		if req.Reason == "" {
-			return errResp("--abandoned requires --reason: say why the dispatch was never delivered")
+			return errResp("--abandoned requires --reason: say why the dispatch is being abandoned")
 		}
 		// The record is still read on this path, though none of its gates apply:
 		// a dispatch can be delivered and then abandoned — a worker that never
@@ -116,8 +120,8 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 		}
 		if ok {
 			delivery = d
+			delivered = true
 		}
-		decision = "abandoned, never delivered: " + req.Reason
 	} else {
 		d, ok, err := h.DeliveryFor(capScope, req.NodeID)
 		if err != nil {
@@ -151,10 +155,9 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 	}
 
 	result := CloseResult{
-		NodeID:   req.NodeID,
-		Decision: decision,
-		Worker:   workerRef,
-		PaneID:   delivery.PaneID,
+		NodeID: req.NodeID,
+		Worker: workerRef,
+		PaneID: delivery.PaneID,
 	}
 	if !req.Abandoned {
 		// The exit gate runs before anything is torn down or marked done: a
@@ -202,11 +205,44 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 		}
 	}
 	result.Warning = strings.Join(warnings, "; ")
+	if req.Abandoned {
+		// Only now, after the teardown, can the record say what happened: which
+		// dispatch was abandoned, and which resources were really removed. A
+		// record written before the teardown would assert a clearance that had
+		// not run yet.
+		decision = abandonedDecision(delivery, delivered, req.Reason, result.TornDown, result.Warning)
+	}
+	result.Decision = decision
 
 	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
 		return errResp("mark node done: " + resp.Error)
 	}
 	return command.Response{OK: true, Data: result}
+}
+
+// abandonedDecision is the durable record of an abandoned close, written after
+// the teardown so it states what actually happened rather than what was about
+// to. A dispatch with no delivery record was never delivered. One with a record
+// was delivered, and the record names it and whatever the teardown left gone; a
+// teardown that could not finish says so instead of claiming a clean-up it did
+// not do.
+func abandonedDecision(delivery command.DeliveryRecord, delivered bool, reason string, tornDown []string, warning string) string {
+	if !delivered {
+		return "abandoned, never delivered: " + reason
+	}
+
+	deliveryRef := strings.TrimSuffix(delivery.Project+":"+delivery.Node, ":")
+	decision := "abandoned after delivery: " + reason
+	if deliveryRef != "" {
+		decision = fmt.Sprintf("abandoned after delivery to %s: %s", deliveryRef, reason)
+	}
+	if len(tornDown) > 0 {
+		decision += " (" + strings.Join(tornDown, " and ") + " torn down)"
+	}
+	if warning != "" {
+		decision += " (teardown reported: " + warning + ")"
+	}
+	return decision
 }
 
 // runCleanupGate runs the exit gate the delivery's task type declares: the

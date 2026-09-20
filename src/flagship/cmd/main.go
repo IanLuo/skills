@@ -87,7 +87,10 @@ Commands:
   task update NODE_ID --status STATUS [--decision TEXT]  Update task
   task edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata: its goal,
                                                 its structural kind, or both
-  task block NODE_ID --reason REASON            Block a task
+  task block NODE_ID --reason REASON            Block a task; --check names a
+                                                shell command that would show
+                                                the condition is over, which fs
+                                                pending and fs unfinished re-run
   task unblock NODE_ID                          Unblock a task
   task knowledge NODE_ID --summary TEXT         Add knowledge to a task
   status [--project PROJECT_ID]                 Show project status
@@ -118,14 +121,19 @@ Commands:
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
-                                               [--confirm] [--deliver] [--worktree WS]
+                                               [--confirm] [--allow-unresolved]
+                                               [--deliver] [--worktree WS]
                                                Prepare a dispatch brief; --deliver
                                                also hands it to a worker pane;
                                                --cards names the batch's cards,
                                                which every check step sees as
                                                $FS_CARDS; --worktree names the
                                                herdr worktree workspace to tear
-                                               down at close
+                                               down at close. Each gate has its
+                                               own override: --confirm proceeds
+                                               past a failing check, and
+                                               --allow-unresolved proceeds with
+                                               an unresolved dispatch still open
   close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
                                                Close out a dispatch: run its
                                                cleanup gate, then close its pane
@@ -134,7 +142,13 @@ Commands:
                                                the delivery record; --worker is
                                                only a check against it. --confirm
                                                answers the gate's ask steps
-  close --node NODE --abandoned --reason TEXT  Close a never-delivered dispatch`)
+  close --node NODE --abandoned --reason TEXT  Close a dispatch without a verdict,
+                                               delivered or not: a never-delivered
+                                               one records "abandoned, never
+                                               delivered: <reason>", a delivered
+                                               one records "abandoned after
+                                               delivery to <project>:<node>" and
+                                               its pane and worktree are torn down`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives
@@ -332,7 +346,11 @@ Subcommands:
                                            the node a gap was found by
   update NODE_ID --status STATUS [--decision TEXT]  Update task
   edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata
-  block NODE_ID --reason REASON            Block a task
+  block NODE_ID --reason REASON [--check "SHELL COMMAND"]
+                                           Block a task; --check names a shell
+                                           command that would show the
+                                           condition is over, re-run by fs
+                                           pending and fs unfinished
   unblock NODE_ID                          Unblock a task
   knowledge NODE_ID --summary TEXT         Add knowledge to a task`)
 		if len(args) < 1 {
@@ -447,6 +465,7 @@ func taskBlock(args []string) {
 	nodeID := args[0]
 	rest := args[1:]
 	reason := flagVal(rest, "--reason", "")
+	check := flagVal(rest, "--check", "")
 	projectID := flagVal(rest, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
@@ -454,7 +473,7 @@ func taskBlock(args []string) {
 	h, projectID := handler(projectID)
 	defer h.Close()
 
-	resp := h.TaskBlock(projectID, nodeID, reason)
+	resp := h.TaskBlockWithCheck(projectID, nodeID, reason, check)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -866,7 +885,13 @@ func unfinishedCmd() {
 	h := openHandler("")
 	defer h.Close()
 
-	output(h.Unfinished())
+	// A recorded block check runs in its scope's project root, so a resolved
+	// condition reads as resolved. A scope with no registry row — cap, most of
+	// all — has no root, and the check runs in this process's directory.
+	reg := openRegistry()
+	defer reg.Close()
+
+	output(h.Unfinished(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
 // gapsCmd lists every kind=gap node across every scope, open ones first, with
@@ -900,6 +925,7 @@ func dispatchCmd(args []string) {
 	worktree := flagVal(args, "--worktree", "")
 	cards := cardsFlag(args)
 	confirm := hasFlag(args, "--confirm")
+	allowUnresolved := hasFlag(args, "--allow-unresolved")
 	deliver := hasFlag(args, "--deliver")
 
 	if project == "" {
@@ -927,7 +953,7 @@ func dispatchCmd(args []string) {
 	h := openHandler(registryRoot(reg, project))
 	defer h.Close()
 
-	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, cards, confirm)
+	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, cards, confirm, allowUnresolved)
 	if resp.OK {
 		brief := resp.Data.(*dispatch.Brief)
 		brief.Worktree = worktree

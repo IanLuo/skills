@@ -50,6 +50,12 @@ type Node struct {
 	Children  []*Node  `json:"children,omitempty"`
 	Decisions []string `json:"decisions,omitempty"`
 	Knowledge []string `json:"knowledge,omitempty"`
+
+	// BlockCheck is the shell command the node's last block recorded, when one
+	// did. A block reason is prose, so nothing re-verifies it; this is what lets
+	// a reader re-run the condition and see that it has expired. It is empty for
+	// a block with no check — prose alone, with no claim of freshness.
+	BlockCheck string `json:"block_check,omitempty"`
 }
 
 // Tree is the derived project state.
@@ -139,6 +145,16 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 			node := tree.ensureNode(nid)
 			node.Knowledge = append(node.Knowledge, p.Summary)
 
+		case store.TaskBlocked:
+			var p struct {
+				Check string `json:"check"`
+			}
+			_ = json.Unmarshal(evt.Payload, &p)
+			tree.ensureNode(nid).BlockCheck = p.Check
+
+		case store.TaskUnblocked:
+			tree.ensureNode(nid).BlockCheck = ""
+
 		case store.MetadataChanged:
 			var p struct {
 				Field    string `json:"field"`
@@ -155,8 +171,8 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 			}
 
 		default:
-			// TaskBlocked, TaskUnblocked — status derived via StatusChanged.
-			// Ensure node exists for orphan events.
+			// Any other event — status derived via StatusChanged. Ensure node
+			// exists for orphan events.
 			tree.ensureNode(nid)
 		}
 	}

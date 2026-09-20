@@ -47,8 +47,8 @@ var cmdSpecs = map[string]cmdSpec{
 		positionals: 1,
 	},
 	"task block": {
-		usage:       "Usage: fs task block NODE_ID --reason REASON [--project PROJECT_ID]",
-		flags:       map[string]bool{"--reason": true, "--project": true},
+		usage:       "Usage: fs task block NODE_ID --reason REASON [--check \"SHELL COMMAND\"] [--project PROJECT_ID]",
+		flags:       map[string]bool{"--reason": true, "--check": true, "--project": true},
 		positionals: 1,
 	},
 	"task unblock": {
@@ -91,7 +91,13 @@ var cmdSpecs = map[string]cmdSpec{
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--confirm] [--deliver] [--worktree WORKSPACE_ID]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
+
+Each gate has its own override, so saying yes to one never waves the other
+through:
+
+  --confirm            proceed past a FAILING PREREQUISITE CHECK
+  --allow-unresolved   proceed with an UNRESOLVED DISPATCH open
 
 Every check step the playbook declares runs with this dispatch's own inputs in
 its environment, so a prerequisite can ask about this dispatch and not only
@@ -106,11 +112,18 @@ about the world:
 comma-separated list.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--cards": true, "--confirm": false, "--deliver": false, "--worktree": true,
+			"--cards": true, "--confirm": false, "--allow-unresolved": false,
+			"--deliver": false, "--worktree": true,
 		},
 	},
 	"close": {
-		usage: "Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT [--confirm] | --abandoned --reason TEXT",
+		usage: `Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT [--confirm]
+       fs close --node CAP_NODE --abandoned --reason TEXT
+
+--abandoned closes a dispatch without a verdict, delivered or not. One that was
+never delivered records "abandoned, never delivered: <reason>"; one that was
+delivered records "abandoned after delivery to <project>:<node>: <reason>" and
+the delivery's pane and worktree are torn down.`,
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
 			"--confirm": false, "--abandoned": false, "--reason": true,
