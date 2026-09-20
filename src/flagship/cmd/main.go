@@ -63,9 +63,6 @@ func main() {
 	case "pending":
 		checkArgs("pending", os.Args[2:])
 		pendingCmd()
-	case "sweep":
-		checkArgs("sweep", os.Args[2:])
-		sweepCmd()
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -103,10 +100,6 @@ Commands:
                                                 ready, running, unseen, gone,
                                                 unlinked — and the undispatched
                                                 gap count
-  sweep                                        Close the pane of every dispatch
-                                                whose worker node is done, without
-                                                waiting on a cap turn. It never
-                                                marks a node done
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   bootstrap                                     Seed ~/.fs/kb from the playbooks
@@ -894,17 +887,6 @@ func pendingCmd() {
 	defer h.Close()
 
 	output(dispatch.Pending(h, dispatch.NewHerdrCLI()))
-}
-
-// sweepCmd closes the pane of every dispatch whose worker's node is done. It is
-// the pane's own mechanism, so the resource no longer waits on the cap having a
-// turn. It is not a gate, it starts nothing, and it never marks a node done —
-// closing the record stays the cap's, after it has read the node.
-func sweepCmd() {
-	h := openHandler("")
-	defer h.Close()
-
-	output(dispatch.Sweep(h, dispatch.NewHerdrCLI()))
 }
 
 // dispatchCmd prepares the cap's dispatch brief and records the cap's node.
