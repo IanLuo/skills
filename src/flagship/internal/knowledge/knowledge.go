@@ -14,23 +14,28 @@ import (
 )
 
 // Step kinds. A step declares what it is, so the dispatcher never has to guess
-// from its wording: check runs a shell command, ask is for the cap to confirm,
-// say is worker context and not part of the gate.
+// from its wording: check runs a shell command and reports pass/fail, do runs a
+// shell command as an action, ask is for the cap to confirm, say is worker
+// context and not part of the gate.
 const (
 	KindCheck = "check"
 	KindAsk   = "ask"
 	KindSay   = "say"
+	KindDo    = "do"
 )
 
 // allowedKinds is the closed step vocabulary per playbook type. A type absent
 // here (e.g. convention) carries no step-kind rule. routing is validated by
 // validateRouting, which also constrains the step count and body.
 //
-// prerequisite guards entry and cleanup guards exit; both are gates, so both
-// admit the same kinds. A gate that only speaks is not a gate.
+// prerequisite guards entry, so it may assert but not act: a gate that acts is
+// not a gate. cleanup guards exit and runs its actions at the end, after the
+// checks pass and the asks are answered — that is where a per-type teardown
+// belongs, rather than hardcoded in the mechanism that loads the playbook.
+// procedure is read, so nothing executes it beyond check.
 var allowedKinds = map[string][]string{
 	"prerequisite": {KindCheck, KindAsk},
-	"cleanup":      {KindCheck, KindAsk},
+	"cleanup":      {KindCheck, KindAsk, KindDo},
 	"procedure":    {KindSay, KindCheck},
 }
 
@@ -287,7 +292,7 @@ func parseStep(line string) Step {
 
 func isKind(kind string) bool {
 	switch kind {
-	case KindCheck, KindAsk, KindSay:
+	case KindCheck, KindAsk, KindSay, KindDo:
 		return true
 	}
 	return false
@@ -308,6 +313,14 @@ func validatePlaybook(name string, pb *Playbook) error {
 			return fmt.Errorf(
 				"knowledge: %s playbook %q step %d (%q) has kind %q; allowed kinds: %s",
 				pb.Type, name, i+1, step.Body, step.Kind, strings.Join(allowed, ", "))
+		}
+		// A step is named by its kind, so a do with nothing to run is a step that
+		// reads as an action and takes none. Refuse it rather than let a close
+		// report an action it did not take.
+		if step.Kind == KindDo && strings.TrimSpace(step.Body) == "" {
+			return fmt.Errorf(
+				"knowledge: %s playbook %q step %d has kind %q with an empty body; a %s step is the shell command to run",
+				pb.Type, name, i+1, KindDo, KindDo)
 		}
 	}
 	return nil

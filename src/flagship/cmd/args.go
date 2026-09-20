@@ -135,18 +135,26 @@ record rather than from a goal string."`,
 
 --abandoned closes a dispatch without a verdict, delivered or not. One that was
 never delivered records "abandoned, never delivered: <reason>"; one that was
-delivered records "abandoned after delivery to <project>:<node>: <reason>" and
-the delivery's pane and worktree are torn down.
+delivered records "abandoned after delivery to <project>:<node>: <reason>". It
+skips the cleanup gate's checks and asks, but not its declared actions: what the
+delivery opened is still torn down, and an action that fails is a warning.
 
-Every cleanup check runs with the closing dispatch's own inputs in its
-environment, so an exit gate can ask about the dispatch it is gating:
+Every cleanup check and action runs with the closing dispatch's own inputs in
+its environment, so an exit gate can ask about the dispatch it is gating and act
+on what the delivery opened:
 
-  FS_PROJECT     the worker's project
-  FS_TYPE        the task type
-  FS_NODE        the cap node being closed
-  FS_WORKER      the worker's node as "<project>:<node>"; empty without one
-  FS_CARDS       empty — a close has no batch — but present, not missing
-  FS_INTEGRATES  the member this integration merges; empty when it merges none`,
+  FS_PROJECT        the worker's project
+  FS_TYPE           the task type
+  FS_NODE           the cap node being closed
+  FS_WORKER         the worker's node as "<project>:<node>"; empty without one
+  FS_CARDS          empty — a close has no batch — but present, not missing
+  FS_INTEGRATES     the member this integration merges; empty when it merges none
+  FS_PANE           the pane the delivery opened
+  FS_WORKTREE       the worktree workspace the dispatch ran in; empty without one
+  FS_WORKTREE_PATH  that worktree's checkout path; empty without one
+
+Checks run in the tree the dispatch worked in; declared do steps run in the
+project root, so an action that removes the worktree does not stand inside it.`,
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
 			"--confirm": false, "--abandoned": false, "--reason": true,

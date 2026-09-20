@@ -40,7 +40,7 @@ const capScope = "cap"
 // Item is one gate step in the brief's checklist: a check the dispatcher ran,
 // or an ask only the cap can confirm. Body is the shell command for a check.
 type Item struct {
-	Kind   string `json:"kind"`   // check | ask
+	Kind   string `json:"kind"`   // check | ask | do
 	Body   string `json:"body"`   // the command to run, or the question
 	Status string `json:"status"` // pass | fail for a check, ? for an ask
 	Output string `json:"output,omitempty"`
@@ -415,9 +415,17 @@ func checkEnv(project, taskType, goal string, cards []string, integrates string)
 // runCheck runs a check's body through the shared shell runner and reports
 // pass/fail plus the command's combined output.
 func runCheck(body, root string, env []string) Item {
-	out, err := command.RunShell(body, root, env)
+	return runStep(knowledge.KindCheck, body, root, env)
+}
+
+// runStep runs one shell step and reports its kind, exit status, and combined
+// output. A check and a do are the same mechanism with different meaning: a
+// check gates, an action acts, and the caller decides which failure is a refusal
+// and which is a warning.
+func runStep(kind, body, cwd string, env []string) Item {
+	out, err := command.RunShell(body, cwd, env)
 	return Item{
-		Kind:   knowledge.KindCheck,
+		Kind:   kind,
 		Body:   body,
 		Status: passFail(err == nil),
 		Output: strings.TrimRight(out, "\n"),

@@ -29,12 +29,6 @@ const herdrEngine = "herdr"
 // pane is a success, not a failure: the dispatch is simply already torn down.
 var ErrPaneGone = errors.New("pane is already gone")
 
-// ErrWorktreeGone reports that a worktree workspace no longer exists, or was
-// never one. Removing an already-removed worktree is success, not failure: the
-// point is that none is left behind, not that this close is the one that
-// removed it.
-var ErrWorktreeGone = errors.New("worktree is already gone")
-
 // ErrNoRootPane reports that a worktree workspace has no pane a worker can be
 // started in: none of its panes sits at the worktree's checkout. A worktree
 // dispatch is refused rather than falling back to splitting the cap's pane,
@@ -94,10 +88,6 @@ type HerdrCLI interface {
 	Agents() (map[string]string, error)
 	// ClosePane closes paneID, returning ErrPaneGone if it no longer exists.
 	ClosePane(paneID string) error
-	// RemoveWorktree removes the worktree workspace wsID, returning
-	// ErrWorktreeGone if herdr has no such worktree — one already removed is the
-	// goal state, not a failure.
-	RemoveWorktree(wsID string) error
 }
 
 // Deliver hands the prepared brief to a worker: it finds the pane the worker
@@ -383,24 +373,6 @@ func (herdrCLI) ClosePane(paneID string) error {
 	_, err := runHerdr("pane", "close", paneID)
 	if herdrErrorCode(err) == "pane_not_found" {
 		return ErrPaneGone
-	}
-	return err
-}
-
-// RemoveWorktree removes a worktree workspace via herdr. `workspace_not_found`
-// and `worktree_not_found` mean herdr no longer has the workspace, or the
-// worktree it expected inside it: that is ErrWorktreeGone — a step with nothing
-// left to do — but never proof the checkout is gone, which is git's to say.
-//
-// `not_git_worktree` is not that, and does not map to ErrWorktreeGone: it says
-// the *caller* is not inside a git work tree, which is a statement about the
-// invoking environment, not about the worktree the record names. Reading it as
-// "gone" is how a leaked worktree was reported clean.
-func (herdrCLI) RemoveWorktree(wsID string) error {
-	_, err := runHerdr("worktree", "remove", "--workspace", wsID)
-	switch herdrErrorCode(err) {
-	case "workspace_not_found", "worktree_not_found":
-		return ErrWorktreeGone
 	}
 	return err
 }

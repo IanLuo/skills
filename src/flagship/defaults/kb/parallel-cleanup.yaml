@@ -17,3 +17,28 @@ steps:
   # being closed.
   - check: fs integrated $FS_NODE
   - ask: has this member's result been read from its worker node
+
+  # The teardown is DECLARED, not machinery in fs close. Removing a tree and
+  # deleting a branch are git actions, they differ by task type, and this is
+  # where they belong: reviewable, diffable, and per-type, instead of one
+  # hardcoded path every type shares.
+  #
+  # The branch goes first, and that order is required: a worktree's branch can
+  # only be named while the worktree exists, and detaching it is the only way to
+  # free a branch another worktree has checked out. Deleting it before the tree
+  # means an unmerged branch refuses the close while the tree is still on disk to
+  # look at, instead of after the tree is gone and the branch is unrecoverable.
+  #
+  # Already done is not a failure: with no worktree the step is a no-op, and a
+  # worktree whose branch is already detached or deleted is skipped. Nothing is
+  # forced — a branch that is not merged into HEAD refuses rather than being
+  # deleted, and a worktree git will not remove refuses — because a close that
+  # destroys work to succeed is not a close worth having. $FS_WORKTREE is the
+  # herdr workspace; $FS_WORKTREE_PATH is the checkout git knows.
+  - do: p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; [ -e "$p" ] || exit 0; b=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null) || { echo "cannot resolve the branch in $p" >&2; exit 1; }; [ "$b" = HEAD ] && exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; git -C "$p" checkout -q --detach && git branch -d "$b"
+
+  # Remove the worktree itself. A path git no longer registers, or one whose
+  # directory is already gone, is the goal state: `git worktree prune` clears a
+  # stale registration and exits 0. A worktree git refuses to remove — a dirty
+  # checkout — is a refusal naming what git said, never a silent leak.
+  - do: p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; if [ -e "$p" ]; then git worktree remove "$p"; else git worktree prune; fi

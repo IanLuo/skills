@@ -51,7 +51,6 @@ type fixture struct {
 	h       *command.Handler
 	reg     *registry.Registry
 	kc      *knowledge.Center
-	git     *fakeGitWorktrees
 	storeDB string
 	kbDir   string
 }
@@ -86,7 +85,7 @@ func newFixture(t *testing.T, root string) *fixture {
 	// dispatches refuse. Close them, so the suite never becomes order-dependent.
 	t.Cleanup(func() { resolveCapScope(h) })
 
-	return &fixture{h: h, reg: reg, kc: kc, git: &fakeGitWorktrees{}, storeDB: dbPath, kbDir: kbDir}
+	return &fixture{h: h, reg: reg, kc: kc, storeDB: dbPath, kbDir: kbDir}
 }
 
 // resolveCapScope marks every node in the cap scope done. Best-effort: cleanup
@@ -121,10 +120,10 @@ func (f *fixture) writePlaybook(t *testing.T, name, content string) {
 
 // close runs the close-out gate against this fixture's store, registry, and
 // knowledge center, so tests exercise the real signature without repeating it.
-// The git worktrees start out reporting none registered: a test that cares what
-// git says about teardown says it by setting f.git before closing.
+// A test that cares what the exit gate does writes the playbook it wants with
+// writePlaybook.
 func (f *fixture) close(hc dispatch.HerdrCLI, req dispatch.CloseRequest) command.Response {
-	return dispatch.Close(f.h, hc, f.git, f.reg, f.kc, req)
+	return dispatch.Close(f.h, hc, f.reg, f.kc, req)
 }
 
 func writeFile(t *testing.T, path, content string) {

@@ -2045,25 +2045,6 @@ case "$cmd $sub" in
     rm -f "$(id_file pane "$id")"
     printf '{"result":{"closed":true}}\n'
     ;;
-  "worktree remove")
-    # Close-out teardown removes the worktree the record names; which one it
-    # removed is kept, so a test can assert it.
-    ws=""
-    while [ $# -gt 0 ]; do
-      if [ "$1" = "--workspace" ]; then ws="${2:-}"; shift 2 || true; else shift; fi
-    done
-    # herdr's failure codes are modelled on request, so a gate that reads one as
-    # proof the worktree is gone can be exercised. not_git_worktree says the
-    # *caller* is not inside a git work tree, which is a statement about this
-    # environment and not about the worktree the record names.
-    if [ -n "${HERDR_TEST_WORKTREE_REMOVE_CODE:-}" ]; then
-      printf '{"error":{"code":"%s","message":"%s"}}\n' "$HERDR_TEST_WORKTREE_REMOVE_CODE" "$HERDR_TEST_WORKTREE_REMOVE_CODE" >&2
-      exit 1
-    fi
-    [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$ws"
-    printf '%s' "$ws" > "$state/worktree_removed"
-    printf '{"result":{"removed":true}}\n'
-    ;;
   "agent start")
     # args: <name> --kind <kind> --pane <pane>
     name="${1:-}"; shift || true
@@ -2459,7 +2440,7 @@ steps:
 		t.Fatalf("the worktree is not clean (%q); the test would prove nothing", dirty)
 	}
 
-	env, state, _ := fakeHerdrOnPath(t)
+	env, _, _ := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
 	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
 	finishWorker(t, bin, root, workerRef)
@@ -2471,11 +2452,6 @@ steps:
 	data := closed["data"].(map[string]any)
 	if data["cleanup"] != "cleanup gate dev-task-cleanup: 2 checks passed in worktree wWT" {
 		t.Errorf("cleanup = %v, want the checks reported and the tree they ran in", data["cleanup"])
-	}
-	// Teardown still removes the worktree the record names, so the fix leaves
-	// the exit path exactly as it was.
-	if removed, err := os.ReadFile(filepath.Join(state, "worktree_removed")); err != nil || string(removed) != "wWT" {
-		t.Errorf("worktree removed = %q (err %v), want wWT", removed, err)
 	}
 }
 
@@ -2519,134 +2495,242 @@ func assertWorktreeGone(t *testing.T, root, worktree, resolved string) {
 	}
 }
 
-// The acceptance check this whole path exists for: a dispatch runs in a real
-// worktree, close tears it down, and the checkout is gone afterwards. The fake
-// herdr reports the workspace removed and touches nothing on disk, so a close
-// that trusted that report would leave the worktree exactly where it was.
-func TestCLICloseRemovesTheWorktreeHerdrReportsRemoved(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
-	worktree, resolved := realWorktree(t, root)
-	assertWorktreeListed(t, root, resolved)
+// shippedTeardown returns the do bodies a shipped cleanup playbook declares, so
+// a CLI test runs the commands fs actually ships rather than a restatement that
+// could drift from them.
+func shippedTeardown(t *testing.T, playbook string) []string {
+	t.Helper()
+	var steps []string
+	for _, line := range strings.Split(shippedDefault(t, playbook), "\n") {
+		line = strings.TrimSpace(line)
+		if body, ok := strings.CutPrefix(line, "- do: "); ok {
+			steps = append(steps, body)
+		}
+	}
+	if len(steps) == 0 {
+		t.Fatalf("shipped %s declares no do steps", playbook)
+	}
+	return steps
+}
 
-	env, _, _ := fakeHerdrOnPath(t)
-	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+// writeCleanupWithTeardown writes a cleanup playbook whose checks are checks and
+// whose actions are the shipped cleanup's declared teardown. The name and
+// trigger are the task type that selects it.
+func writeCleanupWithTeardown(t *testing.T, home, name, taskType, shipped string, checks ...string) {
+	t.Helper()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "name: %s\ntype: cleanup\ntrigger: %s\nsteps:\n", name, taskType)
+	for _, check := range checks {
+		fmt.Fprintf(&sb, "  - check: %s\n", check)
+	}
+	for _, action := range shippedTeardown(t, shipped) {
+		fmt.Fprintf(&sb, "  - do: %s\n", action)
+	}
+	writeKBPlaybook(t, home, name, sb.String())
+}
 
+// mergeIntoMain commits work on the linked worktree's branch and fast-forwards
+// main onto it. The declared branch step refuses a branch that is not merged, so
+// a teardown test has to start from a merged one.
+func mergeIntoMain(t *testing.T, root, worktree, branch string) {
+	t.Helper()
+	writeFileIn(t, worktree, "work.txt", "work\n")
+	goGit(t, worktree, "add", "work.txt")
+	goGit(t, worktree, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "work")
+	goGit(t, root, "merge", "-q", "--ff-only", branch)
+}
+
+// deliverParallelInWorktree prepares and delivers a parallel dispatch bound to a
+// real worktree workspace, and marks the worker's node done so the close-out
+// gate has something to sign off. It returns the cap node.
+func deliverParallelInWorktree(t *testing.T, bin, root string, env []string, worktree, ws string) string {
+	t.Helper()
 	delivered, code := runFSEnv(t, bin, root, env,
-		"dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", "wWT")
+		"dispatch", "--deliver", "--project", "skills", "--type", "parallel", "--goal", "sample", "--worktree", ws)
 	if code != 0 {
 		t.Fatalf("dispatch --deliver exit %d: %v", code, delivered["error"])
 	}
 	data := delivered["data"].(map[string]any)
-	// The record keeps the checkout path, not only the workspace id: the id is
-	// what herdr can forget before close, and the path is what close needs then.
 	if path, _ := data["delivery"].(map[string]any)["worktree_path"].(string); path != worktree {
 		t.Errorf("delivery worktree_path = %q, want the worktree %s", path, worktree)
 	}
 	finishWorker(t, bin, root, data["worker_node"].(string))
-
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", data["cap_node_id"].(string), "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("close exit %d: %v", code, closed["error"])
-	}
-	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
-		t.Errorf("warning = %v, want none: the worktree is verified gone", warning)
-	}
-	assertWorktreeGone(t, root, worktree, resolved)
+	return data["cap_node_id"].(string)
 }
 
-// The state that leaked two checkouts: herdr no longer knows the workspace at
-// all — its agent having ended — while the git worktree is still there. Every
-// herdr call about it reports workspace_not_found, so the close runs without the
-// worktree's environment variables: the recorded path is what keeps the teardown
-// possible, and the git worktree is removed anyway.
-func TestCLICloseRemovesTheWorktreeWhenHerdrForgotTheWorkspace(t *testing.T) {
+// The acceptance check this whole path exists for: a dispatch runs in a real
+// worktree on its own branch, close runs the teardown the shipped playbook
+// declares, and both the checkout and the branch are gone afterwards. The steps
+// are read from the shipped default, so this exercises the commands fs ships.
+func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
+type: prerequisite
+trigger: parallel
+steps:
+  - check: true
+`)
+	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+
 	worktree, resolved := realWorktree(t, root)
+	mergeIntoMain(t, root, worktree, "batch-test-a")
 	assertWorktreeListed(t, root, resolved)
 
 	env, _, _ := fakeHerdrOnPath(t)
-	deliverEnv := append(append([]string{}, env...), "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, deliverEnv, "sample", "--worktree", "wWT")
-	finishWorker(t, bin, root, workerRef)
+	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+	capNode := deliverParallelInWorktree(t, bin, root, env, worktree, "wWT")
 
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v", code, closed["error"])
+	}
+	result := closed["data"].(map[string]any)
+	if warning := result["warning"]; warning != nil {
+		t.Errorf("warning = %v, want none", warning)
+	}
+	if actions, _ := result["actions"].([]any); len(actions) != 2 {
+		t.Errorf("actions = %v, want the declared teardown reported", result["actions"])
+	}
+	assertWorktreeGone(t, root, worktree, resolved)
+	if branches := gitOut(t, root, "branch", "--format=%(refname:short)"); strings.Contains(branches, "batch-test-a") {
+		t.Errorf("branch batch-test-a still exists after close:\n%s", branches)
+	}
+}
+
+// The state that leaked two checkouts: herdr no longer knows the workspace at
+// all — its agent having ended — while the git worktree is still there. The
+// recorded path is what keeps the declared teardown possible: close runs the
+// steps with the path from the delivery record and never asks herdr.
+func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
+type: prerequisite
+trigger: parallel
+steps:
+  - check: true
+`)
+	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+
+	worktree, resolved := realWorktree(t, root)
+	mergeIntoMain(t, root, worktree, "batch-test-a")
+
+	env, _, _ := fakeHerdrOnPath(t)
+	deliverEnv := append(append([]string{}, env...), "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+	capNode := deliverParallelInWorktree(t, bin, root, deliverEnv, worktree, "wWT")
+
+	// Close without the worktree environment: every herdr call about wWT reports
+	// workspace_not_found, and the recorded path is all the steps need.
 	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
 	if code != 0 {
 		t.Fatalf("close exit %d: %v — a forgotten workspace must not cost the close its footing", code, closed["error"])
 	}
 	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
-		t.Errorf("warning = %v, want none: the worktree is verified gone", warning)
+		t.Errorf("warning = %v, want none", warning)
 	}
 	assertWorktreeGone(t, root, worktree, resolved)
 }
 
-// A worktree git will not remove — here an untracked file — is a warning naming
-// the path, and the close still succeeds: the cap can act on what it is told,
-// and a leak is never silent.
-func TestCLICloseWarnsWhenTheWorktreeCannotBeRemoved(t *testing.T) {
+// A declared action that fails refuses the close. This is the whole point of
+// moving the teardown into the playbook: the failure is a refusal the cap has to
+// answer, not a warning nobody reads. The node stays open and the checkout stays
+// put, so the cap can fix it and close again.
+func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
+type: prerequisite
+trigger: parallel
+steps:
+  - check: true
+`)
+	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+
 	worktree, resolved := realWorktree(t, root)
-	// Untracked files make `git worktree remove` refuse without --force, which is
-	// the whole point: the teardown reports it rather than forcing past it.
+	mergeIntoMain(t, root, worktree, "batch-test-a")
+	// An untracked file makes `git worktree remove` refuse without --force: the
+	// declared step reports that rather than forcing past it.
 	writeFileIn(t, worktree, "untracked.txt", "left behind\n")
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
-	finishWorker(t, bin, root, workerRef)
+	capNode := deliverParallelInWorktree(t, bin, root, env, worktree, "wWT")
 
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("close exit %d: %v — a worktree that cannot be removed is a warning, not a refusal", code, closed["error"])
+	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
 	}
-	warning, _ := closed["data"].(map[string]any)["warning"].(string)
-	for _, want := range []string{worktree, "could not remove"} {
-		if !strings.Contains(warning, want) {
-			t.Errorf("warning %q must mention %q", warning, want)
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"cleanup action failed", "git worktree remove", "untracked files"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must mention %q", errMsg, want)
 		}
 	}
-	// The warning is the truth: the checkout is still registered with git.
-	if listed := gitOut(t, root, "worktree", "list", "--porcelain"); !strings.Contains(listed, resolved) {
-		t.Errorf("git no longer lists %s, so the warning claims a leak that is not there:\n%s", resolved, listed)
+	// The refusal left everything where it was: the checkout is still there, so
+	// the cap can clean it and close again.
+	assertWorktreeListed(t, root, resolved)
+	if task := capTask(t, bin, root, "dispatch parallel: sample"); task["status"] == "done" {
+		t.Errorf("cap node status = %v, a refused close must leave it open", task["status"])
 	}
+
+	// Fixing what the step reported and closing again succeeds: the refusal is
+	// the cap's to answer, not a dead end.
+	if err := os.Remove(filepath.Join(worktree, "untracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	retried, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("close after fixing the action exit %d: %v", code, retried["error"])
+	}
+	assertWorktreeGone(t, root, worktree, resolved)
 }
 
-// `not_git_worktree` says the caller's environment is not a git work tree. It is
-// not evidence that the worktree is gone, and it must not be read as one: the
-// close still verifies with git and removes the checkout, and the herdr failure
-// is reported rather than swallowed.
-func TestCLICloseDoesNotReadNotGitWorktreeAsTheWorktreeBeingGone(t *testing.T) {
+// Already gone is not a failure. A worktree removed out of band, and a second
+// close of a node that is already done, both run the declared steps into their
+// no-op case and succeed — a retry after a partial teardown must not fail on
+// "already removed".
+func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
+type: prerequisite
+trigger: parallel
+steps:
+  - check: true
+`)
+	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+
 	worktree, resolved := realWorktree(t, root)
-	assertWorktreeListed(t, root, resolved)
+	mergeIntoMain(t, root, worktree, "batch-test-a")
 
 	env, _, _ := fakeHerdrOnPath(t)
-	env = append(env,
-		"HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree,
-		"HERDR_TEST_WORKTREE_REMOVE_CODE=not_git_worktree")
-	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
-	finishWorker(t, bin, root, workerRef)
+	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
+	capNode := deliverParallelInWorktree(t, bin, root, env, worktree, "wWT")
+
+	// The tree and branch are removed by hand, as a retry after a partial
+	// teardown leaves them: the declared steps must see nothing to do.
+	goGit(t, root, "worktree", "remove", worktree)
+	goGit(t, root, "branch", "-D", "batch-test-a")
+	assertWorktreeGone(t, root, worktree, resolved)
 
 	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
 	if code != 0 {
-		t.Fatalf("close exit %d: %v", code, closed["error"])
+		t.Fatalf("an already-removed worktree must not fail the close: %v", closed["error"])
 	}
-	warning, _ := closed["data"].(map[string]any)["warning"].(string)
-	if !strings.Contains(warning, "not_git_worktree") {
-		t.Errorf("warning %q must report the herdr failure", warning)
+	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
+		t.Errorf("warning = %v, want none for an already-removed worktree", warning)
 	}
-	assertWorktreeGone(t, root, worktree, resolved)
+
+	// And a second close of the same, now done, node is a no-op too.
+	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
+	if code != 0 {
+		t.Fatalf("closing an already-closed dispatch must succeed: %v", again["error"])
+	}
 }
 
 // A worktree workspace herdr does not know is refused, naming it, before any

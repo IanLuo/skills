@@ -323,7 +323,29 @@ steps:
   - check: git status --porcelain
   - say: the worktree must be clean
 `,
-			want: []string{"step 2", "the worktree must be clean", `"say"`, "allowed kinds: check, ask"},
+			want: []string{"step 2", "the worktree must be clean", `"say"`, "allowed kinds: check, ask, do"},
+		},
+		{
+			name: "prerequisite refuses do",
+			pb: `name: p
+type: prerequisite
+trigger: t
+steps:
+  - check: test -f AGENTS.md
+  - do: rm -rf build
+`,
+			want: []string{"step 2", "rm -rf build", `"do"`, "allowed kinds: check, ask"},
+		},
+		{
+			name: "cleanup refuses an empty do",
+			pb: `name: p
+type: cleanup
+trigger: t
+steps:
+  - check: true
+  - do:
+`,
+			want: []string{"step 2", `"do"`, "empty body"},
 		},
 		{
 			name: "routing refuses two steps",
@@ -364,6 +386,33 @@ steps:
 				}
 			}
 		})
+	}
+}
+
+func TestCleanupAcceptsDoSteps(t *testing.T) {
+	kc, err := knowledge.Open(tempKB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const pb = `name: p
+type: cleanup
+trigger: t
+steps:
+  - check: git status --porcelain
+  - ask: is the merge reviewed
+  - do: git worktree remove "$FS_WORKTREE_PATH"
+`
+	if err := kc.Add("p", []byte(pb)); err != nil {
+		t.Fatalf("a cleanup playbook must accept a do step: %v", err)
+	}
+	got, err := kc.Get("p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := knowledge.Step{Kind: knowledge.KindDo, Body: `git worktree remove "$FS_WORKTREE_PATH"`}
+	if len(got.Steps) != 3 || got.Steps[2] != want {
+		t.Errorf("steps = %+v, want the do step last", got.Steps)
 	}
 }
 
