@@ -3,7 +3,9 @@ type: procedure
 trigger: cap
 engine_scope: herdr
 steps:
-  - say: herdr state is a seen/unseen signal, not a finished signal; done means nobody has looked, and a pane in your own tab is always seen
-  - say: a worker runs in its own tab so its completion is unseen and herdr reports done; a sibling pane in your tab never can
+  - say: for any herdr work load the herdr skill first — skills/herdr/SKILL.md and its references/herdr-ops.md; it is marked disable-model-invocation so nothing loads it for you, and the installed CLI is the authority on syntax
+  - say: wait for work in the call that hands it over — herdr agent prompt <target> "<task>" --wait --timeout N IS the notification; sleep-and-poll with agent list is a guess
+  - say: for a worker already running, herdr agent wait <target> --until done --timeout N; for a program rather than an agent, herdr pane wait-output --match
+  - say: --wait settles on idle, done or blocked — idle or done means read its node and close it; blocked means inspect the UI and ask the user, never answer an approval prompt for them
   - say: the worker's node in the project is the truth about whether the work finished; herdr only says when to look
   - say: pick up finished workers at the top of every turn; never wait and never poll with a sleep

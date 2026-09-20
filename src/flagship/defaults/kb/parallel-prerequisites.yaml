@@ -3,7 +3,10 @@ type: prerequisite
 trigger: parallel
 steps:
   - check: test -d .git
-  - check: herdr worktree list >/dev/null
+  # herdr resolves the workspace from the invoking pane's HERDR_* environment,
+  # not from cwd — so a check that calls herdr must name its cwd explicitly, or
+  # it is evaluated against the cap's pane (which need not be in a repo at all).
+  - check: herdr worktree list --cwd . >/dev/null
   # The batch's cards come from the dispatch itself: fs dispatch --cards exports
   # them as $FS_CARDS, comma-separated, and this step passes them to the script
   # that intersects their declared file sets. Disjointness is therefore a

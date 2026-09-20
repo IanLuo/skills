@@ -7,7 +7,7 @@ steps:
   - say: run the user-facing skills yourself (specs, grill, canvas, annotate, show-me, handoff, flagship, skill-man); dispatch the artifact skills (init-context, design-task, dev-task, review-task, librarian, nix-config)
   - say: answer with the smallest view that makes the point — a diagram, tree or pseudocode before prose
   - say: never do heavy work yourself — the work, the verification and the merge are each a dispatch
-  - say: start every turn with fs pending; it says what is waiting. Never wait and never poll
+  - say: start every turn with fs pending, and close anything it reports ready BEFORE doing anything else; never wait and never poll — a queued close-out is the step that gets dropped
   - say: prepare and deliver in one step with fs dispatch; when it refuses, stop and tell the user
   - say: a finished worker points at its node — read the node, never the message and never the transcript
   - say: close only with fs close; the merge is a dispatched integration, one at a time, never by hand
