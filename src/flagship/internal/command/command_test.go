@@ -188,6 +188,174 @@ func TestTaskAddUnknownParentRefused(t *testing.T) {
 	}
 }
 
+// Every writer that names a node must refuse one that does not exist in the
+// resolved project, before appending anything: a status or decision for a node
+// that was never created is a fabrication, not a record. The event count is the
+// assertion — a refusal that still wrote an event is the bug this guards.
+func TestWritersRefuseAnUnknownNode(t *testing.T) {
+	writes := []struct {
+		name  string
+		write func(h *command.Handler) command.Response
+	}{
+		{"task update", func(h *command.Handler) command.Response {
+			return h.TaskUpdate("proj", "t-doesnotexist", "done", "probe", nil)
+		}},
+		{"task edit", func(h *command.Handler) command.Response {
+			return h.TaskEdit("proj", "t-doesnotexist", "reworded", "", nil)
+		}},
+		{"task block", func(h *command.Handler) command.Response {
+			return h.TaskBlock("proj", "t-doesnotexist", "waiting")
+		}},
+		{"task unblock", func(h *command.Handler) command.Response {
+			return h.TaskUnblock("proj", "t-doesnotexist")
+		}},
+		{"task knowledge", func(h *command.Handler) command.Response {
+			return h.KnowledgeAdd("proj", "t-doesnotexist", "learned")
+		}},
+		{"record delivery", func(h *command.Handler) command.Response {
+			return h.RecordDelivery("proj", "t-doesnotexist", command.DeliveryRecord{
+				PaneID: "w1:p1", Agent: "a", Engine: "herdr", Project: "proj", Node: "t-x",
+			})
+		}},
+	}
+
+	for _, tc := range writes {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setup(t)
+			h.ProjectCreate("proj", "/tmp/proj")
+
+			before := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+			resp := tc.write(h)
+			if resp.OK {
+				t.Fatal("a write to a node that does not exist must be refused")
+			}
+			if !strings.Contains(resp.Error, "t-doesnotexist") || !strings.Contains(resp.Error, "proj") {
+				t.Errorf("error must name the node and the project: %s", resp.Error)
+			}
+			after := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+			if after != before {
+				t.Fatalf("a refused write must write no event: %d -> %d", before, after)
+			}
+		})
+	}
+}
+
+// A conjured node — events with no task-created event, the damage the old path
+// left in a live store — must not accept more writes. It is visible in fs
+// status, because derived state materializes a node from any event that names
+// it; an existence check against derived state would pass it. This is the case
+// acceptance names: `fs task update t-doesnotexist --project skills`.
+func TestWritersRefuseAConjuredNode(t *testing.T) {
+	h, s := setupWithStore(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	conjured := "t-doesnotexist"
+	payload, _ := json.Marshal(map[string]string{"summary": "written to a node that was never created"})
+	if _, err := s.Append(store.Event{
+		Type:      store.DecisionRecorded,
+		ProjectID: "proj",
+		NodeID:    &conjured,
+		Payload:   payload,
+	}); err != nil {
+		t.Fatalf("append conjured: %v", err)
+	}
+
+	// Precondition: the conjured node is visible in derived state, which is
+	// exactly why tree membership cannot be the test for existence.
+	if got := len(h.Status("proj").Data.(command.StatusResult).Tasks); got != 1 {
+		t.Fatalf("precondition: conjured node must be visible in status, got %d tasks", got)
+	}
+
+	before := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+	resp := h.TaskUpdate("proj", conjured, "done", "probe", nil)
+	if resp.OK {
+		t.Fatal("a write to a node with no task-created event must be refused")
+	}
+	if !strings.Contains(resp.Error, conjured) || !strings.Contains(resp.Error, "proj") {
+		t.Errorf("error must name the node and the project: %s", resp.Error)
+	}
+	if after := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events); after != before {
+		t.Fatalf("a refused write must write no event: %d -> %d", before, after)
+	}
+}
+
+// The parent a write names is a node the write references, so it must exist the
+// same way: a conjured node is not an acceptable parent.
+func TestTaskAddRefusesAConjuredParent(t *testing.T) {
+	h, s := setupWithStore(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	conjured := "t-doesnotexist"
+	payload, _ := json.Marshal(map[string]string{"summary": "conjured"})
+	if _, err := s.Append(store.Event{
+		Type:      store.DecisionRecorded,
+		ProjectID: "proj",
+		NodeID:    &conjured,
+		Payload:   payload,
+	}); err != nil {
+		t.Fatalf("append conjured: %v", err)
+	}
+
+	before := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+	resp := h.TaskAdd("proj", "child of a node that was never created", &conjured)
+	if resp.OK {
+		t.Fatal("a parent with no task-created event must be refused")
+	}
+	if !strings.Contains(resp.Error, conjured) || !strings.Contains(resp.Error, "proj") {
+		t.Errorf("error must name the parent and the project: %s", resp.Error)
+	}
+	if after := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events); after != before {
+		t.Fatalf("a refused add must write no event: %d -> %d", before, after)
+	}
+}
+
+// "<project>:<node>" is the form our briefs and fs close --worker use. When the
+// qualifier names the resolved project the write lands on the bare node — never
+// on a node literally named "proj:t-...".
+func TestWritersResolveAQualifiedNodeInItsOwnProject(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	nodeID := h.TaskAdd("proj", "do something", nil).Data.(command.EventData).NodeID
+
+	resp := h.TaskUpdate("proj", "proj:"+nodeID, "done", "", nil)
+	if !resp.OK {
+		t.Fatalf("a qualified id naming the resolved project must be accepted: %s", resp.Error)
+	}
+
+	// The write is on the bare node.
+	if events := h.Log("proj", strPtr(nodeID), nil).Data.(command.LogResult).Events; len(events) != 2 {
+		t.Errorf("expected task-created + status-changed on %s, got %d events", nodeID, len(events))
+	}
+	// And no node named literally "proj:<node>" was conjured.
+	if events := h.Log("proj", strPtr("proj:"+nodeID), nil).Data.(command.LogResult).Events; len(events) != 0 {
+		t.Errorf("a node named %q was created", "proj:"+nodeID)
+	}
+}
+
+// A qualifier that names a different project than the one the write targets is
+// refused, naming both: an accidental cross-scope write is the failure this
+// check exists to remove.
+func TestWritersRefuseAQualifiedNodeInAnotherProject(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	h.ProjectCreate("other", "/tmp/other")
+	otherNode := h.TaskAdd("other", "other work", nil).Data.(command.EventData).NodeID
+
+	before := len(h.Log("other", nil, nil).Data.(command.LogResult).Events)
+	resp := h.TaskUpdate("proj", "other:"+otherNode, "done", "", nil)
+	if resp.OK {
+		t.Fatal("a qualified id naming another project must be refused")
+	}
+	if !strings.Contains(resp.Error, "other") || !strings.Contains(resp.Error, "proj") {
+		t.Errorf("error must name both projects: %s", resp.Error)
+	}
+
+	after := len(h.Log("other", nil, nil).Data.(command.LogResult).Events)
+	if after != before {
+		t.Fatalf("the other project's node must be untouched: %d -> %d", before, after)
+	}
+}
+
 func TestTaskAddRequiresGoal(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")

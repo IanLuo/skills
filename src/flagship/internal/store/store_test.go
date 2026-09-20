@@ -244,6 +244,92 @@ func TestFTS5Search(t *testing.T) {
 	}
 }
 
+// A term containing ":" must be searched as text. Bare, FTS5 reads "a:b" as a
+// column filter and fails with "no such column: b" — which the cap misread as
+// zero hits.
+func TestSearchTreatsAColonAsText(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	s.Append(store.Event{Type: store.DecisionRecorded, ProjectID: "p", NodeID: strPtr("t1"),
+		Payload: json.RawMessage(`{"summary":"the type:decision marker is literal text"}`)})
+
+	results, err := s.Search("p", "type:decision")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for the literal text, got %d", len(results))
+	}
+}
+
+// A hyphenated term is one token to FTS5's tokenizer, not syntax — but only
+// once it is quoted, so the whole term is matched and not parsed.
+func TestSearchTreatsAHyphenAsText(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	s.Append(store.Event{Type: store.DecisionRecorded, ProjectID: "p", NodeID: strPtr("t1"),
+		Payload: json.RawMessage(`{"summary":"the jev-typesafe classifier misread it"}`)})
+
+	results, err := s.Search("p", "jev-typesafe")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for jev-typesafe, got %d", len(results))
+	}
+}
+
+// Quoting must keep the prefix behaviour: "auth" still finds "authentication".
+func TestSearchKeepsPrefixBehaviour(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	s.Append(store.Event{Type: store.DecisionRecorded, ProjectID: "p", NodeID: strPtr("t1"),
+		Payload: json.RawMessage(`{"summary":"chose OAuth2 for authentication"}`)})
+
+	for _, term := range []string{"auth", "auth*"} {
+		results, err := s.Search("p", term)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", term, err)
+		}
+		if len(results) != 1 {
+			t.Errorf("Search(%q) = %d results, want the authentication event", term, len(results))
+		}
+	}
+}
+
+// A term containing a double quote must be escaped, not left to close the
+// phrase and turn the rest of the term into syntax.
+func TestSearchEscapesAnInnerQuote(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	s.Append(store.Event{Type: store.DecisionRecorded, ProjectID: "p", NodeID: strPtr("t1"),
+		Payload: json.RawMessage(`{"summary":"the marker \"unquote\" is indexed"}`)})
+
+	results, err := s.Search("p", `"unquote"`)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for the quoted term, got %d", len(results))
+	}
+}
+
 func TestLastEventID(t *testing.T) {
 	s, err := store.Open(tempDB(t))
 	if err != nil {

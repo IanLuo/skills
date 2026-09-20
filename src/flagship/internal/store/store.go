@@ -469,14 +469,22 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 	return events, rows.Err()
 }
 
-// prefixQuery converts each whitespace-separated term to a prefix match.
-// e.g. "auth decisions" → "auth* decisions*"
+// prefixQuery converts each whitespace-separated term to a quoted prefix match.
+//
+// Each term is quoted because a bare term is FTS5 syntax, not text: "a:b" is a
+// column filter (the "no such column: b" the cap misread as zero hits), and
+// operators such as OR or NOT are parsed rather than searched. Quoting makes
+// every term literal text; the trailing "*" keeps the prefix behaviour, which
+// FTS5 accepts on a quoted phrase. A quote inside a term is escaped by doubling
+// it, which is how FTS5 spells a quote within a quoted string. A trailing "*"
+// the caller wrote is redundant once every term is a prefix and is dropped, so
+// `auth*` still finds "authentication".
+// e.g. `auth decisions` → `"auth"* "decisions"*`
 func prefixQuery(q string) string {
 	parts := strings.Fields(q)
 	for i, p := range parts {
-		if !strings.HasSuffix(p, "*") {
-			parts[i] = p + "*"
-		}
+		p = strings.TrimSuffix(p, "*")
+		parts[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"*`
 	}
 	return strings.Join(parts, " ")
 }

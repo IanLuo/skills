@@ -407,6 +407,8 @@ func taskUpdate(args []string) {
 	decision := flagVal(rest, "--decision", "")
 	projectID := flagVal(rest, "--project", "")
 
+	projectID, nodeID = nodeArg(projectID, nodeID)
+
 	h, projectID := handler(projectID)
 	defer h.Close()
 
@@ -425,6 +427,8 @@ func taskEdit(args []string) {
 	rest := args[1:]
 	goal := flagVal(rest, "--goal", "")
 	projectID := flagVal(rest, "--project", "")
+
+	projectID, nodeID = nodeArg(projectID, nodeID)
 
 	h, projectID := handler(projectID)
 	defer h.Close()
@@ -445,6 +449,8 @@ func taskBlock(args []string) {
 	reason := flagVal(rest, "--reason", "")
 	projectID := flagVal(rest, "--project", "")
 
+	projectID, nodeID = nodeArg(projectID, nodeID)
+
 	h, projectID := handler(projectID)
 	defer h.Close()
 
@@ -462,6 +468,8 @@ func taskUnblock(args []string) {
 	nodeID := args[0]
 	rest := args[1:]
 	projectID := flagVal(rest, "--project", "")
+
+	projectID, nodeID = nodeArg(projectID, nodeID)
 
 	h, projectID := handler(projectID)
 	defer h.Close()
@@ -481,6 +489,8 @@ func taskKnowledge(args []string) {
 	rest := args[1:]
 	summary := flagVal(rest, "--summary", "")
 	projectID := flagVal(rest, "--project", "")
+
+	projectID, nodeID = nodeArg(projectID, nodeID)
 
 	h, projectID := handler(projectID)
 	defer h.Close()
@@ -964,6 +974,22 @@ func closeCmd(args []string) {
 	}
 
 	output(dispatch.Close(h, dispatch.NewHerdrCLI(), dispatch.NewGitWorktrees(), reg, kc, req))
+}
+
+// nodeArg splits a "<project>:<node>" node argument into the project it names
+// and the bare node id — but only when no --project was given: an explicit
+// --project is the stronger statement, and the command layer refuses a qualifier
+// that contradicts it, naming both. A colon never appears in a node id (they are
+// "t-<hex>"), so reading one as a qualifier is safe.
+func nodeArg(projectID, nodeID string) (string, string) {
+	if projectID != "" {
+		return projectID, nodeID
+	}
+	project, node, ok := strings.Cut(nodeID, ":")
+	if !ok {
+		return projectID, nodeID
+	}
+	return project, node
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.

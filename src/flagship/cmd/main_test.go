@@ -274,6 +274,133 @@ func TestCLITaskUpdateAndStatus(t *testing.T) {
 	}
 }
 
+// taskEventCount returns how many events a scope holds, so a test can assert a
+// refused write wrote nothing.
+func taskEventCount(t *testing.T, bin, dir, project string) int {
+	t.Helper()
+	resp, code := runFS(t, bin, dir, "log", "--project", project)
+	if code != 0 {
+		t.Fatalf("log exit %d: %v", code, resp["error"])
+	}
+	events, _ := resp["data"].(map[string]any)["events"].([]any)
+	return len(events)
+}
+
+// A write to a node that does not exist must fail loudly and write nothing. The
+// event count is the assertion: the bug this task removes returned ok:true and
+// conjured a node with no task-created event.
+func TestCLIRefusesAnUnknownNode(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	before := taskEventCount(t, bin, dir, "p")
+	resp, code := runFS(t, bin, dir, "task", "update", "t-doesnotexist", "--status", "done", "--decision", "probe", "--project", "p")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	if resp["ok"] != false {
+		t.Errorf("ok = %v, want false", resp["ok"])
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"t-doesnotexist", "p"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must name %q", errMsg, want)
+		}
+	}
+	if after := taskEventCount(t, bin, dir, "p"); after != before {
+		t.Fatalf("a refused write must write no event: %d -> %d", before, after)
+	}
+}
+
+// "<project>:<node>" resolves to that project's node, never to a literal node id.
+func TestCLIResolvesAQualifiedNode(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+	addResp, _ := runFS(t, bin, dir, "task", "add", "--goal", "my task", "--project", "p")
+	nodeID := addResp["data"].(map[string]any)["node_id"].(string)
+
+	resp, code := runFS(t, bin, dir, "task", "update", "p:"+nodeID, "--status", "active", "--project", "p")
+	if code != 0 {
+		t.Fatalf("qualified update exit %d: %v", code, resp["error"])
+	}
+
+	statusResp, _ := runFS(t, bin, dir, "status", "--project", "p")
+	tasks := statusResp["data"].(map[string]any)["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d — a node named %q was conjured", len(tasks), "p:"+nodeID)
+	}
+	if got := tasks[0].(map[string]any)["status"]; got != "active" {
+		t.Errorf("status = %v, want active on the bare node", got)
+	}
+}
+
+// A qualifier naming another project than --project is refused, naming both.
+func TestCLIRefusesAQualifiedNodeInAnotherProject(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+	runFS(t, bin, dir, "project", "create", "--name", "other", "--root", t.TempDir())
+	addResp, _ := runFS(t, bin, dir, "task", "add", "--goal", "other work", "--project", "other")
+	otherNode := addResp["data"].(map[string]any)["node_id"].(string)
+
+	before := taskEventCount(t, bin, dir, "other")
+	resp, code := runFS(t, bin, dir, "task", "update", "other:"+otherNode, "--status", "done", "--project", "p")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: %v", code, resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"other", "p"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("error %q must name %q", errMsg, want)
+		}
+	}
+	if after := taskEventCount(t, bin, dir, "other"); after != before {
+		t.Fatalf("the other project's node must be untouched: %d -> %d", before, after)
+	}
+}
+
+// With no --project, the qualifier names the project — the form our briefs use.
+func TestCLIQualifiedNodeNamesTheProjectWhenNoFlagIsGiven(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+	addResp, _ := runFS(t, bin, dir, "task", "add", "--goal", "my task", "--project", "p")
+	nodeID := addResp["data"].(map[string]any)["node_id"].(string)
+
+	// Run from a directory that resolves to no project: the qualifier is the
+	// only thing naming one.
+	nowhere := t.TempDir()
+	resp, code := runFS(t, bin, nowhere, "task", "update", "p:"+nodeID, "--status", "active")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	statusResp, _ := runFS(t, bin, nowhere, "status", "--project", "p")
+	if got := statusResp["data"].(map[string]any)["tasks"].([]any)[0].(map[string]any)["status"]; got != "active" {
+		t.Errorf("status = %v, want active", got)
+	}
+}
+
+// FTS5 syntax in a search term is text, not syntax: a colon must not error.
+func TestCLIQueryTreatsFTSSyntaxAsText(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+	runFS(t, bin, dir, "task", "add", "--goal", "the jev-typesafe classifier misread type:decision", "--project", "p")
+
+	for _, term := range []string{"jev-typesafe", "type:decision"} {
+		resp, code := runFS(t, bin, dir, "query", term, "--project", "p")
+		if code != 0 {
+			t.Fatalf("query %q exit %d: %v", term, code, resp["error"])
+		}
+		events := resp["data"].(map[string]any)["events"].([]any)
+		if len(events) != 1 {
+			t.Errorf("query %q found %d events, want 1", term, len(events))
+		}
+	}
+}
+
 func TestCLITaskEdit(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()

@@ -204,15 +204,16 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy s
 	// A parent that is not in the project would leave the node unreachable in
 	// the tree: not a root, never a child, invisible to fs status — and events
 	// are immutable, so the mistake could never be corrected. Refuse it here.
-	// The check uses the same derivation fs status and fs unfinished do, so an
-	// accepted parent is one those views show.
+	// Existence is a task-created event, not tree membership: derived state
+	// materializes a node from any event written to it, so a conjured node (see
+	// nodeExists) would otherwise be an acceptable parent.
 	if parentNodeID != nil && *parentNodeID != "" {
-		events, err := h.store.Replay(projectID, nil)
+		exists, err := h.nodeExists(projectID, *parentNodeID)
 		if err != nil {
 			h.logger.Error("store replay failed", "command", "task-add", "error", err)
 			return errResp(err.Error())
 		}
-		if _, ok := query.BuildTree(projectID, events).Nodes[*parentNodeID]; !ok {
+		if !exists {
 			return errResp(fmt.Sprintf("parent %s does not exist in project %s", *parentNodeID, projectID))
 		}
 	}
@@ -256,6 +257,55 @@ func validNodeRef(ref string) error {
 	return nil
 }
 
+// nodeExists reports whether a node was created in the project. The test is a
+// task-created event, not tree membership: derived state materializes a node
+// from any event that names it, so a node that only ever had a status or
+// decision written to it — the damage the old path left behind — is visible in
+// fs status while never having been created. A node whose task-created parent is
+// missing is an orphan, which is a node that exists.
+func (h *Handler) nodeExists(projectID, nodeID string) (bool, error) {
+	filter := &store.ReplayFilter{
+		Types:  []store.EventType{store.TaskCreated},
+		NodeID: &nodeID,
+	}
+	events, err := h.store.Replay(projectID, filter)
+	if err != nil {
+		return false, err
+	}
+	return len(events) > 0, nil
+}
+
+// resolveWriteNode resolves the node id a write names and confirms it exists in
+// projectID. A writer that appends an event for a node that was never created
+// conjures a work item with no task-created event: a status and decisions for
+// something that does not exist. Refusing here, before any append, is what makes
+// "a write lands on the node it names, or fails" true.
+//
+// A "<project>:<node>" id is qualified, never literal: a colon never appears in
+// a node id (they are "t-<hex>"), so reading one as qualified is safe. The
+// qualifier must name projectID — a different project is an accidental
+// cross-scope write, refused naming both.
+func (h *Handler) resolveWriteNode(projectID, nodeID string) (string, error) {
+	if prefix, rest, ok := strings.Cut(nodeID, ":"); ok {
+		if prefix != projectID {
+			return "", fmt.Errorf("id %q names project %s but the write targets project %s", nodeID, prefix, projectID)
+		}
+		if rest == "" {
+			return "", fmt.Errorf("id %q names no node", nodeID)
+		}
+		nodeID = rest
+	}
+
+	exists, err := h.nodeExists(projectID, nodeID)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("node %s does not exist in project %s", nodeID, projectID)
+	}
+	return nodeID, nil
+}
+
 // TaskUpdate appends status-changed and optionally decision-recorded events. AC4.
 func (h *Handler) TaskUpdate(projectID, nodeID, status, decision string, commitSHA *string) Response {
 	if projectID == "" {
@@ -263,6 +313,11 @@ func (h *Handler) TaskUpdate(projectID, nodeID, status, decision string, commitS
 	}
 	if nodeID == "" {
 		return errResp("node_id is required")
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
 	}
 
 	sha := h.commitSHA
@@ -349,6 +404,11 @@ func (h *Handler) RecordDelivery(projectID, nodeID string, d DeliveryRecord) Res
 		return errResp("delivery node is required: it names the node the worker was given")
 	}
 
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
+	}
+
 	payload, _ := json.Marshal(d)
 	id, err := h.store.Append(store.Event{
 		Type:      store.DeliveryRecorded,
@@ -402,6 +462,11 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 	}
 	if nodeID == "" {
 		return errResp("node_id is required")
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
 	}
 
 	sha := h.commitSHA
@@ -732,6 +797,11 @@ func (h *Handler) TaskBlock(projectID, nodeID, reason string) Response {
 		return errResp("--reason is required")
 	}
 
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
+	}
+
 	from := h.deriveStatus(projectID, nodeID)
 
 	blockedPayload, _ := json.Marshal(map[string]string{"reason": reason})
@@ -776,6 +846,11 @@ func (h *Handler) TaskUnblock(projectID, nodeID string) Response {
 	}
 	if nodeID == "" {
 		return errResp("node_id is required")
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
 	}
 
 	unblockedPayload, _ := json.Marshal(map[string]string{})
@@ -823,6 +898,11 @@ func (h *Handler) KnowledgeAdd(projectID, nodeID, summary string) Response {
 	}
 	if summary == "" {
 		return errResp("--summary is required")
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
 	}
 
 	payload, _ := json.Marshal(map[string]string{"summary": summary})
