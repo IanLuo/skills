@@ -2995,3 +2995,279 @@ func TestCLIPendingRefusesArguments(t *testing.T) {
 		t.Errorf("error %q must name the rejected flag", errMsg)
 	}
 }
+
+// fsOnPath puts the built binary on PATH as `fs`, so a shipped gate that shells
+// out to `fs` — the member's exit gate runs `fs integrated $FS_NODE` — resolves
+// the binary under test. The fake herdr the caller installed stays first.
+func fsOnPath(t *testing.T, bin string, env []string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Symlink(bin, filepath.Join(dir, "fs")); err != nil {
+		t.Fatal(err)
+	}
+	path := os.Getenv("PATH")
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			path = strings.TrimPrefix(kv, "PATH=")
+		}
+	}
+	return append(env, "PATH="+dir+string(os.PathListSeparator)+path)
+}
+
+// capNodeOf adds a cap-scope node of the given kind and returns its id.
+func capNodeOf(t *testing.T, bin, root, goal, kind string) string {
+	t.Helper()
+	resp, code := runFS(t, bin, root, "task", "add", "--goal", goal, "--kind", kind, "--project", "cap")
+	if code != 0 {
+		t.Fatalf("task add %s exit %d: %v", goal, code, resp["error"])
+	}
+	return resp["data"].(map[string]any)["node_id"].(string)
+}
+
+// --integrates names the member an integration merges. The link is written into
+// the integration's own task-created payload, so a reader recovers it from the
+// event — never from a goal string — and a typo must be refused at write time.
+func TestCLIDispatchIntegratesRefusesANonDispatchNode(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	gap := capNodeOf(t, bin, root, "a gap, never dispatched", "gap")
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "integrate", "--goal", "merge", "--integrates", gap)
+	if code == 0 {
+		t.Fatalf("--integrates naming a gap node must be refused, got %v", resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{gap, `not a dispatch node`, "--integrates"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("refusal %q must mention %q", errMsg, want)
+		}
+	}
+
+	// A node that does not exist is refused too, naming it.
+	resp, code = runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "integrate", "--goal", "merge", "--integrates", "t-00000000")
+	if code == 0 {
+		t.Fatalf("--integrates naming no node must be refused, got %v", resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "t-00000000") {
+		t.Errorf("refusal %q must name the node", errMsg)
+	}
+}
+
+// A valid link lands on the integration's task-created payload, which is what
+// makes "which member does this integrate?" a structural read.
+func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), intPrePlaybook, `name: integrate-prerequisites
+type: prerequisite
+trigger: integrate
+steps:
+  - check: true
+`)
+
+	member := capNodeOf(t, bin, root, "dispatch parallel: member", "dispatch")
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "integrate", "--goal", "merge the member", "--integrates", member)
+	if code != 0 {
+		t.Fatalf("dispatch --integrates exit %d: %v", code, resp["error"])
+	}
+	integration := resp["data"].(map[string]any)["cap_node_id"].(string)
+
+	log, code := runFS(t, bin, root, "log", "--project", "cap", "--node", integration, "--type", "task-created")
+	if code != 0 {
+		t.Fatalf("log exit %d: %v", code, log["error"])
+	}
+	events := log["data"].(map[string]any)["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("integration has %d task-created events, want 1", len(events))
+	}
+	payload, _ := events[0].(map[string]any)["payload"].(map[string]any)
+	if payload["integrates"] != member {
+		t.Errorf("task-created payload = %v, want integrates %s", payload, member)
+	}
+	if payload["kind"] != "dispatch" {
+		t.Errorf("task-created payload = %v, want kind dispatch", payload)
+	}
+}
+
+// fs task get is the read the integrate entry gate uses: the node exists, and
+// it is the kind the gate says it is. Both answers are exit codes, so a
+// playbook never parses JSON in shell.
+func TestCLITaskGetAnswersWithAnExitCode(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	member := capNodeOf(t, bin, root, "dispatch parallel: member", "dispatch")
+	resp, code := runFS(t, bin, root, "task", "get", member, "--project", "cap", "--kind", "dispatch")
+	if code != 0 {
+		t.Fatalf("task get exit %d: %v", code, resp["error"])
+	}
+	if got := resp["data"].(map[string]any)["node_id"]; got != member {
+		t.Errorf("task get returned %v, want %s", got, member)
+	}
+
+	resp, code = runFS(t, bin, root, "task", "get", member, "--project", "cap", "--kind", "gap")
+	if code == 0 {
+		t.Fatalf("task get --kind gap on a dispatch node must exit non-zero, got %v", resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{member, `"dispatch"`, `"gap"`} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("refusal %q must mention %q", errMsg, want)
+		}
+	}
+
+	resp, code = runFS(t, bin, root, "task", "get", "t-00000000", "--project", "cap")
+	if code == 0 {
+		t.Fatalf("task get for a missing node must exit non-zero, got %v", resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "t-00000000") {
+		t.Errorf("refusal %q must name the node", errMsg)
+	}
+}
+
+// The member's exit gate checks the process, not the outcome. A branch merged by
+// hand — never by an integration dispatch — satisfies "HEAD is an ancestor of
+// main", which is exactly why that check could not tell a dispatched
+// integration from a bypass. This is that failure, live: the merge is asserted
+// at the time, and the gate must refuse it.
+func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	goGit(t, root, "init", "-q", "-b", "main")
+	writeFileIn(t, root, "seed.txt", "seed\n")
+	goGit(t, root, "add", "seed.txt")
+	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
+
+	// The member's branch, merged by hand into main.
+	goGit(t, root, "checkout", "-q", "-b", "member")
+	writeFileIn(t, root, "member.txt", "member work\n")
+	goGit(t, root, "add", "member.txt")
+	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "member")
+	goGit(t, root, "checkout", "-q", "main")
+	goGit(t, root, "merge", "-q", "--no-ff", "-m", "hand merge", "member")
+	// The old gate's condition, asserted so the test proves what it claims.
+	goGit(t, root, "merge-base", "--is-ancestor", "HEAD", "main")
+
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeKBPlaybook(t, testHome(t), parPrePlaybook, `name: parallel-prerequisites
+type: prerequisite
+trigger: parallel
+steps:
+  - check: true
+`)
+	writeKBPlaybook(t, testHome(t), parCleanPlaybook, shippedDefault(t, parCleanPlaybook))
+
+	env, _, _ := fakeHerdrOnPath(t)
+	env = fsOnPath(t, bin, env)
+
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "parallel", "--goal", "member")
+	if code != 0 {
+		t.Fatalf("dispatch --deliver exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	member := data["cap_node_id"].(string)
+	finishWorker(t, bin, root, data["worker_node"].(string))
+
+	// No integration dispatch names it, so fs integrated refuses and so does the
+	// member's exit gate — a hand merge is not an integration.
+	if integrated, code := runFSEnv(t, bin, root, env, "integrated", member); code == 0 {
+		t.Fatalf("fs integrated must exit 1 for a member no integration names, got %v", integrated)
+	}
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", member, "--decision", "read the worker node; verified")
+	if code == 0 {
+		t.Fatalf("a hand-merged member must be refused by parallel-cleanup, got %v", closed)
+	}
+	errMsg, _ := closed["error"].(string)
+	for _, want := range []string{"cleanup check failed", "fs integrated", member} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("refusal %q must mention %q", errMsg, want)
+		}
+	}
+
+	// Now integrate it the dispatched way, per member: an integration dispatch
+	// names it, is closed done, and the member's gate passes.
+	writeKBPlaybook(t, testHome(t), intPrePlaybook, `name: integrate-prerequisites
+type: prerequisite
+trigger: integrate
+steps:
+  - check: true
+`)
+	writeKBPlaybook(t, testHome(t), intCleanPlaybook, `name: integrate-cleanup
+type: cleanup
+trigger: integrate
+steps:
+  - check: true
+`)
+	resp, code = runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "integrate", "--goal", "merge the member", "--integrates", member)
+	if code != 0 {
+		t.Fatalf("dispatch --integrates exit %d: %v", code, resp["error"])
+	}
+	integration := resp["data"].(map[string]any)["cap_node_id"].(string)
+	finishWorker(t, bin, root, resp["data"].(map[string]any)["worker_node"].(string))
+
+	if integrated, code := runFSEnv(t, bin, root, env, "integrated", member); code == 0 {
+		t.Fatalf("a pending integration must not count, got %v", integrated)
+	}
+	if _, code := runFSEnv(t, bin, root, env, "close", "--node", integration, "--decision", "merged the member"); code != 0 {
+		t.Fatalf("closing the integration exit %d", code)
+	}
+
+	integrated, code := runFSEnv(t, bin, root, env, "integrated", member)
+	if code != 0 {
+		t.Fatalf("fs integrated exit %d: %v", code, integrated["error"])
+	}
+	if got := integrated["data"].(map[string]any)["integrated_by"]; got != integration {
+		t.Errorf("integrated_by = %v, want the integration node %s", got, integration)
+	}
+
+	if closed, code := runFSEnv(t, bin, root, env, "close", "--node", member, "--decision", "read the worker node; verified", "--confirm"); code != 0 {
+		t.Fatalf("an integrated member must close, exit %d: %v", code, closed["error"])
+	}
+}
+
+// fs status must agree with fs pending and fs unfinished: a block whose recorded
+// condition is over reports so, in all three. The check runs in the project's
+// own root, so this reads status from somewhere else entirely — a status that
+// ran the check wherever it was standing would repeat the expired block as
+// current truth, which is the disagreement this fixes.
+func TestCLIStatusReRunsABlockCheckInTheProjectRoot(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	added, code := runFS(t, bin, root, "task", "add", "--goal", "waiting on the marker", "--project", "skills")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, added["error"])
+	}
+	node := added["data"].(map[string]any)["node_id"].(string)
+	if _, code := runFS(t, bin, root, "task", "block", node, "--reason", "waiting on the marker", "--check", "test -f marker", "--project", "skills"); code != 0 {
+		t.Fatal("block failed")
+	}
+
+	elsewhere := t.TempDir()
+	assertStatus := func(want string) {
+		t.Helper()
+		resp, code := runFS(t, bin, elsewhere, "status", "--project", "skills")
+		if code != 0 {
+			t.Fatalf("status exit %d: %v", code, resp["error"])
+		}
+		for _, raw := range resp["data"].(map[string]any)["tasks"].([]any) {
+			task := raw.(map[string]any)
+			if task["node_id"] != node {
+				continue
+			}
+			if task["status"] != want {
+				t.Errorf("status = %v, want %q", task["status"], want)
+			}
+			return
+		}
+		t.Fatalf("status did not report node %s", node)
+	}
+
+	assertStatus("blocked")
+	writeFileIn(t, root, "marker", "")
+	assertStatus("blocked (condition no longer holds — test -f marker exited 0)")
+}

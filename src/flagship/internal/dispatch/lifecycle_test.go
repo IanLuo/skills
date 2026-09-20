@@ -161,7 +161,18 @@ func addCapNode(t *testing.T, f *fixture, goal string) string {
 // dispatch gates pass over ordinary cap work.
 func addCapKindNode(t *testing.T, f *fixture, goal string, kind query.Kind) string {
 	t.Helper()
-	added := f.h.TaskAddKind("cap", goal, kind, "", nil)
+	added := f.h.TaskAddKind("cap", goal, kind, "", "", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	return added.Data.(command.EventData).NodeID
+}
+
+// addIntegrationNode records an integration dispatch that names a member, the
+// way fs dispatch --integrates does: one task-created event carrying the link.
+func addIntegrationNode(t *testing.T, f *fixture, member string) string {
+	t.Helper()
+	added := f.h.TaskAddKind("cap", "dispatch integrate: merge the member", query.KindDispatch, "", member, nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -232,7 +243,7 @@ func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID,
 // does — a dispatch node — with the given status.
 func addWorkerNode(t *testing.T, f *fixture, status string) string {
 	t.Helper()
-	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", nil)
+	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -1663,5 +1674,106 @@ steps:
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
 		t.Errorf("a refused close must leave the node open, got %q", status)
+	}
+}
+
+// Exit checks see the closing dispatch's own inputs as FS_*, the same treatment
+// entry checks get, so an exit gate can ask about the dispatch it is gating
+// instead of a proxy for it.
+//
+// printenv rather than echo is deliberate: it fails on an absent variable, so a
+// step passing proves the variable is set — and FS_CARDS, which a close has no
+// value for, must read as set-and-empty rather than missing.
+func TestCloseGivesCleanupChecksTheClosingDispatchEnv(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	f.writePlaybook(t, "dev-task-cleanup", fmt.Sprintf(`name: dev-task-cleanup
+type: cleanup
+trigger: dev-task
+steps:
+  - check: test "$FS_PROJECT" = skills
+  - check: test "$FS_TYPE" = dev-task
+  - check: test "$FS_NODE" = %s
+  - check: test "$FS_WORKER" = skills:%s
+  - check: test -z "$FS_CARDS" && printenv FS_CARDS >/dev/null
+  - check: test -z "$FS_INTEGRATES" && printenv FS_INTEGRATES >/dev/null
+`, nodeID, workerID))
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "6 checks passed") {
+		t.Errorf("cleanup note = %q, want every env check reported", note)
+	}
+}
+
+// An integration's exit gate sees the member the integration names, so a gate
+// can be about this integration's own link.
+func TestCloseGivesCleanupChecksTheIntegratesLink(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+
+	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
+	nodeID := addIntegrationNode(t, f, member)
+	workerID := addWorkerNode(t, f, "done")
+	recordTypedDelivery(t, f, nodeID, "w1:p9", workerID, "integrate")
+
+	f.writePlaybook(t, "integrate-cleanup", fmt.Sprintf(`name: integrate-cleanup
+type: cleanup
+trigger: integrate
+steps:
+  - check: test "$FS_NODE" = %s
+  - check: test "$FS_INTEGRATES" = %s
+`, nodeID, member))
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "2 checks passed") {
+		t.Errorf("cleanup note = %q, want the link check reported", note)
+	}
+}
+
+// A member's integration closes per member: closing integration 1 leaves member
+// 2's tree, branch and open node exactly as they were. The batch-global checks
+// this gate used to carry made that impossible — they asked about the whole
+// batch, so no single member's integration could pass while another was
+// unfinished.
+func TestCloseOfOneMembersIntegrationIsUnaffectedByTheOtherMember(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "gate.marker"), "")
+
+	f := newFixture(t, root)
+	f.writePlaybook(t, "integrate-cleanup", `name: integrate-cleanup
+type: cleanup
+trigger: integrate
+steps:
+  - check: test -f gate.marker
+  - ask: was the integration verdict recorded and read
+`)
+
+	first := addCapKindNode(t, f, "dispatch parallel: member one", query.KindDispatch)
+	second := addCapKindNode(t, f, "dispatch parallel: member two", query.KindDispatch)
+	integration := addIntegrationNode(t, f, first)
+	workerID := addWorkerNode(t, f, "done")
+	recordTypedDelivery(t, f, integration, "w1:p9", workerID, "integrate")
+
+	// Member two is still open: the whole point is that its state cannot reach
+	// member one's integration gate.
+	if status := nodeStatus(t, f, "cap", second); status == "done" {
+		t.Fatalf("member two must still be open for this test to mean anything, got %q", status)
+	}
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: integration, Decision: "merged one", Confirm: true})
+	if !resp.OK {
+		t.Fatalf("closing one member's integration must not depend on the other member: %s", resp.Error)
+	}
+	if status := nodeStatus(t, f, "cap", second); status == "done" {
+		t.Errorf("closing an integration for member one closed member two (status %q)", status)
 	}
 }

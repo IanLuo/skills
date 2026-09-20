@@ -51,6 +51,9 @@ func main() {
 	case "dispatch":
 		checkArgs("dispatch", os.Args[2:])
 		dispatchCmd(os.Args[2:])
+	case "integrated":
+		checkArgs("integrated", os.Args[2:])
+		integratedCmd(os.Args[2:])
 	case "close":
 		checkArgs("close", os.Args[2:])
 		closeCmd(os.Args[2:])
@@ -84,6 +87,10 @@ Commands:
                                                 by default), and --found-by
                                                 PROJECT:NODE records what a gap
                                                 was found by
+  task get NODE_ID [--project P] [--kind KIND]  Show one task's derived state;
+                                                exit 1 when no such node exists,
+                                                or when --kind names a different
+                                                kind
   task update NODE_ID --status STATUS [--decision TEXT]  Update task
   task edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata: its goal,
                                                 its structural kind, or both
@@ -121,19 +128,29 @@ Commands:
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
+                                               [--integrates MEMBER_NODE]
                                                [--confirm] [--allow-unresolved]
                                                [--deliver] [--worktree WS]
                                                Prepare a dispatch brief; --deliver
                                                also hands it to a worker pane;
                                                --cards names the batch's cards,
                                                which every check step sees as
-                                               $FS_CARDS; --worktree names the
-                                               herdr worktree workspace to tear
-                                               down at close. Each gate has its
-                                               own override: --confirm proceeds
-                                               past a failing check, and
-                                               --allow-unresolved proceeds with
-                                               an unresolved dispatch still open
+                                               $FS_CARDS; --integrates names the
+                                               member cap node this integration
+                                               merges, recorded on the dispatch's
+                                               own task-created payload and seen
+                                               by every check as $FS_INTEGRATES;
+                                               --worktree names the herdr worktree
+                                               workspace to tear down at close.
+                                               Each gate has its own override:
+                                               --confirm proceeds past a failing
+                                               check, and --allow-unresolved
+                                               proceeds with an unresolved
+                                               dispatch still open
+  integrated MEMBER_NODE                       Exit 0 and print the done
+                                               integration dispatch that names
+                                               this member cap node; exit 1 when
+                                               none does
   close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
                                                Close out a dispatch: run its
                                                cleanup gate, then close its pane
@@ -344,6 +361,10 @@ Subcommands:
                                            Add a task; --kind is work (default),
                                            dispatch or gap; --found-by names
                                            the node a gap was found by
+  get NODE_ID [--project PROJECT_ID] [--kind KIND]
+                                           Show one task's derived state; exit
+                                           1 when no such node exists, or when
+                                           --kind names a different kind
   update NODE_ID --status STATUS [--decision TEXT]  Update task
   edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata
   block NODE_ID --reason REASON [--check "SHELL COMMAND"]
@@ -362,6 +383,9 @@ Subcommands:
 	case "add":
 		checkArgs("task add", args[1:])
 		taskAdd(args[1:])
+	case "get":
+		checkArgs("task get", args[1:])
+		taskGet(args[1:])
 	case "update":
 		checkArgs("task update", args[1:])
 		taskUpdate(args[1:])
@@ -408,11 +432,61 @@ func taskAdd(args []string) {
 		parentPtr = &parent
 	}
 
-	resp := h.TaskAddKind(projectID, goal, kind, foundBy, parentPtr)
+	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", parentPtr)
 	if resp.OK {
 		updateActivity(projectID)
 	}
 	output(resp)
+}
+
+// taskGet prints one node's derived state. It is a read with an exit code: it
+// answers "does this node exist, and is it the kind I think it is?" the way a
+// gate can use it, instead of leaving a playbook to parse fs status's JSON in
+// shell. --kind is the filter the integrate entry gate names: an integration
+// integrates a member's dispatch node, so the node it was given must be one.
+func taskGet(args []string) {
+	if len(args) < 1 {
+		fatal("fs task get: NODE_ID required")
+	}
+	nodeID := args[0]
+	rest := args[1:]
+	projectID := flagVal(rest, "--project", "")
+	kind := query.Kind(flagVal(rest, "--kind", ""))
+
+	if kind != "" && !query.ValidKind(kind) {
+		fatal(fmt.Sprintf("fs task get: invalid kind %q (valid: work, dispatch, gap)", kind))
+	}
+
+	projectID, nodeID = nodeArg(projectID, nodeID)
+
+	// The project's root is where a blocked node's recorded check runs, the same
+	// way fs status resolves it: one node's derived state must not disagree with
+	// the tree it was copied from.
+	name, root := resolveProject(projectID)
+	h := openHandler(root)
+	defer h.Close()
+
+	resp := h.StatusIn(name, root)
+	if !resp.OK {
+		output(resp)
+		return
+	}
+
+	for _, task := range resp.Data.(command.StatusResult).Tasks {
+		if task.NodeID != nodeID {
+			continue
+		}
+		if kind != "" && task.Kind != kind {
+			output(command.Response{OK: false, Error: fmt.Sprintf(
+				"fs task get: node %s in project %s is a %q node, not a %q node",
+				nodeID, name, task.Kind, kind)})
+			return
+		}
+		output(command.Response{OK: true, Data: task})
+		return
+	}
+	output(command.Response{OK: false, Error: fmt.Sprintf(
+		"fs task get: no node %s in project %s", nodeID, name)})
 }
 
 func taskUpdate(args []string) {
@@ -521,15 +595,19 @@ func taskKnowledge(args []string) {
 	output(resp)
 }
 
+// statusCmd shows one project's derived state. A blocked node's recorded check
+// runs in the project's own root — the same re-verification fs pending and fs
+// unfinished do — so all three readers agree on whether a block's condition
+// still holds.
 func statusCmd(args []string) {
 	projectID := flagVal(args, "--project", "")
 
-	h, projectID := handler(projectID)
+	name, root := resolveProject(projectID)
+	h := openHandler(root)
 	defer h.Close()
 
-	updateActivity(projectID)
-	resp := h.Status(projectID)
-	output(resp)
+	updateActivity(name)
+	output(h.StatusIn(name, root))
 }
 
 func kbCmd(args []string) {
@@ -923,6 +1001,7 @@ func dispatchCmd(args []string) {
 	taskType := flagVal(args, "--type", "")
 	goal := flagVal(args, "--goal", "")
 	worktree := flagVal(args, "--worktree", "")
+	integrates := flagVal(args, "--integrates", "")
 	cards := cardsFlag(args)
 	confirm := hasFlag(args, "--confirm")
 	allowUnresolved := hasFlag(args, "--allow-unresolved")
@@ -953,7 +1032,7 @@ func dispatchCmd(args []string) {
 	h := openHandler(registryRoot(reg, project))
 	defer h.Close()
 
-	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, cards, confirm, allowUnresolved)
+	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, cards, integrates, confirm, allowUnresolved)
 	if resp.OK {
 		brief := resp.Data.(*dispatch.Brief)
 		brief.Worktree = worktree
@@ -1000,6 +1079,22 @@ func closeCmd(args []string) {
 	}
 
 	output(dispatch.Close(h, dispatch.NewHerdrCLI(), dispatch.NewGitWorktrees(), reg, kc, req))
+}
+
+// integratedCmd answers a member's question: was it merged by a done integration
+// dispatch? It exits 0 and prints that dispatch's node id, or 1 with what to do
+// instead. It is a read, and the cap's scope needs no registered project, so it
+// works from anywhere — including the member's own worktree, which is where the
+// member's exit gate runs it.
+func integratedCmd(args []string) {
+	if len(args) < 1 {
+		fatal("fs integrated: MEMBER_NODE required")
+	}
+
+	h := openHandler("")
+	defer h.Close()
+
+	output(dispatch.Integrated(h, args[0]))
 }
 
 // nodeArg splits a "<project>:<node>" node argument into the project it names

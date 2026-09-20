@@ -92,7 +92,7 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 
 	node, err := capNode(h, req.NodeID)
 	if err != nil {
-		return errResp(err.Error())
+		return errResp("close: " + err.Error())
 	}
 	if node.Kind != query.KindDispatch {
 		return errResp(fmt.Sprintf(
@@ -165,7 +165,7 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 		// remain so it can be finished. A refusal above returned before this point,
 		// and so does a refusal here — the teardown below is only ever reached by a
 		// close that is going to succeed.
-		gate, confirmations, err := runCleanupGate(hc, reg, kc, delivery, req.Confirm)
+		gate, confirmations, err := runCleanupGate(hc, reg, kc, delivery, req.NodeID, node.Integrates, req.Confirm)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -253,6 +253,11 @@ func abandonedDecision(delivery command.DeliveryRecord, delivered bool, reason s
 // a missing exit gate must be visible, never silent. A playbook that exists but
 // cannot be read is refused, because a gate that fails open is worse than none.
 //
+// capNodeID is the dispatch node being closed and integrates the member it
+// merges, when it merges one; both are passed on to the checks as FS_NODE and
+// FS_INTEGRATES, so a gate can ask about the dispatch it is gating instead of a
+// proxy for it.
+//
 // Checks run in order in the tree the dispatch worked in — the worktree the
 // record names, or the worker project's root when it names none — and the first
 // failure refuses: the same fail-fast shape as fs dispatch, and for the same
@@ -260,7 +265,7 @@ func abandonedDecision(delivery command.DeliveryRecord, delivered bool, reason s
 // because an ask is a question only the user can answer: making them confirm a
 // gate and then revealing that a check fails wastes the answer and hides the
 // failure. ask steps are refused until --confirm says they have been answered.
-func runCleanupGate(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, delivery command.DeliveryRecord, confirm bool) (string, []string, error) {
+func runCleanupGate(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, delivery command.DeliveryRecord, capNodeID, integrates string, confirm bool) (string, []string, error) {
 	if delivery.Type == "" {
 		return "no cleanup gate: the delivery record carries no task type", nil, nil
 	}
@@ -293,15 +298,19 @@ func runCleanupGate(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, d
 		return "", nil, fmt.Errorf("close: cleanup gate %s cannot run: %v", name, err)
 	}
 
+	// Exit checks get the same FS_* treatment entry checks do, so a gate can ask
+	// about the dispatch it is gating: which project and task type it was, which
+	// cap node is closing, which worker's node it rested on, and which member it
+	// integrates. FS_CARDS is exported empty — a close has no batch to offer — and
+	// stays present rather than missing, so a check can tell "this dispatch named
+	// no cards" from "this step has no env".
+	env := cleanupEnv(delivery, capNodeID, integrates)
 	checks := 0
 	for _, step := range pb.Steps {
 		if step.Kind != knowledge.KindCheck {
 			continue
 		}
-		// Exit checks get no FS_* environment: those carry the dispatch's own
-		// inputs (its cards, above all), and a close-out has none to offer — the
-		// delivery record names a pane and a node, not a batch.
-		item := runCheck(step.Body, cwd, nil)
+		item := runCheck(step.Body, cwd, env)
 		if item.Status != "pass" {
 			return "", nil, fmt.Errorf(
 				"close: cleanup check failed: %q; output: %s; fix it, then close again",
@@ -333,6 +342,26 @@ func runCleanupGate(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, d
 		note += fmt.Sprintf(", %d confirmed", len(asks))
 	}
 	return note, confirmations, nil
+}
+
+// cleanupEnv is the closing dispatch's own inputs, exposed to every exit check
+// as FS_*. It is deliberately narrower than the entry gate's env: a close has no
+// --goal and no --cards to offer, so it exports FS_CARDS empty rather than
+// inventing a value nobody supplied. FS_INTEGRATES is the member this
+// integration merges, empty for a dispatch that merges nothing.
+func cleanupEnv(delivery command.DeliveryRecord, capNodeID, integrates string) []string {
+	worker := ""
+	if delivery.Project != "" && delivery.Node != "" {
+		worker = delivery.Project + ":" + delivery.Node
+	}
+	return []string{
+		"FS_PROJECT=" + delivery.Project,
+		"FS_TYPE=" + delivery.Type,
+		"FS_NODE=" + capNodeID,
+		"FS_WORKER=" + worker,
+		"FS_CARDS=",
+		"FS_INTEGRATES=" + integrates,
+	}
 }
 
 // checkDir returns the directory the cleanup checks run in: the worktree the
@@ -466,10 +495,12 @@ func workerFor(d command.DeliveryRecord, requested string) (string, string, erro
 }
 
 // capNode returns the cap-scope node, or an error when no such node exists.
+// The error carries no command's name: fs close and fs dispatch both resolve
+// their nodes through here.
 func capNode(h *command.Handler, nodeID string) (command.TaskInfo, error) {
 	node, ok := scopeNode(h, capScope, nodeID)
 	if !ok {
-		return command.TaskInfo{}, fmt.Errorf("close: no node %s in scope %s", nodeID, capScope)
+		return command.TaskInfo{}, fmt.Errorf("no node %s in scope %s", nodeID, capScope)
 	}
 	return node, nil
 }

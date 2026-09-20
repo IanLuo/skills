@@ -19,6 +19,7 @@ package dispatch
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -81,13 +82,18 @@ type Brief struct {
 // returns the CLI response envelope, so failures are reported the same way as
 // every other command's.
 //
+// integrates is the member's cap node an integration merges, or empty for a
+// dispatch that integrates nothing. A non-empty value must name a cap-scope
+// dispatch node: the link is recorded on this dispatch's own task-created
+// payload, so it exists from creation and never depends on parsing a goal.
+//
 // It refuses in two cases rather than preparing work in a bad state: an earlier
 // dispatch is still unresolved, or a prerequisite check failed. The two gates
 // have one override each: allowUnresolved for the unresolved dispatch, confirm
 // for the failing check. Neither overrides the other — a cap answering "go ahead
 // with the other dispatch open" has not seen, and so cannot have accepted, a
 // failing prerequisite the other flag would have short-circuited.
-func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, cards []string, confirm, allowUnresolved bool) command.Response {
+func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, cards []string, integrates string, confirm, allowUnresolved bool) command.Response {
 	if project == "" {
 		return errResp("--project is required")
 	}
@@ -96,6 +102,11 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	}
 	if goal == "" {
 		return errResp("--goal is required")
+	}
+
+	member, err := integrateMember(h, integrates)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
 	}
 
 	playbookName := knowledge.PrerequisiteName(taskType)
@@ -118,20 +129,26 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	// Refuse to pile another one on top of it unless the cap says to proceed.
 	// --allow-unresolved is this gate's only override: --confirm is about a
 	// failing check and must not pass this one.
+	//
+	// The member this integration names is expected to be unresolved: a member's
+	// dispatch is closed only after the integration it waits on is done, so it is
+	// not the other open work this gate protects — it is what this dispatch is
+	// about. Every other open dispatch still refuses.
 	unresolved, err := unresolvedDispatches(h)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
+	unresolved = withoutNode(unresolved, member)
 	if len(unresolved) > 0 && !allowUnresolved {
 		return errResp(unresolvedError(unresolved))
 	}
 
-	brief, err := buildBrief(pb, proj, taskType, goal, cards, confirm)
+	brief, err := buildBrief(pb, proj, taskType, goal, cards, integrates, confirm)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 
-	nodeID, err := recordCapNode(h, taskType, goal, project)
+	nodeID, err := recordCapNode(h, taskType, goal, project, member)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
@@ -169,6 +186,115 @@ func triggerError(kind, name string, pb *knowledge.Playbook, taskType string) er
 	return fmt.Errorf(
 		"%s playbook %s.yaml carries trigger %q, which does not match the task type %q its name selects it for; set trigger to %q, or leave it empty — an empty trigger is valid and the shipped playbooks rely on it",
 		kind, name, pb.Trigger, taskType, taskType)
+}
+
+// integrateMember resolves a --integrates value to the bare id of the cap-scope
+// dispatch node it names, or to "" when the flag was not given.
+//
+// It refuses a node that does not exist, and one that is not a dispatch node,
+// naming it: the link is written into the integration's task-created payload, and
+// events are immutable, so a wrong link could never be corrected. "Is this a
+// dispatch node" is the same question the dispatch gates ask, so it is asked the
+// same way — from the node's structural kind, never from its goal text.
+func integrateMember(h *command.Handler, integrates string) (string, error) {
+	if integrates == "" {
+		return "", nil
+	}
+
+	member, err := bareNodeID(integrates)
+	if err != nil {
+		return "", err
+	}
+	node, err := capNode(h, member)
+	if err != nil {
+		return "", fmt.Errorf("--integrates %s: %v", integrates, err)
+	}
+	if node.Kind != query.KindDispatch {
+		return "", fmt.Errorf(
+			"--integrates %s names a %q node, not a %s node — an integration integrates a member's dispatch node",
+			integrates, node.Kind, query.KindDispatch)
+	}
+	return member, nil
+}
+
+// bareNodeID strips an optional "<scope>:" qualifier from a node reference. A
+// node id is "t-<hex>" — a colon never appears in one — so a qualified id is
+// unambiguously qualified. Only capScope is accepted: an integration's member
+// lives in the cap's own scope.
+func bareNodeID(ref string) (string, error) {
+	if ref == "" {
+		return "", errors.New("a member cap node is required")
+	}
+	scope, node, qualified := strings.Cut(ref, ":")
+	if qualified {
+		if scope != capScope {
+			return "", fmt.Errorf("%s names scope %s; a member lives in scope %s", ref, scope, capScope)
+		}
+		if node == "" {
+			return "", fmt.Errorf("%s names no node", ref)
+		}
+		return node, nil
+	}
+	return ref, nil
+}
+
+// Integrated answers the member's question: is there a done integration
+// dispatch in the cap scope that names this member? It returns that dispatch's
+// node id.
+//
+// It is the member's exit gate. An outcome — "HEAD is an ancestor of main" — is
+// satisfied by a hand merge, so it cannot tell a dispatched integration from a
+// bypass; a done integration node naming this member can. A pending one does
+// not count: the member is not integrated until the integration's own gate has
+// passed and its node is done.
+func Integrated(h *command.Handler, member string) command.Response {
+	ref, err := bareNodeID(member)
+	if err != nil {
+		return errResp("integrated: " + err.Error())
+	}
+
+	// cap has no registered root, and nothing here needs one: the read is of the
+	// cap's own scope.
+	resp := h.StatusIn(capScope, "")
+	if !resp.OK {
+		return errResp("integrated: " + resp.Error)
+	}
+	result, ok := resp.Data.(command.StatusResult)
+	if !ok {
+		return errResp("integrated: read scope " + capScope + ": no status payload")
+	}
+
+	for _, task := range result.Tasks {
+		if task.Integrates == ref && task.Kind == query.KindDispatch && task.Status == "done" {
+			return command.Response{OK: true, Data: IntegratedResult{Member: ref, IntegratedBy: task.NodeID}}
+		}
+	}
+	return errResp(fmt.Sprintf(
+		"integrated: no done integration dispatch in scope %s names member %s; merge it with a dispatched integration (fs dispatch --type integrate --integrates %s), never by hand",
+		capScope, ref, ref))
+}
+
+// IntegratedResult is the data payload of fs integrated: which member was asked
+// about, and the done integration dispatch that names it.
+type IntegratedResult struct {
+	Member       string `json:"member"`
+	IntegratedBy string `json:"integrated_by"`
+}
+
+// withoutNode drops one node id from a list. It is how the member an
+// integration names is kept out of the unresolved-dispatch gate it would
+// otherwise fail: that gate is about other open work.
+func withoutNode(nodes []command.UnfinishedNode, nodeID string) []command.UnfinishedNode {
+	if nodeID == "" {
+		return nodes
+	}
+	kept := make([]command.UnfinishedNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node.NodeID != nodeID {
+			kept = append(kept, node)
+		}
+	}
+	return kept
 }
 
 // dispatchGoal is the goal text fs dispatch writes — on the cap's node, and on
@@ -216,8 +342,9 @@ func unresolvedError(unresolved []command.UnfinishedNode) string {
 // user fixes one thing at a time; a list of failures buries the decision.
 //
 // Each check runs with env, so a prerequisite over the batch's own inputs —
-// which cards, which type — is a mechanical gate rather than a judgement call.
-func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string, cards []string, confirm bool) (*Brief, error) {
+// which cards, which type, which member — is a mechanical gate rather than a
+// judgement call.
+func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string, cards []string, integrates string, confirm bool) (*Brief, error) {
 	info, err := os.Stat(proj.RootPath)
 	if err != nil {
 		return nil, fmt.Errorf("project %q root %s is unreadable: %w", proj.Name, proj.RootPath, err)
@@ -227,7 +354,7 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 	}
 
 	lockedDocs := findLockedDocs(proj.RootPath)
-	env := checkEnv(proj.Name, taskType, goal, cards)
+	env := checkEnv(proj.Name, taskType, goal, cards, integrates)
 
 	checklist := make([]Item, 0, len(pb.Steps))
 	var context []string
@@ -267,15 +394,21 @@ func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal st
 //
 // It exists because a prerequisite is otherwise a static shell string: it could
 // ask about the world (is this a git repo?) but never about *this* dispatch
-// (which cards?). A gate over the batch's cards cannot be written without it.
-// FS_CARDS is the --cards value, comma-separated, and empty when none was named
-// — a check that needs cards must refuse on empty rather than pass vacuously.
-func checkEnv(project, taskType, goal string, cards []string) []string {
+// (which cards? which member does it integrate?). A gate over the batch's cards
+// cannot be written without it.
+//
+// FS_CARDS is the --cards value, comma-separated, and FS_INTEGRATES is the
+// --integrates value. Both are exported empty rather than left absent when they
+// were not given, so a check can tell "this dispatch named no cards/member" from
+// "this step has no env" — and one that needs them must refuse on empty rather
+// than pass vacuously.
+func checkEnv(project, taskType, goal string, cards []string, integrates string) []string {
 	return []string{
 		"FS_PROJECT=" + project,
 		"FS_TYPE=" + taskType,
 		"FS_GOAL=" + goal,
 		"FS_CARDS=" + strings.Join(cards, ","),
+		"FS_INTEGRATES=" + integrates,
 	}
 }
 
@@ -342,11 +475,12 @@ func findLockedDocs(root string) []string {
 	return docs
 }
 
-// recordCapNode writes the cap's two events for this dispatch: the node itself
-// and the decision naming the project the work went to. It returns the node id
-// so the cap can read its own dispatch back.
-func recordCapNode(h *command.Handler, taskType, goal, project string) (string, error) {
-	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), query.KindDispatch, "", nil)
+// recordCapNode writes the cap's two events for this dispatch: the node itself —
+// carrying the member it integrates, when it integrates one — and the decision
+// naming the project the work went to. It returns the node id so the cap can
+// read its own dispatch back.
+func recordCapNode(h *command.Handler, taskType, goal, project, integrates string) (string, error) {
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), query.KindDispatch, "", integrates, nil)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}

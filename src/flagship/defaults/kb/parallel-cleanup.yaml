@@ -2,11 +2,18 @@ name: parallel-cleanup
 type: cleanup
 trigger: parallel
 steps:
-  # Checks run with cwd set to the worker project's root — for a parallel
-  # dispatch, the worktree the worker ran in. The prose the gate encodes is what
-  # each command asserts: no uncommitted files, and the branch merged into main
-  # (a dispatch abandoned instead of merged closes with --abandoned, which skips
-  # this gate by definition).
-  - check: test -z "$(git status --porcelain)"
-  - check: git merge-base --is-ancestor HEAD main
-  - ask: was the merge reviewed before this closed
+  # The member's exit gate. It checks the process, not the outcome.
+  #
+  # `fs integrated $FS_NODE` exits 0 only when a done integration dispatch
+  # carries this member on its own task-created payload. The check it replaces —
+  # `git merge-base --is-ancestor HEAD main` — asserted an outcome, and a hand
+  # merge satisfies it: it could not tell a dispatched integration from a bypass.
+  # `fs integrated` is strictly stronger, so the merged-ness check is deleted
+  # rather than kept beside it.
+  #
+  # Checks run with cwd set to the tree the member worked in — its worktree, or
+  # the worker project's root when the dispatch had none — and with the closing
+  # dispatch's own inputs in the environment: $FS_NODE above all, the cap node
+  # being closed.
+  - check: fs integrated $FS_NODE
+  - ask: has this member's result been read from its worker node

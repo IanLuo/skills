@@ -451,7 +451,7 @@ func TestTaskAddKindWithFoundBy(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "skills:t-found", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "skills:t-found", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}
@@ -469,7 +469,7 @@ func TestTaskAddRefusesAnUnknownKind(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", nil)
+	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", "", nil)
 	if resp.OK {
 		t.Fatal("an unknown kind must be refused at write time, not stored")
 	}
@@ -483,7 +483,7 @@ func TestTaskAddRefusesAMalformedFoundBy(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 
 	for _, ref := range []string{"skills", "skills:", ":t-1", "skills:t-1:extra"} {
-		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, nil)
+		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, "", nil)
 		if resp.OK {
 			t.Errorf("found_by %q must be refused", ref)
 			continue
@@ -532,8 +532,8 @@ func TestUnfinishedGroupsByKind(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 	h.TaskAdd("proj", "ordinary work", nil)
-	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", nil)
-	h.TaskAddKind("proj", "a gap", query.KindGap, "skills:t-found", nil)
+	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", "", nil)
+	h.TaskAddKind("proj", "a gap", query.KindGap, "skills:t-found", "", nil)
 
 	resp := h.Unfinished(nil)
 	if !resp.OK {
@@ -561,12 +561,12 @@ func TestGapsListsOpenFirstAcrossScopes(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", nil).Data.(command.EventData).NodeID
+	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", "", nil).Data.(command.EventData).NodeID
 	if resp := h.TaskUpdate("proj", doneGap, "done", "fixed", nil); !resp.OK {
 		t.Fatalf("TaskUpdate: %s", resp.Error)
 	}
-	h.TaskAddKind("proj", "an open gap", query.KindGap, "skills:t-found", nil)
-	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", nil)
+	h.TaskAddKind("proj", "an open gap", query.KindGap, "skills:t-found", "", nil)
+	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", "", nil)
 	h.TaskAdd("proj", "ordinary work", nil)
 
 	resp := h.Gaps()
@@ -1262,4 +1262,173 @@ func TestUnfinishedAcrossScopes(t *testing.T) {
 			break
 		}
 	}
+}
+
+// fs status must agree with fs pending and fs unfinished about a block whose
+// recorded condition is over. All three re-run the check and report the same
+// string; before this, only the other two did, so one of the three readers
+// repeated an expired block as current truth.
+func TestStatusReRunsARecordedBlockLikeUnfinished(t *testing.T) {
+	h := setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker")
+	check := "test -f " + marker
+
+	h.ProjectCreate("proj", root)
+	nodeID := h.TaskAdd("proj", "waiting on the marker", nil).Data.(command.EventData).NodeID
+	if resp := h.TaskBlockWithCheck("proj", nodeID, "waiting on the marker", check); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	statuses := func() (status, unfinished string) {
+		t.Helper()
+		resp := h.StatusIn("proj", root)
+		if !resp.OK {
+			t.Fatalf("StatusIn: %s", resp.Error)
+		}
+		for _, task := range resp.Data.(command.StatusResult).Tasks {
+			if task.NodeID == nodeID {
+				status = task.Status
+			}
+		}
+		resp = h.Unfinished(func(scope string) string {
+			if scope == "proj" {
+				return root
+			}
+			return ""
+		})
+		if !resp.OK {
+			t.Fatalf("Unfinished: %s", resp.Error)
+		}
+		groups := resp.Data.(map[string]any)["unfinished"].(map[string][]command.UnfinishedNode)
+		for _, node := range groups[string(query.KindWork)] {
+			if node.NodeID == nodeID {
+				unfinished = node.Status
+			}
+		}
+		return status, unfinished
+	}
+
+	if status, unfinished := statuses(); status != "blocked" || unfinished != "blocked" {
+		t.Errorf("while the condition holds: status = %q, unfinished = %q, want both blocked", status, unfinished)
+	}
+
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "blocked (condition no longer holds — " + check + " exited 0)"
+	status, unfinished := statuses()
+	if status != want {
+		t.Errorf("status once the condition is over = %q, want %q", status, want)
+	}
+	if unfinished != want {
+		t.Errorf("status and unfinished must agree: %q vs %q", status, unfinished)
+	}
+	if task, ok := taskByID(t, h, "proj", nodeID); !ok || task.BlockCheck != check {
+		t.Errorf("status must carry the recorded check so it can be re-run: %+v", task)
+	}
+}
+
+// A node's block check is re-run in the directory the caller names — the
+// project's own root — not wherever the process happens to be standing. With
+// the wrong directory the same check would read as still holding.
+func TestStatusRunsABlockCheckInTheProjectRoot(t *testing.T) {
+	h := setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker")
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.ProjectCreate("proj", root)
+	nodeID := h.TaskAdd("proj", "waiting on the marker", nil).Data.(command.EventData).NodeID
+	if resp := h.TaskBlockWithCheck("proj", nodeID, "waiting", "test -f marker"); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	task, ok := taskByID(t, h, "proj", nodeID)
+	if !ok {
+		t.Fatal("node not found")
+	}
+	if task.Status != "blocked" {
+		t.Errorf("status with no directory = %q, want plain blocked: cwd is not the project root", task.Status)
+	}
+
+	resp := h.StatusIn("proj", root)
+	for _, info := range resp.Data.(command.StatusResult).Tasks {
+		if info.NodeID == nodeID && !strings.Contains(info.Status, "condition no longer holds") {
+			t.Errorf("status in the project root = %q, want the check reported as over", info.Status)
+		}
+	}
+}
+
+// The integrates link is structural: it is recorded on the integration's own
+// task-created payload, so a reader recovers it from the event and never from
+// the goal text.
+func TestTaskAddKindRecordsTheIntegratesLink(t *testing.T) {
+	h := setup(t)
+	member := h.TaskAddKind("cap", "dispatch parallel: member", query.KindDispatch, "", "", nil).
+		Data.(command.EventData).NodeID
+
+	resp := h.TaskAddKind("cap", "dispatch integrate: merge member", query.KindDispatch, "", member, nil)
+	if !resp.OK {
+		t.Fatalf("TaskAddKind: %s", resp.Error)
+	}
+	integration := resp.Data.(command.EventData).NodeID
+
+	task, ok := taskByID(t, h, "cap", integration)
+	if !ok {
+		t.Fatal("integration node not found")
+	}
+	if task.Integrates != member {
+		t.Errorf("integrates = %q, want the member %s", task.Integrates, member)
+	}
+
+	// The payload is what a reader sees: fs log shows it without any derivation.
+	events := h.Log("cap", &integration, nil).Data.(command.LogResult).Events
+	if len(events) == 0 {
+		t.Fatal("no events for the integration node")
+	}
+	var payload struct {
+		Integrates string `json:"integrates"`
+	}
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if payload.Integrates != member {
+		t.Errorf("task-created payload integrates = %q, want %s", payload.Integrates, member)
+	}
+}
+
+// The link is written into an immutable event, so a malformed one must fail at
+// write time rather than land as a node that can never be corrected. An
+// integrates value names a node in this scope, so a qualified id is refused
+// too: "cap:t-1" would read as a node id that does not exist.
+func TestTaskAddKindRefusesAMalformedIntegratesLink(t *testing.T) {
+	h := setup(t)
+	for _, ref := range []string{"cap:t-1", "t-1 t-2", " ", "t-1\t"} {
+		resp := h.TaskAddKind("cap", "dispatch integrate: x", query.KindDispatch, "", ref, nil)
+		if resp.OK {
+			t.Errorf("integrates %q must be refused", ref)
+			continue
+		}
+		if !strings.Contains(resp.Error, "integrates must be a bare node id") {
+			t.Errorf("refusal %q must say what a valid link is", resp.Error)
+		}
+	}
+}
+
+// taskByID is one node's derived state, the way fs status reports it.
+func taskByID(t *testing.T, h *command.Handler, project, nodeID string) (command.TaskInfo, bool) {
+	t.Helper()
+	resp := h.Status(project)
+	if !resp.OK {
+		t.Fatalf("Status: %s", resp.Error)
+	}
+	for _, task := range resp.Data.(command.StatusResult).Tasks {
+		if task.NodeID == nodeID {
+			return task, true
+		}
+	}
+	return command.TaskInfo{}, false
 }

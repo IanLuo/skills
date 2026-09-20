@@ -56,6 +56,12 @@ type Node struct {
 	// a reader re-run the condition and see that it has expired. It is empty for
 	// a block with no check — prose alone, with no claim of freshness.
 	BlockCheck string `json:"block_check,omitempty"`
+
+	// Integrates names the cap-scope dispatch node this node integrates, when it
+	// is an integration dispatch. It is the structural link between an
+	// integration and the member it merges: recorded on the integration's own
+	// task-created payload, never parsed out of a goal string.
+	Integrates string `json:"integrates,omitempty"`
 }
 
 // Tree is the derived project state.
@@ -105,9 +111,10 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 		switch evt.Type {
 		case store.TaskCreated:
 			var p struct {
-				Goal    string `json:"goal"`
-				Kind    string `json:"kind"`
-				FoundBy string `json:"found_by"`
+				Goal       string `json:"goal"`
+				Kind       string `json:"kind"`
+				FoundBy    string `json:"found_by"`
+				Integrates string `json:"integrates"`
 			}
 			_ = json.Unmarshal(evt.Payload, &p)
 			parentID := ""
@@ -115,12 +122,13 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				parentID = *evt.ParentNodeID
 			}
 			node := &Node{
-				NodeID:   nid,
-				Goal:     p.Goal,
-				Kind:     nodeKind(p.Kind, p.Goal),
-				FoundBy:  p.FoundBy,
-				Status:   "pending",
-				ParentID: parentID,
+				NodeID:     nid,
+				Goal:       p.Goal,
+				Kind:       nodeKind(p.Kind, p.Goal),
+				FoundBy:    p.FoundBy,
+				Integrates: p.Integrates,
+				Status:     "pending",
+				ParentID:   parentID,
 			}
 			tree.Nodes[nid] = node
 			if parentID == "" {

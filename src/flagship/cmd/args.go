@@ -41,6 +41,11 @@ var cmdSpecs = map[string]cmdSpec{
 		flags:       map[string]bool{"--status": true, "--decision": true, "--project": true},
 		positionals: 1,
 	},
+	"task get": {
+		usage:       "Usage: fs task get NODE_ID [--project PROJECT_ID] [--kind work|dispatch|gap]",
+		flags:       map[string]bool{"--project": true, "--kind": true},
+		positionals: 1,
+	},
 	"task edit": {
 		usage:       "Usage: fs task edit NODE_ID [--goal GOAL] [--kind work|dispatch|gap] [--project PROJECT_ID]",
 		flags:       map[string]bool{"--goal": true, "--kind": true, "--project": true},
@@ -103,16 +108,24 @@ Every check step the playbook declares runs with this dispatch's own inputs in
 its environment, so a prerequisite can ask about this dispatch and not only
 about the world:
 
-  FS_PROJECT  the resolved project
-  FS_TYPE     the task type
-  FS_GOAL     the goal text
-  FS_CARDS    the --cards value, comma-separated; empty when none was given
+  FS_PROJECT      the resolved project
+  FS_TYPE         the task type
+  FS_GOAL         the goal text
+  FS_CARDS        the --cards value, comma-separated; empty when none was given
+  FS_INTEGRATES   the --integrates value — the member cap node this integration
+                  merges; empty when none was given
 
 --cards names the batch's cards. It is repeatable, and each value may be a
-comma-separated list.`,
+comma-separated list.
+
+--integrates names the member cap node an integration merges. It must exist in
+the cap scope and be a dispatch node; the link is recorded on this dispatch's own
+task-created payload, so fs integrated can answer the member's question from the
+record rather than from a goal string."`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--cards": true, "--confirm": false, "--allow-unresolved": false,
+			"--cards": true, "--integrates": true,
+			"--confirm": false, "--allow-unresolved": false,
 			"--deliver": false, "--worktree": true,
 		},
 	},
@@ -123,7 +136,17 @@ comma-separated list.`,
 --abandoned closes a dispatch without a verdict, delivered or not. One that was
 never delivered records "abandoned, never delivered: <reason>"; one that was
 delivered records "abandoned after delivery to <project>:<node>: <reason>" and
-the delivery's pane and worktree are torn down.`,
+the delivery's pane and worktree are torn down.
+
+Every cleanup check runs with the closing dispatch's own inputs in its
+environment, so an exit gate can ask about the dispatch it is gating:
+
+  FS_PROJECT     the worker's project
+  FS_TYPE        the task type
+  FS_NODE        the cap node being closed
+  FS_WORKER      the worker's node as "<project>:<node>"; empty without one
+  FS_CARDS       empty — a close has no batch — but present, not missing
+  FS_INTEGRATES  the member this integration merges; empty when it merges none`,
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
 			"--confirm": false, "--abandoned": false, "--reason": true,
@@ -132,6 +155,10 @@ the delivery's pane and worktree are torn down.`,
 	"unfinished": {usage: "Usage: fs unfinished"},
 	"gaps":       {usage: "Usage: fs gaps"},
 	"pending":    {usage: "Usage: fs pending"},
+	"integrated": {
+		usage:       "Usage: fs integrated MEMBER_NODE",
+		positionals: 1,
+	},
 }
 
 // checkArgs enforces name's spec. A leading help token prints that subcommand's

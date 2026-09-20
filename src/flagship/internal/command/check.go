@@ -35,13 +35,20 @@ func RunShell(body, dir string, env []string) (string, error) {
 // says the condition no longer holds. Every other node keeps its own status — a
 // block with no check is prose and gets no claim of freshness.
 func BlockStatus(n UnfinishedNode, dir string) string {
-	if n.Status != "blocked" || n.BlockCheck == "" {
-		return n.Status
+	return blockStatus(n.Status, n.BlockCheck, dir)
+}
+
+// blockStatus is the one re-verification fs status, fs pending, and fs unfinished
+// share, so a blocked node reads the same in all three: plain "blocked", or
+// "blocked (condition no longer holds …)" once the recorded check exits 0.
+func blockStatus(status, check, dir string) string {
+	if status != "blocked" || check == "" {
+		return status
 	}
-	if _, err := RunShell(n.BlockCheck, dir, nil); err == nil {
-		return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", n.BlockCheck)
+	if _, err := RunShell(check, dir, nil); err == nil {
+		return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", check)
 	}
-	return n.Status
+	return status
 }
 
 // refreshBlockChecks replaces each node's status with its BlockStatus. rootOf

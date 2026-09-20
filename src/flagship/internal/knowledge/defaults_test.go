@@ -370,6 +370,7 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 		"cap":                     "prompt:cap",
 		"herdr":                   "prompt:cap",
 		"dev-task-prerequisites":  "dispatch:dev-task",
+		"dev-task-cleanup":        "close:dev-task",
 		"parallel-prerequisites":  "dispatch:parallel",
 		"parallel-cleanup":        "close:parallel",
 		"integrate-prerequisites": "dispatch:integrate",

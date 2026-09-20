@@ -11,6 +11,7 @@ import (
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/knowledge"
+	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
 )
@@ -139,7 +140,7 @@ func writeFile(t *testing.T, path, content string) {
 func TestPrepareMissingPlaybook(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", nil, "", false, false)
 	if resp.OK {
 		t.Fatal("expected failure for a missing playbook")
 	}
@@ -159,7 +160,7 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -237,7 +238,7 @@ func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if resp.OK {
 		t.Fatal("a failing check must refuse, not prepare a brief")
 	}
@@ -266,7 +267,7 @@ func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", true, false)
 	if !resp.OK {
 		t.Fatalf("--confirm must prepare despite the failure: %s", resp.Error)
 	}
@@ -288,13 +289,13 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false, false)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, "", false, false)
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
 	firstID := first.Data.(*dispatch.Brief).CapNodeID
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, false)
 	if resp.OK {
 		t.Fatal("expected refusal while a dispatch is unresolved")
 	}
@@ -304,7 +305,7 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 		}
 	}
 
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, true)
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, true)
 	if !confirmed.OK {
 		t.Fatalf("--allow-unresolved dispatch: %s", confirmed.Error)
 	}
@@ -323,7 +324,7 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 func TestPrepareOverridesDoNotCoverEachOther(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false, false)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, "", false, false)
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
@@ -333,7 +334,7 @@ func TestPrepareOverridesDoNotCoverEachOther(t *testing.T) {
 	// failing prerequisite at the same time.
 	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(filepath.Join(t.TempDir(), "check3-ran")))
 
-	byUnresolved := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, true)
+	byUnresolved := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, true)
 	if byUnresolved.OK {
 		t.Fatal("--allow-unresolved must not override a failing check")
 	}
@@ -343,7 +344,7 @@ func TestPrepareOverridesDoNotCoverEachOther(t *testing.T) {
 		}
 	}
 
-	byConfirm := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, true, false)
+	byConfirm := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", true, false)
 	if byConfirm.OK {
 		t.Fatal("--confirm must not override an unresolved dispatch")
 	}
@@ -369,7 +370,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, false, false)
+	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, "", false, false)
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
@@ -378,7 +379,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 		t.Fatalf("task edit: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, false)
 	if resp.OK {
 		t.Fatal("a dispatch whose goal was rewritten must still gate")
 	}
@@ -402,7 +403,7 @@ func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 		t.Fatalf("task block: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !resp.OK {
 		t.Fatalf("a non-dispatch cap node must not gate: %s", resp.Error)
 	}
@@ -420,7 +421,7 @@ steps:
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", reworded)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -461,7 +462,7 @@ steps:
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "dev-task-prerequisites", envPlaybook)
 
-	withCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", []string{"a.md", "b.md"}, false, false)
+	withCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", []string{"a.md", "b.md"}, "", false, false)
 	if !withCards.OK {
 		t.Fatalf("Prepare with cards: %s", withCards.Error)
 	}
@@ -480,7 +481,7 @@ steps:
 	if resp := f.h.TaskUpdate("cap", brief.CapNodeID, "done", "test cleanup", nil); !resp.OK {
 		t.Fatalf("resolving the first dispatch: %s", resp.Error)
 	}
-	noCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	noCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !noCards.OK {
 		t.Fatalf("Prepare without cards: %s", noCards.Error)
 	}
@@ -504,7 +505,7 @@ steps:
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", procedure)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -528,7 +529,7 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	f := newFixture(t, root)
 	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -581,7 +582,7 @@ func TestPrepareRequiresArgs(t *testing.T) {
 		{"skills", "", "x"},
 		{"skills", "dev-task", ""},
 	} {
-		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, nil, false, false)
+		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, nil, "", false, false)
 		if resp.OK {
 			t.Errorf("Prepare(%q, %q, %q) should fail", tc.project, tc.taskType, tc.goal)
 		}
@@ -600,7 +601,7 @@ steps:
   - check: true
 `)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if resp.OK {
 		t.Fatal("a contradictory trigger must refuse, not prepare a brief")
 	}
@@ -611,7 +612,7 @@ steps:
 	}
 
 	// The refusal is a config error, not a gate: --confirm must not override it.
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, true, false)
+	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", true, false)
 	if confirmed.OK {
 		t.Fatal("--confirm must not override a contradictory trigger")
 	}
@@ -636,8 +637,241 @@ steps:
   - check: true
 `)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, false, false)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
 	if !resp.OK {
 		t.Fatalf("an empty trigger must be accepted: %s", resp.Error)
+	}
+}
+
+// passingIntegratePlaybook is the integrate entry gate in its simplest honest
+// form: a gate test is about the pipework, not about the shipped wording.
+const passingIntegratePlaybook = `name: integrate-prerequisites
+type: prerequisite
+trigger: integrate
+steps:
+  - check: true
+`
+
+// --integrates names the member this integration merges. The link is written
+// into the integration's task-created payload, and events are immutable, so a
+// link that names nothing — or names a node that is not a dispatch — must be
+// refused, naming it.
+func TestPrepareRefusesAnIntegratesThatIsNotADispatchNode(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "integrate-prerequisites", passingIntegratePlaybook)
+
+	gap := addCapKindNode(t, f, "a gap, never dispatched", query.KindGap)
+	for _, tc := range []struct{ ref, want string }{
+		{gap, "not a dispatch node"},
+		{"t-00000000", "no node t-00000000 in scope cap"},
+		{"other:t-1", "names scope other"},
+		{"cap:", "names no node"},
+	} {
+		resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge", nil, tc.ref, false, false)
+		if resp.OK {
+			t.Errorf("--integrates %s must be refused", tc.ref)
+			continue
+		}
+		if !strings.Contains(resp.Error, tc.want) {
+			t.Errorf("refusal for %q = %q, want it to mention %q", tc.ref, resp.Error, tc.want)
+		}
+		if !strings.Contains(resp.Error, "dispatch:") {
+			t.Errorf("refusal for %q = %q, want it to say which command refused", tc.ref, resp.Error)
+		}
+	}
+
+	// A refusal leaves nothing behind to gate the next dispatch.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 { // only the gap node
+		t.Errorf("cap scope has %d nodes after refusals, want only the gap", len(nodes))
+	}
+}
+
+// A valid link is recorded on the integration's own task-created payload — the
+// structural statement of which member this dispatch integrates — and is
+// readable from the node without parsing any goal text.
+func TestPrepareRecordsTheMemberOnTheIntegrationNode(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "integrate-prerequisites", passingIntegratePlaybook)
+
+	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge member", nil, member, false, false)
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+
+	task, ok := scopeTask(t, f, "cap", brief.CapNodeID)
+	if !ok || task.Integrates != member {
+		t.Errorf("integration node integrates = %q, want %q", task.Integrates, member)
+	}
+	if task.Kind != query.KindDispatch {
+		t.Errorf("integration node kind = %q, want dispatch", task.Kind)
+	}
+
+	// The payload itself carries it: this is what a reader of the event sees.
+	payload := string(capEventsOf(t, f, brief.CapNodeID)[0].Payload)
+	if !strings.Contains(payload, `"integrates":"`+member+`"`) {
+		t.Errorf("task-created payload = %s, want the member link", payload)
+	}
+}
+
+// The member's dispatch is closed only after the integration it waits on is
+// done, so a member is expected to be unresolved while its integration is being
+// prepared. It is the subject of this dispatch, not other open work piled on
+// top of it: `--allow-unresolved` must not be needed to integrate a member.
+// Every other open dispatch still refuses.
+func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "integrate-prerequisites", passingIntegratePlaybook)
+
+	member := addCapKindNode(t, f, "dispatch parallel: member one", query.KindDispatch)
+
+	// Only the named member is open: the integration prepares without an override.
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge one", nil, member, false, false)
+	if !resp.OK {
+		t.Fatalf("the member it integrates must not trip the unresolved gate: %s", resp.Error)
+	}
+
+	// A second, unrelated dispatch is open now, so the same call refuses and
+	// names it — and the member it names is still not the reason.
+	other := addCapKindNode(t, f, "dispatch parallel: member two", query.KindDispatch)
+	resp = dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge one", nil, member, false, false)
+	if resp.OK {
+		t.Fatal("another open dispatch must still trip the gate")
+	}
+	if !strings.Contains(resp.Error, other) || !strings.Contains(resp.Error, "--allow-unresolved") {
+		t.Errorf("refusal %q must name %s and the override", resp.Error, other)
+	}
+
+	// The override is still the way past it, and it is recorded.
+	resp = dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge one", nil, member, false, true)
+	if !resp.OK {
+		t.Fatalf("--allow-unresolved must proceed: %s", resp.Error)
+	}
+}
+
+// The entry gate sees the member this dispatch integrates, so it can be a gate
+// about this integration and not about the batch.
+func TestPrepareGivesChecksTheIntegratesLink(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "integrate-prerequisites", `name: integrate-prerequisites
+type: prerequisite
+trigger: integrate
+steps:
+  - check: printenv FS_INTEGRATES
+  - check: printenv FS_CARDS
+`)
+
+	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge", nil, member, false, false)
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+	if len(brief.Checklist) != 2 {
+		t.Fatalf("checklist = %+v, want the two checks", brief.Checklist)
+	}
+	// printenv fails on an absent variable, so both passing proves both are set;
+	// FS_CARDS is set-and-empty rather than missing.
+	if got := brief.Checklist[0].Output; got != member {
+		t.Errorf("FS_INTEGRATES = %q, want the member %s", got, member)
+	}
+	if got := brief.Checklist[1].Output; got != "" {
+		t.Errorf("FS_CARDS = %q, want empty-and-set", got)
+	}
+}
+
+// A dispatch that integrates nothing records no link, and its checks see an
+// empty FS_INTEGRATES rather than a missing one.
+func TestPrepareWithoutIntegratesRecordsNoLink(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+
+	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+	task, ok := scopeTask(t, f, "cap", brief.CapNodeID)
+	if !ok || task.Integrates != "" {
+		t.Errorf("integrates = %q, want none for a dispatch that integrates nothing", task.Integrates)
+	}
+}
+
+// capEventsOf returns every event appended to one node, in order.
+func capEventsOf(t *testing.T, f *fixture, nodeID string) []store.Event {
+	t.Helper()
+	s, err := store.Open(f.storeDB)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	events, err := s.Replay("cap", &store.ReplayFilter{NodeID: &nodeID})
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	return events
+}
+
+// fs integrated answers the member's question. A pending integration does not
+// count — the member is not integrated until the integration's own gate has
+// passed and its node is done — and a scope with no such integration says so
+// with what to do instead.
+func TestIntegratedAnswersWithTheDoneIntegrationThatNamesTheMember(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
+	other := addCapKindNode(t, f, "dispatch parallel: other member", query.KindDispatch)
+
+	link := addIntegrationNode(t, f, member)
+	unrelated := addIntegrationNode(t, f, other)
+
+	resp := dispatch.Integrated(f.h, member)
+	if resp.OK {
+		t.Fatal("a pending integration must not count as integrating the member")
+	}
+	if !strings.Contains(resp.Error, member) {
+		t.Errorf("refusal %q must name the member", resp.Error)
+	}
+
+	// A done integration that does not name this member does not answer for it.
+	if r := f.h.TaskUpdate("cap", unrelated, "done", "merged something else", nil); !r.OK {
+		t.Fatal(r.Error)
+	}
+	if resp := dispatch.Integrated(f.h, member); resp.OK {
+		t.Error("an integration naming another member must not answer for this one")
+	}
+
+	if r := f.h.TaskUpdate("cap", link, "done", "merged the member", nil); !r.OK {
+		t.Fatal(r.Error)
+	}
+	resp = dispatch.Integrated(f.h, member)
+	if !resp.OK {
+		t.Fatalf("Integrated: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.IntegratedResult)
+	if result.Member != member || result.IntegratedBy != link {
+		t.Errorf("result = %+v, want member %s integrated by %s", result, member, link)
+	}
+}
+
+// A member with no integration at all — the hand-merge case — is refused, with
+// the dispatched route named. This is what the member's exit gate rests on: an
+// outcome check could not tell a hand merge from a dispatched one.
+func TestIntegratedRefusesAMemberNoIntegrationNames(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
+
+	resp := dispatch.Integrated(f.h, member)
+	if resp.OK {
+		t.Fatal("a member with no integration must be refused")
+	}
+	for _, want := range []string{member, "--integrates", "never by hand"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
 	}
 }

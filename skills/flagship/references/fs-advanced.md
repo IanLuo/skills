@@ -151,11 +151,10 @@ fs kb remove dev-task-prerequisites
 
 ### Shipped defaults and drift
 
-Five playbooks ship inside the binary and are seeded into `~/.fs/kb/`: `cap`,
-`dev-task-prerequisites`, `herdr`, `parallel-prerequisites`, and
-`parallel-cleanup` (every other task-type playbook is written by hand). They
-live in `src/flagship/defaults/kb/` and are embedded with `//go:embed`, so the
-contract is versioned with the code and survives a wipe.
+Eight playbooks ship inside the binary and are seeded into `~/.fs/kb/`: `cap`,
+`herdr`, and an entry/exit pair for each of `dev-task`, `parallel`, and
+`integrate`. They live in `src/flagship/defaults/kb/` and are embedded with
+`//go:embed`, so the contract is versioned with the code and survives a wipe.
 
 ```bash
 fs bootstrap                  # create ~/.fs/kb and write every absent playbook

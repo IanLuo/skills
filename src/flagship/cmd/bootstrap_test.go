@@ -15,6 +15,7 @@ import (
 const (
 	capPlaybook      = "cap"
 	devPlaybook      = "dev-task-prerequisites"
+	devCleanPlaybook = "dev-task-cleanup"
 	herdrPlaybook    = "herdr"
 	parPrePlaybook   = "parallel-prerequisites"
 	parCleanPlaybook = "parallel-cleanup"
@@ -25,8 +26,8 @@ const (
 // shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
 // of them; the cap's standing rules are built from the procedure ones.
 var shippedPlaybooks = []string{
-	capPlaybook, devPlaybook, herdrPlaybook, parPrePlaybook, parCleanPlaybook,
-	intPrePlaybook, intCleanPlaybook,
+	capPlaybook, devPlaybook, devCleanPlaybook, herdrPlaybook, parPrePlaybook,
+	parCleanPlaybook, intPrePlaybook, intCleanPlaybook,
 }
 
 // shippedDefault is a default the binary is expected to carry. The test process
@@ -426,5 +427,88 @@ func TestCLIKBPromptOnAFreshHomeSaysToBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "fs bootstrap") {
 		t.Errorf("an unseeded knowledge center must say how to fill it:\n%s", stdout)
+	}
+}
+
+// stepsOf returns one shipped playbook's steps, parsed by the binary itself —
+// the same parse the dispatcher and the cleanup gate use.
+func stepsOf(t *testing.T, bin, name string) []map[string]any {
+	t.Helper()
+	writeKBPlaybook(t, testHome(t), name, shippedDefault(t, name))
+	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", name)
+	if code != 0 {
+		t.Fatalf("kb get %s exit %d: %v", name, code, resp["error"])
+	}
+	var steps []map[string]any
+	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
+		steps = append(steps, raw.(map[string]any))
+	}
+	return steps
+}
+
+// bodiesOf returns the bodies of one kind of step, in order.
+func bodiesOf(steps []map[string]any, kind string) []string {
+	var bodies []string
+	for _, step := range steps {
+		if step["kind"] == kind {
+			bodies = append(bodies, step["body"].(string))
+		}
+	}
+	return bodies
+}
+
+// A gate must check what its own dispatch owns: not a proxy for it, and not a
+// condition belonging to a different dispatch. This pins where each shipped gate
+// draws that line, so a later edit that reaches for a proxy fails here.
+func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
+	bin := getFS(t)
+
+	// The member's exit gate checks the process, not the outcome. The
+	// merged-ness check it replaced asserted an outcome a hand merge satisfies,
+	// so it is deleted rather than kept beside the stronger check.
+	member := bodiesOf(stepsOf(t, bin, parCleanPlaybook), "check")
+	if len(member) != 1 || member[0] != "fs integrated $FS_NODE" {
+		t.Errorf("parallel-cleanup checks = %v, want only the integration link", member)
+	}
+
+	// The integration's exit gate keeps what the integration owns. A worktree or
+	// branch check is batch-global: it belongs to no single member, and it makes
+	// a per-member integration impossible while any other member is unfinished.
+	for _, body := range bodiesOf(stepsOf(t, bin, intCleanPlaybook), "check") {
+		if strings.Contains(body, "worktree") || strings.Contains(body, "branch") {
+			t.Errorf("integrate-cleanup check %q is batch-global; it belongs to no single member", body)
+		}
+	}
+	if asks := bodiesOf(stepsOf(t, bin, intCleanPlaybook), "ask"); len(asks) != 1 ||
+		!strings.Contains(asks[0], "integration verdict") {
+		t.Errorf("integrate-cleanup asks = %v, want the one question this integration owns", asks)
+	}
+
+	// The entry gate is member-scoped, and its compound ask is split: a rubric
+	// cannot partition two questions asked as one.
+	entry := bodiesOf(stepsOf(t, bin, intPrePlaybook), "check")
+	if len(entry) != 1 || !strings.Contains(entry[0], "fs task get") || !strings.Contains(entry[0], "$FS_INTEGRATES") {
+		t.Errorf("integrate-prerequisites checks = %v, want the member check on $FS_INTEGRATES", entry)
+	}
+	for _, body := range entry {
+		if strings.Contains(body, "worktree list") {
+			t.Errorf("integrate-prerequisites check %q is repo-wide; it cannot be run per member", body)
+		}
+	}
+	if asks := bodiesOf(stepsOf(t, bin, intPrePlaybook), "ask"); len(asks) != 2 {
+		t.Errorf("integrate-prerequisites asks = %v, want the order and the staged-changes question apart", asks)
+	}
+
+	// Ordinary work has an exit gate at all, and it is one ask — the only honest
+	// step available: no shell command can decide whether a node says what the
+	// worker did, and the repo is routinely dirty with another agent's work, so a
+	// clean-tree check would be a false gate.
+	dev := stepsOf(t, bin, devCleanPlaybook)
+	if checks := bodiesOf(dev, "check"); len(checks) != 0 {
+		t.Errorf("dev-task-cleanup checks = %v, want none: none can be made true", checks)
+	}
+	asks := bodiesOf(dev, "ask")
+	if len(asks) != 1 || !strings.Contains(asks[0], "nothing important died with its transcript") {
+		t.Errorf("dev-task-cleanup asks = %v, want the question about the worker's node", asks)
 	}
 }

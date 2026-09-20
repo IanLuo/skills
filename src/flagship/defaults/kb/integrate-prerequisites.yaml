@@ -4,22 +4,20 @@ trigger: integrate
 steps:
   # Integration is a dispatch too: a worker merges the batch's branches into main
   # on its own card, and the coordinator's part is to decide the order, answer
-  # these asks, read the verdict on the worker's node, and close. These checks
-  # run at the project root — the main checkout — and ask git, never herdr:
-  # herdr resolves a workspace from the invoking pane's HERDR_* environment, so a
-  # check that called it would answer about the cap's pane rather than about this
-  # project. A static check string is never handed a branch name; the worktrees
-  # git registers under the root are what name them.
-
-  # The batch member's tree must still be there, or there is nothing to merge.
-  # `git worktree list --porcelain` prints one `worktree <path>` record per
-  # registered checkout, and this checkout is one of them, so a second record is
-  # a linked worktree holding the member's branch.
-  - check: test "$(git worktree list --porcelain | grep -c '^worktree ')" -gt 1 || { echo "the project root has no linked worktree: the batch member's tree is gone, so there is nothing to integrate"; exit 1; }
-
-  # The branch must exist. Every `branch refs/heads/<name>` a registered
-  # worktree prints is resolved against this repository, so a tree whose branch
-  # was deleted refuses here rather than at merge time.
-  - check: git worktree list --porcelain | sed -n 's|^branch refs/heads/||p' | while read -r b; do git rev-parse --verify "refs/heads/$b" >/dev/null || { echo "branch $b is registered in a worktree but does not exist in this repository"; exit 1; }; done
-
-  - ask: is this the next merge in order, and is main free of foreign staged changes
+  # these asks, read the verdict on the worker's node, and close.
+  #
+  # This gate is member-scoped: every step is about the one member this
+  # integration names. $FS_INTEGRATES is the --integrates value, so the check
+  # asks about *this* integration's member and nothing else. The repo-wide greps
+  # it replaces — "more than one worktree exists", "every registered branch
+  # exists" — asked about the whole batch, so closing member 1's integration
+  # required members 2..n to be finished first, and the gate could not be run per
+  # member at all. They are deleted.
+  #
+  # Checks run at the project root — the main checkout — and ask fs and git,
+  # never herdr: herdr resolves a workspace from the invoking pane's HERDR_*
+  # environment, so a check that called it would answer about the cap's pane
+  # rather than about this project.
+  - check: fs task get $FS_INTEGRATES --project cap --kind dispatch
+  - ask: is this the next merge in order
+  - ask: is main free of foreign staged changes

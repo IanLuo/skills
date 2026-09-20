@@ -84,6 +84,13 @@ type TaskInfo struct {
 	Orphan       bool       `json:"orphan,omitempty"`
 	Decisions    []string   `json:"decisions,omitempty"`
 	Knowledge    []string   `json:"knowledge,omitempty"`
+	// BlockCheck is the check the node's last block recorded, when one did. fs
+	// status re-runs it the same way fs pending and fs unfinished do, so all
+	// three readers report a block whose condition is over as such.
+	BlockCheck string `json:"block_check,omitempty"`
+	// Integrates names the cap-scope dispatch node an integration dispatch
+	// merges. It is the structural link, read from the task-created payload.
+	Integrates string `json:"integrates,omitempty"`
 }
 
 // StatusResult is the data payload for fs status.
@@ -183,13 +190,14 @@ func (h *Handler) ProjectCreate(name, rootPath string) Response {
 
 // TaskAdd appends a task-created event of the default kind, work. AC2.
 func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response {
-	return h.TaskAddKind(projectID, goal, query.KindWork, "", parentNodeID)
+	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", parentNodeID)
 }
 
 // TaskAddKind appends a task-created event carrying its structural kind — and,
-// for a gap, the node that noticed it. It is the write side of the kind the
-// dispatch gates and fs gaps read.
-func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy string, parentNodeID *string) Response {
+// for a gap, the node that noticed it; for an integration, the member it
+// integrates. It is the write side of the kind the dispatch gates and fs gaps
+// read, and of the integrates link the member's exit gate reads.
+func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates string, parentNodeID *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -201,6 +209,11 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy s
 	}
 	if foundBy != "" {
 		if err := validNodeRef(foundBy); err != nil {
+			return errResp(err.Error())
+		}
+	}
+	if integrates != "" {
+		if err := validIntegrates(integrates); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -226,6 +239,9 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy s
 	payload := map[string]string{"goal": goal, "kind": string(kind)}
 	if foundBy != "" {
 		payload["found_by"] = foundBy
+	}
+	if integrates != "" {
+		payload["integrates"] = integrates
 	}
 	data, _ := json.Marshal(payload)
 
@@ -257,6 +273,17 @@ func validNodeRef(ref string) error {
 	project, node, ok := strings.Cut(ref, ":")
 	if !ok || project == "" || node == "" || strings.Contains(node, ":") {
 		return fmt.Errorf("found_by must be \"<project>:<node>\", got %q", ref)
+	}
+	return nil
+}
+
+// validIntegrates refuses an integrates link that is not a bare node id. The
+// link is the one structural statement of which member an integration merges,
+// and it names a node in the integration's own scope — so a qualified or
+// malformed value must fail at write time, where it can still be corrected.
+func validIntegrates(ref string) error {
+	if strings.ContainsAny(ref, ": \t") {
+		return fmt.Errorf("integrates must be a bare node id (e.g. t-1a2b3c4d), got %q", ref)
 	}
 	return nil
 }
@@ -533,8 +560,20 @@ func (h *Handler) appendMetadata(projectID, nodeID, field, oldValue, newValue st
 }
 
 // Status derives current state for all tasks in a project. AC3.
-// Delegates tree-building to the query engine.
+// Delegates tree-building to the query engine. It runs a blocked node's
+// recorded check in this process's own directory; StatusIn names the project
+// root the check belongs in.
 func (h *Handler) Status(projectID string) Response {
+	return h.StatusIn(projectID, "")
+}
+
+// StatusIn is Status with the directory a blocked node's recorded check runs in:
+// the project root the node belongs to. The check is about that project, not
+// about wherever the terminal happens to be, and re-verifying it here is what
+// makes fs status agree with fs pending and fs unfinished — a block whose
+// condition is over must not read as current truth in one of the three readers
+// only. Nothing is unblocked: only the reported status changes.
+func (h *Handler) StatusIn(projectID, blockDir string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -550,6 +589,10 @@ func (h *Handler) Status(projectID string) Response {
 	result := StatusResult{ProjectID: projectID}
 	for _, root := range tree.Roots {
 		collectTasks(root, &result.Tasks)
+	}
+	for i := range result.Tasks {
+		task := &result.Tasks[i]
+		task.Status = blockStatus(task.Status, task.BlockCheck, blockDir)
 	}
 
 	return okResp(result)
@@ -567,6 +610,8 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 		Orphan:       node.Orphan,
 		Decisions:    node.Decisions,
 		Knowledge:    node.Knowledge,
+		BlockCheck:   node.BlockCheck,
+		Integrates:   node.Integrates,
 	})
 	for _, child := range node.Children {
 		collectTasks(child, out)
