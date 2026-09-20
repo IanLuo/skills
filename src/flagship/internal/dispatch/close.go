@@ -31,21 +31,28 @@ type CloseRequest struct {
 	Worker    string // optional "<project>:<node>"; must match the delivery record when given
 	Decision  string // the cap's verdict, recorded on the cap node
 	Confirm   bool   // the cap has answered the cleanup gate's ask steps
-	Abandoned bool   // the dispatch was never delivered
-	Reason    string // why it was never delivered; required with Abandoned
+	Abandoned bool   // close without the delivery, worker, and cleanup gates
+	Reason    string // why it is being abandoned; required with Abandoned
 }
 
 // CloseResult is the close-out's data payload. Worker names the node this
 // close-out rested on, so the cap can see which one it just signed off. Cleanup
 // says what the exit gate did — including that there was none, which must be
 // visible rather than silent.
+//
+// TornDown names what close-out left gone: the pane, and the worktree when the
+// record names one. An entry means that artifact is verified gone — removed now
+// or already — never merely that a teardown was attempted; a teardown that could
+// not finish says so in Warning instead. It exists so a reader can see the
+// cleanup happened rather than infer it from a pane id that was there all along.
 type CloseResult struct {
-	NodeID   string `json:"node_id"`
-	Decision string `json:"decision"`
-	Worker   string `json:"worker,omitempty"`
-	PaneID   string `json:"pane_id,omitempty"`
-	Cleanup  string `json:"cleanup,omitempty"`
-	Warning  string `json:"warning,omitempty"`
+	NodeID   string   `json:"node_id"`
+	Decision string   `json:"decision"`
+	Worker   string   `json:"worker,omitempty"`
+	PaneID   string   `json:"pane_id,omitempty"`
+	Cleanup  string   `json:"cleanup,omitempty"`
+	TornDown []string `json:"torn_down,omitempty"`
+	Warning  string   `json:"warning,omitempty"`
 }
 
 // Close closes out a dispatch node. It refuses — naming what is missing — when
@@ -61,7 +68,12 @@ type CloseResult struct {
 // the only way to name it.
 //
 // --abandoned skips the delivery and worker gates and records
-// "abandoned, never delivered: <reason>" instead of a verdict.
+// "abandoned, never delivered: <reason>" instead of a verdict. It skips the
+// cleanup gate too, but not the teardown: the delivery record, when there is
+// one, is still read, and what it names is still removed. Abandoning is a
+// decision about the work, not a licence to leak a pane — a delivered dispatch
+// closed this way is still a successful close, and its pane and worktree would
+// otherwise outlive it silently.
 //
 // reg, kc, hc, and gw are how the exit gate finds its footing: kc holds the
 // cleanup playbook named by the delivery record's type, reg says which project
@@ -92,6 +104,18 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 	if req.Abandoned {
 		if req.Reason == "" {
 			return errResp("--abandoned requires --reason: say why the dispatch was never delivered")
+		}
+		// The record is still read on this path, though none of its gates apply:
+		// a dispatch can be delivered and then abandoned — a worker that never
+		// finished, a request withdrawn — and the record is what names the pane
+		// and the worktree to tear down. No record is the never-delivered case,
+		// where nothing was opened and there is nothing to clean.
+		d, ok, err := h.DeliveryFor(capScope, req.NodeID)
+		if err != nil {
+			return errResp(fmt.Sprintf("close: read delivery record: %v", err))
+		}
+		if ok {
+			delivery = d
 		}
 		decision = "abandoned, never delivered: " + req.Reason
 	} else {
@@ -135,7 +159,9 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 	if !req.Abandoned {
 		// The exit gate runs before anything is torn down or marked done: a
 		// dispatch that fails it is still open work, and its pane and worktree must
-		// remain so it can be finished.
+		// remain so it can be finished. A refusal above returned before this point,
+		// and so does a refusal here — the teardown below is only ever reached by a
+		// close that is going to succeed.
 		gate, confirmations, err := runCleanupGate(hc, reg, kc, delivery, req.Confirm)
 		if err != nil {
 			return errResp(err.Error())
@@ -146,27 +172,36 @@ func Close(h *command.Handler, hc HerdrCLI, gw GitWorktrees, reg *registry.Regis
 				return errResp(err.Error())
 			}
 		}
-
-		var warnings []string
-		if warning := tearDownPane(hc, delivery.PaneID); warning != "" {
-			warnings = append(warnings, warning)
-		}
-		if delivery.Worktree != "" {
-			// The repository the worktree was made from is what git has to be asked
-			// about it. A project whose registry row is gone leaves no repository
-			// to ask, which the teardown reports rather than skipping the check.
-			repo := ""
-			if proj, err := reg.Get(delivery.Project); err == nil {
-				repo = proj.RootPath
-			}
-			if warning := tearDownWorktree(hc, gw, repo, delivery); warning != "" {
-				warnings = append(warnings, warning)
-			}
-		}
-		result.Warning = strings.Join(warnings, "; ")
 	} else {
 		result.Cleanup = "no cleanup gate: the dispatch was abandoned"
 	}
+
+	// Teardown runs on both paths: an abandoned close is a successful close, so
+	// what the delivery opened must not outlive it. On a record that names
+	// nothing there is nothing to tear down, which is the never-delivered case.
+	var warnings []string
+	if delivery.PaneID != "" {
+		if warning := tearDownPane(hc, delivery.PaneID); warning != "" {
+			warnings = append(warnings, warning)
+		} else {
+			result.TornDown = append(result.TornDown, "pane "+delivery.PaneID)
+		}
+	}
+	if delivery.Worktree != "" {
+		// The repository the worktree was made from is what git has to be asked
+		// about it. A project whose registry row is gone leaves no repository
+		// to ask, which the teardown reports rather than skipping the check.
+		repo := ""
+		if proj, err := reg.Get(delivery.Project); err == nil {
+			repo = proj.RootPath
+		}
+		if warning := tearDownWorktree(hc, gw, repo, delivery); warning != "" {
+			warnings = append(warnings, warning)
+		} else {
+			result.TornDown = append(result.TornDown, "worktree "+delivery.Worktree)
+		}
+	}
+	result.Warning = strings.Join(warnings, "; ")
 
 	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
 		return errResp("mark node done: " + resp.Error)

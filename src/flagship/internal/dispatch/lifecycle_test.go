@@ -896,6 +896,108 @@ func TestCloseAbandonedSkipsDeliveryAndWorkerGates(t *testing.T) {
 	}
 }
 
+// An abandoned close is a successful close: the node is marked done, so what
+// the delivery opened must not outlive it. The worker here is still active —
+// the dispatch the cap gives up on — and the record names a worktree, so both
+// the pane and the checkout have to die with the node.
+func TestCloseAbandonedTearsDownTheDeliveredPaneAndWorktree(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "active")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
+
+	herdr := &fakeHerdr{}
+	resp := f.close(herdr, dispatch.CloseRequest{
+		NodeID: nodeID, Abandoned: true, Reason: "the user withdrew the request",
+	})
+	if !resp.OK {
+		t.Fatalf("Close --abandoned: %s", resp.Error)
+	}
+	if len(herdr.closed) != 1 || herdr.closed[0] != "w7:p1" {
+		t.Errorf("closed = %v, want the delivered pane", herdr.closed)
+	}
+	if len(herdr.removed) != 1 || herdr.removed[0] != "w7" {
+		t.Errorf("herdr removed = %v, want the delivered workspace", herdr.removed)
+	}
+	if len(f.git.removed) != 1 || f.git.removed[0] != "/checkouts/w7" {
+		t.Errorf("git removed = %v, want the leaked checkout", f.git.removed)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	if result.PaneID != "w7:p1" {
+		t.Errorf("pane_id = %q, want the delivered pane named", result.PaneID)
+	}
+	for _, want := range []string{"pane w7:p1", "worktree w7"} {
+		if !contains(result.TornDown, want) {
+			t.Errorf("torn_down = %v, must name %q so the cleanup is visible", result.TornDown, want)
+		}
+	}
+	if result.Warning != "" {
+		t.Errorf("warning = %q, want none", result.Warning)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+		t.Errorf("cap node status = %q, want done", status)
+	}
+}
+
+// A refused close keeps everything, and the abandoned path has its own refusal:
+// a missing --reason. The record names a live pane and a live worktree, and
+// neither may be touched before the refusal — the distinction between "we are
+// not gating this" and "we are not cleaning this".
+func TestCloseAbandonedWithoutAReasonKeepsThePaneAndWorktree(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "active")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
+
+	herdr := &fakeHerdr{}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Abandoned: true})
+	if resp.OK {
+		t.Fatal("--abandoned without --reason must be refused")
+	}
+	if len(herdr.closed) != 0 || len(herdr.removed) != 0 {
+		t.Errorf("a refused close touched herdr: closed=%v removed=%v", herdr.closed, herdr.removed)
+	}
+	if len(f.git.removed) != 0 {
+		t.Errorf("a refused close removed %v, want nothing", f.git.removed)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// Abandoning is a decision; a stuck pane is a cleanup problem, not a reason to
+// keep the node open. The teardown that cannot finish warns instead of refusing,
+// and what it did not finish is never claimed as torn down.
+func TestCloseAbandonedWarnsButStillMarksDoneWhenTeardownFails(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "active")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	f.git.listed = []string{"/checkouts/w7"}
+	f.git.keepListed = true
+
+	resp := f.close(&fakeHerdr{closeErr: errors.New("herdr: server is down")}, dispatch.CloseRequest{
+		NodeID: nodeID, Abandoned: true, Reason: "the user withdrew the request",
+	})
+	if !resp.OK {
+		t.Fatalf("an abandoned dispatch must still be marked done: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	for _, want := range []string{"server is down", "w7:p1", "/checkouts/w7", "still registered"} {
+		if !strings.Contains(result.Warning, want) {
+			t.Errorf("warning = %q, must mention %q", result.Warning, want)
+		}
+	}
+	if len(result.TornDown) != 0 {
+		t.Errorf("torn_down = %v, want nothing: a failed teardown is a warning, not a claim", result.TornDown)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+		t.Errorf("cap node status = %q, want done despite the warning", status)
+	}
+}
+
 // The exit gate is named by the record's type, not by the goal prose. A failing
 // check refuses, fail-fast, naming the command and its output — the same shape
 // as fs dispatch, and for the same reason. The sentinel proves the later check
