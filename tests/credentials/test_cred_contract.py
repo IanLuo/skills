@@ -180,7 +180,7 @@ def stop_holder(cred_dir, proc):
         sock.unlink()
 
 
-def on_a_real_tty(args, cred_dir, answers, timeout=30):
+def on_a_real_tty(args, cred_dir, answers, timeout=30, extra=None):
     """Run cred.sh on a controlling pty, answering its prompts in order.
 
     `cred init`, `cred add` and `cred remember` are human-gated — the only way to
@@ -198,7 +198,7 @@ def on_a_real_tty(args, cred_dir, answers, timeout=30):
     """
     pid, master = pty.fork()
     if pid == 0:
-        os.execvpe("bash", ["bash", str(CRED), *args], base_env(cred_dir))
+        os.execvpe("bash", ["bash", str(CRED), *args], base_env(cred_dir, extra))
         os._exit(127)
 
     chunks, pending, quiet = [], list(answers), 0.0
@@ -532,6 +532,57 @@ def main():
                 r.returncode != 0 and want in r.stderr,
                 f"{bad} exit={r.returncode} err={r.stderr!r}",
             )
+
+    # 16. The cleanup trap has to survive a space in $TMPDIR/$CRED_DIR. It used
+    # to hold its paths in an unquoted string, so `rm -f $list` word-split on the
+    # space and failed silently: `cred add` exited 0 with the whole decrypted
+    # vault still on disk, forever. Every other section here uses a space-free
+    # tempfile path, which is why nothing caught it.
+    with tempfile.TemporaryDirectory() as td:
+        spaced = pathlib.Path(td) / "space dir"
+        spaced_tmp = spaced / "tmp"
+        spaced_tmp.mkdir(parents=True)
+        spaced_cred = spaced / "cred dir"
+        extra = {"TMPDIR": str(spaced_tmp)}
+        code, out = on_a_real_tty(["init"], spaced_cred, ["pw", "pw"], extra=extra)
+        check("a spaced CRED_DIR still inits", code == 0, out)
+        code, out = on_a_real_tty(["add", "spaced", "TOK"], spaced_cred, [SECRET, "pw"], extra=extra)
+        check("add succeeds with a space in CRED_DIR and TMPDIR", code == 0, out)
+        left = sorted(p.name for p in spaced_tmp.glob("cred.*"))
+        check("no temp file survives a spaced add", not left, str(left))
+        on_disk = [p for p in spaced.rglob("*") if p.is_file() and SECRET in p.read_text(errors="ignore")]
+        check("no plaintext vault survives a spaced add", not on_disk, str(on_disk))
+
+    # 17. The cleanup trap must be safe on bash 3.2 as well: macOS's /bin/bash
+    # (what `#!/usr/bin/env bash` resolves to on a stock machine) treats
+    # `"${TMPFILES[@]}"` on an empty array as an unbound variable under `set -u`.
+    # The trap runs on every exit, so that broke *every* invocation that
+    # registered no temp file — list, lock, --help — with exit 1.
+    stock_bash = pathlib.Path("/bin/bash")
+    if not stock_bash.is_file():
+        print("  skip /bin/bash is not present")
+    else:
+        with tempfile.TemporaryDirectory() as td:
+            bare = pathlib.Path(td) / "bare"
+            bare.mkdir()
+            for args in (["--help"], ["list"]):
+                r = subprocess.run(
+                    [str(stock_bash), str(CRED), *args],
+                    env=base_env(bare),
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                )
+                check(
+                    f"/bin/bash: cred {' '.join(args)} exits 0 with an empty temp list",
+                    r.returncode == 0,
+                    f"exit={r.returncode} err={r.stderr!r}",
+                )
+                check(
+                    f"/bin/bash: cred {' '.join(args)} hits no unbound variable",
+                    "unbound variable" not in r.stderr + r.stdout,
+                    r.stderr,
+                )
 
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

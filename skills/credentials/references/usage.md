@@ -2,9 +2,11 @@
 
 `cred` stores service credentials in a **passphrase-encrypted vault file** and
 injects them into a command's environment without ever printing a value. There
-is no `get` verb: a secret value exists only inside the child process. It is
-cross-platform — it needs `bash`, `awk`, `find`, `mktemp` and `openssl`, plus the
-`cred-run` binary for `run`.
+is no `get` verb: a secret value exists only inside the child process. It runs on
+macOS and Linux — the Keychain path (`cred remember`) is macOS-only — and needs a
+POSIX shell plus the usual Unix tools (`bash`, `awk`, `find`, `mktemp`, `openssl`,
+`head`, `od`, `tr`, `date`, `seq`, `ps`, `sort`, `chmod`, `nohup`, `kill`,
+`basename`) and the `cred-run` binary for `run`.
 
 - Deployable entrypoint: `skills/credentials/scripts/cred.sh` (and the compiled
   `scripts/cred-run` binary it delegates `run` to).
@@ -12,6 +14,14 @@ cross-platform — it needs `bash`, `awk`, `find`, `mktemp` and `openssl`, plus 
   `packages.credentials` in the repo flake. Build and install it with
   `./bin/build-project.sh credentials` from the repo root, which runs
   `nix build .#credentials` and installs the artifact into `scripts/`.
+
+Nothing installs `cred` on your `PATH` — the skill deploys as a folder, so every
+example below assumes this definition in the shell that runs it (from the repo
+root that holds this skill; use an absolute path otherwise):
+
+```bash
+cred() { bash skills/credentials/scripts/cred.sh "$@"; }
+```
 
 ## 1. Setup (once)
 
@@ -37,7 +47,7 @@ Creates:
 | `cred remember` | human, once | store the vault passphrase in the Keychain |
 | `cred add <profile> <VAR>` | human | store a secret (hidden prompt) |
 | `cred set <profile> <VAR> <value>` | human | store a non-secret var |
-| `cred list [profile]` | anyone | names only, never values |
+| `cred list [profile]` | anyone | names and non-secret values; secrets as @secret |
 | `cred unlock` | human or agent | open a window (approve a dialog, or type on a TTY) |
 | `cred lock` | anyone | close that window now |
 | `cred run <profile> -- <cmd> [args]` | agent or human | open a window if closed, then inject + run + scrub |
@@ -99,7 +109,8 @@ cred add github GH_TOKEN
 - Prompts for the vault passphrase (hidden) and re-encrypts the whole vault.
 - Writes `VAR=@secret` into the profile (a *reference*, not the value).
 - Verifies the stored value by reading it back and comparing (without printing).
-- Known limit: the plaintext secret is written to a 0600 temp file for ~ms.
+- Known limit: the whole decrypted vault is written to a 0600 temp file in
+  `$TMPDIR` for the duration of the command (~0.4 s measured) and removed at exit.
 
 ### `cred set <profile> <VAR> <value>`
 
@@ -184,6 +195,10 @@ Exit codes:
 | 5 | profile missing an `allow =` line |
 | 6 | command not in the allow-list |
 
+An empty result is not a failure: re-running `cred init` on an existing vault is
+an intentional no-op that exits 0, and `cred list` with no profiles prints
+`no profiles yet` and also exits 0. A *named* profile that does not exist exits 1.
+
 ## 3. Profile format
 
 `~/.config/cred/profiles/<name>.env` — plaintext, agent-readable by design.
@@ -208,8 +223,9 @@ Rules:
 
 ## 4. The safety model (what `cred run` guarantees)
 
-- Secrets go into the child via `envp` — the one Unix channel `ps` cannot see.
-  They never appear in argv, in this process's output, or in the transcript.
+- Secrets go into the child via `envp`, never argv. argv is world-readable; the
+  environment is readable only by the same uid — and same-uid is not a boundary
+  (§5.1). They never appear in this process's output or in the transcript.
 - **The vault passphrase is never typed after setup.** With `cred remember`,
   opening a window is an *approval*: you enter your **login keychain password**
   so macOS will authorize the read. The vault passphrase itself only ever goes
@@ -239,9 +255,11 @@ Rules:
    child's output. `cred run svc -- sh -c 'base64 <<< "$TOKEN"'` prints the
    secret in a form the scrubber cannot match. Coming through `cred run` does
    not make output safe to re-publish.
-3. **`cred add` writes the plaintext secret to a 0600 temp file for ~ms**, and
-   the passphrase travels via `openssl`'s environment (never argv). A sibling
-   same-user process polling that instant could catch either. `cred unlock`
+3. **`cred add` writes the whole decrypted vault to a 0600 temp file in
+   `$TMPDIR` for the duration of the command** (two 200 000-iteration `openssl`
+   passes; ~0.4 s measured warm, longer under load) and removes it at exit. The
+   passphrase also travels via `openssl`'s environment (never argv). A sibling
+   same-user process polling that window could catch either. `cred unlock`
    creates no temp file — it decrypts straight into the holder's stdin.
 4. **Allow-list checks only the first word.** `cred run github -- gh api repo …`
    is allowed; arguments are not screened. Keep the list tight.
@@ -275,7 +293,7 @@ npm:
 
 ```bash
 cred add npm NPM_TOKEN
-cred set npm allow "npm"
+cred set npm allow "npm sh"   # the sh -c wrapper below runs `sh`, which the allow-list checks first
 cred run npm -- sh -c 'npm publish --dry-run'
 ```
 

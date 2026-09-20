@@ -7,7 +7,7 @@
 #   cred remember                      store the vault passphrase in the Keychain (once)
 #   cred add <profile> <VAR>           store a secret (prompts, no echo)
 #   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
-#   cred list [profile]                list profiles / vars (names only)
+#   cred list [profile]                list profiles / vars (secrets as @secret)
 #   cred unlock                        hold the vault in memory for 5 min
 #   cred lock                          close that window now
 #   cred run <profile> -- <cmd> [args] run cmd, injecting secrets + scrubbing output
@@ -42,9 +42,10 @@ TTL=300
 # vault". These definitions are the whole contract between this script and
 # cred-run, and each is exported only to the half that uses it instead of being
 # re-derived on the other side: the holder gets the profile dir, the socket, the
-# window and the marker; the client gets the socket and nothing else. A hash of
-# the vault layout or the relock window in the binary would be a second place to
-# change.
+# window and the marker. The client *requires* only the socket — but `cred run`
+# execs it from the same shell that may have just exported the other three, so
+# they are present there too. A hash of the vault layout or the relock window in
+# the binary would be a second place to change.
 SECRET_MARKER='@secret'
 
 # The Keychain item that holds the vault passphrase, and the trail of every window
@@ -61,9 +62,18 @@ require_tty() { [ -t 0 ] || die "this verb needs an interactive terminal (run it
 valid_profile() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
 
 # Temp files to remove on exit. EXIT (not RETURN) so it also fires on set -e
-# abort and die — a RETURN trap would orphan plaintext vault temp files.
-_TMP_CLEANUP=""
-trap 'rm -f $_TMP_CLEANUP' EXIT
+# abort and die — a RETURN trap would orphan plaintext vault temp files. An
+# array, quoted at the trap: these paths sit under $TMPDIR/$CRED_DIR, and an
+# unquoted list word-splits on whitespace, so one space in either path makes rm
+# fail and leaves the whole decrypted vault on disk.
+#
+# The length guard is load-bearing: this trap runs on every exit, and under
+# `set -u` bash 3.2 (macOS /bin/bash, which `#!/usr/bin/env bash` resolves to on
+# a stock machine) treats `"${TMPFILES[@]}"` on an empty array as an unbound
+# variable — so without it every invocation that registered no temp file exits 1.
+# `${#TMPFILES[@]}` is 0-safe there.
+TMPFILES=()
+trap '[ ${#TMPFILES[@]} -eq 0 ] || rm -f "${TMPFILES[@]}"' EXIT
 
 usage() {
   cat <<'USAGE'
@@ -74,7 +84,7 @@ Usage:
   cred remember                      store the vault passphrase in the Keychain (once)
   cred add <profile> <VAR>           store a secret (prompts, no echo)
   cred set <profile> <VAR> <value>   store a NON-secret var (plaintext)
-  cred list [profile]                list profiles / vars (names only)
+  cred list [profile]                list profiles / vars (secrets as @secret)
   cred unlock [--for <secs>]        hold the vault in memory (default 5 min)
   cred lock                          close that window now
   cred run <profile> -- <cmd> [args] run cmd, injecting secrets + scrubbing output
@@ -90,7 +100,7 @@ Use:
   cred unlock                        # open a 5-min window
   cred run github -- gh api user     # token injected, output scrubbed; opens the
                                      # window itself if closed (asks for approval)
-  cred list github                   # names only, never values
+  cred list github                   # names + non-secret values; secrets as @secret
 
 There is no `get` verb — a secret value exists only inside the child process.
 Full guide: skills/credentials/references/usage.md
@@ -137,7 +147,7 @@ profile_file() { printf '%s/%s.env' "$PROFILE_DIR" "$1"; }
 # argv and no backslash escape inside it gets reinterpreted.
 upsert() {
   local f="$1" key="$2" val="$3"
-  _TMP_CLEANUP="$_TMP_CLEANUP $f.new"
+  TMPFILES+=("$f.new")
   CRED_UPSERT_KEY="$key" CRED_UPSERT_VAL="$val" awk '
     BEGIN { key = ENVIRON["CRED_UPSERT_KEY"]; val = ENVIRON["CRED_UPSERT_VAL"]; done = 0 }
     {
@@ -204,7 +214,7 @@ cmd_add() {
   local pw tmp
   pw="$(read_secret 'vault passphrase (hidden): ')"
   tmp="$(mktemp "${TMPDIR:-/tmp}/cred.XXXXXX")"
-  _TMP_CLEANUP="$_TMP_CLEANUP $tmp $tmp.new"
+  TMPFILES+=("$tmp" "$tmp.new")
   CRED_PW="$pw" VDEC "$tmp" || die "wrong passphrase (or corrupt vault)"
   [ "$(head -n1 "$tmp")" = "$HEADER" ] || die "wrong passphrase (or corrupt vault)"
 

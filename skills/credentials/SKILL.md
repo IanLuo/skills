@@ -11,9 +11,11 @@ metadata:
 `cred` stores secrets in a **passphrase-encrypted vault file**
 (`~/.config/cred/vault`) and injects them into a command's environment without
 printing them. There is deliberately **no `get` verb** — a secret value exists
-only inside a child process, never in your output. It is cross-platform: it
-needs only `bash`, `awk`, `find`, `mktemp` and `openssl`, plus the `cred-run`
-binary for `run`.
+only inside a child process, never in your output. It runs on macOS and Linux —
+the Keychain path (`cred remember`) is macOS-only — and needs a POSIX shell plus
+the usual Unix tools (`bash`, `awk`, `find`, `mktemp`, `openssl`, `head`, `od`,
+`tr`, `date`, `seq`, `ps`, `sort`, `chmod`, `nohup`, `kill`, `basename`), and the
+`cred-run` binary for `run`.
 
 The entrypoint is `scripts/cred.sh` (a thin dispatcher for the interactive
 verbs) plus the compiled Rust binary `scripts/cred-run` (resolve + inject +
@@ -38,8 +40,10 @@ still gets scrubbed, allow-listed output — the scrub is not a property of the
 caller.
 
 cred.sh exports the contract as environment variables — `CRED_PROFILE_DIR`,
-`CRED_HOLD_SOCK`, `CRED_TTL`, `CRED_SECRET_MARKER` to the holder, and only
-`CRED_HOLD_SOCK` to the client — rather than letting either half re-derive it.
+`CRED_HOLD_SOCK`, `CRED_TTL`, `CRED_SECRET_MARKER` for the holder — rather than
+letting either half re-derive it. The client needs only `CRED_HOLD_SOCK`; when
+`cred run` opens the window in its own shell before `exec`, the other three are
+in that process's environment too, so nothing may assume they are absent.
 Each definition exists exactly once. Deploy ships `cred.sh` plus a binary, and
 the Rust source never has to agree with the shell by coincidence.
 
@@ -94,7 +98,7 @@ cred init                         # one-time: create the encrypted vault (human)
 cred remember                     # one-time: store the passphrase in the Keychain (human)
 cred add <profile> <VAR>          # store a secret — prompts, no echo (human)
 cred set <profile> <VAR> <value>  # store a NON-secret var (e.g. API base URL)
-cred list [profile]               # names only — never values
+cred list [profile]               # names + non-secret values; secrets show as @secret
 cred unlock                       # open a 5-min window (approve a dialog)
 cred lock                         # re-lock now
 cred run <profile> -- <cmd> ...   # open a window if closed, then inject + run + scrub
@@ -130,7 +134,9 @@ whose first word isn't listed.
 
 ## What `cred run` guarantees
 
-- Secrets are injected as environment variables (safe from `ps`), never argv.
+- Secrets are injected as environment variables, never argv. argv is
+  world-readable; the environment is readable only by the same uid — and
+  same-uid is not a boundary (see Known limits).
 - Secrets never leave the holder process; the client only relays scrubbed output.
 - Opening a window is an **approval of a read**, not an entry of the vault
   passphrase: with `cred remember`, macOS draws the dialog and you confirm it
@@ -154,9 +160,11 @@ whose first word isn't listed.
 - **The scrub stops accidents, not intent.** `cred run svc -- sh -c 'base64 <<< "$TOKEN"'`
   prints the secret in a form the scrubber cannot match. Coming through
   `cred run` does not make output safe to re-publish.
-- **`cred add` writes the plaintext secret to a 0600 temp file for ~ms** and
+- **`cred add` writes the whole decrypted vault to a 0600 temp file in `$TMPDIR`
+  for the duration of the command** (two 200 000-iteration `openssl` passes;
+  ~0.4 s measured warm, longer under load) and removes it at exit. It also
   passes the passphrase via `openssl`'s environment (never argv). A sibling
-  same-user process polling during that instant could catch either. `cred unlock`
+  same-user process polling during that window could catch either. `cred unlock`
   creates no temp file — it decrypts straight into the holder's stdin.
 - **The allow-list checks only the command's first word.** `cred run github -- gh api repo ...`
   is allowed; arguments are not screened. Keep the list tight to the tools you
