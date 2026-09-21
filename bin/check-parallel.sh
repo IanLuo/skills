@@ -16,7 +16,7 @@
 #   bin/check-parallel.sh <card.md> [card.md ...]
 #   bin/check-parallel.sh a.md,b.md
 #
-# The second form is the one fs dispatch uses: parallel-prerequisites.yaml runs
+# The second form is the one fs dispatch uses: parallel-entry.yaml runs
 # this with $FS_CARDS, which fs dispatch sets from --cards, comma-separated.
 #
 # Exit: 0 disjoint · 1 overlap, or a card with no file list · 2 no cards named.

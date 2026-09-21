@@ -12,7 +12,7 @@ steps:
   # they arrive through the same plan and the same trace as every other step.
   - say: note your work on your node as you go — goal, status, the exact commands you ran, the commit — and mark it done with your evidence when you finish
   - say: your node is named in your brief. Use it; never invent one, and never write to another node
-  - say: when you find work that is not yours — a gap, a broken gate, a stale fact — file it as a `kind: gap` node naming the scope it belongs to (`fs task add --kind gap --found-by <your node> --goal ...`), rather than fixing it outside your card
+  - say: when you find work that is not yours — a gap, a broken gate, a stale fact — file it as a `kind: gap` node naming the scope it belongs to (`fs task add --project <the scope it belongs to> --kind gap --found-by <your node> --goal ...`), rather than fixing it outside your card
   - say: a claim without the command that produced it is not evidence; paste the command and its output, or say you did not run it
   - say: when a card is wrong or under-specified, say so on your node and stop — do not guess at intent, and do not widen the card to cover the guess
   - say: skills named in a `use:` step are hints, not requirements. Load the one that fits, or say why none does

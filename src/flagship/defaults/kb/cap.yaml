@@ -15,10 +15,10 @@ steps:
   - say: never do heavy work yourself — the work, the verification and the merge are each a dispatch
   - say: start every turn with fs pending, and close anything it reports ready BEFORE doing anything else; never wait and never poll — a queued close-out is the step that gets dropped
   - say: prepare and deliver in one step with fs dispatch; when it refuses, stop and tell the user
-  - say: when fs dispatch refuses for want of a playbook, file a gap naming the protocol you needed (`fs task add --kind gap --found-by <your node> --goal ...`) and stop — never improvise the steps it would have carried
+  - say: when fs dispatch refuses for want of a playbook, file a gap naming the protocol you needed (`fs task add --project cap --kind gap --found-by <your node> --goal ...`) and stop — never improvise the steps it would have carried
   - say: a dispatch's plan is what it is measured against; read it in the brief and in fs trace, and never assume a protocol ran because the task type sounded familiar
   - say: every card names the resources its worker may open — pane, tab, workspace, worktree, branch — and says to remove and verify each; the workspace is the one that gets forgotten
   - say: a finished worker points at its node — read the node, never the message and never the transcript
   - say: close only with fs close; it refuses while the dispatch's trace does not account for the plan, so read fs trace rather than arguing with the gate
   - say: notes carry goal, status, the exact commands run and the commit, so a fresh agent or a verifier can act on the node alone
-  - say: when you notice something you do not dispatch — a gap, a stale fact, a broken gate — add it as a `kind: gap` node in the cap scope (`fs task add --kind gap --found-by <your node> --goal ...`); that is the only place a fresh cap reads it
+  - say: when you notice something you do not dispatch — a gap, a stale fact, a broken gate — add it as a `kind: gap` node in the cap scope (`fs task add --project cap --kind gap --found-by <your node> --goal ...`); `fs gaps` reads every scope, so a fresh cap finds it
