@@ -39,12 +39,19 @@ type fakeHerdr struct {
 	checkoutPath string
 	checkoutErr  error
 
+	// paneExists/paneExistsErr stand in for the read-back a close does after
+	// closing the pane: an empty fake reports the pane gone, which is the goal
+	// state, and paneExists: true is how a test constructs a pane that survived.
+	paneExists    bool
+	paneExistsErr error
+
 	created   []string
 	started   []string
 	prompts   []promptCall
 	closed    []string
 	rooted    []string
 	checkouts []string
+	verified  []string
 }
 
 // promptCall is one brief handed to a pane, so a test can read the text the
@@ -98,6 +105,14 @@ func (f *fakeHerdr) ClosePane(paneID string) error {
 	}
 	f.closed = append(f.closed, paneID)
 	return nil
+}
+
+func (f *fakeHerdr) PaneExists(paneID string) (bool, error) {
+	f.verified = append(f.verified, paneID)
+	if f.paneExistsErr != nil {
+		return false, f.paneExistsErr
+	}
+	return f.paneExists, nil
 }
 
 // addCapNode records a dispatch node in the cap scope the way Prepare does,
@@ -794,6 +809,78 @@ func TestCloseWarnsButSucceedsWhenHerdrIsUnavailable(t *testing.T) {
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done despite the warning", status)
+	}
+}
+
+// A close that returns nil from the pane close is a claim, not a fact: the pane
+// is read back, and the report claims it torn down only when herdr agrees. The
+// fake records the read, so a close that trusted the close call fails here.
+func TestCloseReadsThePaneBackAfterClosingIt(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	herdr := &fakeHerdr{}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if len(herdr.verified) != 1 || herdr.verified[0] != "w1:p9" {
+		t.Errorf("panes read back = %v, want w1:p9 verified after the close", herdr.verified)
+	}
+	if result := resp.Data.(dispatch.CloseResult); !contains(result.TornDown, "pane w1:p9") {
+		t.Errorf("torn_down = %v, want the verified pane named", result.TornDown)
+	}
+}
+
+// A pane herdr still reports after the close is a warning naming it, and the
+// close does not claim it was torn down: trusting the close call is exactly how
+// a teardown reports success over a resource that survived.
+func TestCloseWarnsWhenThePaneSurvivesTheClose(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := f.close(&fakeHerdr{paneExists: true}, dispatch.CloseRequest{
+		NodeID: nodeID, Decision: "verified",
+	})
+	if !resp.OK {
+		t.Fatalf("a surviving pane is a warning, not a refusal: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	if !strings.Contains(result.Warning, "w1:p9") || !strings.Contains(result.Warning, "survived") {
+		t.Errorf("warning = %q, want the pane and that it survived", result.Warning)
+	}
+	if contains(result.TornDown, "pane w1:p9") {
+		t.Errorf("torn_down = %v, must not claim a pane that survived", result.TornDown)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+		t.Errorf("cap node status = %q, want done; a leaked pane is a warning", status)
+	}
+}
+
+// A pane read-back that cannot be answered is a warning too: close-out must not
+// claim a clearance it could not verify.
+func TestCloseWarnsWhenThePaneCannotBeReadBack(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := f.close(&fakeHerdr{paneExistsErr: errors.New("herdr: server is down")}, dispatch.CloseRequest{
+		NodeID: nodeID, Decision: "verified",
+	})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	if !strings.Contains(result.Warning, "w1:p9") || !strings.Contains(result.Warning, "verify") {
+		t.Errorf("warning = %q, want the pane and that it could not be verified", result.Warning)
+	}
+	if contains(result.TornDown, "pane w1:p9") {
+		t.Errorf("torn_down = %v, must not claim an unverified pane", result.TornDown)
 	}
 }
 
@@ -1553,6 +1640,108 @@ steps:
 	}
 	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// Declared order is the contract across kinds: a do declared before a check runs
+// before it, and a check declared after a do runs after it. Each step appends a
+// line, so the log is the order they ran in — the two-phase split this replaces
+// would have run both checks first.
+func TestCloseRunsStepsInDeclaredOrderAcrossKinds(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
+	type: cleanup
+	trigger: dev-task
+	steps:
+	  - check: printf 'check-1\n' >> order.log
+	  - do: printf 'do-1\n' >> order.log
+	  - check: printf 'check-2\n' >> order.log
+	  - do: printf 'do-2\n' >> order.log
+	`)
+
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	log, err := os.ReadFile(filepath.Join(root, "order.log"))
+	if err != nil {
+		t.Fatalf("the steps did not run: %v", err)
+	}
+	if string(log) != "check-1\ndo-1\ncheck-2\ndo-2\n" {
+		t.Errorf("steps ran as %q, want the declared order", log)
+	}
+}
+
+// A failing check declared after an action refuses *after* that action ran: the
+// postcondition is the whole point of declared order. Nothing is torn down on
+// the way out, and the node stays open.
+func TestCloseRefusesAPostActionCheckAfterTheActionRan(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "action-ran")
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
+	type: cleanup
+	trigger: parallel
+	steps:
+	  - do: touch %s
+	  - check: echo still-there >&2; false
+	`, ran))
+
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", t.TempDir())
+
+	herdr := &fakeHerdr{}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a post-action check that fails must refuse the close")
+	}
+	for _, want := range []string{"cleanup check failed", `"echo still-there >&2; false"`, "still-there"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Errorf("the action declared before the check did not run: %v", err)
+	}
+	if len(herdr.closed) != 0 {
+		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// A check declared after an action that removed the tree it would run in falls
+// back to the project root: `test ! -e "$FS_WORKTREE_PATH"` has no footing in the
+// path it asserts is gone, so it must run where that path can be tested at all.
+func TestCloseRunsAPostActionCheckAfterItsTreeIsGone(t *testing.T) {
+	root := t.TempDir()
+	worktree := t.TempDir()
+	f := newFixture(t, root)
+	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
+	type: cleanup
+	trigger: parallel
+	steps:
+	  - check: test -d "$FS_WORKTREE_PATH"
+	  - do: rm -rf "$FS_WORKTREE_PATH"
+	  - check: test ! -e "$FS_WORKTREE_PATH"
+	`)
+
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("the post-action check must run after its tree is gone: %s", resp.Error)
+	}
+	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "2 checks passed") {
+		t.Errorf("cleanup note = %q, want both checks reported", note)
 	}
 }
 

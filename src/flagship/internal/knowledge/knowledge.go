@@ -29,10 +29,12 @@ const (
 // validateRouting, which also constrains the step count and body.
 //
 // prerequisite guards entry, so it may assert but not act: a gate that acts is
-// not a gate. cleanup guards exit and runs its actions at the end, after the
-// checks pass and the asks are answered — that is where a per-type teardown
-// belongs, rather than hardcoded in the mechanism that loads the playbook.
-// procedure is read, so nothing executes it beyond check.
+// not a gate. cleanup guards exit, and its steps run in the order the playbook
+// declares them — each kind says what its step does, so a cleanup may assert a
+// precondition before an action and a POSTCONDITION after one, which is where
+// an exit gate belongs: the teardown is an action, and nothing else can verify
+// what it achieved. That is why cleanup alone allows do. procedure is read, so
+// nothing executes it beyond check.
 var allowedKinds = map[string][]string{
 	"prerequisite": {KindCheck, KindAsk},
 	"cleanup":      {KindCheck, KindAsk, KindDo},

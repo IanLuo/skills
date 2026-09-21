@@ -88,6 +88,13 @@ type HerdrCLI interface {
 	Agents() (map[string]string, error)
 	// ClosePane closes paneID, returning ErrPaneGone if it no longer exists.
 	ClosePane(paneID string) error
+	// PaneExists reports whether herdr still knows paneID. It is how close-out
+	// confirms a pane it closed is really gone: a close that returns nil is a
+	// claim, and the error-mapped "already gone" it treats as success is the same
+	// mapping that once reported a worktree gone while its checkout stayed on
+	// disk. An error means the question could not be answered, which is not the
+	// same as the pane being absent.
+	PaneExists(paneID string) (bool, error)
 }
 
 // Deliver hands the prepared brief to a worker: it finds the pane the worker
@@ -375,6 +382,21 @@ func (herdrCLI) ClosePane(paneID string) error {
 		return ErrPaneGone
 	}
 	return err
+}
+
+// PaneExists asks herdr for the pane and reads the answer, rather than trusting
+// that a close succeeded. pane_not_found is the one error that answers the
+// question — the pane is absent; any other failure leaves it unanswered and is
+// reported as such.
+func (herdrCLI) PaneExists(paneID string) (bool, error) {
+	_, err := runHerdr("pane", "get", paneID)
+	if err == nil {
+		return true, nil
+	}
+	if herdrErrorCode(err) == "pane_not_found" {
+		return false, nil
+	}
+	return false, fmt.Errorf("herdr pane get %s: %w", paneID, err)
 }
 
 // HerdrError is a failure the herdr CLI reported with a machine-readable code

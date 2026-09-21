@@ -2012,16 +2012,30 @@ case "$cmd $sub" in
     ;;
   "workspace get")
     # A worktree workspace is named by HERDR_TEST_WORKTREE_WS; anything else is
-    # simply not there, the way a typo'd workspace id is not.
+    # simply not there, the way a typo'd workspace id is not. A closed workspace
+    # is gone too — that is the state the teardown's postcondition asserts.
     id="${1:-}"
+    [ -f "$(id_file closed_workspace "$id")" ] && not_found workspace "$id" || true
     [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$id"
     printf '{"result":{"workspace":{"workspace_id":"%s","worktree":{"checkout_path":"%s","is_linked_worktree":true}}}}\n' "$id" "$HERDR_TEST_WORKTREE_CWD"
+    ;;
+  "workspace close")
+    # Closing the worktree workspace removes the workspace and its panes, and
+    # leaves the git checkout exactly where it is: git owns that, herdr does not.
+    # The two are separate resources, which is why the teardown removes them with
+    # separate steps.
+    id="${1:-}"
+    [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$id"
+    : > "$(id_file closed_workspace "$id")"
+    rm -f "$(id_file pane "$id:p1")"
+    printf '{"result":{"type":"ok"}}\n'
     ;;
   "pane list")
     ws=""
     while [ $# -gt 0 ]; do
       if [ "$1" = "--workspace" ]; then ws="${2:-}"; shift 2 || true; else shift; fi
     done
+    [ -f "$(id_file closed_workspace "$ws")" ] && not_found workspace "$ws" || true
     [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$ws"
     # A worktree workspace has its root pane from the moment herdr made it, at
     # the worktree's own checkout — no split needed to run a worker in it.
@@ -2590,7 +2604,7 @@ steps:
 	if warning := result["warning"]; warning != nil {
 		t.Errorf("warning = %v, want none", warning)
 	}
-	if actions, _ := result["actions"].([]any); len(actions) != 2 {
+	if actions, _ := result["actions"].([]any); len(actions) != 3 {
 		t.Errorf("actions = %v, want the declared teardown reported", result["actions"])
 	}
 	assertWorktreeGone(t, root, worktree, resolved)

@@ -1,6 +1,10 @@
 name: integrate-cleanup
 type: cleanup
 trigger: integrate
+# The declared teardown closes the integration's worktree workspace, which is a
+# herdr action. engine_scope says so — the mechanism stays engine-agnostic and
+# the playbook declares what this type's exit needs.
+engine_scope: herdr
 steps:
   # The integration's own exit gate. The suite must be green on the merged tree.
   # `tests/run.sh` is this repo's declared suite, so it runs here rather than
@@ -22,10 +26,34 @@ steps:
   # The same declared teardown the member's own cleanup declares, for the same
   # reason: whatever tree this dispatch ran in must not outlive its node, and
   # removing it is an action, not machinery. When the integration names no
-  # worktree — the usual case — both steps are no-ops, which is the "already
+  # worktree — the usual case — every step is a no-op, which is the "already
   # done" case, not a failure.
   #
   # The branch is freed and deleted before the tree comes down, and only when it
   # is merged into HEAD; an unmerged branch refuses rather than being forced.
   - do: p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; [ -e "$p" ] || exit 0; b=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null) || { echo "cannot resolve the branch in $p" >&2; exit 1; }; [ "$b" = HEAD ] && exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; git -C "$p" checkout -q --detach && git branch -d "$b"
+
+  # git owns the worktree and its registration; `git worktree prune` is what
+  # clears a registration whose checkout is already gone. A worktree git refuses
+  # to remove — a dirty checkout — refuses the close, naming what git said.
   - do: p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; if [ -e "$p" ]; then git worktree remove "$p"; else git worktree prune; fi
+
+  # herdr owns the workspace, and `git worktree remove` never removes it — the
+  # step that was missing when a parallel close left wE and wG behind.
+  # workspace_not_found is the goal state; any other failure refuses.
+  - do: ws="$FS_WORKTREE"; [ -n "$ws" ] || exit 0; if ! out=$(herdr workspace close "$ws" 2>&1); then case "$out" in *workspace_not_found*) exit 0;; *) echo "herdr workspace close $ws failed: $out" >&2; exit 1;; esac; fi
+
+  # Postconditions: each asserts, after the actions, that what they removed is
+  # actually gone. They run with the project root as cwd once the tree is gone,
+  # because a check about a removed path has no footing inside it.
+  - check: p="$FS_WORKTREE_PATH"; [ -z "$p" ] || [ ! -e "$p" ] || { echo "the checkout is still on disk at $p" >&2; exit 1; }
+
+  # git prints the path it resolved, so the recorded path is resolved through its
+  # parent first; comparing the raw recorded path would miss a registration git
+  # lists under /private/... on macOS.
+  - check: p="$FS_WORKTREE_PATH"; [ -n "$p" ] || exit 0; d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) && p="$d/$(basename "$p")"; git worktree list --porcelain | grep -qxF "worktree $p" && { echo "git still registers worktree $p" >&2; exit 1; }; exit 0
+
+  # Passes only on workspace_not_found: a herdr that cannot be reached is not
+  # evidence the workspace is gone, so an unreachable herdr refuses instead of
+  # passing a gate it could not evaluate.
+  - check: ws="$FS_WORKTREE"; [ -n "$ws" ] || exit 0; if out=$(herdr workspace get "$ws" 2>&1); then echo "herdr still knows workspace $ws" >&2; exit 1; fi; case "$out" in *workspace_not_found*) exit 0;; *) echo "cannot tell whether workspace $ws is gone: $out" >&2; exit 1;; esac

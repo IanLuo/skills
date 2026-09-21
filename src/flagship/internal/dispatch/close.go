@@ -272,13 +272,23 @@ type cleanupRun struct {
 // FS_INTEGRATES, so a gate can ask about the dispatch it is gating instead of a
 // proxy for it.
 //
-// The order is the contract, because later steps act on an earlier step's
-// success: checks run in the tree the dispatch worked in, in order, and the
-// first failure refuses; then the asks, because an ask is a question only the
-// user can answer and making them confirm a gate that then fails wastes the
-// answer; then the declared actions, in order, in the project root. A refusal
-// from any of them leaves the node open and returns before anything is torn
-// down.
+// The order is the DECLARED order: the steps run in the sequence the playbook
+// lists them, and each step's kind says what it does. check runs a shell command
+// in the tree the dispatch worked in and refuses the close, fail-fast, on
+// non-zero — naming the step and its output. ask is a question only the user can
+// answer: it requires --confirm and is recorded per step. do runs a shell command
+// in the project root and refuses the same way.
+//
+// This supersedes the earlier rule that every check ran before any action. A
+// playbook's preconditions are still enforced first because it declares them
+// first — and it can now place a postcondition after an action, which is the
+// whole point: nothing verified what an action achieved before, which is how a
+// teardown reported success over a checkout that was still on disk.
+//
+// A refusal leaves the node open and returns before anything is torn down. A
+// check's tree is resolved before the first check runs; a check whose tree a
+// preceding action removed falls back to the project root, because a
+// postcondition about a removed resource has no footing inside it.
 //
 // abandoned is the escape hatch, and it skips only the gates: checks and asks
 // do not run, because a node being abandoned is not a node being gated. The
@@ -329,71 +339,81 @@ func runCleanup(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, deliv
 	// tell "this dispatch named no cards" from "this step has no env".
 	env := cleanupEnv(delivery, capNodeID, integrates)
 
-	var asks []string
-	for _, step := range pb.Steps {
-		if step.Kind == knowledge.KindAsk {
-			asks = append(asks, step.Body)
-		}
-	}
-
 	var run cleanupRun
-	checks := 0
-	if !abandoned {
-		cwd, err := checkDir(hc, delivery, proj.RootPath)
-		if err != nil {
-			return cleanupRun{}, fmt.Errorf("close: cleanup gate %s cannot run: %v", name, err)
-		}
-		for _, step := range pb.Steps {
-			if step.Kind != knowledge.KindCheck {
+	checks, asks := 0, 0
+	tree := "" // the tree the checks run in; resolved before the first check
+	for i, step := range pb.Steps {
+		switch step.Kind {
+		case knowledge.KindCheck:
+			if abandoned {
 				continue
 			}
-			item := runCheck(step.Body, cwd, env)
+			if tree == "" {
+				resolved, err := checkDir(hc, delivery, proj.RootPath)
+				if err != nil {
+					return cleanupRun{}, fmt.Errorf("close: cleanup gate %s cannot run: %v", name, err)
+				}
+				tree = resolved
+			}
+			item := runCheck(step.Body, checkTree(tree, proj.RootPath), env)
 			if item.Status != "pass" {
 				return cleanupRun{}, fmt.Errorf(
-					"close: cleanup check failed: %q; output: %s; fix it, then close again",
-					item.Body, checkOutput(item))
+					"close: cleanup check failed (step %d): %q; output: %s; fix it, then close again",
+					i+1, item.Body, checkOutput(item))
 			}
 			checks++
-		}
 
-		if len(asks) > 0 && !confirm {
-			quoted := make([]string, len(asks))
-			for i, ask := range asks {
-				quoted[i] = fmt.Sprintf("%q", ask)
+		case knowledge.KindAsk:
+			if abandoned {
+				continue
 			}
-			return cleanupRun{}, fmt.Errorf(
-				"close: cleanup gate %s has unconfirmed steps: %s; answer each, then re-run with --confirm",
-				name, strings.Join(quoted, ", "))
-		}
-		for _, ask := range asks {
-			run.Confirmations = append(run.Confirmations, "user confirmed cleanup step: "+ask)
-		}
-	}
-
-	// The actions are the per-type teardown, declared rather than hardcoded: each
-	// is a shell command run in the project root, in the order the playbook
-	// lists. Running them here — after the checks and the asks, before the node
-	// is marked done — is what makes a failing action a refusal the cap has to
-	// answer instead of a warning nobody reads.
-	for _, step := range pb.Steps {
-		if step.Kind != knowledge.KindDo {
-			continue
-		}
-		item := runStep(knowledge.KindDo, step.Body, proj.RootPath, env)
-		if item.Status != "pass" {
-			if !abandoned {
+			if !confirm {
+				// Every ask from here on is surfaced, not just this one: the cap
+				// should see the whole set it is being asked to confirm. Refusing
+				// here, at the ask's declared position, is what lets a declared
+				// action before it have already run.
+				unconfirmed := []string{fmt.Sprintf("%q", step.Body)}
+				for _, later := range pb.Steps[i+1:] {
+					if later.Kind == knowledge.KindAsk {
+						unconfirmed = append(unconfirmed, fmt.Sprintf("%q", later.Body))
+					}
+				}
 				return cleanupRun{}, fmt.Errorf(
-					"close: cleanup action failed: %q; output: %s; fix it, then close again",
-					item.Body, checkOutput(item))
+					"close: cleanup gate %s has unconfirmed steps: %s; answer each, then re-run with --confirm",
+					name, strings.Join(unconfirmed, ", "))
 			}
-			run.Warnings = append(run.Warnings,
-				fmt.Sprintf("cleanup action %q failed: %s", item.Body, checkOutput(item)))
+			run.Confirmations = append(run.Confirmations, "user confirmed cleanup step: "+step.Body)
+			asks++
+
+		case knowledge.KindDo:
+			item := runStep(knowledge.KindDo, step.Body, proj.RootPath, env)
+			if item.Status != "pass" {
+				if !abandoned {
+					return cleanupRun{}, fmt.Errorf(
+						"close: cleanup action failed (step %d): %q; output: %s; fix it, then close again",
+						i+1, item.Body, checkOutput(item))
+				}
+				run.Warnings = append(run.Warnings,
+					fmt.Sprintf("cleanup action %q failed: %s", step.Body, checkOutput(item)))
+			}
+			run.Actions = append(run.Actions, step.Body)
 		}
-		run.Actions = append(run.Actions, step.Body)
 	}
 
-	run.Note = cleanupNote(name, checks, len(run.Actions), len(asks), delivery.Worktree, abandoned)
+	run.Note = cleanupNote(name, checks, len(run.Actions), asks, delivery.Worktree, abandoned)
 	return run, nil
+}
+
+// checkTree is the directory a check runs in: the tree the dispatch worked in
+// while it exists, and the project root once a declared action has removed it.
+// A postcondition about a removed resource has no footing inside the resource —
+// `test ! -e "$FS_WORKTREE_PATH"` cannot run with $FS_WORKTREE_PATH as its cwd —
+// and the root is the tree that outlives the teardown.
+func checkTree(tree, root string) string {
+	if info, err := os.Stat(tree); err == nil && info.IsDir() {
+		return tree
+	}
+	return root
 }
 
 // cleanupNote is the one-line account of the exit gate the response carries:
@@ -497,12 +517,18 @@ func checkDir(hc HerdrCLI, delivery command.DeliveryRecord, root string) (string
 	return checkout, nil
 }
 
-// tearDownPane closes the pane a delivery split open, and returns a warning for
-// a pane herdr would not close.
+// tearDownPane closes the pane a delivery split open, reads it back to confirm
+// it is gone, and returns a warning when it is not.
 //
 // The pane is all the delivery owns: the worker sits in a sibling pane of the
 // cap's own tab, so the tab is the cap's and must never be closed with it. A
 // pane that is already gone is the goal state, not a failure.
+//
+// Closing is a claim; the read-back is the fact. Trusting a return code is the
+// mistake this path keeps making — the same error-mapped "already gone" that
+// made a worktree removal report success over a checkout still on disk — and the
+// pane is machinery, so its verification belongs in machinery too. A pane herdr
+// still reports after the close is a warning, never a claim that it is gone.
 //
 // This is machinery, not a declared step: every dispatch has a pane, and a
 // playbook that forgot to close one would leak a terminal with nothing left to
@@ -512,6 +538,13 @@ func checkDir(hc HerdrCLI, delivery command.DeliveryRecord, root string) (string
 func tearDownPane(hc HerdrCLI, paneID string) string {
 	if err := hc.ClosePane(paneID); err != nil && !errors.Is(err, ErrPaneGone) {
 		return fmt.Sprintf("could not close pane %s: %v — close it by hand", paneID, err)
+	}
+	exists, err := hc.PaneExists(paneID)
+	if err != nil {
+		return fmt.Sprintf("could not verify pane %s is gone: %v — check it by hand", paneID, err)
+	}
+	if exists {
+		return fmt.Sprintf("pane %s survived the close — close it by hand", paneID)
 	}
 	return ""
 }

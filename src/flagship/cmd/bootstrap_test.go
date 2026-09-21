@@ -465,17 +465,46 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 
 	// The member's exit gate checks the process, not the outcome. The
 	// merged-ness check it replaced asserted an outcome a hand merge satisfies,
-	// so it is deleted rather than kept beside the stronger check.
-	member := bodiesOf(stepsOf(t, bin, parCleanPlaybook), "check")
-	if len(member) != 1 || member[0] != "fs integrated $FS_NODE" {
-		t.Errorf("parallel-cleanup checks = %v, want only the integration link", member)
+	// so it is deleted rather than kept beside the stronger check. What follows the
+	// declared teardown are postconditions, and they are member-scoped too: each is
+	// about this member's own tree or workspace, named by $FS_WORKTREE*, never
+	// about the batch.
+	memberSteps := stepsOf(t, bin, parCleanPlaybook)
+	member := bodiesOf(memberSteps, "check")
+	if len(member) == 0 || member[0] != "fs integrated $FS_NODE" {
+		t.Errorf("parallel-cleanup's first check = %v, want the integration link", member)
+	}
+	postconditions := 0
+	afterTeardown := false
+	for _, step := range memberSteps {
+		switch step["kind"] {
+		case "do":
+			afterTeardown = true
+		case "check":
+			body, _ := step["body"].(string)
+			if !afterTeardown {
+				if body != "fs integrated $FS_NODE" {
+					t.Errorf("parallel-cleanup's pre-action check %q is not the integration link", body)
+				}
+				continue
+			}
+			postconditions++
+			if !strings.Contains(body, "FS_WORKTREE") {
+				t.Errorf("parallel-cleanup postcondition %q is not about this member's own worktree/workspace", body)
+			}
+		}
+	}
+	if postconditions == 0 {
+		t.Errorf("parallel-cleanup declares no post-action check: nothing verifies the teardown it ran")
 	}
 
 	// The integration's exit gate keeps what the integration owns. A worktree or
-	// branch check is batch-global: it belongs to no single member, and it makes
-	// a per-member integration impossible while any other member is unfinished.
+	// branch check is batch-global when it does not name this dispatch's own tree:
+	// it belongs to no single member, and it makes a per-member integration
+	// impossible while any other member is unfinished.
 	for _, body := range bodiesOf(stepsOf(t, bin, intCleanPlaybook), "check") {
-		if strings.Contains(body, "worktree") || strings.Contains(body, "branch") {
+		if (strings.Contains(body, "worktree") || strings.Contains(body, "branch")) &&
+			!strings.Contains(body, "FS_WORKTREE") {
 			t.Errorf("integrate-cleanup check %q is batch-global; it belongs to no single member", body)
 		}
 	}
