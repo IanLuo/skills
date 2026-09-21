@@ -1,0 +1,13 @@
+name: research
+phase: work
+applies_when: research
+order: 20
+steps:
+  # Research work answers a question rather than changing code, so its bar is
+  # about the answer being checkable by someone who was not there.
+  - say: name your sources on your node, not in your transcript — a transcript dies with the pane and the node is what a verifier reads
+  - say: distinguish what a source says from what you concluded from it; the second is yours to defend
+  - say: say what would falsify your answer, and whether you looked for it
+  - say: record the searches that found nothing; a null result that stops the next agent repeating it is the most useful thing on the node
+  - say: when the answer is "it depends", say what it depends on rather than picking the likelier branch
+  - use: librarian — this project's research library and how a finding is filed

@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	capYAML   = "name: cap\ntype: procedure\nsteps:\n  - say: hold the plan\n"
-	movedYAML = "name: moved\ntype: procedure\nsteps:\n  - say: v1\n"
+	capYAML   = "name: cap\nphase: cap\nsteps:\n  - say: hold the plan\n"
+	movedYAML = "name: moved\nphase: work\nsteps:\n  - say: v1\n"
 )
 
 // shippedFS is the embedded defaults a test seeds from.
@@ -64,15 +64,15 @@ func stateOf(t *testing.T, states []knowledge.PlaybookState, name string) knowle
 }
 
 func TestSeedCreatesStampedPlaybooksThenKeepsThem(t *testing.T) {
-	dir := tempKB(t)
-	kc, err := knowledge.Open(dir)
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	shipped := shippedFS(map[string]string{
-		"cap.yaml":                    capYAML,
-		"dev-task-prerequisites.yaml": movedYAML,
-		"ignored.txt":                 "not a playbook",
+		"cap.yaml":    capYAML,
+		"moved.yaml":  movedYAML,
+		"ignored.txt": "not a playbook",
 	})
 
 	outcomes, err := kc.Seed(shipped)
@@ -86,18 +86,18 @@ func TestSeedCreatesStampedPlaybooksThenKeepsThem(t *testing.T) {
 		if outcome.Action != knowledge.ActionCreated {
 			t.Errorf("%s action = %q, want %q", outcome.Name, outcome.Action, knowledge.ActionCreated)
 		}
-		if want := filepath.Join(dir, outcome.Name+".yaml"); outcome.Path != want {
+		if want := kbPath(fsRoot, outcome.Name); outcome.Path != want {
 			t.Errorf("%s path = %q, want %q", outcome.Name, outcome.Path, want)
 		}
 	}
 
 	// The written file is the default's body verbatim, with one stamp line added.
-	if got, want := readFile(t, filepath.Join(dir, "cap.yaml")), stampOf(capYAML)+capYAML; got != want {
+	if got, want := readFile(t, kbPath(fsRoot, "cap")), stampOf(capYAML)+capYAML; got != want {
 		t.Errorf("seeded cap.yaml = %q, want %q", got, want)
 	}
 
 	// A second run changes nothing and says so.
-	before := readFile(t, filepath.Join(dir, "cap.yaml"))
+	before := readFile(t, kbPath(fsRoot, "cap"))
 	outcomes, err = kc.Seed(shipped)
 	if err != nil {
 		t.Fatalf("second Seed: %v", err)
@@ -107,27 +107,27 @@ func TestSeedCreatesStampedPlaybooksThenKeepsThem(t *testing.T) {
 			t.Errorf("%s action = %q, want %q", outcome.Name, outcome.Action, knowledge.ActionKept)
 		}
 	}
-	if after := readFile(t, filepath.Join(dir, "cap.yaml")); after != before {
+	if after := readFile(t, kbPath(fsRoot, "cap")); after != before {
 		t.Errorf("second Seed rewrote cap.yaml:\nbefore %q\nafter  %q", before, after)
 	}
 }
 
 func TestSeedNeverOverwritesAnExistingPlaybook(t *testing.T) {
-	dir := tempKB(t)
-	kc, err := knowledge.Open(dir)
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	mine := "# mine: do not touch\nname: cap\ntype: procedure\nsteps:\n  - say: my own rule\n"
-	writeFile(t, filepath.Join(dir, "cap.yaml"), mine)
+	mine := "# mine: do not touch\nname: cap\nphase: cap\nsteps:\n  - say: my own rule\n"
+	writeFile(t, kbPath(fsRoot, "cap"), mine)
 
 	outcomes, err := kc.Seed(shippedFS(map[string]string{"cap.yaml": capYAML, "other.yaml": movedYAML}))
 	if err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	if got := readFile(t, filepath.Join(dir, "cap.yaml")); got != mine {
+	if got := readFile(t, kbPath(fsRoot, "cap")); got != mine {
 		t.Errorf("an existing playbook was modified:\ngot  %q\nwant %q", got, mine)
 	}
 	for _, outcome := range outcomes {
@@ -141,9 +141,43 @@ func TestSeedNeverOverwritesAnExistingPlaybook(t *testing.T) {
 	}
 }
 
+// Seeding a KB that already holds a playbook from the removed schema keeps it
+// byte-for-byte — seeding never deletes — and the file it keeps is one nothing
+// can select. That is the migration an operator has to finish by hand.
+func TestSeedKeepsASupersededPlaybookAndStatesCallsItInert(t *testing.T) {
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := "name: moved\ntype: prerequisite\ntrigger: moved\nsteps:\n  - check: true\n"
+	writeFile(t, kbPath(fsRoot, "moved"), old)
+
+	outcomes, err := kc.Seed(shippedFS(map[string]string{"moved.yaml": movedYAML}))
+	if err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if outcomes[0].Action != knowledge.ActionKept {
+		t.Errorf("action = %q, want the superseded file kept", outcomes[0].Action)
+	}
+	if got := readFile(t, kbPath(fsRoot, "moved")); got != old {
+		t.Errorf("seed rewrote a superseded playbook:\ngot  %q\nwant %q", got, old)
+	}
+
+	states, err := kc.States(shippedFS(map[string]string{"moved.yaml": movedYAML}))
+	if err != nil {
+		t.Fatalf("States: %v", err)
+	}
+	got := stateOf(t, states, "moved")
+	if got.UsedBy != knowledge.UsedByNone {
+		t.Errorf("a playbook carrying a removed field is reported used_by %q, want %q", got.UsedBy, knowledge.UsedByNone)
+	}
+}
+
 func TestStatesReportsDrift(t *testing.T) {
-	dir := tempKB(t)
-	kc, err := knowledge.Open(dir)
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,21 +200,21 @@ func TestStatesReportsDrift(t *testing.T) {
 	}
 
 	// A one-line change is edited, not stale: the default has not moved.
-	writeFile(t, filepath.Join(dir, "cap.yaml"), stampOf(capYAML)+capYAML+"  - say: an added rule\n")
+	writeFile(t, kbPath(fsRoot, "cap"), stampOf(capYAML)+capYAML+"  - say: an added rule\n")
 	// A playbook whose stamp matches its own body but not today's default was
 	// seeded from a default that has since moved on: stale, not edited.
-	older := "name: moved\ntype: procedure\nsteps:\n  - say: v0\n"
-	writeFile(t, filepath.Join(dir, "moved.yaml"), stampOf(older)+older)
+	older := "name: moved\nphase: work\nsteps:\n  - say: v0\n"
+	writeFile(t, kbPath(fsRoot, "moved"), stampOf(older)+older)
 	// Both at once: the user edited it and the default moved on.
-	writeFile(t, filepath.Join(dir, "both.yaml"), stampOf(movedYAML)+movedYAML+"  - say: an added rule\n")
+	writeFile(t, kbPath(fsRoot, "both"), stampOf(movedYAML)+movedYAML+"  - say: an added rule\n")
 	// A hand-written playbook with no shipped default is local.
-	local := "name: hand\ntype: procedure\nsteps:\n  - say: mine\n"
-	writeFile(t, filepath.Join(dir, "hand.yaml"), local)
+	local := "name: hand\nphase: work\nsteps:\n  - say: mine\n"
+	writeFile(t, kbPath(fsRoot, "hand"), local)
 
 	states, err = kc.States(shippedFS(map[string]string{
 		"cap.yaml":   capYAML,
-		"moved.yaml": "name: moved\ntype: procedure\nsteps:\n  - say: v2\n",
-		"both.yaml":  "name: both\ntype: procedure\nsteps:\n  - say: v2\n",
+		"moved.yaml": "name: moved\nphase: work\nsteps:\n  - say: v2\n",
+		"both.yaml":  "name: both\nphase: work\nsteps:\n  - say: v2\n",
 	}))
 	if err != nil {
 		t.Fatalf("States: %v", err)
@@ -204,9 +238,38 @@ func TestStatesReportsDrift(t *testing.T) {
 	}
 }
 
+// A project's playbook is reported with the project as its scope, so where a
+// playbook came from is part of its state rather than only its name.
+func TestStatesReportsTheScopeOfEachPlaybook(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := global.Seed(shippedFS(map[string]string{"cap.yaml": capYAML})); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("house", []byte("name: house\nphase: work\nsteps:\n  - say: this project's way\n")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	states, err := project.States(fstest.MapFS{})
+	if err != nil {
+		t.Fatalf("States: %v", err)
+	}
+	if got := stateOf(t, states, "cap").Scope; got != knowledge.ScopeGlobal {
+		t.Errorf("cap scope = %q, want %q", got, knowledge.ScopeGlobal)
+	}
+	if got := stateOf(t, states, "house").Scope; got != "skills" {
+		t.Errorf("house scope = %q, want %q", got, "skills")
+	}
+}
+
 func TestDiffIsEmptyForAPristineSeedAndShowsAnEdit(t *testing.T) {
-	dir := tempKB(t)
-	kc, err := knowledge.Open(dir)
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +287,7 @@ func TestDiffIsEmptyForAPristineSeedAndShowsAnEdit(t *testing.T) {
 	}
 
 	edited := stampOf(capYAML) + strings.Replace(capYAML, "hold the plan", "hold the plan and the budget", 1)
-	writeFile(t, filepath.Join(dir, "cap.yaml"), edited)
+	writeFile(t, kbPath(fsRoot, "cap"), edited)
 
 	diff, err = kc.Diff(shipped, "cap")
 	if err != nil {
@@ -252,8 +315,8 @@ func TestDiffIsEmptyForAPristineSeedAndShowsAnEdit(t *testing.T) {
 }
 
 func TestResetRestoresTheShippedDefault(t *testing.T) {
-	dir := tempKB(t)
-	kc, err := knowledge.Open(dir)
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,13 +325,13 @@ func TestResetRestoresTheShippedDefault(t *testing.T) {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	writeFile(t, filepath.Join(dir, "cap.yaml"), stampOf(capYAML)+"name: cap\nsteps:\n  - say: something else\n")
+	writeFile(t, kbPath(fsRoot, "cap"), stampOf(capYAML)+"name: cap\nphase: cap\nsteps:\n  - say: something else\n")
 
 	path, err := kc.Reset(shipped, "cap")
 	if err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
-	if want := filepath.Join(dir, "cap.yaml"); path != want {
+	if want := kbPath(fsRoot, "cap"); path != want {
 		t.Errorf("Reset path = %q, want %q", path, want)
 	}
 	if got, want := readFile(t, path), stampOf(capYAML)+capYAML; got != want {
@@ -284,38 +347,36 @@ func TestResetRestoresTheShippedDefault(t *testing.T) {
 }
 
 // used_by answers "who loads this playbook?" — the question that makes an inert
-// playbook visible. The name is the selector for the two gates; type plus
-// trigger is the selector for the prompt; a name nothing looks up, or a trigger
-// that contradicts the name it is selected by, is `none`.
+// playbook visible. A playbook is selected by its phase and its applies_when and
+// by nothing else: the cap phase is loaded by the session prompt, the other
+// three by a dispatch whose tags satisfy the terms, and a file that does not
+// parse declares nothing, so nothing selects it.
 func TestStatesReportsWhoUsesEachPlaybook(t *testing.T) {
-	dir := tempKB(t)
-	kc, err := knowledge.Open(dir)
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	for name, body := range map[string]string{
-		"dev-task-prerequisites": "name: dev-task-prerequisites\ntype: prerequisite\ntrigger: dev-task\nsteps:\n  - check: true\n",
-		"parallel-cleanup":       "name: parallel-cleanup\ntype: cleanup\ntrigger: parallel\nsteps:\n  - check: true\n",
-		"cap":                    "name: cap\ntype: procedure\ntrigger: cap\nsteps:\n  - say: hold the plan\n",
-		// An empty trigger is not a contradiction: the name is the selector, and
-		// the playbooks written before the field existed can only declare by name.
-		"legacy-prerequisites": "name: legacy-prerequisites\ntype: prerequisite\nsteps:\n  - check: true\n",
-		// The name matches a gate's pattern but its trigger names a different
-		// type, so the mechanism refuses it. It is inert, and says so.
-		"weird-prerequisites": "name: weird-prerequisites\ntype: prerequisite\ntrigger: nonsense\nsteps:\n  - check: true\n",
-		"weird-cleanup":       "name: weird-cleanup\ntype: cleanup\ntrigger: nonsense\nsteps:\n  - check: true\n",
-		// Right type and trigger, but a name no gate looks up: prompt only.
-		"cap-rules": "name: cap-rules\ntype: procedure\ntrigger: cap\nsteps:\n  - say: hold the plan\n",
-		// A name no mechanism selects at all.
-		"dev-task-checks": "name: dev-task-checks\ntype: prerequisite\ntrigger: dev-task\nsteps:\n  - check: true\n",
-		// Two mechanisms at once: the name puts it in the dispatch gate, and its
-		// procedure/cap declaration also puts it in the prompt.
-		"cap-prerequisites": "name: cap-prerequisites\ntype: procedure\ntrigger: cap\nsteps:\n  - say: hold the plan\n",
+		"code-entry":    "name: code-entry\nphase: entry\napplies_when: code\nsteps:\n  - check: true\n",
+		"parallel-exit": "name: parallel-exit\nphase: exit\napplies_when: type=parallel\nsteps:\n  - check: true\n",
+		"cap":           "name: cap\nphase: cap\nsteps:\n  - say: hold the plan\n",
+		"herdr":         "name: herdr\nphase: cap\napplies_when: engine=herdr\nsteps:\n  - say: the herdr rules\n",
+		// No terms at all: it loads for every dispatch, and says so rather than
+		// reading as something nothing selects.
+		"worker": "name: worker\nphase: work\nsteps:\n  - say: note your node\n",
+		// Every term must hold, so this one wants both tags at once.
+		"code-research": "name: code-research\nphase: work\napplies_when: code, type=dev-task\nsteps:\n  - say: x\n",
+		// A phase that is not one of the four: no dispatch runs it.
+		"procedure": "name: procedure\nphase: procedure\nsteps:\n  - say: x\n",
+		// A playbook from the removed schema: refused at parse, so inert. This
+		// is what makes the migration visible in `fs kb list`.
+		"superseded": "name: superseded\ntype: prerequisite\ntrigger: superseded\nsteps:\n  - check: true\n",
 		// Not a playbook at all: it declares nothing, so nothing selects it.
 		"broken": "prose that is not a playbook\n",
 	} {
-		writeFile(t, filepath.Join(dir, name+".yaml"), body)
+		writeFile(t, kbPath(fsRoot, name), body)
 	}
 
 	// No shipped defaults: the fixtures are hand-written playbooks.
@@ -325,15 +386,14 @@ func TestStatesReportsWhoUsesEachPlaybook(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ name, usedBy string }{
-		{"dev-task-prerequisites", "dispatch:dev-task"},
-		{"parallel-cleanup", "close:parallel"},
-		{"cap", "prompt:cap"},
-		{"legacy-prerequisites", "dispatch:legacy"},
-		{"weird-prerequisites", knowledge.UsedByNone},
-		{"weird-cleanup", knowledge.UsedByNone},
-		{"cap-rules", "prompt:cap"},
-		{"dev-task-checks", knowledge.UsedByNone},
-		{"cap-prerequisites", "dispatch:cap, prompt:cap"},
+		{"code-entry", "dispatch: code"},
+		{"parallel-exit", "dispatch: type=parallel"},
+		{"cap", "prompt: always"},
+		{"herdr", "prompt: engine=herdr"},
+		{"worker", "dispatch: always"},
+		{"code-research", "dispatch: code,type=dev-task"},
+		{"procedure", knowledge.UsedByNone},
+		{"superseded", knowledge.UsedByNone},
 		{"broken", knowledge.UsedByNone},
 	} {
 		if got := stateOf(t, states, tc.name).UsedBy; got != tc.usedBy {
@@ -348,7 +408,7 @@ func TestStatesReportsWhoUsesEachPlaybook(t *testing.T) {
 func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 	shipped := os.DirFS(filepath.Join("..", "..", "defaults", "kb"))
 
-	kc, err := knowledge.Open(tempKB(t))
+	kc, err := knowledge.Open(tempFS(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,14 +427,20 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 	}
 
 	for name, usedBy := range map[string]string{
-		"cap":                     "prompt:cap",
-		"herdr":                   "prompt:cap",
-		"dev-task-prerequisites":  "dispatch:dev-task",
-		"dev-task-cleanup":        "close:dev-task",
-		"parallel-prerequisites":  "dispatch:parallel",
-		"parallel-cleanup":        "close:parallel",
-		"integrate-prerequisites": "dispatch:integrate",
-		"integrate-cleanup":       "close:integrate",
+		"cap":               "prompt: always",
+		"herdr":             "prompt: engine=herdr",
+		"worker":            "dispatch: always",
+		"code-entry":        "dispatch: code",
+		"code-exit":         "dispatch: code",
+		"plan":              "dispatch: code",
+		"development":       "dispatch: code",
+		"tdd":               "dispatch: code",
+		"review":            "dispatch: code",
+		"research":          "dispatch: research",
+		"parallel-entry":    "dispatch: type=parallel",
+		"parallel-exit":     "dispatch: type=parallel",
+		"integration-entry": "dispatch: type=integrate",
+		"integration-exit":  "dispatch: type=integrate",
 	} {
 		if got := stateOf(t, states, name).UsedBy; got != usedBy {
 			t.Errorf("shipped %s used_by = %q, want %q", name, got, usedBy)

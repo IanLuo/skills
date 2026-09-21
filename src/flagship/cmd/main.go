@@ -18,6 +18,7 @@ import (
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
+	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // logger is the structured logger for the CLI. JSON to stderr (ARCHITECTURE R4).
@@ -57,6 +58,9 @@ func main() {
 	case "close":
 		checkArgs("close", os.Args[2:])
 		closeCmd(os.Args[2:])
+	case "trace":
+		checkArgs("trace", os.Args[2:])
+		traceCmd(os.Args[2:])
 	case "unfinished":
 		checkArgs("unfinished", os.Args[2:])
 		unfinishedCmd()
@@ -114,21 +118,27 @@ Commands:
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   bootstrap                                     Seed ~/.fs/kb from the playbooks
                                                 shipped in the binary
-  kb add --name NAME --file PATH                Add a playbook
-  kb get NAME                                   Get a playbook
-  kb list                                       List playbooks and their state
-  kb prompt                                     Print the cap's standing rules:
-                                                the procedure playbooks with
-                                                trigger cap, concatenated. Plain
-                                                text on stdout, for
+  kb add --name NAME --file PATH [--project P]  Add a playbook; --project P
+                                                writes it to that project's own
+                                                KB instead of the global one
+  kb get NAME [--project P]                     Get a playbook
+  kb list [--project P]                         List playbooks, their scope
+                                                (global or a project) and their
+                                                state against the shipped default
+  kb prompt [--project P]                       Print the cap's standing rules:
+                                                the phase: cap playbooks the
+                                                session's tags match. Plain text
+                                                on stdout, for
                                                 pi --append-system-prompt
-  kb diff NAME                                  Diff the shipped default against
+  kb diff NAME [--project P]                    Diff the shipped default against
                                                 the playbook on disk
-  kb reset NAME --yes                           Restore the shipped default
-  kb edit --name NAME --file PATH               Edit a playbook
-  kb remove NAME                                Remove a playbook
+  kb reset NAME --yes [--project P]             Restore the shipped default
+  kb edit --name NAME --file PATH [--project P] Edit a playbook
+  kb remove NAME [--project P]                  Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
                                                [--integrates MEMBER_NODE]
+                                               [--tag K[=V]] [--also NAME]
+                                               [--without NAME]
                                                [--confirm] [--allow-unresolved]
                                                [--deliver] [--worktree WS]
                                                Prepare a dispatch brief; --deliver
@@ -142,30 +152,45 @@ Commands:
                                                by every check as $FS_INTEGRATES;
                                                --worktree names the herdr worktree
                                                workspace to tear down at close.
-                                               Each gate has its own override:
-                                               --confirm proceeds past a failing
-                                               check, and --allow-unresolved
-                                               proceeds with an unresolved
-                                               dispatch still open
+                                               --tag declares situation terms on
+                                               top of the derived type= and
+                                               engine= tags; --also forces a
+                                               playbook into the plan and
+                                               --without drops one the tags
+                                               selected. Each gate has its own
+                                               override: --confirm proceeds past
+                                               a failing check, and
+                                               --allow-unresolved proceeds with
+                                               an unresolved dispatch still open
   integrated MEMBER_NODE                       Exit 0 and print the done
                                                integration dispatch that names
                                                this member cap node; exit 1 when
                                                none does
   close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
-                                               Close out a dispatch: run its
-                                               cleanup gate, then close its pane
-                                               and worktree, then mark the node
-                                               done. The worker node comes from
-                                               the delivery record; --worker is
-                                               only a check against it. --confirm
-                                               answers the gate's ask steps
+                                               Close out a dispatch: run the exit
+                                               phase of the plan it recorded, then
+                                               close its pane, then mark the node
+                                               done. It refuses while the trace
+                                               does not account for every step of
+                                               that plan, naming the step. The
+                                               worker node comes from the delivery
+                                               record; --worker is only a check
+                                               against it. --confirm answers the
+                                               plan's ask steps
   close --node NODE --abandoned --reason TEXT  Close a dispatch without a verdict,
                                                delivered or not: a never-delivered
                                                one records "abandoned, never
                                                delivered: <reason>", a delivered
                                                one records "abandoned after
                                                delivery to <project>:<node>" and
-                                               its pane and worktree are torn down`)
+                                               its pane and worktree are torn down
+  trace NODE [--project P] [--json]            Print one dispatch's trace: the
+                                               plan it was measured against and
+                                               one line per step outcome. The text
+                                               view ends with the deviation — what
+                                               the plan asked for that the trace
+                                               does not account for, or none.
+                                               Exit 1 when no trace was written`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives
@@ -679,10 +704,7 @@ func kbAdd(args []string) {
 		fatal("cannot read file: " + err.Error())
 	}
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB(flagVal(args, "--project", ""))
 
 	if err := kc.Add(name, data); err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
@@ -697,10 +719,7 @@ func kbGet(args []string) {
 	}
 	name := args[0]
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB(flagVal(args, "--project", ""))
 
 	pb, err := kc.Get(name)
 	if err != nil {
@@ -712,11 +731,8 @@ func kbGet(args []string) {
 
 // kbList reports every playbook and how it relates to the shipped defaults, so
 // a drifted contract is visible without anyone remembering to check.
-func kbList(_ []string) {
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+func kbList(args []string) {
+	kc := openKB(flagVal(args, "--project", ""))
 
 	states, err := kc.States(shippedKB())
 	if err != nil {
@@ -731,13 +747,10 @@ func kbList(_ []string) {
 // it into `pi --append-system-prompt` is the entire integration, so stdout
 // carries the prompt and nothing else, and a failure goes to stderr rather than
 // the JSON envelope every other command uses.
-func kbPrompt(_ []string) {
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		promptError(err)
-	}
+func kbPrompt(args []string) {
+	kc := openKB(flagVal(args, "--project", ""))
 
-	prompt, err := kc.Prompt(shippedKB())
+	prompt, err := kc.Prompt(shippedKB(), dispatch.SessionTags())
 	if err != nil {
 		promptError(err)
 	}
@@ -760,10 +773,7 @@ func kbDiff(args []string) {
 	}
 	name := args[0]
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB(flagVal(args, "--project", ""))
 
 	diff, err := kc.Diff(shippedKB(), name)
 	if err != nil {
@@ -787,10 +797,7 @@ func kbReset(args []string) {
 		return
 	}
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB(flagVal(args, "--project", ""))
 
 	path, err := kc.Reset(shippedKB(), name)
 	if err != nil {
@@ -804,10 +811,7 @@ func kbReset(args []string) {
 // It is safe on every install: what is absent is created and what is there is
 // left alone, so a playbook the user edited is never quietly replaced.
 func bootstrapCmd(_ []string) {
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB("")
 
 	outcomes, err := kc.Seed(shippedKB())
 	if err != nil {
@@ -845,10 +849,7 @@ func kbEdit(args []string) {
 		fatal("cannot read file: " + err.Error())
 	}
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB(flagVal(args, "--project", ""))
 
 	if err := kc.Edit(name, data); err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
@@ -863,10 +864,7 @@ func kbRemove(args []string) {
 	}
 	name := args[0]
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB(flagVal(args, "--project", ""))
 
 	if err := kc.Remove(name); err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
@@ -875,9 +873,49 @@ func kbRemove(args []string) {
 	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "removed"}})
 }
 
-// kbDir returns the knowledge center directory. SYSTEM-DESIGN R4: ~/.fs/kb/.
+// kbDir returns the global knowledge center directory. SYSTEM-DESIGN R4:
+// ~/.fs/kb/.
 func kbDir() string {
 	return filepath.Join(fsHome(), "kb")
+}
+
+// projectKBDir is a project's own playbook directory: ~/.fs/projects/<P>/kb/.
+// It is where `fs kb add|edit --project P` writes, and where the resolver looks
+// first for a dispatch into P.
+func projectKBDir(project string) string {
+	return filepath.Join(fsHome(), "projects", project, "kb")
+}
+
+// openKB opens the knowledge center, bound to a project when one is named: reads
+// resolve project-first and writes land in the project's own KB. With no
+// project it is the global center, reads and writes alike.
+//
+// A named project must be registered, because the name is the path segment the
+// playbooks live under and a typo would otherwise create a directory nothing
+// ever reads.
+func openKB(project string) *knowledge.Center {
+	if project != "" {
+		reg := openRegistry()
+		defer reg.Close()
+		if _, err := reg.Get(project); err != nil {
+			fatal(fmt.Sprintf(
+				"no project %q is registered: pass a registered project name, or omit --project for the global KB (%s)",
+				project, kbDir()))
+		}
+	}
+	return kbCenter(project)
+}
+
+// kbCenter is openKB without the registration check. It is for a read that
+// already knows which project it means — a trace names its own directory — and
+// refusing it because the registry row is gone would hide a record that is
+// still on disk.
+func kbCenter(project string) *knowledge.Center {
+	kc, err := knowledge.Open(fsHome())
+	if err != nil {
+		fatal(err.Error())
+	}
+	return kc.InProject(project)
 }
 
 // registryPath returns the path to the global registry database.
@@ -1017,10 +1055,7 @@ func dispatchCmd(args []string) {
 		fatal("--goal is required")
 	}
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
-	}
+	kc := openKB("")
 
 	reg := openRegistry()
 	defer reg.Close()
@@ -1032,12 +1067,23 @@ func dispatchCmd(args []string) {
 	h := openHandler(registryRoot(reg, project))
 	defer h.Close()
 
-	resp := dispatch.Prepare(h, reg, kc, project, taskType, goal, cards, integrates, confirm, allowUnresolved)
+	resp := dispatch.Prepare(h, reg, kc, traceLog(), dispatch.PrepareRequest{
+		Project:         project,
+		TaskType:        taskType,
+		Goal:            goal,
+		Cards:           cards,
+		Integrates:      integrates,
+		Tags:            multiFlag(args, "--tag"),
+		Also:            multiFlag(args, "--also"),
+		Without:         multiFlag(args, "--without"),
+		Confirm:         confirm,
+		AllowUnresolved: allowUnresolved,
+	})
 	if resp.OK {
 		brief := resp.Data.(*dispatch.Brief)
 		brief.Worktree = worktree
 		if deliver {
-			resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), brief)
+			resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), traceLog(), brief)
 		}
 	}
 	output(resp)
@@ -1072,12 +1118,76 @@ func closeCmd(args []string) {
 	h := openHandler(root)
 	defer h.Close()
 
-	kc, err := knowledge.Open(kbDir())
-	if err != nil {
-		fatal(err.Error())
+	output(dispatch.Close(h, dispatch.NewHerdrCLI(), reg, openKB(""), traceLog(), req))
+}
+
+// traceLog is the trace store: one JSONL file per dispatch under
+// ~/.fs/projects/<project>/logs/. It is opened once per command; nothing is
+// created until a line is written.
+func traceLog() *trace.Log {
+	return trace.Open(filepath.Join(fsHome(), "projects"))
+}
+
+// traceCmd prints one dispatch's trace: the plan it was measured against, then
+// one line per step outcome, then the deviation. It reads only — it never writes
+// a line, and it never closes anything — so it is safe to run against a dispatch
+// that is still in flight.
+//
+// The deviation is the same comparison the close gate refuses on, which is the
+// point: what `fs trace` reports as a deviation is exactly what would stop a
+// close, so a cap can see it coming instead of meeting it at the gate.
+func traceCmd(args []string) {
+	if len(args) < 1 {
+		fatal("fs trace: NODE required")
+	}
+	node := args[0]
+
+	project := flagVal(args, "--project", "")
+	if project == "" {
+		// The trace's directory is the project the dispatch ran against, and a
+		// node id alone does not name it. One match is unambiguous; several mean
+		// the caller has to say which, rather than the command guessing.
+		switch matches := traceLog().ProjectsFor(node); len(matches) {
+		case 1:
+			project = matches[0]
+		case 0:
+			output(command.Response{OK: false, Error: fmt.Sprintf("no trace was written for %q", node)})
+			return
+		default:
+			output(command.Response{OK: false, Error: fmt.Sprintf(
+				"traces for %q exist in more than one project (%s) — name one with --project",
+				node, strings.Join(matches, ", "))})
+			return
+		}
 	}
 
-	output(dispatch.Close(h, dispatch.NewHerdrCLI(), reg, kc, req))
+	lines, err := traceLog().Read(project, node)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+
+	if hasFlag(args, "--json") {
+		output(command.Response{OK: true, Data: map[string]any{
+			"node": node, "project": project, "path": traceLog().Path(project, node), "lines": lines,
+		}})
+		return
+	}
+
+	// The deviation is computed against the playbooks, which is why it is read
+	// here and not in the trace package: trace holds the record, the knowledge
+	// center holds the plan's steps, and only together do they say whether the
+	// record accounts for the plan.
+	var gaps []string
+	if plan, ok := trace.PlanOf(lines); ok {
+		gaps, err = dispatch.Deviations(kbCenter(project), plan.Plan, lines, node)
+		if err != nil {
+			gaps = []string{err.Error()}
+		}
+	} else {
+		gaps = []string{"the trace records no plan, so there is nothing to measure it against"}
+	}
+	fmt.Print(trace.Render(lines, gaps))
 }
 
 // integratedCmd answers a member's question: was it merged by a done integration
@@ -1160,6 +1270,20 @@ func cardsFlag(args []string) []string {
 		}
 	}
 	return cards
+}
+
+// multiFlag collects the values of a repeatable flag, in the order given. It is
+// the plain sibling of cardsFlag: no comma splitting, because --tag, --also and
+// --without each name one thing per occurrence, and a term with a comma in it
+// would be silently torn in two.
+func multiFlag(args []string, flag string) []string {
+	var values []string
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			values = append(values, args[i+1])
+		}
+	}
+	return values
 }
 
 // isHelp returns true if the arg is a help flag.

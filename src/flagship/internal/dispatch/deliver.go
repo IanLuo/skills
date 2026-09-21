@@ -1,7 +1,7 @@
 // Delivery: handing a prepared brief to a worker and recording the binding.
 //
-// herdr is the declared dispatcher (engine_scope: herdr in the playbook
-// schema), so shelling out to its CLI is a deliberate coupling, not an
+// herdr is the declared dispatcher — it is the derived `engine=herdr` tag every
+// dispatch carries — so shelling out to its CLI is a deliberate coupling, not an
 // accident. The HerdrCLI interface exists only so the gates can be exercised
 // without a live terminal.
 package dispatch
@@ -15,7 +15,9 @@ import (
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
+	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // agentKind is the agent the dispatcher launches in the worker pane. It matches
@@ -108,7 +110,7 @@ type HerdrCLI interface {
 // that works, so a failure after the node exists rolls it back (see
 // rollbackWorker): a failed delivery neither leaves outstanding work behind nor
 // claims a delivery that did not happen.
-func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
+func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) command.Response {
 	paneID, tabID, worktreePath, err := workerPane(hc, brief)
 	if err != nil {
 		return deliverErr(brief, err)
@@ -136,6 +138,16 @@ func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 		return deliverErr(brief, fmt.Errorf("send brief: %w", err))
 	}
 
+	// The handover is now on the record, one line per work playbook. A line that
+	// cannot be written rolls the delivery back: close refuses a plan whose work
+	// playbook was never handed over, and a delivery that cannot be recorded is a
+	// delivery that cannot be closed as if it had happened.
+	if err := recordLoaded(lg, brief); err != nil {
+		abandonWorker(hc, paneID)
+		rollbackWorker(h, brief.Project, workerID, err.Error())
+		return deliverErr(brief, err)
+	}
+
 	delivery := command.DeliveryRecord{
 		PaneID:       paneID,
 		TabID:        tabID,
@@ -161,6 +173,31 @@ func Deliver(h *command.Handler, hc HerdrCLI, brief *Brief) command.Response {
 
 	brief.Delivery = &delivery
 	return command.Response{OK: true, Data: brief}
+}
+
+// recordLoaded appends the trace's `loaded` line for every work playbook in the
+// plan. It is the whole of the claim the trace makes about guidance: the brief
+// carried the playbook. There is deliberately no `followed` line — the trace
+// cannot see inside the worker, and nothing here pretends otherwise.
+func recordLoaded(lg *trace.Log, brief *Brief) error {
+	for _, entry := range brief.Plan {
+		if entry.Phase != knowledge.PhaseWork {
+			continue
+		}
+		if err := lg.Append(brief.Project, trace.Line{
+			ID:       trace.StepID(brief.CapNodeID, entry.Name, 0),
+			Dispatch: brief.CapNodeID,
+			Worker:   brief.WorkerNode,
+			Playbook: entry.Name,
+			Phase:    entry.Phase,
+			Kind:     trace.KindLoaded,
+			Status:   trace.StatusLoaded,
+			Detail:   "handed to " + brief.WorkerNode,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // workerPane returns the pane the worker starts in — and, for a worktree

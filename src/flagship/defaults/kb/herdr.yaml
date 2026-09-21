@@ -1,11 +1,21 @@
 name: herdr
-type: procedure
-trigger: cap
-engine_scope: herdr
+phase: cap
+applies_when: engine=herdr
+order: 20
 steps:
+  # herdr-operative rules, loaded only for a session that dispatches through
+  # herdr — the engine tag is derived, not declared, so this playbook cannot be
+  # selected by a session that is not running one.
+  #
+  # It used to contradict `cap`: this file told the cap to wait inside the call
+  # that hands work over, while `cap` says never wait and never poll. The
+  # contradiction is resolved in favour of `cap`, because `cap` is the rule that
+  # survives a dispatcher change and the one the user reads.
   - say: for any herdr work load the herdr skill first — skills/herdr/SKILL.md and its references/herdr-ops.md; it is marked disable-model-invocation so nothing loads it for you, and the installed CLI is the authority on syntax
-  - say: wait for work in the call that hands it over — herdr agent prompt <target> "<task>" --wait --timeout N IS the notification; sleep-and-poll with agent list is a guess
-  - say: for a worker already running, herdr agent wait <target> --until done --timeout N; for a program rather than an agent, herdr pane wait-output --match
+  - say: never wait and never poll — fs pending is the read. It says which dispatch is ready, running, unseen or gone, and every turn starts there
+  - say: a worker owns its own handover: it writes its node and stops. You do not park a call until it does
+  - say: --wait is for a herdr operation that is genuinely synchronous in the call issuing it, never as a way to wait for a worker to finish
+  - say: for a program rather than an agent, herdr pane wait-output --match is the right tool; for an agent, read fs pending
   - say: --wait settles on idle, done or blocked — idle or done means read its node and close it; blocked means inspect the UI and ask the user, never answer an approval prompt for them
-  - say: the worker's node in the project is the truth about whether the work finished; herdr only says when to look
-  - say: pick up finished workers at the top of every turn; never wait and never poll with a sleep
+  - say: the worker's node in the project is the truth about whether the work finished; herdr only says where to look
+  - say: a pane herdr no longer lists is not proof the work failed — read the node and the trace before deciding anything

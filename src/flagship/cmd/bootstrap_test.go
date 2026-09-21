@@ -12,22 +12,26 @@ import (
 	"testing"
 )
 
+// The shipped playbooks a test names by constant. A playbook is selected by its
+// phase and its applies_when and by nothing else, so the names below say which
+// phase gate each one is rather than what it used to be called.
 const (
 	capPlaybook      = "cap"
-	devPlaybook      = "dev-task-prerequisites"
-	devCleanPlaybook = "dev-task-cleanup"
+	codeEntryPb      = "code-entry"
+	codeExitPb       = "code-exit"
 	herdrPlaybook    = "herdr"
-	parPrePlaybook   = "parallel-prerequisites"
-	parCleanPlaybook = "parallel-cleanup"
-	intPrePlaybook   = "integrate-prerequisites"
-	intCleanPlaybook = "integrate-cleanup"
+	parEntryPlaybook = "parallel-entry"
+	parExitPlaybook  = "parallel-exit"
+	intEntryPlaybook = "integration-entry"
+	intExitPlaybook  = "integration-exit"
 )
 
 // shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
-// of them; the cap's standing rules are built from the procedure ones.
+// of them; the cap's standing rules are built from the cap-phase ones.
 var shippedPlaybooks = []string{
-	capPlaybook, devPlaybook, devCleanPlaybook, herdrPlaybook, parPrePlaybook,
-	parCleanPlaybook, intPrePlaybook, intCleanPlaybook,
+	capPlaybook, herdrPlaybook, "worker", codeEntryPb, codeExitPb, "plan",
+	"development", "tdd", "review", "research", parEntryPlaybook, parExitPlaybook,
+	intEntryPlaybook, intExitPlaybook,
 }
 
 // shippedDefault is a default the binary is expected to carry. The test process
@@ -189,7 +193,7 @@ func TestCLIBootstrapNeverOverwritesAPlaybook(t *testing.T) {
 	dir := t.TempDir()
 	home := testHome(t)
 
-	mine := "# mine: keep this line\nname: cap\ntype: procedure\nsteps:\n  - say: mine\n"
+	mine := "# mine: keep this line\nname: cap\nphase: cap\nsteps:\n  - say: mine\n"
 	writeKBPlaybook(t, home, capPlaybook, mine)
 
 	seeded := playbooksOf(t, runFSOK(t, bin, dir, "bootstrap"))
@@ -199,7 +203,7 @@ func TestCLIBootstrapNeverOverwritesAPlaybook(t *testing.T) {
 	if got := readRaw(t, filepath.Join(home, ".fs", "kb", capPlaybook+".yaml")); got != mine {
 		t.Errorf("bootstrap modified an existing playbook:\ngot  %q\nwant %q", got, mine)
 	}
-	if seeded[devPlaybook]["action"] != "created" {
+	if seeded[codeEntryPb]["action"] != "created" {
 		t.Errorf("an absent playbook must still be created: %v", seeded)
 	}
 }
@@ -219,22 +223,22 @@ func TestCLIKBListReportsDrift(t *testing.T) {
 	}
 
 	// A one-line change is edited.
-	devPath := filepath.Join(kbDir, devPlaybook+".yaml")
+	devPath := filepath.Join(kbDir, codeEntryPb+".yaml")
 	writeRaw(t, devPath, readRaw(t, devPath)+"  - say: an added step\n")
-	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[devPlaybook]; state["state"] != "edited" {
+	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[codeEntryPb]; state["state"] != "edited" {
 		t.Errorf("an edited playbook = %v, want state edited", state)
 	}
 
 	// A playbook whose stamp matches its own body but not the shipped default
 	// was seeded from a default that has since moved on: stale, not edited.
-	older := "name: cap\ntype: procedure\nsteps:\n  - say: older\n"
+	older := "name: cap\nphase: cap\nsteps:\n  - say: older\n"
 	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
 	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[capPlaybook]; state["state"] != "stale" {
 		t.Errorf("a stale playbook = %v, want state stale", state)
 	}
 
 	// A hand-written playbook with no shipped default is local.
-	writeKBPlaybook(t, home, "hand-written", "name: hand-written\ntype: procedure\nsteps:\n  - say: mine\n")
+	writeKBPlaybook(t, home, "hand-written", "name: hand-written\nphase: work\nsteps:\n  - say: mine\n")
 	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))["hand-written"]; state["state"] != "local" {
 		t.Errorf("a local playbook = %v, want state local", state)
 	}
@@ -314,19 +318,16 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 	}
 }
 
-// fs kb prompt is the delivery path for the playbooks: the cap's standing rules
-// come out as plain text on stdout, so a session starts from the rules the
-// binary ships rather than from a prompt retyped by hand.
 // The parallel gate must read the batch's cards from the dispatch that runs it,
-// not from a list someone edits per batch: parallel-prerequisites.yaml runs
+// not from a list someone edits per batch: parallel-entry.yaml runs
 // bin/check-parallel.sh with $FS_CARDS, the variable fs dispatch --cards exports.
 // This pins that wiring wherever the module is built, including where the repo's
 // bin/ is out of reach; tests/check-parallel covers the script's own behaviour.
 func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	bin := getFS(t)
-	writeKBPlaybook(t, testHome(t), parPrePlaybook, shippedDefault(t, parPrePlaybook))
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, shippedDefault(t, parEntryPlaybook))
 
-	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", parPrePlaybook)
+	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", parEntryPlaybook)
 	if code != 0 {
 		t.Fatalf("kb get exit %d: %v", code, resp["error"])
 	}
@@ -334,7 +335,7 @@ func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	// The gate reads the batch from the dispatch itself: $FS_CARDS is the
 	// variable fs dispatch --cards exports. Naming the variable rather than the
 	// whole command pins the wiring while leaving the playbook's wording free.
-	want := shippedStep(t, shippedDefault(t, parPrePlaybook), "check", "$FS_CARDS")
+	want := shippedStep(t, shippedDefault(t, parEntryPlaybook), "check", "$FS_CARDS")
 	var checks []string
 	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
 		step := raw.(map[string]any)
@@ -350,6 +351,9 @@ func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	t.Errorf("the parallel gate's checks are %v, want one running %q", checks, want)
 }
 
+// fs kb prompt is the delivery path for the playbooks: the cap's standing rules
+// come out as plain text on stdout, so a session starts from the rules the
+// binary ships rather than from a prompt retyped by hand.
 func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
@@ -367,24 +371,24 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 		t.Errorf("kb prompt must be plain text, not the JSON envelope: %q", stdout)
 	}
 
-	// The standing-rules line, one stamped header per cap-triggered procedure,
-	// and the rules themselves — read from the shipped default, so rewording the
-	// playbook cannot break a test that only means "the prompt carries the herdr
-	// rules".
+	// The standing-rules line, one stamped header per cap playbook the session's
+	// tags select, and the rules themselves — read from the shipped default, so
+	// rewording the playbook cannot break a test that only means "the prompt
+	// carries the herdr rules".
 	for _, want := range []string{
 		"Standing rules for this session",
 		"not suggestions",
-		"# cap — procedure, trigger cap; default, stamp sha256:",
-		"# herdr — procedure, trigger cap; default, stamp sha256:",
+		"# cap — phase cap; default, stamp sha256:",
+		"# herdr — phase cap; default, stamp sha256:",
 		shippedStep(t, shippedDefault(t, herdrPlaybook), "say", ""),
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("kb prompt must contain %q; got:\n%s", want, stdout)
 		}
 	}
-	// A prerequisite playbook is a gate the dispatcher runs, not a standing rule.
-	if strings.Contains(stdout, devPlaybook) {
-		t.Errorf("a prerequisite playbook must not be part of the prompt:\n%s", stdout)
+	// An entry playbook is a gate a dispatch runs, not a standing rule.
+	if strings.Contains(stdout, codeEntryPb) {
+		t.Errorf("an entry playbook must not be part of the prompt:\n%s", stdout)
 	}
 
 	// Piped whole into one --append-system-prompt argument: a blank line would
@@ -402,14 +406,14 @@ func TestCLIKBPromptMarksAStalePlaybook(t *testing.T) {
 	home := testHome(t)
 	runFSOK(t, bin, dir, "bootstrap")
 
-	older := "name: cap\ntype: procedure\ntrigger: cap\nsteps:\n  - say: older\n"
+	older := "name: cap\nphase: cap\nsteps:\n  - say: older\n"
 	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
 
 	stdout, _, code := rawFS(t, bin, dir, home, "kb", "prompt")
 	if code != 0 {
 		t.Fatalf("kb prompt exit = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "# cap — procedure, trigger cap; stale, stamp sha256:") {
+	if !strings.Contains(stdout, "# cap — phase cap; stale, stamp sha256:") {
 		t.Errorf("a stale playbook must be marked stale in the prompt:\n%s", stdout)
 	}
 }
@@ -431,7 +435,7 @@ func TestCLIKBPromptOnAFreshHomeSaysToBootstrap(t *testing.T) {
 }
 
 // stepsOf returns one shipped playbook's steps, parsed by the binary itself —
-// the same parse the dispatcher and the cleanup gate use.
+// the same parse the dispatcher and the exit gate use.
 func stepsOf(t *testing.T, bin, name string) []map[string]any {
 	t.Helper()
 	writeKBPlaybook(t, testHome(t), name, shippedDefault(t, name))
@@ -457,6 +461,44 @@ func bodiesOf(steps []map[string]any, kind string) []string {
 	return bodies
 }
 
+// postconditionsOf returns the bodies of the checks declared after the first
+// `do` step — the ones that verify what a teardown removed, as opposed to the
+// ones that gate whether it runs at all.
+func postconditionsOf(t *testing.T, playbook string, steps []map[string]any) []string {
+	t.Helper()
+	var post []string
+	afterTeardown := false
+	for _, step := range steps {
+		switch step["kind"] {
+		case "do":
+			afterTeardown = true
+		case "check":
+			if afterTeardown {
+				post = append(post, step["body"].(string))
+			}
+		}
+	}
+	if len(post) == 0 {
+		t.Errorf("%s declares no post-action check: nothing verifies the teardown it ran", playbook)
+	}
+	return post
+}
+
+// preconditionsOf returns the bodies of the checks declared before the first
+// `do` step — the ones that decide whether the teardown runs.
+func preconditionsOf(steps []map[string]any) []string {
+	var pre []string
+	for _, step := range steps {
+		if step["kind"] == "do" {
+			return pre
+		}
+		if step["kind"] == "check" {
+			pre = append(pre, step["body"].(string))
+		}
+	}
+	return pre
+}
+
 // A gate must check what its own dispatch owns: not a proxy for it, and not a
 // condition belonging to a different dispatch. This pins where each shipped gate
 // draws that line, so a later edit that reaches for a proxy fails here.
@@ -465,79 +507,87 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 
 	// The member's exit gate checks the process, not the outcome. The
 	// merged-ness check it replaced asserted an outcome a hand merge satisfies,
-	// so it is deleted rather than kept beside the stronger check. What follows the
-	// declared teardown are postconditions, and they are member-scoped too: each is
-	// about this member's own tree or workspace, named by $FS_WORKTREE*, never
-	// about the batch.
-	memberSteps := stepsOf(t, bin, parCleanPlaybook)
-	member := bodiesOf(memberSteps, "check")
-	if len(member) == 0 || member[0] != "fs integrated $FS_NODE" {
-		t.Errorf("parallel-cleanup's first check = %v, want the integration link", member)
+	// so it is deleted rather than kept beside the stronger check. Everything
+	// after the declared teardown is a postcondition about this member's own
+	// tree or workspace, named by $FS_WORKTREE*, never about the batch.
+	memberSteps := stepsOf(t, bin, parExitPlaybook)
+	pre := preconditionsOf(memberSteps)
+	if len(pre) != 1 || pre[0] != "fs integrated $FS_NODE" {
+		t.Errorf("parallel-exit's pre-teardown checks = %v, want the integration link alone", pre)
 	}
-	postconditions := 0
-	afterTeardown := false
-	for _, step := range memberSteps {
-		switch step["kind"] {
-		case "do":
-			afterTeardown = true
-		case "check":
-			body, _ := step["body"].(string)
-			if !afterTeardown {
-				if body != "fs integrated $FS_NODE" {
-					t.Errorf("parallel-cleanup's pre-action check %q is not the integration link", body)
-				}
-				continue
-			}
-			postconditions++
-			if !strings.Contains(body, "FS_WORKTREE") {
-				t.Errorf("parallel-cleanup postcondition %q is not about this member's own worktree/workspace", body)
-			}
+	for _, body := range postconditionsOf(t, parExitPlaybook, memberSteps) {
+		if !strings.Contains(body, "FS_WORKTREE") {
+			t.Errorf("parallel-exit postcondition %q is not about this member's own worktree/workspace", body)
 		}
 	}
-	if postconditions == 0 {
-		t.Errorf("parallel-cleanup declares no post-action check: nothing verifies the teardown it ran")
+	if asks := bodiesOf(memberSteps, "ask"); len(asks) != 1 ||
+		!strings.Contains(asks[0], "its worker node") {
+		t.Errorf("parallel-exit asks = %v, want the one question about this member's node", asks)
 	}
 
-	// The integration's exit gate keeps what the integration owns. A worktree or
-	// branch check is batch-global when it does not name this dispatch's own tree:
-	// it belongs to no single member, and it makes a per-member integration
-	// impossible while any other member is unfinished.
-	for _, body := range bodiesOf(stepsOf(t, bin, intCleanPlaybook), "check") {
-		if (strings.Contains(body, "worktree") || strings.Contains(body, "branch")) &&
-			!strings.Contains(body, "FS_WORKTREE") {
-			t.Errorf("integrate-cleanup check %q is batch-global; it belongs to no single member", body)
+	// The integration's exit gate keeps what the integration owns, and it is the
+	// same teardown: a worktree or branch check is batch-global when it does not
+	// name this dispatch's own tree — it belongs to no single member, and it
+	// makes a per-member integration impossible while any other member is
+	// unfinished. The suite check is the integration's own: it runs on the tree
+	// the worker merged into.
+	intSteps := stepsOf(t, bin, intExitPlaybook)
+	if got := preconditionsOf(intSteps); len(got) != 1 || !strings.Contains(got[0], "tests/run.sh") {
+		t.Errorf("integration-exit's pre-teardown checks = %v, want the repo suite alone", got)
+	}
+	for _, body := range postconditionsOf(t, intExitPlaybook, intSteps) {
+		if !strings.Contains(body, "FS_WORKTREE") {
+			t.Errorf("integration-exit postcondition %q is not about this dispatch's own worktree", body)
 		}
 	}
-	if asks := bodiesOf(stepsOf(t, bin, intCleanPlaybook), "ask"); len(asks) != 1 ||
+	for _, body := range bodiesOf(intSteps, "check") {
+		if (strings.Contains(body, "worktree") || strings.Contains(body, "branch")) &&
+			!strings.Contains(body, "FS_WORKTREE") {
+			t.Errorf("integration-exit check %q is batch-global; it belongs to no single member", body)
+		}
+	}
+	if asks := bodiesOf(intSteps, "ask"); len(asks) != 1 ||
 		!strings.Contains(asks[0], "integration verdict") {
-		t.Errorf("integrate-cleanup asks = %v, want the one question this integration owns", asks)
+		t.Errorf("integration-exit asks = %v, want the one question this integration owns", asks)
 	}
 
 	// The entry gate is member-scoped, and its compound ask is split: a rubric
 	// cannot partition two questions asked as one.
-	entry := bodiesOf(stepsOf(t, bin, intPrePlaybook), "check")
+	entry := bodiesOf(stepsOf(t, bin, intEntryPlaybook), "check")
 	if len(entry) != 1 || !strings.Contains(entry[0], "fs task get") || !strings.Contains(entry[0], "$FS_INTEGRATES") {
-		t.Errorf("integrate-prerequisites checks = %v, want the member check on $FS_INTEGRATES", entry)
+		t.Errorf("integration-entry checks = %v, want the member check on $FS_INTEGRATES", entry)
 	}
 	for _, body := range entry {
 		if strings.Contains(body, "worktree list") {
-			t.Errorf("integrate-prerequisites check %q is repo-wide; it cannot be run per member", body)
+			t.Errorf("integration-entry check %q is repo-wide; it cannot be run per member", body)
 		}
 	}
-	if asks := bodiesOf(stepsOf(t, bin, intPrePlaybook), "ask"); len(asks) != 2 {
-		t.Errorf("integrate-prerequisites asks = %v, want the order and the staged-changes question apart", asks)
+	if asks := bodiesOf(stepsOf(t, bin, intEntryPlaybook), "ask"); len(asks) != 2 {
+		t.Errorf("integration-entry asks = %v, want the order and the staged-changes question apart", asks)
 	}
 
-	// Ordinary work has an exit gate at all, and it is one ask — the only honest
-	// step available: no shell command can decide whether a node says what the
-	// worker did, and the repo is routinely dirty with another agent's work, so a
-	// clean-tree check would be a false gate.
-	dev := stepsOf(t, bin, devCleanPlaybook)
-	if checks := bodiesOf(dev, "check"); len(checks) != 0 {
-		t.Errorf("dev-task-cleanup checks = %v, want none: none can be made true", checks)
+	// Ordinary code work has an exit gate at all, and it declares its own
+	// teardown rather than relying on machinery in fs close. The ask comes
+	// first, because the teardown destroys the tree the answer is about: a
+	// question asked after the worktree is gone is a question about a checkout
+	// nobody can look at any more.
+	dev := stepsOf(t, bin, codeExitPb)
+	if len(dev) == 0 || dev[0]["kind"] != "ask" {
+		t.Errorf("code-exit's first step = %v, want the ask before the teardown", dev)
 	}
 	asks := bodiesOf(dev, "ask")
 	if len(asks) != 1 || !strings.Contains(asks[0], "nothing important died with its transcript") {
-		t.Errorf("dev-task-cleanup asks = %v, want the question about the worker's node", asks)
+		t.Errorf("code-exit asks = %v, want the question about the worker's node", asks)
+	}
+	if len(bodiesOf(dev, "do")) == 0 {
+		t.Error("code-exit declares no teardown: a dispatch that had a worktree would leak its checkout")
+	}
+	for _, body := range postconditionsOf(t, codeExitPb, dev) {
+		if !strings.Contains(body, "FS_WORKTREE") {
+			t.Errorf("code-exit postcondition %q is not about this dispatch's own worktree", body)
+		}
+	}
+	if pre := preconditionsOf(dev); len(pre) != 0 {
+		t.Errorf("code-exit pre-teardown checks = %v, want none: neither a clean tree nor a merged branch can be made true here", pre)
 	}
 }

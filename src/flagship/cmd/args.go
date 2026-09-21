@@ -82,31 +82,42 @@ var cmdSpecs = map[string]cmdSpec{
 	},
 
 	"kb add": {
-		usage: "Usage: fs kb add --name NAME --file PATH",
-		flags: map[string]bool{"--name": true, "--file": true},
+		usage: "Usage: fs kb add --name NAME --file PATH [--project PROJECT_ID]",
+		flags: map[string]bool{"--name": true, "--file": true, "--project": true},
 	},
-	"kb get":    {usage: "Usage: fs kb get NAME", positionals: 1},
-	"kb list":   {usage: "Usage: fs kb list"},
-	"kb diff":   {usage: "Usage: fs kb diff NAME", positionals: 1},
-	"kb reset":  {usage: "Usage: fs kb reset NAME --yes", flags: map[string]bool{"--yes": false}, positionals: 1},
-	"kb edit":   {usage: "Usage: fs kb edit --name NAME --file PATH", flags: map[string]bool{"--name": true, "--file": true}},
-	"kb remove": {usage: "Usage: fs kb remove NAME", positionals: 1},
-	"kb prompt": {usage: "Usage: fs kb prompt"},
+	"kb get":    {usage: "Usage: fs kb get NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
+	"kb list":   {usage: "Usage: fs kb list [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
+	"kb diff":   {usage: "Usage: fs kb diff NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
+	"kb reset":  {usage: "Usage: fs kb reset NAME --yes [--project PROJECT_ID]", flags: map[string]bool{"--yes": false, "--project": true}, positionals: 1},
+	"kb edit":   {usage: "Usage: fs kb edit --name NAME --file PATH [--project PROJECT_ID]", flags: map[string]bool{"--name": true, "--file": true, "--project": true}},
+	"kb remove": {usage: "Usage: fs kb remove NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
+	"kb prompt": {usage: "Usage: fs kb prompt [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
 
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
 
-Each gate has its own override, so saying yes to one never waves the other
-through:
+The plan is the playbooks whose applies_when the dispatch's tags satisfy,
+ordered by the order they declare and then by name. The tags are
+type=<TASK_TYPE>, engine=herdr, and every --tag. Each gate has its own override,
+so saying yes to one never waves the other through:
 
-  --confirm            proceed past a FAILING PREREQUISITE CHECK
+  --confirm            proceed past a FAILING ENTRY CHECK
   --allow-unresolved   proceed with an UNRESOLVED DISPATCH open
 
-Every check step the playbook declares runs with this dispatch's own inputs in
-its environment, so a prerequisite can ask about this dispatch and not only
-about the world:
+  --tag K[=V]          a declared situation term. Repeatable. It may not restate
+                       type or engine: those are set by the dispatch itself.
+  --also NAME          force a playbook into the plan that the tags did not
+                       select. A name that does not resolve is refused.
+  --without NAME       drop a playbook the tags did select. It has the last word
+                       over --also.
+
+An empty plan is legal and reported: a dispatch whose tags select nothing runs
+no protocol, which is visible in the brief and in the trace rather than silent.
+
+Every entry check step runs with this dispatch's own inputs in its environment,
+so a gate can ask about this dispatch and not only about the world:
 
   FS_PROJECT      the resolved project
   FS_TYPE         the task type
@@ -125,6 +136,7 @@ record rather than from a goal string."`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
 			"--cards": true, "--integrates": true,
+			"--tag": true, "--also": true, "--without": true,
 			"--confirm": false, "--allow-unresolved": false,
 			"--deliver": false, "--worktree": true,
 		},
@@ -136,12 +148,19 @@ record rather than from a goal string."`,
 --abandoned closes a dispatch without a verdict, delivered or not. One that was
 never delivered records "abandoned, never delivered: <reason>"; one that was
 delivered records "abandoned after delivery to <project>:<node>: <reason>". It
-skips the cleanup gate's checks and asks, but not its declared actions: what the
+skips the exit phase's checks and asks, but not its declared actions: what the
 delivery opened is still torn down, and an action that fails is a warning.
 
-Every cleanup check and action runs with the closing dispatch's own inputs in
-its environment, so an exit gate can ask about the dispatch it is gating and act
-on what the delivery opened:
+The exit phase is the plan's phase: exit playbooks, in the order the plan
+recorded. close refuses while the dispatch's trace does not account for every
+step of that plan — every entry step, every work playbook's handover, every exit
+step — naming the playbook, the step and the kind. The trace records what the
+dispatch loaded and ran, not what the worker obeyed, so a step with no line is a
+step that did not happen; the refusal says so rather than implying disobedience.
+
+Every exit check and action runs with the closing dispatch's own inputs in its
+environment, so an exit gate can ask about the dispatch it is gating and act on
+what the delivery opened:
 
   FS_PROJECT        the worker's project
   FS_TYPE           the task type
@@ -165,6 +184,27 @@ project root, so an action that removes the worktree does not stand inside it.`,
 	"pending":    {usage: "Usage: fs pending"},
 	"integrated": {
 		usage:       "Usage: fs integrated MEMBER_NODE",
+		positionals: 1,
+	},
+	"trace": {
+		usage: `Usage: fs trace NODE [--project PROJECT_ID] [--json]
+
+Print one dispatch's trace: the plan it was measured against, then one line per
+step outcome, oldest first. It reads only — no line is ever written by this
+command — so it is safe against a dispatch that is still in flight.
+
+The text view ends with the deviation: what the plan asked for that the trace
+does not account for, or "deviation: none". It is the same comparison close
+refuses on, so what this prints is what would stop a close.
+
+A node with no trace prints "no trace was written for <node>" and exits 1. There
+is no empty timeline that reads as success.
+
+  --project PROJECT_ID  the project whose logs hold the trace. Without it, the
+                        trace is found by searching every project's logs, and
+                        more than one match is refused as ambiguous.
+  --json                the raw lines, as the JSON envelope`,
+		flags:       map[string]bool{"--project": true, "--json": false},
 		positionals: 1,
 	},
 }

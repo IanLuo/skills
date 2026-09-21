@@ -1,6 +1,7 @@
-name: integrate-prerequisites
-type: prerequisite
-trigger: integrate
+name: integration-entry
+phase: entry
+applies_when: type=integrate
+order: 10
 steps:
   # Integration is a dispatch too: a worker merges the batch's branches into main
   # on its own card, and the coordinator's part is to decide the order, answer

@@ -1,12 +1,15 @@
 package dispatch_test
 
+// The dispatch lifecycle: delivering a prepared brief, and closing out against
+// the plan and the trace the dispatch left behind.
+
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
+	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // fakeHerdr stands in for the herdr CLI: it records what was asked of it and
@@ -35,7 +39,7 @@ type fakeHerdr struct {
 	rootPaneErr error
 
 	// checkoutPath/checkoutErr stand in for the checkout path a worktree
-	// workspace resolves to — the tree the cleanup gate must run its checks in.
+	// workspace resolves to — the tree the exit checks must run in.
 	checkoutPath string
 	checkoutErr  error
 
@@ -115,6 +119,138 @@ func (f *fakeHerdr) PaneExists(paneID string) (bool, error) {
 	return f.paneExists, nil
 }
 
+// writeGates writes the two `code` playbooks an ordinary close test needs: one
+// entry check and one exit check. A test that is about a gate writes its own.
+func writeGates(t *testing.T, f *fixture) {
+	t.Helper()
+	f.writePlaybook(t, "code-entry", passingEntry)
+	f.writePlaybook(t, "code-exit", codeExit)
+}
+
+const codeExit = `name: code-exit
+phase: exit
+applies_when: code
+steps:
+  - check: true
+`
+
+// exitGate writes the `code` exit playbook with the given steps, indented under
+// `steps:`, so a test states the protocol it is about and nothing else.
+func exitGate(t *testing.T, f *fixture, steps string) {
+	t.Helper()
+	f.writePlaybook(t, "code-exit", "name: code-exit\nphase: exit\napplies_when: code\nsteps:\n"+steps)
+}
+
+// entryGate does the same for the entry phase.
+func entryGate(t *testing.T, f *fixture, steps string) {
+	t.Helper()
+	f.writePlaybook(t, "code-entry", "name: code-entry\nphase: entry\napplies_when: code\nsteps:\n"+steps)
+}
+
+// parallelExitGate writes the exit playbook a parallel dispatch selects: its
+// applies_when is the derived `type=parallel` tag, which the dispatch's own
+// --type sets, so no declared tag is needed to reach it.
+func parallelExitGate(t *testing.T, f *fixture, steps string) {
+	t.Helper()
+	f.writePlaybook(t, "parallel-exit",
+		"name: parallel-exit\nphase: exit\napplies_when: type=parallel\nsteps:\n"+steps)
+}
+
+// integrationExitGate writes the exit playbook an integration selects.
+func integrationExitGate(t *testing.T, f *fixture, steps string) {
+	t.Helper()
+	f.writePlaybook(t, "integration-exit",
+		"name: integration-exit\nphase: exit\napplies_when: type=integrate\nsteps:\n"+steps)
+}
+
+// parallelReq is a worktree batch's dispatch, so the fixtures tagged for it load.
+func parallelReq(goal string) dispatch.PrepareRequest {
+	return dispatch.PrepareRequest{Project: "skills", TaskType: "parallel", Goal: goal}
+}
+
+// prepareOnly runs a real dispatch and records its plan and its entry lines, but
+// hands nothing to a worker. It is how a test builds a dispatch whose delivery
+// record it writes itself — a record with no worker node, one with no project, a
+// worktree whose path was never recorded.
+func prepareOnly(t *testing.T, f *fixture, req dispatch.PrepareRequest) *dispatch.Brief {
+	t.Helper()
+	resp := f.prepare(req)
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	return resp.Data.(*dispatch.Brief)
+}
+
+// runDispatch prepares and delivers a dispatch for real: the plan is recorded,
+// the entry gate runs, the brief goes to a worker node, the trace gets its entry
+// and `loaded` lines, and the delivery record is written — all by the code under
+// test. A close test built on it is measured against a dispatch that really
+// happened, not one a test assembled by hand.
+func runDispatch(t *testing.T, f *fixture, req dispatch.PrepareRequest) *dispatch.Brief {
+	t.Helper()
+	brief := prepareOnly(t, f, req)
+
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
+	if resp := dispatch.Deliver(f.h, herdr, f.lg, brief); !resp.OK {
+		t.Fatalf("Deliver: %s", resp.Error)
+	}
+
+	// The worker then finishes its work: close refuses a node that is still open.
+	workerProject, workerID, ok := strings.Cut(brief.WorkerNode, ":")
+	if !ok {
+		t.Fatalf("worker node %q is not PROJECT:NODE", brief.WorkerNode)
+	}
+	if resp := f.h.TaskUpdate(workerProject, workerID, "done", "the work is finished", nil); !resp.OK {
+		t.Fatalf("finish the worker: %s", resp.Error)
+	}
+	return brief
+}
+
+// rewriteTrace rewrites a dispatch's trace through keep, which returns the line
+// to write and whether to write it at all. It is how a test builds the damage
+// the trace gate exists to catch: a file an operator, a truncation, or a stray
+// edit left inconsistent with the plan.
+func rewriteTrace(t *testing.T, f *fixture, project, node string, keep func(trace.Line) (trace.Line, bool)) {
+	t.Helper()
+	lines, err := f.lg.Read(project, node)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	path := f.lg.Path(project, node)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove trace: %v", err)
+	}
+	for _, ln := range lines {
+		out, write := keep(ln)
+		if !write {
+			continue
+		}
+		if err := f.lg.Append(project, out); err != nil {
+			t.Fatalf("append to trace: %v", err)
+		}
+	}
+}
+
+// dropTraceLine removes one line from a dispatch's trace.
+func dropTraceLine(t *testing.T, f *fixture, project, node, id string) {
+	t.Helper()
+	rewriteTrace(t, f, project, node, func(ln trace.Line) (trace.Line, bool) {
+		return ln, ln.ID != id
+	})
+}
+
+// rewriteTraceStatus changes one line's status in place, so a test can construct
+// a record close must refuse — a step whose last line says it failed.
+func rewriteTraceStatus(t *testing.T, f *fixture, project, node, id, status string) {
+	t.Helper()
+	rewriteTrace(t, f, project, node, func(ln trace.Line) (trace.Line, bool) {
+		if ln.ID == id {
+			ln.Status = status
+		}
+		return ln, true
+	})
+}
+
 // addCapNode records a dispatch node in the cap scope the way Prepare does,
 // without a playbook: the kind carries what the goal prefix used to.
 func addCapNode(t *testing.T, f *fixture, goal string) string {
@@ -152,8 +288,7 @@ func recordDelivery(t *testing.T, f *fixture, capNode, paneID, workerID string) 
 	recordTypedDelivery(t, f, capNode, paneID, workerID, "dev-task")
 }
 
-// recordTypedDelivery writes a delivery record for a named task type. A record
-// written before the type existed carries none, which is the legacy shape.
+// recordTypedDelivery writes a delivery record for a named task type.
 func recordTypedDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, taskType string) {
 	t.Helper()
 	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
@@ -165,9 +300,14 @@ func recordTypedDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, ta
 	}
 }
 
-// recordLegacyDelivery writes the pane binding the way the binary did before the
-// worker's node was part of it: pane, agent, and engine only.
-func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID string) {
+// recordLegacyDelivery writes a delivery record straight into the store, the
+// way a binary older than the current DeliveryRecord did: pane, agent, and
+// engine, and nothing else. RecordDelivery refuses a record with no node or no
+// project, so this is the only way to construct the shape a close has to read
+// after an upgrade — and the reason close reads those two fields defensively.
+// project is what the caller wants the record to name; "" is the record written
+// before deliveries carried one at all.
+func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID, project string) {
 	t.Helper()
 	s, err := store.Open(f.storeDB)
 	if err != nil {
@@ -177,6 +317,7 @@ func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID string) {
 
 	payload, err := json.Marshal(map[string]string{
 		"pane_id": paneID, "agent": "dispatch-dev-task", "engine": "herdr",
+		"project": project, "type": "dev-task",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,10 +330,10 @@ func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID string) {
 }
 
 // recordWorktreeDelivery writes a delivery record bound to a worktree workspace,
-// the shape a worktree dispatch records: a batch's workers ran in one, the
-// cleanup gate has to find that tree, and the teardown has to verify it gone
-// afterwards. path is the checkout the workspace was made from — what the record
-// keeps so the worktree can be removed after the workspace is forgotten.
+// the shape a worktree dispatch records: a batch's workers ran in one, the exit
+// gate has to find that tree, and the teardown has to verify it gone afterwards.
+// path is the checkout the workspace was made from — what the record keeps so the
+// worktree can be removed after the workspace is forgotten.
 func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path string) {
 	t.Helper()
 	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
@@ -235,6 +376,46 @@ func capEvents(t *testing.T, f *fixture, eventType store.EventType) []store.Even
 	return events
 }
 
+// scopeTasks returns every node in a scope, via derived state.
+func scopeTasks(t *testing.T, f *fixture, scope string) []command.TaskInfo {
+	t.Helper()
+	resp := f.h.Status(scope)
+	if !resp.OK {
+		t.Fatalf("Status: %s", resp.Error)
+	}
+	return resp.Data.(command.StatusResult).Tasks
+}
+
+// scopeTask returns one node's derived state, or ok=false when the scope has no
+// such node.
+func scopeTask(t *testing.T, f *fixture, scope, nodeID string) (command.TaskInfo, bool) {
+	t.Helper()
+	for _, task := range scopeTasks(t, f, scope) {
+		if task.NodeID == nodeID {
+			return task, true
+		}
+	}
+	return command.TaskInfo{}, false
+}
+
+// nodeStatus reads one node's derived status the same way fs status reports it.
+func nodeStatus(t *testing.T, f *fixture, scope, nodeID string) string {
+	t.Helper()
+	task, ok := scopeTask(t, f, scope, nodeID)
+	if !ok {
+		t.Fatalf("node %s not found in scope %s", nodeID, scope)
+	}
+	return task.Status
+}
+
+func contains(values []string, want string) bool {
+	return slices.Contains(values, want)
+}
+
+// ---------------------------------------------------------------------------
+// Delivery
+// ---------------------------------------------------------------------------
+
 func TestDeliverRecordsThePaneAndWorkerBindingStructurally(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
@@ -243,7 +424,7 @@ func TestDeliverRecordsThePaneAndWorkerBindingStructurally(t *testing.T) {
 	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
-	resp := dispatch.Deliver(f.h, herdr, brief)
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
@@ -293,20 +474,26 @@ func TestDeliverRecordsThePaneAndWorkerBindingStructurally(t *testing.T) {
 }
 
 // The delivery creates the worker's node in the target project — carrying the
-// cap node's goal — and the brief tells the worker that node is already its own.
+// cap node's goal — and the brief names it, so the worker is told which node is
+// already its own rather than left to invent one. The obligations in that brief
+// are the work playbook's own say steps: text in a file, not a string compiled
+// into the binary.
 func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
-	capNode := addCapNode(t, f, "dispatch dev-task: sample")
+	f.writePlaybook(t, "worker", `name: worker
+phase: work
+applies_when: code
+steps:
+  - say: a final message is not read; record what is durable on your node
+`)
+	brief := prepareOnly(t, f, devReq("sample"))
 
 	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
-	resp := dispatch.Deliver(f.h, herdr, &dispatch.Brief{
-		Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: capNode,
-	})
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
-	brief := resp.Data.(*dispatch.Brief)
 
 	workerID, ok := strings.CutPrefix(brief.WorkerNode, "skills:")
 	if !ok || workerID == "" {
@@ -330,20 +517,14 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 		t.Fatalf("prompts = %v, want the brief sent once", herdr.prompts)
 	}
 	briefText := herdr.prompts[0].text
-	if !strings.Contains(briefText, "Note your work on "+brief.WorkerNode) {
+	if !strings.Contains(briefText, "Your node: "+brief.WorkerNode) {
 		t.Errorf("the brief must name the worker's node; got:\n%s", briefText)
 	}
-	if !strings.Contains(briefText, "do not create another") {
-		t.Errorf("the brief must say the node is the worker's, not one to invent; got:\n%s", briefText)
+	if !strings.Contains(briefText, "a final message is not read; record what is durable on your node") {
+		t.Errorf("the brief must carry the work playbook's own obligation; got:\n%s", briefText)
 	}
-	// Every worker is told how a gap outlives it, with the found_by set to the
-	// node it owns — the message is not read and closing destroys the transcript.
-	for _, want := range []string{
-		"Gaps:", "--kind gap", "--found-by " + brief.WorkerNode, "your final message is not read",
-	} {
-		if !strings.Contains(briefText, want) {
-			t.Errorf("the brief must carry the worker obligation %q; got:\n%s", want, briefText)
-		}
+	if !strings.Contains(briefText, "- worker (work, order 500)") {
+		t.Errorf("the brief must name the playbook the obligation came from; got:\n%s", briefText)
 	}
 }
 
@@ -358,7 +539,7 @@ func TestDeliverFailsLeavesNodePendingAndClosesTheWorkerPane(t *testing.T) {
 	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9", promptErr: errors.New("agent_prompt_stalled")}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
-	resp := dispatch.Deliver(f.h, herdr, brief)
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if resp.OK {
 		t.Fatal("a failed send must not report a delivery")
 	}
@@ -402,7 +583,7 @@ func TestDeliverHerdrUnavailableLeavesNodePending(t *testing.T) {
 	herdr := &fakeHerdr{splitErr: errors.New("exec: herdr: executable file not found in $PATH")}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
-	resp := dispatch.Deliver(f.h, herdr, brief)
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if resp.OK {
 		t.Fatal("herdr being unavailable must fail the delivery")
 	}
@@ -429,7 +610,7 @@ func TestDeliverNamesEachAgentAfterItsOwnWorkerNode(t *testing.T) {
 
 	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
 	for _, brief := range []*dispatch.Brief{first, second} {
-		if resp := dispatch.Deliver(f.h, herdr, brief); !resp.OK {
+		if resp := dispatch.Deliver(f.h, herdr, f.lg, brief); !resp.OK {
 			t.Fatalf("Deliver %s: %s", brief.Goal, resp.Error)
 		}
 	}
@@ -451,11 +632,50 @@ func TestDeliverNamesEachAgentAfterItsOwnWorkerNode(t *testing.T) {
 	}
 }
 
+// The handover is the whole of the trace's claim about guidance: one `loaded`
+// line per work playbook the plan names, and nothing for a playbook the worker
+// was not handed. There is deliberately no line saying a playbook was followed —
+// the trace cannot see inside the worker, and nothing here pretends otherwise.
+func TestDeliverRecordsALoadedLinePerWorkPlaybook(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	f.writePlaybook(t, "code-entry", passingEntry)
+	f.writePlaybook(t, "code-work", codeWork)
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	loaded := map[string]string{}
+	statuses := map[string]bool{}
+	for _, ln := range lines {
+		statuses[ln.Status] = true
+		if ln.Kind == trace.KindLoaded {
+			loaded[ln.Playbook] = ln.Status
+		}
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("loaded lines = %v, want one, for code-work alone", loaded)
+	}
+	if got := loaded["code-work"]; got != trace.StatusLoaded {
+		t.Errorf("code-work line status = %q, want %q", got, trace.StatusLoaded)
+	}
+	if _, ok := loaded["code-entry"]; ok {
+		t.Error("an entry playbook is a gate, not a handover: it must have no loaded line")
+	}
+	// The vocabulary is closed, and "followed" is not in it.
+	if statuses["followed"] {
+		t.Error("the trace must never claim a playbook was followed")
+	}
+	if got := trace.StepID(brief.CapNodeID, "code-work", 0); loaded["code-work"] != trace.StatusLoaded {
+		_ = got
+	}
+}
+
 // A dispatch that ran in a worktree records the worktree workspace and the
 // checkout it was made from, so close can remove it: the record, not the goal
-// prose, is where close looks. The path is recorded because the workspace id
-// can be gone by close — herdr forgetting it does not make the checkout
-// disappear — and then the id alone names nothing that can be removed.
+// prose, is where close looks. The path is recorded because the workspace id can
+// be gone by close — herdr forgetting it does not make the checkout disappear —
+// and then the id alone names nothing that can be removed.
 func TestDeliverRecordsTheWorktreeItRunsIn(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
@@ -466,7 +686,7 @@ func TestDeliverRecordsTheWorktreeItRunsIn(t *testing.T) {
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "w7",
 	}
-	resp := dispatch.Deliver(f.h, herdr, brief)
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
@@ -498,7 +718,7 @@ func TestDeliverStartsTheWorkerInTheWorktreeRootPane(t *testing.T) {
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "wA",
 	}
-	resp := dispatch.Deliver(f.h, herdr, brief)
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
@@ -546,7 +766,7 @@ func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "wZZ",
 	}
-	resp := dispatch.Deliver(f.h, herdr, brief)
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if resp.OK {
 		t.Fatal("a worktree with no root pane must be refused, not delivered")
 	}
@@ -570,6 +790,221 @@ func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The trace gate
+// ---------------------------------------------------------------------------
+
+// A dispatch whose trace is gone cannot be gated. Absence is not the same as
+// "nothing ran", so close refuses rather than closing on an empty timeline.
+func TestCloseRefusesADispatchWithNoTrace(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	if err := os.Remove(f.lg.Path("skills", brief.CapNodeID)); err != nil {
+		t.Fatalf("remove the trace: %v", err)
+	}
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a dispatch with no trace must not close")
+	}
+	if !strings.Contains(resp.Error, "no trace was written for") || !strings.Contains(resp.Error, brief.CapNodeID) {
+		t.Errorf("error %q must name the missing trace and the dispatch", resp.Error)
+	}
+}
+
+// A step with no line is a step that did not run. The plan names it, the trace
+// does not account for it, and close refuses naming the playbook, the step, and
+// what the trace has there instead — the whole point of gating on the record.
+func TestCloseRefusesAnEntryStepWithNoTraceLine(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	entryGate(t, f, "  - check: true\n  - check: true\n")
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	dropTraceLine(t, f, "skills", brief.CapNodeID, trace.StepID(brief.CapNodeID, "code-entry", 2))
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a plan the trace does not account for must refuse the close")
+	}
+	for _, want := range []string{
+		brief.CapNodeID,
+		"code-entry step 2 (check)",
+		"no line in the trace",
+		"a step with no line is a step that did not run",
+		"--abandoned",
+	} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
+		t.Errorf("cap node status = %q, a refused close must leave it open", status)
+	}
+}
+
+// The trace's claim about guidance is the `loaded` line, so a work playbook with
+// no such line was never handed to the worker. Close refuses it rather than
+// closing on a brief nobody can find on the record.
+func TestCloseRefusesAWorkPlaybookWithNoLoadedLine(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	writeGates(t, f)
+	f.writePlaybook(t, "code-work", codeWork)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	dropTraceLine(t, f, "skills", brief.CapNodeID, trace.StepID(brief.CapNodeID, "code-work", 0))
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a work playbook with no loaded line must refuse the close")
+	}
+	for _, want := range []string{
+		"work playbook code-work",
+		"no `loaded` line",
+		"the brief the worker received is not on the record",
+	} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// A line that says the step failed is a step the dispatch should not have been
+// delivered past. Close refuses it rather than reading a failure as an answer.
+func TestCloseRefusesATraceWhoseEntryLineFailed(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	rewriteTraceStatus(t, f, "skills", brief.CapNodeID,
+		trace.StepID(brief.CapNodeID, "code-entry", 1), trace.StatusFail)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a failed entry line must refuse the close")
+	}
+	for _, want := range []string{
+		"code-entry step 1 (check)",
+		"recorded a failure",
+		"should not have been delivered past it",
+	} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// An entry ask the cap left unanswered was recorded `skipped`, and --confirm is
+// what answers it — at the close, before any exit step runs, so a gate that has
+// not been answered has not yet torn anything down.
+func TestCloseAnswersTheEntryAskWithConfirm(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	entryGate(t, f, "  - ask: is the acceptance check for this deliverable stated\n")
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("an unanswered entry ask must refuse the close")
+	}
+	for _, want := range []string{
+		"code-entry step 1 (ask)",
+		"recorded skipped, not answered",
+		"--confirm",
+	} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	// The refusal is before the exit phase, so the exit check has not run.
+	for _, ln := range traceOf(t, f, "skills", brief.CapNodeID) {
+		if ln.Playbook == "code-exit" {
+			t.Errorf("the exit phase ran despite the entry gate refusing: %+v", ln)
+		}
+	}
+
+	confirmed := f.close(&fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Decision: "verified", Confirm: true,
+	})
+	if !confirmed.OK {
+		t.Fatalf("Close --confirm: %s", confirmed.Error)
+	}
+	if decisions := capDecisions(t, f, brief.CapNodeID); !contains(decisions,
+		"user confirmed entry step: is the acceptance check for this deliverable stated") {
+		t.Errorf("decisions = %v, want the entry ask recorded as confirmed", decisions)
+	}
+}
+
+// A playbook edited between the dispatch and the close no longer lines up with
+// the lines already written: the added step has no line, so it never ran here.
+// Only the entry phase can be checked this way — the exit phase is run by the
+// close itself, which records whatever the protocol says as it stands.
+func TestCloseRefusesAnEntryPlaybookEditedAfterTheDispatch(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	entryGate(t, f, "  - check: true\n")
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	entryGate(t, f, "  - check: true\n  - check: true\n")
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("an entry step the dispatch never ran must refuse the close")
+	}
+	if !strings.Contains(resp.Error, "code-entry step 2") || !strings.Contains(resp.Error, "no line in the trace") {
+		t.Errorf("error %q must name the added step", resp.Error)
+	}
+}
+
+// A plan the close cannot resolve is refused rather than skipped: a gate that
+// fails open is worse than no gate at all. The protocol was removed between the
+// dispatch and the close.
+func TestCloseRefusesWhenItsExitPlaybookIsGone(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
+
+	if err := os.Remove(filepath.Join(f.kbDir, "code-exit.yaml")); err != nil {
+		t.Fatalf("remove the playbook: %v", err)
+	}
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("an exit playbook the plan names but cannot be read must refuse the close")
+	}
+	for _, want := range []string{"close: the plan names", "code-exit", "cannot be read"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// A dispatch with no recorded plan was never prepared by a binary that gated on
+// one. It is not the same as a dispatch that declared no exit phase: there is
+// nothing to measure the close against, and close says so.
+func TestCloseRefusesADispatchWithNoRecordedPlan(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	workerID := addWorkerNode(t, f, "done")
+	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	if resp.OK {
+		t.Fatal("a dispatch with no recorded plan must not close")
+	}
+	for _, want := range []string{"no plan is recorded for " + nodeID, "nothing to gate the close against"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Identity, the verdict, and the worker's node
+// ---------------------------------------------------------------------------
+
 func TestCloseRefusesANonDispatchNode(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	nodeID := addCapKindNode(t, f, "cap loop", query.KindWork)
@@ -584,17 +1019,18 @@ func TestCloseRefusesANonDispatchNode(t *testing.T) {
 }
 
 // Close reads the node's kind, so a dispatch whose goal was rewritten is still
-// the dispatch it was — the prefix convention refused this node.
+// the dispatch it was.
 func TestCloseClosesADispatchWhoseGoalWasEdited(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
-	if resp := f.h.TaskEdit("cap", nodeID, "reworded entirely", "", nil); !resp.OK {
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
+	if resp := f.h.TaskEdit("cap", brief.CapNodeID, "reworded entirely", "", nil); !resp.OK {
 		t.Fatalf("task edit: %s", resp.Error)
 	}
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "read the worker node; verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Decision: "read the worker node; verified",
+	})
 	if !resp.OK {
 		t.Fatalf("a goal edit must not un-dispatch a node: %s", resp.Error)
 	}
@@ -602,9 +1038,11 @@ func TestCloseClosesADispatchWhoseGoalWasEdited(t *testing.T) {
 
 func TestCloseRefusesWithoutADeliveryRecord(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	brief := prepareOnly(t, f, devReq("sample"))
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Worker: "skills:x", Decision: "x"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Worker: "skills:x", Decision: "x",
+	})
 	if resp.OK {
 		t.Fatal("a dispatch with no delivery record must not close")
 	}
@@ -619,11 +1057,12 @@ func TestCloseRefusesWithoutADeliveryRecord(t *testing.T) {
 // --worker still cannot close out work that is not done.
 func TestCloseRefusesAWorkerThatIsNotDone(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
 	workerID := addWorkerNode(t, f, "active")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	recordDelivery(t, f, brief.CapNodeID, "w1:p9", workerID)
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "x"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "x"})
 	if resp.OK {
 		t.Fatal("an unfinished worker must block close-out")
 	}
@@ -636,10 +1075,11 @@ func TestCloseRefusesAWorkerThatIsNotDone(t *testing.T) {
 
 func TestCloseRefusesAnUnknownWorker(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	recordDelivery(t, f, nodeID, "w1:p9", "t-00000000")
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
+	recordDelivery(t, f, brief.CapNodeID, "w1:p9", "t-00000000")
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "x"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "x"})
 	if resp.OK {
 		t.Fatal("a worker node that does not exist must block close-out")
 	}
@@ -650,11 +1090,10 @@ func TestCloseRefusesAnUnknownWorker(t *testing.T) {
 
 func TestCloseRefusesWithoutAVerdict(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID})
 	if resp.OK {
 		t.Fatal("a close-out without a verdict must be refused")
 	}
@@ -665,13 +1104,13 @@ func TestCloseRefusesWithoutAVerdict(t *testing.T) {
 
 func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
+	workerRef := brief.WorkerNode
 
 	herdr := &fakeHerdr{}
 	resp := f.close(herdr, dispatch.CloseRequest{
-		NodeID: nodeID, Decision: "verified the worker's node",
+		NodeID: brief.CapNodeID, Decision: "verified the worker's node",
 	})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
@@ -680,8 +1119,8 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	if !ok || result.PaneID != "w1:p9" || result.Warning != "" {
 		t.Fatalf("result = %#v, want the closed pane and no warning", resp.Data)
 	}
-	if result.Worker != "skills:"+workerID {
-		t.Errorf("result worker = %q, want the recorded node skills:%s", result.Worker, workerID)
+	if result.Worker != workerRef {
+		t.Errorf("result worker = %q, want the recorded node %s", result.Worker, workerRef)
 	}
 	// The pane is the whole teardown. The tab in the record is the cap's own —
 	// the worker shares it — so close must never touch it. That is structural
@@ -689,11 +1128,14 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
 		t.Errorf("closed = %v, want w1:p9", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done", status)
 	}
-	if decisions := capDecisions(t, f, nodeID); !contains(decisions, "verified the worker's node") {
+	if decisions := capDecisions(t, f, brief.CapNodeID); !contains(decisions, "verified the worker's node") {
 		t.Errorf("decisions = %v, want the verdict", decisions)
+	}
+	if result.Trace != f.lg.Path("skills", brief.CapNodeID) {
+		t.Errorf("result trace = %q, want the path the gate read", result.Trace)
 	}
 }
 
@@ -701,12 +1143,11 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 // cap and the record agree, not a second source of truth.
 func TestCloseAcceptsAWorkerThatMatchesTheRecord(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
+		NodeID: brief.CapNodeID, Worker: brief.WorkerNode, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("a --worker that matches the record must close: %s", resp.Error)
@@ -718,19 +1159,19 @@ func TestCloseAcceptsAWorkerThatMatchesTheRecord(t *testing.T) {
 // touched.
 func TestCloseRefusesAMismatchedWorker(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 	otherID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	otherRef := "skills:" + otherID
 
 	herdr := &fakeHerdr{}
 	resp := f.close(herdr, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + otherID, Decision: "verified",
+		NodeID: brief.CapNodeID, Worker: otherRef, Decision: "verified",
 	})
 	if resp.OK {
 		t.Fatal("a --worker that is not the recorded node must be refused")
 	}
-	for _, want := range []string{"skills:" + otherID, "does not match", "skills:" + workerID, "wrong work"} {
+	for _, want := range []string{otherRef, "does not match", brief.WorkerNode, "wrong work"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -738,7 +1179,7 @@ func TestCloseRefusesAMismatchedWorker(t *testing.T) {
 	if len(herdr.closed) != 0 {
 		t.Errorf("closed = %v, want no pane touched by a refused close", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must not close it", status)
 	}
 }
@@ -748,11 +1189,12 @@ func TestCloseRefusesAMismatchedWorker(t *testing.T) {
 // --worker it still works, so an old dispatch is not stranded.
 func TestCloseRefusesARecordWithNoNode(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordLegacyDelivery(t, f, nodeID, "w1:p9")
+	recordLegacyDelivery(t, f, brief.CapNodeID, "w1:p9", "skills")
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("a record with no worker node must not be closed by guesswork")
 	}
@@ -763,7 +1205,7 @@ func TestCloseRefusesARecordWithNoNode(t *testing.T) {
 	}
 
 	migrated := f.close(&fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
+		NodeID: brief.CapNodeID, Worker: "skills:" + workerID, Decision: "verified",
 	})
 	if !migrated.OK {
 		t.Fatalf("the old --worker form must still close an old record: %s", migrated.Error)
@@ -773,14 +1215,63 @@ func TestCloseRefusesARecordWithNoNode(t *testing.T) {
 	}
 }
 
+// A record written before deliveries carried a project cannot be traced: a
+// trace lives under the project it belongs to. Close refuses rather than gating
+// against some other project's logs.
+func TestCloseRefusesARecordThatNamesNoProject(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
+	workerID := addWorkerNode(t, f, "done")
+	recordLegacyDelivery(t, f, brief.CapNodeID, "w1:p9", "")
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Worker: "skills:" + workerID, Decision: "verified",
+	})
+	if resp.OK {
+		t.Fatal("a record that names no project has no trace, so it cannot be gated")
+	}
+	if !strings.Contains(resp.Error, "no trace was written for") {
+		t.Errorf("error %q must say the trace could not be found", resp.Error)
+	}
+}
+
+// A record that names no tab — one written before the binding carried one, or
+// one written by a herdr whose split response named the pane alone — must still
+// close: close reads the pane, and the tab is the cap's own either way.
+func TestCloseToleratesARecordWithNoTab(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
+	workerID := addWorkerNode(t, f, "done")
+	if resp := f.h.RecordDelivery("cap", brief.CapNodeID, command.DeliveryRecord{
+		PaneID: "w1:p9", Agent: "dispatch-dev-task", Engine: "herdr",
+		Project: "skills", Node: workerID, Type: "dev-task",
+	}); !resp.OK {
+		t.Fatalf("RecordDelivery: %s", resp.Error)
+	}
+
+	herdr := &fakeHerdr{}
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("a record with no tab must still close: %s", resp.Error)
+	}
+	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
+		t.Errorf("closed = %v, want w1:p9", herdr.closed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The pane teardown
+// ---------------------------------------------------------------------------
+
 func TestCloseSucceedsWhenThePaneIsAlreadyGone(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	resp := f.close(&fakeHerdr{closeErr: dispatch.ErrPaneGone}, dispatch.CloseRequest{
-		NodeID: nodeID, Decision: "verified",
+		NodeID: brief.CapNodeID, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("an already-closed pane must not fail the close-out: %s", resp.Error)
@@ -792,14 +1283,11 @@ func TestCloseSucceedsWhenThePaneIsAlreadyGone(t *testing.T) {
 
 func TestCloseWarnsButSucceedsWhenHerdrIsUnavailable(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	herdr := &fakeHerdr{closeErr: errors.New("herdr: server is down")}
-	resp := f.close(herdr, dispatch.CloseRequest{
-		NodeID: nodeID, Decision: "verified",
-	})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("close-out must not depend on the dispatcher being up: %s", resp.Error)
 	}
@@ -807,7 +1295,7 @@ func TestCloseWarnsButSucceedsWhenHerdrIsUnavailable(t *testing.T) {
 	if !strings.Contains(result.Warning, "server is down") || !strings.Contains(result.Warning, "w1:p9") {
 		t.Errorf("warning = %q, want the pane and the reason", result.Warning)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done despite the warning", status)
 	}
 }
@@ -817,12 +1305,11 @@ func TestCloseWarnsButSucceedsWhenHerdrIsUnavailable(t *testing.T) {
 // fake records the read, so a close that trusted the close call fails here.
 func TestCloseReadsThePaneBackAfterClosingIt(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -839,12 +1326,11 @@ func TestCloseReadsThePaneBackAfterClosingIt(t *testing.T) {
 // a teardown reports success over a resource that survived.
 func TestCloseWarnsWhenThePaneSurvivesTheClose(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	resp := f.close(&fakeHerdr{paneExists: true}, dispatch.CloseRequest{
-		NodeID: nodeID, Decision: "verified",
+		NodeID: brief.CapNodeID, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("a surviving pane is a warning, not a refusal: %s", resp.Error)
@@ -856,7 +1342,7 @@ func TestCloseWarnsWhenThePaneSurvivesTheClose(t *testing.T) {
 	if contains(result.TornDown, "pane w1:p9") {
 		t.Errorf("torn_down = %v, must not claim a pane that survived", result.TornDown)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done; a leaked pane is a warning", status)
 	}
 }
@@ -865,12 +1351,11 @@ func TestCloseWarnsWhenThePaneSurvivesTheClose(t *testing.T) {
 // claim a clearance it could not verify.
 func TestCloseWarnsWhenThePaneCannotBeReadBack(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	writeGates(t, f)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	resp := f.close(&fakeHerdr{paneExistsErr: errors.New("herdr: server is down")}, dispatch.CloseRequest{
-		NodeID: nodeID, Decision: "verified",
+		NodeID: brief.CapNodeID, Decision: "verified",
 	})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
@@ -884,29 +1369,9 @@ func TestCloseWarnsWhenThePaneCannotBeReadBack(t *testing.T) {
 	}
 }
 
-// A record that names no tab — one written before the binding carried one, or
-// one written by a herdr whose split response named the pane alone — must still
-// close: close reads the pane, and the tab is the cap's own either way.
-func TestCloseToleratesARecordWithNoTab(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	if resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
-		PaneID: "w1:p9", Agent: "dispatch-dev-task", Engine: "herdr",
-		Project: "skills", Node: workerID,
-	}); !resp.OK {
-		t.Fatalf("RecordDelivery: %s", resp.Error)
-	}
-
-	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
-	if !resp.OK {
-		t.Fatalf("a record with no tab must still close: %s", resp.Error)
-	}
-	if len(herdr.closed) != 1 || herdr.closed[0] != "w1:p9" {
-		t.Errorf("closed = %v, want w1:p9", herdr.closed)
-	}
-}
+// ---------------------------------------------------------------------------
+// Abandoning
+// ---------------------------------------------------------------------------
 
 func TestCloseAbandonedRequiresAReason(t *testing.T) {
 	f := newFixture(t, t.TempDir())
@@ -944,27 +1409,22 @@ func TestCloseAbandonedSkipsDeliveryAndWorkerGates(t *testing.T) {
 	}
 }
 
-// An abandoned close is a successful close: the node is marked done, so what
-// the delivery opened must not outlive it. The worker here is still active —
-// the dispatch the cap gives up on — and the cleanup playbook declares an
-// action, which still runs: abandoning skips the gate, not the teardown.
+// An abandoned close is a successful close: the node is marked done, so what the
+// delivery opened must not outlive it. The worker here is still active — the
+// dispatch the cap gives up on — and the exit playbook declares an action, which
+// still runs: abandoning skips the gate, not the teardown.
 func TestCloseAbandonedRunsTheDeclaredActionsAndClosesThePane(t *testing.T) {
 	ran := filepath.Join(t.TempDir(), "action-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - do: touch %s
-`, ran))
+	parallelExitGate(t, f, "  - do: touch "+ran+"\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "active")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
 
 	herdr := &fakeHerdr{}
 	resp := f.close(herdr, dispatch.CloseRequest{
-		NodeID: nodeID, Abandoned: true, Reason: "the user withdrew the request",
+		NodeID: brief.CapNodeID, Abandoned: true, Reason: "the user withdrew the request",
 	})
 	if !resp.OK {
 		t.Fatalf("Close --abandoned: %s", resp.Error)
@@ -980,7 +1440,7 @@ steps:
 		t.Errorf("pane_id = %q, want the delivered pane named", result.PaneID)
 	}
 	if !contains(result.TornDown, "pane w7:p1") {
-		t.Errorf("torn_down = %v, must name the pane so the cleanup is visible", result.TornDown)
+		t.Errorf("torn_down = %v, must name the pane so the teardown is visible", result.TornDown)
 	}
 	if !contains(result.Actions, "touch "+ran) {
 		t.Errorf("actions = %v, must name the declared action that ran", result.Actions)
@@ -991,14 +1451,14 @@ steps:
 	// The durable record has to agree with what was just done: a delivered
 	// dispatch abandoned and torn down must not read "never delivered".
 	want := "abandoned after delivery to skills:" + workerID +
-		": the user withdrew the request (pane w7:p1 torn down) (1 cleanup action ran)"
-	if decisions := capDecisions(t, f, nodeID); !contains(decisions, want) {
+		": the user withdrew the request (pane w7:p1 torn down) (1 exit action ran)"
+	if decisions := capDecisions(t, f, brief.CapNodeID); !contains(decisions, want) {
 		t.Errorf("decisions = %v, want %q", decisions, want)
 	}
 	if result.Decision != want {
 		t.Errorf("result.Decision = %q, want %q", result.Decision, want)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done", status)
 	}
 }
@@ -1009,19 +1469,14 @@ steps:
 func TestCloseAbandonedWithoutAReasonRunsNothing(t *testing.T) {
 	ran := filepath.Join(t.TempDir(), "action-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - do: touch %s
-`, ran))
+	parallelExitGate(t, f, "  - do: touch "+ran+"\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "active")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Abandoned: true})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Abandoned: true})
 	if resp.OK {
 		t.Fatal("--abandoned without --reason must be refused")
 	}
@@ -1031,29 +1486,24 @@ steps:
 	if _, err := os.Stat(ran); !os.IsNotExist(err) {
 		t.Errorf("a refused close ran the declared action (stat err = %v)", err)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
 
 // Abandoning is a decision; a stuck pane or a declared action that cannot finish
-// is a cleanup problem, not a reason to keep the node open. Both warn instead of
-// refusing, and neither is claimed as done.
+// is a teardown problem, not a reason to keep the node open. Both warn instead
+// of refusing, and neither is claimed as done.
 func TestCloseAbandonedWarnsButStillMarksDoneWhenTeardownFails(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - do: echo boom >&2; false
-`)
+	parallelExitGate(t, f, "  - do: echo boom >&2; false\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "active")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
 
 	resp := f.close(&fakeHerdr{closeErr: errors.New("herdr: server is down")}, dispatch.CloseRequest{
-		NodeID: nodeID, Abandoned: true, Reason: "the user withdrew the request",
+		NodeID: brief.CapNodeID, Abandoned: true, Reason: "the user withdrew the request",
 	})
 	if !resp.OK {
 		t.Fatalf("an abandoned dispatch must still be marked done: %s", resp.Error)
@@ -1078,7 +1528,7 @@ steps:
 	if !strings.Contains(result.Decision, "teardown reported") {
 		t.Errorf("decision = %q, must say the teardown did not finish", result.Decision)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done despite the warning", status)
 	}
 }
@@ -1090,23 +1540,18 @@ steps:
 // covers.
 func TestCloseAbandonedWarnsWhenTheProjectIsNotRegistered(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - do: true
-`)
+	parallelExitGate(t, f, "  - do: true\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "active")
-	if resp := f.h.RecordDelivery("cap", nodeID, command.DeliveryRecord{
+	if resp := f.h.RecordDelivery("cap", brief.CapNodeID, command.DeliveryRecord{
 		PaneID: "w7:p1", Engine: "herdr", Project: "ghost", Node: workerID, Type: "parallel",
 	}); !resp.OK {
 		t.Fatalf("RecordDelivery: %s", resp.Error)
 	}
 
 	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Abandoned: true, Reason: "the project is gone",
+		NodeID: brief.CapNodeID, Abandoned: true, Reason: "the project is gone",
 	})
 	if !resp.OK {
 		t.Fatalf("a teardown that cannot run must not keep an abandoned node open: %s", resp.Error)
@@ -1114,37 +1559,31 @@ steps:
 	if warning := resp.Data.(dispatch.CloseResult).Warning; !strings.Contains(warning, "not registered") {
 		t.Errorf("warning = %q, want it to say the project is not registered", warning)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status != "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status != "done" {
 		t.Errorf("cap node status = %q, want done", status)
 	}
 }
 
-// The exit gate is named by the record's type, not by the goal prose. A failing
-// check refuses, fail-fast, naming the command and its output — the same shape
-// as fs dispatch, and for the same reason. The sentinel proves the later check
-// never ran, and a refused close leaves the node open.
-func TestCloseRefusesAFailingCleanupCheckAndStopsTheRun(t *testing.T) {
+// ---------------------------------------------------------------------------
+// The exit gate
+// ---------------------------------------------------------------------------
+
+// A failing exit check refuses, fail-fast, naming the command and its output —
+// the same shape as the entry gate, and for the same reason. The sentinel proves
+// the later check never ran, and a refused close leaves the node open.
+func TestCloseRefusesAFailingExitCheckAndStopsTheRun(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "check3-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-cleanup", fmt.Sprintf(`name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
-steps:
-  - check: true
-  - check: echo boom >&2; false
-  - check: touch %s
-`, sentinel))
+	exitGate(t, f, "  - check: true\n  - check: echo boom >&2; false\n  - check: touch "+sentinel+"\n")
 
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	brief := runDispatch(t, f, devReq("sample"))
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
-		t.Fatal("a failing cleanup check must refuse the close")
+		t.Fatal("a failing exit check must refuse the close")
 	}
-	for _, want := range []string{"cleanup check failed", `"echo boom >&2; false"`, "boom", "fix it"} {
+	for _, want := range []string{"exit check failed", `"echo boom >&2; false"`, "boom", "code-exit step 2", "fix it"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1155,42 +1594,35 @@ steps:
 	if len(herdr.closed) != 0 {
 		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
 
 // A worktree record's checks must run in the worktree, not in the project root.
-// The shipped parallel-cleanup checks assert things about the worktree — no
-// uncommitted files, branch merged — and the main checkout is routinely another
-// agent's dirty tree, so a gate that runs there fails for reasons the dispatch
-// had nothing to do with. Here the root carries the file the worktree does not,
-// and the worktree the file the root does not: only the worktree passes both.
+// The main checkout is routinely another agent's dirty tree, so a gate that runs
+// there fails for reasons the dispatch had nothing to do with. Here the root
+// carries the file the worktree does not, and the worktree the file the root
+// does not: only the worktree passes both.
 //
-// The record is the legacy shape — it names the workspace but no path, as every
-// record written before the path was recorded does — so this also pins the
-// fallback: the workspace is resolved for the tree to check in.
-func TestCloseRunsCleanupChecksInTheWorktreeTheRecordNames(t *testing.T) {
+// The record is the shape written before the path was recorded — it names the
+// workspace and no path — so this also pins the fallback: the workspace is
+// resolved for the tree to check in.
+func TestCloseRunsExitChecksInTheWorktreeTheRecordNames(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()
 	writeFile(t, filepath.Join(worktree, "clean.marker"), "")
 	writeFile(t, filepath.Join(root, "uncommitted.marker"), "")
 
 	f := newFixture(t, root)
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - check: test -f clean.marker
-  - check: test ! -f uncommitted.marker
-`)
+	parallelExitGate(t, f, "  - check: test -f clean.marker\n  - check: test ! -f uncommitted.marker\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "")
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "")
 
 	herdr := &fakeHerdr{checkoutPath: worktree}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -1201,7 +1633,7 @@ steps:
 	// invisible is how checking the wrong tree went unnoticed.
 	note := resp.Data.(dispatch.CloseResult).Cleanup
 	if !strings.Contains(note, "2 checks passed") || !strings.Contains(note, "in worktree w7") {
-		t.Errorf("cleanup note = %q, want the checks and the tree they ran in", note)
+		t.Errorf("exit note = %q, want the checks and the tree they ran in", note)
 	}
 }
 
@@ -1209,29 +1641,24 @@ steps:
 // forgotten does not cost the close its footing: the checks run in the tree the
 // dispatch worked in, and herdr is never asked. Refusing instead would leave the
 // checkout this work exists to remove.
-func TestCloseRunsCleanupChecksInTheRecordedPathWithoutAskingHerdr(t *testing.T) {
+func TestCloseRunsExitChecksInTheRecordedPathWithoutAskingHerdr(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()
 	writeFile(t, filepath.Join(worktree, "clean.marker"), "")
 
 	f := newFixture(t, root)
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - check: test -f clean.marker
-`)
+	parallelExitGate(t, f, "  - check: test -f clean.marker\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", worktree)
 
 	// herdr has forgotten the workspace entirely: the checks' footing must not
 	// depend on it. The recorded path is what the gate runs in.
 	herdr := &fakeHerdr{
 		checkoutErr: fmt.Errorf("%w: herdr has no workspace w7", dispatch.ErrNoWorktree),
 	}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -1239,37 +1666,32 @@ steps:
 		t.Errorf("herdr was asked to resolve %v, want the recorded path used", herdr.checkouts)
 	}
 	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "1 checks passed") {
-		t.Errorf("cleanup note = %q, want the checks reported", note)
+		t.Errorf("exit note = %q, want the checks reported", note)
 	}
 }
 
 // A check that genuinely fails in the worktree still refuses, naming the command
 // and its output. The root is clean here, so a gate that fell back to it would
 // pass — the failure has to come from the worktree's own state.
-func TestCloseRefusesAWorktreeCleanupCheckThatFailsThere(t *testing.T) {
+func TestCloseRefusesAWorktreeExitCheckThatFailsThere(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()
 	writeFile(t, filepath.Join(root, "state.txt"), "clean\n")
 	writeFile(t, filepath.Join(worktree, "state.txt"), "dirty\n")
 
 	f := newFixture(t, root)
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - check: grep -c clean state.txt
-`)
+	parallelExitGate(t, f, "  - check: grep -c clean state.txt\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", worktree)
 
 	herdr := &fakeHerdr{checkoutPath: worktree}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("a check that fails in the worktree must refuse the close")
 	}
-	for _, want := range []string{"cleanup check failed", `"grep -c clean state.txt"`, "0", "fix it"} {
+	for _, want := range []string{"exit check failed", `"grep -c clean state.txt"`, "0", "fix it"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1277,7 +1699,7 @@ steps:
 	if len(herdr.closed) != 0 {
 		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
@@ -1290,23 +1712,18 @@ func TestCloseRefusesWhenTheRecordedWorktreeCannotBeResolved(t *testing.T) {
 	root := t.TempDir()
 	sentinel := filepath.Join(root, "check-ran")
 	f := newFixture(t, root)
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - check: touch %s
-`, sentinel))
+	parallelExitGate(t, f, "  - check: touch "+sentinel+"\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "wZZ", "")
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "wZZ", "")
 
 	herdr := &fakeHerdr{checkoutErr: fmt.Errorf("%w: herdr has no workspace wZZ", dispatch.ErrNoWorktree)}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("an unresolvable worktree must refuse the close")
 	}
-	for _, want := range []string{"wZZ", "parallel-cleanup", "herdr has no workspace", "--abandoned"} {
+	for _, want := range []string{"wZZ", "parallel-exit", "herdr has no workspace", "--abandoned"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1319,7 +1736,7 @@ steps:
 	if len(herdr.closed) != 0 {
 		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
@@ -1327,25 +1744,17 @@ steps:
 // An outstanding ask must not mask a failing check: the checks run first, so the
 // refusal names what the user has to fix rather than asking them to confirm a
 // gate that cannot pass, and only revealing the failure afterwards.
-func TestCloseRunsCleanupChecksBeforeTheAsks(t *testing.T) {
+func TestCloseRunsExitChecksBeforeTheAsks(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
-steps:
-  - check: echo boom >&2; false
-  - ask: was the merge reviewed before this closed
-`)
+	exitGate(t, f, "  - check: echo boom >&2; false\n  - ask: was the merge reviewed before this closed\n")
 
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	brief := runDispatch(t, f, devReq("sample"))
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("a failing check must refuse the close even with an ask outstanding")
 	}
-	for _, want := range []string{"cleanup check failed", `"echo boom >&2; false"`, "boom"} {
+	for _, want := range []string{"exit check failed", `"echo boom >&2; false"`, "boom"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1357,24 +1766,17 @@ steps:
 
 // A record that names no worktree keeps the footing it always had: the checks
 // run in the worker project's root, and herdr is not consulted at all.
-func TestCloseRunsCleanupChecksInTheProjectRootWithoutAWorktree(t *testing.T) {
+func TestCloseRunsExitChecksInTheProjectRootWithoutAWorktree(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "clean.marker"), "")
 
 	f := newFixture(t, root)
-	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
-steps:
-  - check: test -f clean.marker
-`)
-
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
+	f.writePlaybook(t, "code-entry", passingEntry)
+	exitGate(t, f, "  - check: test -f clean.marker\n")
+	brief := runDispatch(t, f, devReq("sample"))
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -1382,68 +1784,37 @@ steps:
 		t.Errorf("worktrees resolved = %v for a record that names none", herdr.checkouts)
 	}
 	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "1 checks passed") {
-		t.Errorf("cleanup note = %q, want the check reported", note)
+		t.Errorf("exit note = %q, want the check reported", note)
 	}
 }
 
-// A type with no cleanup playbook has no gate — and the close says so, because
-// a missing exit gate must be visible, never silent.
-func TestCloseSaysWhenThereIsNoCleanupPlaybook(t *testing.T) {
+// A plan with no exit playbook has no gate — and the close says so, because an
+// absent exit phase must be visible, never silent. It is not the same dispatch
+// as one whose exit playbook could not be found, which refuses.
+func TestCloseSaysWhenThePlanDeclaresNoExitPlaybook(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordTypedDelivery(t, f, nodeID, "w1:p9", workerID, "parallel")
+	f.writePlaybook(t, "code-entry", passingEntry)
+	brief := runDispatch(t, f, devReq("sample"))
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
-		t.Fatalf("a missing cleanup playbook must not block the close: %s", resp.Error)
+		t.Fatalf("a plan with no exit playbook must not block the close: %s", resp.Error)
 	}
-	result := resp.Data.(dispatch.CloseResult)
-	if !strings.Contains(result.Cleanup, "no cleanup gate") ||
-		!strings.Contains(result.Cleanup, "parallel-cleanup.yaml") {
-		t.Errorf("cleanup note = %q, want it to name the missing playbook", result.Cleanup)
-	}
-}
-
-// A record written before types existed carries none, so close cannot name a
-// gate. It says that too rather than silently skipping the exit gate.
-func TestCloseSaysWhenTheRecordCarriesNoType(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordLegacyDelivery(t, f, nodeID, "w1:p9")
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Worker: "skills:" + workerID, Decision: "verified",
-	})
-	if !resp.OK {
-		t.Fatalf("close: %s", resp.Error)
-	}
-	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "no cleanup gate") ||
-		!strings.Contains(note, "no task type") {
-		t.Errorf("cleanup note = %q, want it to say the record names no type", note)
+	note := resp.Data.(dispatch.CloseResult).Cleanup
+	if !strings.Contains(note, "no exit gate") || !strings.Contains(note, "declares no exit playbook") {
+		t.Errorf("exit note = %q, want it to say no exit playbook was declared", note)
 	}
 }
 
 // The steps only the user can answer are refused until --confirm says they have
 // been answered, and then each is recorded as its own decision — so the log
 // names what was confirmed, not just that something was.
-func TestCloseRequiresConfirmForTheCleanupAsks(t *testing.T) {
+func TestCloseRequiresConfirmForTheExitAsks(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
-steps:
-  - check: true
-  - ask: was the merge reviewed before this closed
-  - ask: is the follow-up work tracked
-`)
+	exitGate(t, f, "  - check: true\n  - ask: was the merge reviewed before this closed\n  - ask: is the follow-up work tracked\n")
+	brief := runDispatch(t, f, devReq("sample"))
 
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("an unconfirmed ask step must refuse the close")
 	}
@@ -1458,27 +1829,27 @@ steps:
 		}
 	}
 
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("a refused close must leave the node open, got %q", status)
 	}
 
 	confirmed := f.close(&fakeHerdr{}, dispatch.CloseRequest{
-		NodeID: nodeID, Decision: "verified", Confirm: true,
+		NodeID: brief.CapNodeID, Decision: "verified", Confirm: true,
 	})
 	if !confirmed.OK {
 		t.Fatalf("Close --confirm: %s", confirmed.Error)
 	}
-	decisions := capDecisions(t, f, nodeID)
+	decisions := capDecisions(t, f, brief.CapNodeID)
 	for _, want := range []string{
-		"user confirmed cleanup step: was the merge reviewed before this closed",
-		"user confirmed cleanup step: is the follow-up work tracked",
+		"user confirmed exit step: was the merge reviewed before this closed",
+		"user confirmed exit step: is the follow-up work tracked",
 	} {
 		if !contains(decisions, want) {
 			t.Errorf("decisions = %v, want %q", decisions, want)
 		}
 	}
 	if note := confirmed.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "2 confirmed") {
-		t.Errorf("cleanup note = %q, want the confirmed asks counted", note)
+		t.Errorf("exit note = %q, want the confirmed asks counted", note)
 	}
 }
 
@@ -1490,20 +1861,13 @@ func TestCloseRunsDeclaredActionsInOrderInTheProjectRoot(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()
 	f := newFixture(t, root)
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - check: true
-  - do: printf 'first\n' >> actions.log
-  - do: printf 'second\n' >> actions.log
-`)
+	parallelExitGate(t, f, "  - check: true\n  - do: printf 'first\\n' >> actions.log\n  - do: printf 'second\\n' >> actions.log\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", worktree)
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -1521,11 +1885,11 @@ steps:
 	}
 	result := resp.Data.(dispatch.CloseResult)
 	wantActions := []string{"printf 'first\\n' >> actions.log", "printf 'second\\n' >> actions.log"}
-	if !reflect.DeepEqual(result.Actions, wantActions) {
+	if !slices.Equal(result.Actions, wantActions) {
 		t.Errorf("actions = %v, want %v", result.Actions, wantActions)
 	}
 	if !strings.Contains(result.Cleanup, "2 actions run") {
-		t.Errorf("cleanup note = %q, want the declared actions counted", result.Cleanup)
+		t.Errorf("exit note = %q, want the declared actions counted", result.Cleanup)
 	}
 }
 
@@ -1535,27 +1899,22 @@ steps:
 // proves the variable is set — set-and-empty for a dispatch that opened none.
 func TestCloseGivesDeclaredActionsTheDeliveryEnv(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
-
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - do: test "$FS_PROJECT" = skills
+	parallelExitGate(t, f, `  - do: test "$FS_PROJECT" = skills
   - do: test "$FS_TYPE" = parallel
-  - do: test "$FS_NODE" = %s
-  - do: test "$FS_WORKER" = skills:%s
+  - do: test -n "$FS_NODE"
+  - do: test "$FS_WORKER" = skills:`+workerID+`
   - do: test -z "$FS_CARDS" && printenv FS_CARDS >/dev/null
   - do: test -z "$FS_INTEGRATES" && printenv FS_INTEGRATES >/dev/null
   - do: test "$FS_PANE" = w7:p1
   - do: test "$FS_WORKTREE" = w7
   - do: test "$FS_WORKTREE_PATH" = /checkouts/w7
-`, nodeID, workerID))
+`)
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	brief := prepareOnly(t, f, parallelReq("sample"))
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -1571,25 +1930,18 @@ steps:
 func TestCloseRefusesAFailingActionAndStopsTheRun(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "action3-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - do: true
-  - do: echo boom >&2; false
-  - do: touch %s
-`, sentinel))
+	parallelExitGate(t, f, "  - do: true\n  - do: echo boom >&2; false\n  - do: touch "+sentinel+"\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("a failing action must refuse the close")
 	}
-	for _, want := range []string{"cleanup action failed", `"echo boom >&2; false"`, "boom", "fix it"} {
+	for _, want := range []string{"exit action failed", `"echo boom >&2; false"`, "boom", "parallel-exit step 2", "fix it"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1600,7 +1952,7 @@ steps:
 	if len(herdr.closed) != 0 {
 		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
@@ -1610,24 +1962,18 @@ steps:
 func TestCloseRunsChecksBeforeTheDeclaredActions(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "action-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-type: cleanup
-trigger: parallel
-steps:
-  - check: echo boom >&2; false
-  - do: touch %s
-`, sentinel))
+	parallelExitGate(t, f, "  - check: echo boom >&2; false\n  - do: touch "+sentinel+"\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", t.TempDir())
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", t.TempDir())
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("a failing check must refuse the close")
 	}
-	for _, want := range []string{"cleanup check failed", `"echo boom >&2; false"`, "boom"} {
+	for _, want := range []string{"exit check failed", `"echo boom >&2; false"`, "boom"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1638,7 +1984,7 @@ steps:
 	if len(herdr.closed) != 0 {
 		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
@@ -1650,21 +1996,14 @@ steps:
 func TestCloseRunsStepsInDeclaredOrderAcrossKinds(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
-	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
-	type: cleanup
-	trigger: dev-task
-	steps:
-	  - check: printf 'check-1\n' >> order.log
-	  - do: printf 'do-1\n' >> order.log
-	  - check: printf 'check-2\n' >> order.log
-	  - do: printf 'do-2\n' >> order.log
-	`)
+	exitGate(t, f, `  - check: printf 'check-1\n' >> order.log
+  - do: printf 'do-1\n' >> order.log
+  - check: printf 'check-2\n' >> order.log
+  - do: printf 'do-2\n' >> order.log
+`)
+	brief := runDispatch(t, f, devReq("sample"))
 
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
@@ -1683,24 +2022,18 @@ func TestCloseRunsStepsInDeclaredOrderAcrossKinds(t *testing.T) {
 func TestCloseRefusesAPostActionCheckAfterTheActionRan(t *testing.T) {
 	ran := filepath.Join(t.TempDir(), "action-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "parallel-cleanup", fmt.Sprintf(`name: parallel-cleanup
-	type: cleanup
-	trigger: parallel
-	steps:
-	  - do: touch %s
-	  - check: echo still-there >&2; false
-	`, ran))
+	parallelExitGate(t, f, "  - do: touch "+ran+"\n  - check: echo still-there >&2; false\n")
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", t.TempDir())
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", t.TempDir())
 
 	herdr := &fakeHerdr{}
-	resp := f.close(herdr, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("a post-action check that fails must refuse the close")
 	}
-	for _, want := range []string{"cleanup check failed", `"echo still-there >&2; false"`, "still-there"} {
+	for _, want := range []string{"exit check failed", `"echo still-there >&2; false"`, "still-there"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -1711,7 +2044,7 @@ func TestCloseRefusesAPostActionCheckAfterTheActionRan(t *testing.T) {
 	if len(herdr.closed) != 0 {
 		t.Errorf("a refused close closed pane(s) %v, want none", herdr.closed)
 	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
+	if status := nodeStatus(t, f, "cap", brief.CapNodeID); status == "done" {
 		t.Errorf("cap node status = %q, a refused close must leave it open", status)
 	}
 }
@@ -1723,25 +2056,21 @@ func TestCloseRunsAPostActionCheckAfterItsTreeIsGone(t *testing.T) {
 	root := t.TempDir()
 	worktree := t.TempDir()
 	f := newFixture(t, root)
-	f.writePlaybook(t, "parallel-cleanup", `name: parallel-cleanup
-	type: cleanup
-	trigger: parallel
-	steps:
-	  - check: test -d "$FS_WORKTREE_PATH"
-	  - do: rm -rf "$FS_WORKTREE_PATH"
-	  - check: test ! -e "$FS_WORKTREE_PATH"
-	`)
+	parallelExitGate(t, f, `  - check: test -d "$FS_WORKTREE_PATH"
+  - do: rm -rf "$FS_WORKTREE_PATH"
+  - check: test ! -e "$FS_WORKTREE_PATH"
+`)
 
-	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+	brief := prepareOnly(t, f, parallelReq("sample"))
 	workerID := addWorkerNode(t, f, "done")
-	recordWorktreeDelivery(t, f, nodeID, "w7:p1", workerID, "w7", worktree)
+	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", worktree)
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("the post-action check must run after its tree is gone: %s", resp.Error)
 	}
 	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "2 checks passed") {
-		t.Errorf("cleanup note = %q, want both checks reported", note)
+		t.Errorf("exit note = %q, want both checks reported", note)
 	}
 }
 
@@ -1750,18 +2079,11 @@ func TestCloseRunsAPostActionCheckAfterItsTreeIsGone(t *testing.T) {
 // teardown is a no-op rather than an error or a missing variable.
 func TestCloseWithoutAWorktreeRunsActionsWithAnEmptyWorktreeEnv(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
-steps:
-  - do: test -z "$FS_WORKTREE"; test -z "$FS_WORKTREE_PATH"; printenv FS_WORKTREE >/dev/null
+	exitGate(t, f, `  - do: test -z "$FS_WORKTREE"; test -z "$FS_WORKTREE_PATH"; printenv FS_WORKTREE >/dev/null
 `)
+	brief := runDispatch(t, f, devReq("sample"))
 
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("a dispatch with no worktree must not fail its declared actions: %s", resp.Error)
 	}
@@ -1770,174 +2092,90 @@ steps:
 	}
 }
 
-// scopeTasks returns every node in a scope, via derived state.
-func scopeTasks(t *testing.T, f *fixture, scope string) []command.TaskInfo {
-	t.Helper()
-	resp := f.h.Status(scope)
-	if !resp.OK {
-		t.Fatalf("Status: %s", resp.Error)
-	}
-	return resp.Data.(command.StatusResult).Tasks
-}
-
-// scopeTask returns one node's derived state, or ok=false when the scope has no
-// such node.
-func scopeTask(t *testing.T, f *fixture, scope, nodeID string) (command.TaskInfo, bool) {
-	t.Helper()
-	for _, task := range scopeTasks(t, f, scope) {
-		if task.NodeID == nodeID {
-			return task, true
-		}
-	}
-	return command.TaskInfo{}, false
-}
-
-// nodeStatus reads one node's derived status the same way fs status reports it.
-func nodeStatus(t *testing.T, f *fixture, scope, nodeID string) string {
-	t.Helper()
-	task, ok := scopeTask(t, f, scope, nodeID)
-	if !ok {
-		t.Fatalf("node %s not found in scope %s", nodeID, scope)
-	}
-	return task.Status
-}
-
-func contains(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
-
-// The trigger rule is the same at exit as at entry: fs close loads
-// "<type>-cleanup", so a cleanup playbook whose trigger names another type is
-// refused rather than run.
-func TestCloseRefusesACleanupPlaybookWhoseTriggerContradictsItsType(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-cleanup", `name: dev-task-cleanup
-type: cleanup
-trigger: nonsense
-steps:
-  - check: true
-`)
-
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
-	if resp.OK {
-		t.Fatal("a contradictory cleanup trigger must refuse the close")
-	}
-	for _, want := range []string{"nonsense", `"dev-task"`, "empty"} {
-		if !strings.Contains(resp.Error, want) {
-			t.Errorf("error %q must mention %q", resp.Error, want)
-		}
-	}
-	if status := nodeStatus(t, f, "cap", nodeID); status == "done" {
-		t.Errorf("a refused close must leave the node open, got %q", status)
-	}
-}
-
 // Exit checks see the closing dispatch's own inputs as FS_*, the same treatment
-// entry checks get, so an exit gate can ask about the dispatch it is gating
-// instead of a proxy for it.
+// entry checks get, so a gate can ask about the dispatch it is gating instead of
+// a proxy for it.
 //
 // printenv rather than echo is deliberate: it fails on an absent variable, so a
 // step passing proves the variable is set — and FS_CARDS, which a close has no
 // value for, must read as set-and-empty rather than missing.
-func TestCloseGivesCleanupChecksTheClosingDispatchEnv(t *testing.T) {
+func TestCloseGivesExitChecksTheClosingDispatchEnv(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-
-	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
-	workerID := addWorkerNode(t, f, "done")
-	recordDelivery(t, f, nodeID, "w1:p9", workerID)
-
-	f.writePlaybook(t, "dev-task-cleanup", fmt.Sprintf(`name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
-steps:
-  - check: test "$FS_PROJECT" = skills
+	exitGate(t, f, `  - check: test "$FS_PROJECT" = skills
   - check: test "$FS_TYPE" = dev-task
-  - check: test "$FS_NODE" = %s
-  - check: test "$FS_WORKER" = skills:%s
+  - check: test -n "$FS_NODE"
+  - check: test -n "$FS_WORKER"
   - check: test -z "$FS_CARDS" && printenv FS_CARDS >/dev/null
   - check: test -z "$FS_INTEGRATES" && printenv FS_INTEGRATES >/dev/null
-`, nodeID, workerID))
+`)
+	brief := runDispatch(t, f, devReq("sample"))
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
 	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "6 checks passed") {
-		t.Errorf("cleanup note = %q, want every env check reported", note)
+		t.Errorf("exit note = %q, want every env check reported", note)
 	}
 }
 
 // An integration's exit gate sees the member the integration names, so a gate
 // can be about this integration's own link.
-func TestCloseGivesCleanupChecksTheIntegratesLink(t *testing.T) {
+func TestCloseGivesExitChecksTheIntegratesLink(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-
 	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
-	nodeID := addIntegrationNode(t, f, member)
+	integrationExitGate(t, f, "  - check: test -n \"$FS_NODE\"\n  - check: test \"$FS_INTEGRATES\" = "+member+"\n")
+
+	brief := prepareOnly(t, f, dispatch.PrepareRequest{
+		Project: "skills", TaskType: "integrate", Goal: "merge", Integrates: member,
+	})
 	workerID := addWorkerNode(t, f, "done")
-	recordTypedDelivery(t, f, nodeID, "w1:p9", workerID, "integrate")
+	recordTypedDelivery(t, f, brief.CapNodeID, "w1:p9", workerID, "integrate")
 
-	f.writePlaybook(t, "integrate-cleanup", fmt.Sprintf(`name: integrate-cleanup
-type: cleanup
-trigger: integrate
-steps:
-  - check: test "$FS_NODE" = %s
-  - check: test "$FS_INTEGRATES" = %s
-`, nodeID, member))
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: nodeID, Decision: "verified"})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
 		t.Fatalf("Close: %s", resp.Error)
 	}
 	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "2 checks passed") {
-		t.Errorf("cleanup note = %q, want the link check reported", note)
+		t.Errorf("exit note = %q, want the link check reported", note)
 	}
 }
 
-// A member's integration closes per member: closing integration 1 leaves member
-// 2's tree, branch and open node exactly as they were. The batch-global checks
-// this gate used to carry made that impossible — they asked about the whole
-// batch, so no single member's integration could pass while another was
-// unfinished.
+// A member's integration closes per member: closing one member's integration
+// leaves another member's tree, branch and open node exactly as they were. The
+// batch-global checks this gate used to carry made that impossible — they asked
+// about the whole batch, so no single member's integration could pass while
+// another was unfinished.
 func TestCloseOfOneMembersIntegrationIsUnaffectedByTheOtherMember(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "gate.marker"), "")
 
 	f := newFixture(t, root)
-	f.writePlaybook(t, "integrate-cleanup", `name: integrate-cleanup
-type: cleanup
-trigger: integrate
-steps:
-  - check: test -f gate.marker
+	memberOne := addCapKindNode(t, f, "dispatch parallel: member one", query.KindDispatch)
+	integrationExitGate(t, f, `  - check: test -f gate.marker
   - ask: was the integration verdict recorded and read
 `)
-
-	first := addCapKindNode(t, f, "dispatch parallel: member one", query.KindDispatch)
-	second := addCapKindNode(t, f, "dispatch parallel: member two", query.KindDispatch)
-	integration := addIntegrationNode(t, f, first)
+	brief := prepareOnly(t, f, dispatch.PrepareRequest{
+		Project: "skills", TaskType: "integrate", Goal: "merge one", Integrates: memberOne,
+	})
 	workerID := addWorkerNode(t, f, "done")
-	recordTypedDelivery(t, f, integration, "w1:p9", workerID, "integrate")
+	recordTypedDelivery(t, f, brief.CapNodeID, "w1:p9", workerID, "integrate")
 
-	// Member two is still open: the whole point is that its state cannot reach
-	// member one's integration gate.
-	if status := nodeStatus(t, f, "cap", second); status == "done" {
+	// Member two is opened after this integration was prepared, and is still open
+	// when it closes: the whole point is that its state cannot reach member one's
+	// gate.
+	memberTwo := addCapKindNode(t, f, "dispatch parallel: member two", query.KindDispatch)
+	if status := nodeStatus(t, f, "cap", memberTwo); status == "done" {
 		t.Fatalf("member two must still be open for this test to mean anything, got %q", status)
 	}
 
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: integration, Decision: "merged one", Confirm: true})
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Decision: "merged one", Confirm: true,
+	})
 	if !resp.OK {
 		t.Fatalf("closing one member's integration must not depend on the other member: %s", resp.Error)
 	}
-	if status := nodeStatus(t, f, "cap", second); status == "done" {
+	if status := nodeStatus(t, f, "cap", memberTwo); status == "done" {
 		t.Errorf("closing an integration for member one closed member two (status %q)", status)
 	}
 }

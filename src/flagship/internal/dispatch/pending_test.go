@@ -156,12 +156,13 @@ func TestPendingClassifiesEachDispatch(t *testing.T) {
 	}
 }
 
-// A record written before the link existed carries no worker node. There is
-// nothing to read, so it is unlinked rather than the worker looking gone.
+// A record written before the link existed carries no worker node — nor a
+// project, the two fields arrived together. There is nothing to read, so it is
+// unlinked rather than the worker looking gone.
 func TestPendingReportsALegacyRecordUnlinked(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	capNode := addCapNode(t, f, "dispatch dev-task: sample")
-	recordLegacyDelivery(t, f, capNode, "w1:p9")
+	recordLegacyDelivery(t, f, capNode, "w1:p9", "")
 
 	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{}))
 
@@ -325,7 +326,7 @@ func TestPendingIsARead(t *testing.T) {
 	workerID := addWorkerNode(t, f, "done")
 	recordDeliveryAs(t, f, done, "dispatch-dev-task-"+workerID, workerID)
 	legacy := addCapNode(t, f, "dispatch dev-task: legacy")
-	recordLegacyDelivery(t, f, legacy, "w1:p8")
+	recordLegacyDelivery(t, f, legacy, "w1:p8", "")
 
 	capBefore := scopeEventCount(t, f, "cap")
 	skillsBefore := scopeEventCount(t, f, "skills")

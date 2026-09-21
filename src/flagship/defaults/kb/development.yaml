@@ -1,0 +1,14 @@
+name: development
+phase: work
+applies_when: code
+order: 30
+steps:
+  # The code bar. These are the rules a reviewer would apply to your diff, put
+  # where the person writing the diff reads them.
+  - say: write the smallest structure that solves the problem — no abstraction for a single caller, no configuration nobody asked for
+  - say: make surgical changes: every changed line traces to the card, and no adjacent code is "improved" on the way past
+  - say: match the surrounding style, even where you would do it differently; consistency beats preference in someone else's file
+  - say: own only the orphans your change creates; report pre-existing dead code rather than deleting it
+  - say: do a refactor as its own step, with its own verification, never folded into a change that was supposed to do something else
+  - say: no new dependency without saying why an existing one will not do
+  - use: dev-task — the code bar and the review loop this project holds itself to

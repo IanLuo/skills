@@ -133,12 +133,12 @@ func TestRunTaskIncludesProcedures(t *testing.T) {
 
 	// Add a procedure for dev-task.
 	kc.Add("dev-task-procedure", []byte(`name: dev-task-procedure
-type: procedure
-trigger: dev-task
+phase: work
+applies_when: type=dev-task
 steps:
-  - write failing test first
-  - implement the narrowest change
-  - run tests
+  - say: write failing test first
+  - say: implement the narrowest change
+  - say: run tests
 `))
 
 	o := orchestrator.New(s, kc, me)
@@ -161,13 +161,8 @@ func TestRunTaskSetsSkill(t *testing.T) {
 	seedProject(t, s, "proj")
 	seedTask(t, s, "proj", "t1", "task")
 
-	// Add a routing rule.
-	kc.Add("skill-routing", []byte(`name: skill-routing
-type: routing
-trigger: dev-task
-steps:
-  - dev-task
-`))
+	// A skill is a `use` step inside a work playbook now; there is no routing
+	// playbook to add, and the task type is the answer.
 
 	o := orchestrator.New(s, kc, me)
 	_, err := o.RunTask("proj", "t1", "dev-task")
@@ -191,8 +186,8 @@ func TestRunTaskBlocksOnMissingPrerequisite(t *testing.T) {
 
 	// Add a prerequisite playbook that requires a spec.
 	kc.Add("task-prerequisites", []byte(`name: task-prerequisites
-type: prerequisite
-trigger: dev-task
+phase: entry
+applies_when: type=dev-task
 steps:
   - check: ensure locked spec exists
   - check: ensure architecture doc exists
@@ -223,8 +218,8 @@ func TestRunTaskPassesPrerequisiteWhenDocsExist(t *testing.T) {
 
 	// Add prerequisite playbook.
 	kc.Add("task-prerequisites", []byte(`name: task-prerequisites
-type: prerequisite
-trigger: dev-task
+phase: entry
+applies_when: type=dev-task
 steps:
   - check: ensure locked spec exists
   - check: ensure architecture doc exists

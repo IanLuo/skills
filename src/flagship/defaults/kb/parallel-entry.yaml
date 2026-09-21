@@ -1,6 +1,7 @@
-name: parallel-prerequisites
-type: prerequisite
-trigger: parallel
+name: parallel-entry
+phase: entry
+applies_when: type=parallel
+order: 10
 steps:
   - check: test -d .git
   # herdr resolves the workspace from the invoking pane's HERDR_* environment,

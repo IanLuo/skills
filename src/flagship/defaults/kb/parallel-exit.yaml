@@ -1,11 +1,10 @@
-name: parallel-cleanup
-type: cleanup
-trigger: parallel
+name: parallel-exit
+phase: exit
+applies_when: type=parallel
+order: 10
 # The declared actions call herdr — closing the member's worktree workspace is a
-# herdr action. engine_scope says so, which is what keeps fs itself
-# engine-agnostic: the mechanism knows nothing about herdr, the playbook declares
-# that this type's teardown needs it.
-engine_scope: herdr
+# herdr action. The schema's `engine_scope: herdr` field said so; the field is
+# gone, and the steps below still say it where it matters.
 steps:
   # The member's exit gate. It checks the process, not the outcome.
   #

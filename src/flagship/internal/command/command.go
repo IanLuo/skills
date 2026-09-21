@@ -485,6 +485,68 @@ func (h *Handler) DeliveryFor(projectID, nodeID string) (DeliveryRecord, bool, e
 	return d, true, nil
 }
 
+// RecordPlan appends a plan-recorded event on a cap dispatch node: the ordered
+// playbooks the dispatch is measured against, and the tags that selected them.
+//
+// It is recorded once, at dispatch time, so the entry gate, the brief and the
+// exit gate all work from the plan that was used. Re-deriving it at close would
+// read today's playbook files against flags close no longer has, and a plan that
+// changes underneath a running dispatch is not a plan.
+func (h *Handler) RecordPlan(projectID, nodeID string, payload []byte) Response {
+	if projectID == "" {
+		return errResp("project_id is required")
+	}
+	if nodeID == "" {
+		return errResp("node_id is required")
+	}
+	if len(payload) == 0 {
+		return errResp("plan payload is required")
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
+	}
+
+	id, err := h.store.Append(store.Event{
+		Type:      store.PlanRecorded,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		CommitSHA: h.commitSHA,
+		Payload:   payload,
+	})
+	if err != nil {
+		h.logger.Error("store append failed", "command", "record-plan", "error", err)
+		return errResp(err.Error())
+	}
+
+	h.logger.Info("command executed", "command", "record-plan", "project", projectID, "node_id", nodeID, "event_id", id)
+	return okResp(EventData{
+		EventID:   id,
+		EventType: store.PlanRecorded,
+		NodeID:    nodeID,
+		CommitSHA: h.commitSHA,
+	})
+}
+
+// PlanFor returns the plan recorded for a node, and ok=false when the node has
+// no plan-recorded event. The bytes are the event's payload, so the caller
+// decodes the shape it wrote.
+func (h *Handler) PlanFor(projectID, nodeID string) ([]byte, bool, error) {
+	filter := &store.ReplayFilter{
+		Types:  []store.EventType{store.PlanRecorded},
+		NodeID: &nodeID,
+	}
+	events, err := h.store.Replay(projectID, filter)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(events) == 0 {
+		return nil, false, nil
+	}
+	return events[len(events)-1].Payload, true, nil
+}
+
 // TaskEdit appends a metadata-changed event for each field it is given: the
 // goal, the kind, or both. AC11.
 func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind, commitSHA *string) Response {

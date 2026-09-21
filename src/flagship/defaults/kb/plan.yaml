@@ -1,0 +1,17 @@
+name: plan
+phase: work
+applies_when: code
+order: 20
+steps:
+  # The worker's planning rule. The locked spec is the authority; the plan is
+  # yours to state and the cap's to read.
+  #
+  # "Ask the cap when the spec is silent, never improvise" is the whole point of
+  # this file. A worker that invents a decision the spec did not make has moved a
+  # design choice out of the spec and into a diff, where nobody reviews it as a
+  # decision.
+  - say: the locked spec governs what you build; read it before you plan, and quote it when a choice it settles comes up
+  - say: state your plan — the steps, the files, the verification — on your node before you start changing anything
+  - say: when the spec is silent or the card is ambiguous, ask the cap; never improvise a decision that was not made
+  - say: when the spec, the card and the code disagree, say so plainly and stop; do not pick a winner silently
+  - say: hold the plan you stated or say why it changed; a diff nobody was told about is how a card becomes something else

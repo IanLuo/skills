@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -42,17 +43,18 @@ type SeedOutcome struct {
 	Path   string `json:"path"`
 }
 
-// UsedByNone is the used_by value for a playbook no mechanism selects: it is
+// UsedByNone is the used_by value for a playbook nothing can select: it is
 // inert, and fs kb list says so rather than leaving it looking shipped.
 const UsedByNone = "none"
 
 // PlaybookState is one playbook on disk and how it relates to the shipped
 // defaults. Edited and stale are independent — a user's edit and an upstream
 // change can both be true — so both are reported, with State as the headline.
-// UsedBy names the mechanisms that select it; UsedByNone is the warning that
-// nothing does.
+// Scope says which KB it came from; UsedBy says which tags load it, and
+// UsedByNone is the warning that nothing does.
 type PlaybookState struct {
 	Name   string `json:"name"`
+	Scope  string `json:"scope"`
 	State  string `json:"state"`
 	Edited bool   `json:"edited"`
 	Stale  bool   `json:"stale"`
@@ -76,7 +78,7 @@ func (c *Center) Seed(defaults fs.FS) ([]SeedOutcome, error) {
 
 	outcomes := make([]SeedOutcome, 0, len(books))
 	for _, book := range books {
-		path := c.path(book.name)
+		path := filepath.Join(c.writeDir(), book.name+".yaml")
 		outcome := SeedOutcome{Name: book.name, Path: path}
 
 		switch _, err := os.Stat(path); {
@@ -101,14 +103,14 @@ func (c *Center) Seed(defaults fs.FS) ([]SeedOutcome, error) {
 // default is the drift this reports — with the two flags carrying the full
 // answer when both hold.
 func (c *Center) States(defaults fs.FS) ([]PlaybookState, error) {
-	names, err := c.List()
+	books, err := c.scopedNames()
 	if err != nil {
 		return nil, err
 	}
 
-	states := make([]PlaybookState, 0, len(names))
-	for _, name := range names {
-		state, err := c.state(defaults, name)
+	states := make([]PlaybookState, 0, len(books))
+	for _, book := range books {
+		state, err := c.state(defaults, book)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +155,7 @@ func (c *Center) Reset(defaults fs.FS, name string) (string, error) {
 		return "", fmt.Errorf("knowledge: no shipped default named %q to reset to", name)
 	}
 
-	path := c.path(name)
+	path := filepath.Join(c.writeDir(), name+".yaml")
 	if err := os.WriteFile(path, stamped(def), 0o644); err != nil {
 		return "", fmt.Errorf("knowledge: reset %s: %w", name, err)
 	}
@@ -161,18 +163,23 @@ func (c *Center) Reset(defaults fs.FS, name string) (string, error) {
 }
 
 // state compares one playbook on disk to the shipped default of the same name.
-func (c *Center) state(defaults fs.FS, name string) (PlaybookState, error) {
-	content, err := c.read(name)
+func (c *Center) state(defaults fs.FS, book scopedPlaybook) (PlaybookState, error) {
+	content, err := os.ReadFile(book.path)
+	if err != nil {
+		return PlaybookState{}, fmt.Errorf("knowledge: read %s: %w", book.path, err)
+	}
+
+	def, shipped, err := defaultBody(defaults, book.name)
 	if err != nil {
 		return PlaybookState{}, err
 	}
 
-	def, shipped, err := defaultBody(defaults, name)
-	if err != nil {
-		return PlaybookState{}, err
+	state := PlaybookState{
+		Name:   book.name,
+		Scope:  book.scope,
+		Path:   book.path,
+		UsedBy: usedByFor(book.name, content),
 	}
-
-	state := PlaybookState{Name: name, Path: c.path(name), UsedBy: usedByFor(name, content)}
 	if !shipped {
 		state.State = StateLocal
 		return state, nil
@@ -198,47 +205,31 @@ func (c *Center) state(defaults fs.FS, name string) (PlaybookState, error) {
 	return state, nil
 }
 
-// usedByFor names every mechanism that selects a playbook, derived from the
-// playbook itself. Its order is the order the mechanisms are asked for:
-// dispatch, then close, then prompt. An empty result is the answer "nothing
-// selects it" — the playbook is inert.
+// usedByFor says which tags load a playbook, derived from the playbook itself:
+// a cap playbook is loaded by the session prompt, every other phase by a
+// dispatch whose tags satisfy its applies_when. `always` is a playbook with no
+// terms — one that loads for every dispatch.
 //
-// A file that does not parse is reported the same way rather than failing the
-// whole list: a malformed playbook declares nothing, so nothing selects it, and
-// fs kb get is where the parse error surfaces.
+// A file that does not parse is reported as loaded by nothing rather than
+// failing the whole list: a malformed playbook declares nothing, so nothing can
+// select it, and fs kb get is where the parse error surfaces.
 func usedByFor(name string, content []byte) string {
-	pb, err := parsePlaybook(content)
+	pb, err := parsePlaybook(name, content)
 	if err != nil {
 		return UsedByNone
 	}
 
-	var selectors []string
-	if taskType, ok := strings.CutSuffix(name, prerequisiteSuffix); ok && taskType != "" && pb.TriggerAgrees(taskType) {
-		selectors = append(selectors, "dispatch:"+taskType)
+	tags := "always"
+	if len(pb.AppliesWhen) > 0 {
+		tags = strings.Join(pb.AppliesWhen, ",")
 	}
-	if taskType, ok := strings.CutSuffix(name, cleanupSuffix); ok && taskType != "" && pb.TriggerAgrees(taskType) {
-		selectors = append(selectors, "close:"+taskType)
+	if pb.Phase == PhaseCap {
+		return "prompt: " + tags
 	}
-	if pb.Type == "procedure" && pb.Trigger == capTrigger {
-		selectors = append(selectors, "prompt:"+capTrigger)
-	}
-	if len(selectors) == 0 {
+	if _, known := allowedKinds[pb.Phase]; !known {
 		return UsedByNone
 	}
-	return strings.Join(selectors, ", ")
-}
-
-// read returns one playbook's bytes, naming the file when it is absent.
-func (c *Center) read(name string) ([]byte, error) {
-	path := c.path(name)
-	content, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("knowledge: playbook %q not found", name)
-		}
-		return nil, fmt.Errorf("knowledge: read %s: %w", path, err)
-	}
-	return content, nil
+	return "dispatch: " + tags
 }
 
 // defaultPlaybook is one shipped default read out of the embedded tree.

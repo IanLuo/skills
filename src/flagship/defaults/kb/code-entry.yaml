@@ -1,6 +1,7 @@
-name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+name: code-entry
+phase: entry
+applies_when: code
+order: 10
 steps:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .

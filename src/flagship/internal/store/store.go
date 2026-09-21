@@ -31,6 +31,11 @@ const (
 	// DeliveryRecorded binds a cap dispatch node to the pane and agent carrying
 	// its brief. Structural, so close-out never has to read a prose decision.
 	DeliveryRecorded EventType = "delivery-recorded"
+	// PlanRecorded is the playbooks a dispatch was measured against: the ordered
+	// plan and the tags that selected it. Additive — derived state ignores it —
+	// and structural, so close-out reads the plan from the log rather than
+	// re-deriving it from flags it no longer has.
+	PlanRecorded EventType = "plan-recorded"
 )
 
 var validTypes = map[EventType]bool{
@@ -43,6 +48,7 @@ var validTypes = map[EventType]bool{
 	TaskUnblocked:    true,
 	MetadataChanged:  true,
 	DeliveryRecorded: true,
+	PlanRecorded:     true,
 }
 
 // Event is the core persistent entity (SYSTEM-DESIGN R2).

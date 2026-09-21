@@ -1,36 +1,41 @@
-name: integrate-cleanup
-type: cleanup
-trigger: integrate
-# The declared teardown closes the integration's worktree workspace, which is a
-# herdr action. engine_scope says so — the mechanism stays engine-agnostic and
-# the playbook declares what this type's exit needs.
-engine_scope: herdr
+name: code-exit
+phase: exit
+applies_when: code
+order: 10
 steps:
-  # The integration's own exit gate. The suite must be green on the merged tree.
-  # `tests/run.sh` is this repo's declared suite, so it runs here rather than
-  # being taken on the worker's word.
+  # Ordinary code work's exit gate. Until this playbook existed every dev-task
+  # close printed "no cleanup gate": entry was guarded, exit was not.
   #
-  # An integration dispatch usually names no worktree — the worker merges into
-  # main — so the check runs at the project root, the merged main checkout, and
-  # that is the tree it is about. It deliberately does not ask herdr: git is what
-  # owns a branch and a worktree.
-  - check: bash tests/run.sh
-
-  # "exactly one worktree remains" and "no unmerged local branches" are deleted:
-  # both are batch-global, so they belong to no single member — a per-member
-  # integration cannot satisfy them while any other member is unfinished. That is
-  # what made this gate unable to run per member, and a gate that answers about
-  # the batch is a gate about somebody else's dispatch.
-  - ask: was the integration verdict recorded and read
-
-  # The same declared teardown the member's own cleanup declares, for the same
-  # reason: whatever tree this dispatch ran in must not outlive its node, and
-  # removing it is an action, not machinery. When the integration names no
-  # worktree — the usual case — every step is a no-op, which is the "already
-  # done" case, not a failure.
+  # The ask is the only honest check available. A clean-tree check cannot be made
+  # true — the repo is routinely dirty with another agent's work — so it would be
+  # a false gate; and no shell command can decide whether a node says what the
+  # worker actually did. This question is the one that would have caught a worker
+  # reporting a node finished when it had written nothing, which is exactly the
+  # failure an exit gate exists for.
   #
-  # The branch is freed and deleted before the tree comes down, and only when it
-  # is merged into HEAD; an unmerged branch refuses rather than being forced.
+  # It comes first because the teardown below destroys the tree the answer is
+  # about: a question asked after the worktree is gone is a question about a
+  # checkout nobody can look at any more.
+  - ask: is the worker's node complete enough that nothing important died with its transcript
+
+  # The declared teardown. It is DECLARED, not machinery in fs close: removing a
+  # tree, closing a workspace and deleting a branch differ by task type and
+  # belong here — reviewable, diffable, per-type — instead of one hardcoded path
+  # every type shares. This is the fix for a `dev-task --worktree` leaking its
+  # checkout: nothing used to remove it at all.
+  #
+  # The branch goes first, and that order is required: a worktree's branch can
+  # only be named while the worktree exists, and detaching it is the only way to
+  # free a branch another worktree has checked out. Deleting it before the tree
+  # means an unmerged branch refuses the close while the tree is still on disk to
+  # look at, instead of after the tree is gone and the branch is unrecoverable.
+  #
+  # Already done is not a failure: with no worktree every step is a no-op, and a
+  # worktree whose branch is already detached or deleted is skipped. Nothing is
+  # forced — a branch that is not merged into HEAD refuses rather than being
+  # deleted, and a worktree git will not remove refuses — because a close that
+  # destroys work to succeed is not a close worth having. $FS_WORKTREE is the
+  # herdr workspace; $FS_WORKTREE_PATH is the checkout git knows.
   - do: p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; [ -e "$p" ] || exit 0; b=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null) || { echo "cannot resolve the branch in $p" >&2; exit 1; }; [ "$b" = HEAD ] && exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; git -C "$p" checkout -q --detach && git branch -d "$b"
 
   # git owns the worktree and its registration; `git worktree prune` is what

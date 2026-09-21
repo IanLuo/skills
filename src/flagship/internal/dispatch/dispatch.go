@@ -1,24 +1,31 @@
 // Package dispatch owns the cap's dispatch lifecycle for a task type: prepare
 // the brief, deliver it to a worker, and close it out.
 //
-// Prepare reads the task-type's prerequisite playbook, runs the mechanical
-// prerequisites against the target project's root, records the cap's own node,
-// and returns the brief. Every check step sees the dispatch's own inputs as
-// FS_* (see checkEnv), so a gate can ask about this dispatch — which cards —
-// and not only about the world. Deliver (fs dispatch --deliver) is the only
-// step that spawns: it splits a sibling pane of the cap's own, starts the agent
-// in it, sends the brief, and records the pane binding structurally. Close
-// (fs close) is the close-out gate: it refuses to close a dispatch whose worker
-// node is not done, then closes the pane from the recorded binding.
+// A dispatch is measured against a plan: the playbooks whose applies_when the
+// dispatch's tags satisfy, ordered by the order they declare. Prepare builds
+// that plan once, records it on the cap node, runs the plan's `entry` steps
+// against the target project's root, and renders the brief from the plan's
+// `work` steps. Every step that runs appends a line to the dispatch's trace
+// under ~/.fs/projects/<project>/logs/, which is what close-out gates against.
 //
-// It also gates preparation: a failing prerequisite check or an earlier dispatch
-// that was never delivered stops it. Each gate has its own override — --confirm
-// for a failing check, --allow-unresolved for an unresolved dispatch — so saying
-// yes to one can never wave the other through.
+// Every check step sees the dispatch's own inputs as FS_* (see checkEnv), so a
+// gate can ask about this dispatch — which cards — and not only about the world.
+// Deliver (fs dispatch --deliver) is the only step that spawns: it splits a
+// sibling pane of the cap's own, starts the agent in it, sends the brief,
+// appends a `loaded` line per work playbook, and records the pane binding
+// structurally. Close (fs close) is the close-out gate: it refuses when the
+// trace does not account for the plan, refuses a worker node that is not done,
+// runs the plan's `exit` steps, and closes the pane from the recorded binding.
+//
+// It also gates preparation: a failing entry check or an earlier dispatch that
+// was never delivered stops it. Each gate has its own override — --confirm for a
+// failing check or an unanswered ask, --allow-unresolved for an unresolved
+// dispatch — so saying yes to one can never wave the other through.
 package dispatch
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -26,16 +33,31 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
+	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // capScope is the project_id of the cap's own event table. It is implicit: a
 // scope is just a string, so it is never registered and never created.
 const capScope = "cap"
+
+// SessionTags is the tag set the cap's own session runs under: the engine it
+// dispatches through. A `phase: cap` playbook tagged for that engine loads into
+// the session's standing rules.
+func SessionTags() map[string]any {
+	return map[string]any{engineTag: herdrEngine}
+}
+
+// engineTag is the derived tag naming the dispatcher.
+const engineTag = "engine"
+
+// typeTag is the derived tag naming the dispatch's task type.
+const typeTag = "type"
 
 // Item is one gate step in the brief's checklist: a check the dispatcher ran,
 // or an ask only the cap can confirm. Body is the shell command for a check.
@@ -48,12 +70,23 @@ type Item struct {
 
 // Brief is the data payload of fs dispatch.
 type Brief struct {
-	Goal        string   `json:"goal"`
-	Project     string   `json:"project"`
-	RootPath    string   `json:"root_path"`
-	TaskType    string   `json:"task_type"`
-	Playbook    string   `json:"playbook"`
-	Checklist   []Item   `json:"checklist"`
+	Goal      string            `json:"goal"`
+	Project   string            `json:"project"`
+	RootPath  string            `json:"root_path"`
+	TaskType  string            `json:"task_type"`
+	Plan      []trace.PlanEntry `json:"plan"`
+	Checklist []Item            `json:"checklist"`
+
+	// Obligations and Skills are the work-phase playbooks' `say` and `use`
+	// steps, in plan order. They are the only place a worker's standing
+	// obligations live: the brief renders them, and nothing here is hardcoded,
+	// so changing what every worker must do is a playbook edit rather than a
+	// rebuild.
+	Obligations []string `json:"obligations,omitempty"`
+	Skills      []string `json:"skills,omitempty"`
+
+	// Context is the entry-phase playbooks' `say` steps: what the gate wanted
+	// the worker to know before it starts.
 	Context     []string `json:"context,omitempty"`
 	LockedDocs  []string `json:"locked_docs"`
 	Notes       []string `json:"notes"`
@@ -78,51 +111,76 @@ type Brief struct {
 	Delivery *command.DeliveryRecord `json:"delivery,omitempty"`
 }
 
-// Prepare composes the brief for a task type and records the cap's node. It
-// returns the CLI response envelope, so failures are reported the same way as
-// every other command's.
+// PrepareRequest is what the cap asked a dispatch to be.
+type PrepareRequest struct {
+	Project    string
+	TaskType   string
+	Goal       string
+	Cards      []string
+	Integrates string
+
+	// Tags are declared situation terms (`k` or `k=v`), on top of the derived
+	// `type=<taskType>` and `engine=herdr`.
+	Tags []string
+	// Also forces a playbook into the plan; Without drops one the tags selected.
+	Also    []string
+	Without []string
+
+	Confirm         bool
+	AllowUnresolved bool
+}
+
+// Prepare builds a dispatch's plan, runs its entry steps, and composes the
+// brief. It returns the CLI response envelope, so failures are reported the same
+// way as every other command's.
 //
-// integrates is the member's cap node an integration merges, or empty for a
+// Integrates is the member's cap node an integration merges, or empty for a
 // dispatch that integrates nothing. A non-empty value must name a cap-scope
 // dispatch node: the link is recorded on this dispatch's own task-created
 // payload, so it exists from creation and never depends on parsing a goal.
 //
-// It refuses in two cases rather than preparing work in a bad state: an earlier
-// dispatch is still unresolved, or a prerequisite check failed. The two gates
-// have one override each: allowUnresolved for the unresolved dispatch, confirm
-// for the failing check. Neither overrides the other — a cap answering "go ahead
-// with the other dispatch open" has not seen, and so cannot have accepted, a
-// failing prerequisite the other flag would have short-circuited.
-func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, project, taskType, goal string, cards []string, integrates string, confirm, allowUnresolved bool) command.Response {
-	if project == "" {
+// It refuses in three cases rather than preparing work in a bad state: an
+// earlier dispatch is still unresolved, a matched playbook is not legal for its
+// phase, or an entry check failed. The gates have one override each:
+// allowUnresolved for the unresolved dispatch, confirm for the failing check.
+// Neither overrides the other — a cap answering "go ahead with the other
+// dispatch open" has not seen, and so cannot have accepted, a failing entry
+// check the other flag would have short-circuited.
+func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req PrepareRequest) command.Response {
+	if req.Project == "" {
 		return errResp("--project is required")
 	}
-	if taskType == "" {
+	if req.TaskType == "" {
 		return errResp("--type is required")
 	}
-	if goal == "" {
+	if req.Goal == "" {
 		return errResp("--goal is required")
 	}
 
-	member, err := integrateMember(h, integrates)
+	tags, err := tagSet(req.TaskType, req.Tags)
 	if err != nil {
 		return errResp("dispatch: " + err.Error())
 	}
 
-	playbookName := knowledge.PrerequisiteName(taskType)
-	pb, err := kc.Get(playbookName)
+	member, err := integrateMember(h, req.Integrates)
 	if err != nil {
-		return errResp(fmt.Sprintf(
-			"dispatch: prerequisite playbook %s.yaml is missing or unreadable (%v); tell the user and stop — never improvise a procedure for a worker",
-			playbookName, err))
-	}
-	if err := triggerError("prerequisite", playbookName, pb, taskType); err != nil {
 		return errResp("dispatch: " + err.Error())
 	}
 
-	proj, err := reg.Get(project)
+	proj, err := reg.Get(req.Project)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
+	}
+
+	// The plan is built from both scopes, project first: a dispatch into a
+	// project runs that project's own protocols where it has them and the shared
+	// ones everywhere else. This is the only place the two scopes meet — the
+	// plan records the resolution, so nothing downstream re-derives it.
+	kc = kc.InProject(proj.Name)
+
+	plan, err := buildPlan(kc, tags, req.Also, req.Without)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
 	}
 
 	// Gate: a dispatch the cap prepared but never delivered is still open work.
@@ -139,31 +197,41 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 	unresolved = withoutNode(unresolved, member)
-	if len(unresolved) > 0 && !allowUnresolved {
+	if len(unresolved) > 0 && !req.AllowUnresolved {
 		return errResp(unresolvedError(unresolved))
 	}
 
-	brief, err := buildBrief(pb, proj, taskType, goal, cards, integrates, confirm)
+	// The node comes first, because the trace is named after it and AC3 wants an
+	// entry step's outcome on the record. It is not left behind by a refusal: a
+	// refused entry gate rolls it back below, marked done with the refusal as
+	// its decision, so the attempt is legible and no open dispatch is invented.
+	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 
-	nodeID, err := recordCapNode(h, taskType, goal, project, member)
-	if err != nil {
-		return errResp(fmt.Sprintf("dispatch: %v", err))
+	recorded := trace.Plan{Plan: planEntries(plan), Tags: tags}
+	if err := recordPlan(h, lg, nodeID, req.Project, recorded); err != nil {
+		return errResp("dispatch: " + refuseEntry(h, nodeID, err.Error()))
 	}
-	brief.CapNodeID = nodeID
+
+	env := checkEnv(proj.Name, req.TaskType, req.Goal, req.Cards, req.Integrates)
+	run, err := runEntry(plan, proj.RootPath, env, lg, req.Project, nodeID, req.Confirm)
+	if err != nil {
+		return errResp("dispatch: " + refuseEntry(h, nodeID, err.Error()))
+	}
+
+	brief := buildBrief(run, plan, proj, req, nodeID)
 	brief.NextCommand = nextCommand(brief)
 
 	// Each override is recorded by the flag that granted it, on the node it
-	// granted it for. A refusal above leaves no node and no override: nothing
-	// proceeded, so there is nothing to record.
-	if confirm {
+	// granted it for.
+	if req.Confirm {
 		if err := recordCheckOverrides(h, nodeID, brief); err != nil {
 			return errResp(fmt.Sprintf("dispatch: %v", err))
 		}
 	}
-	if allowUnresolved && len(unresolved) > 0 {
+	if req.AllowUnresolved && len(unresolved) > 0 {
 		if err := recordUnresolvedOverride(h, nodeID, unresolved); err != nil {
 			return errResp(fmt.Sprintf("dispatch: %v", err))
 		}
@@ -172,20 +240,133 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, p
 	return command.Response{OK: true, Data: brief}
 }
 
-// triggerError refuses a playbook whose trigger contradicts the task type its
-// name selects it for. An empty trigger is not a contradiction: the name is
-// what selects a playbook, and the shipped playbooks predate the field.
-//
-// Entry and exit are held to the same rule, because both select by the same
-// kind of name. --confirm never overrides it: a contradiction is a
-// configuration mistake, not a failed gate.
-func triggerError(kind, name string, pb *knowledge.Playbook, taskType string) error {
-	if pb.TriggerAgrees(taskType) {
-		return nil
+// refuseEntry marks a dispatch node done after preparation refused past the
+// point where it had to exist, and returns the refusal unchanged. The node's
+// evidence stays readable — its plan and the trace beside it — without leaving
+// an open dispatch that blocks the next one.
+func refuseEntry(h *command.Handler, nodeID, msg string) string {
+	if err := recordStatus(h, nodeID, "done", "dispatch refused at entry: "+msg); err != nil {
+		return msg + fmt.Sprintf(" (the rollback could not be recorded: %v)", err)
 	}
-	return fmt.Errorf(
-		"%s playbook %s.yaml carries trigger %q, which does not match the task type %q its name selects it for; set trigger to %q, or leave it empty — an empty trigger is valid and the shipped playbooks rely on it",
-		kind, name, pb.Trigger, taskType, taskType)
+	return msg
+}
+
+// tagSet builds the dispatch's tag set: `type=<taskType>`, the derived engine,
+// and every declared term. A declared term may not restate a derived one — a
+// tag that silently moves `type` is a tag that silently changes which protocol
+// runs.
+func tagSet(taskType string, declared []string) (map[string]any, error) {
+	tags := map[string]any{typeTag: taskType, engineTag: herdrEngine}
+
+	for _, term := range declared {
+		key, value, hasValue := strings.Cut(term, "=")
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("--tag %q names no tag", term)
+		}
+		if key == typeTag || key == engineTag {
+			return nil, fmt.Errorf(
+				"--tag %s restates a derived tag; %s is set by the dispatch itself and cannot be declared",
+				key, key)
+		}
+		if hasValue {
+			tags[key] = strings.TrimSpace(value)
+			continue
+		}
+		tags[key] = true
+	}
+	return tags, nil
+}
+
+// planned is one playbook in a dispatch's plan: where it sits, and the protocol
+// it resolved to, includes and all.
+type planned struct {
+	Name  string
+	Phase string
+	Order int
+	Steps []knowledge.Step
+}
+
+// planEntries is the plan as it is recorded: the ordered playbooks without
+// their steps.
+func planEntries(plan []planned) []trace.PlanEntry {
+	entries := make([]trace.PlanEntry, 0, len(plan))
+	for _, pb := range plan {
+		entries = append(entries, trace.PlanEntry{Name: pb.Name, Phase: pb.Phase, Order: pb.Order})
+	}
+	return entries
+}
+
+// buildPlan selects the playbooks whose applies_when the tags satisfy, orders
+// them by the order they declare and then by name, and validates each one: a
+// playbook whose steps are not legal for its phase is refused here, naming it,
+// before it can run half of them.
+//
+// Cap-phase playbooks are not part of a dispatch's plan: they are the session's
+// standing rules, selected by the session's tags, and a dispatch runs the
+// entry, work and exit phases.
+//
+// --also names a playbook the tags did not select — a deliberate widening, so a
+// name that does not resolve is refused rather than ignored. --without drops one
+// they did select, and it has the last word.
+func buildPlan(kc *knowledge.Center, tags map[string]any, also, without []string) ([]planned, error) {
+	names, err := kc.List()
+	if err != nil {
+		return nil, err
+	}
+
+	chosen := map[string]planned{}
+	for _, name := range names {
+		pb, err := kc.Get(name)
+		if err != nil {
+			return nil, err
+		}
+		if pb.Phase == knowledge.PhaseCap || !pb.Matches(tags) {
+			continue
+		}
+		if err := knowledge.Validate(pb); err != nil {
+			return nil, err
+		}
+		chosen[name] = plannedOf(pb)
+	}
+
+	for _, name := range also {
+		if _, ok := chosen[name]; ok {
+			continue
+		}
+		pb, err := kc.Get(name)
+		if err != nil {
+			return nil, fmt.Errorf("--also %s: %w", name, err)
+		}
+		if pb.Phase == knowledge.PhaseCap {
+			return nil, fmt.Errorf(
+				"--also %s: a `phase: cap` playbook loads into the session's standing rules, not into a dispatch's plan", name)
+		}
+		if err := knowledge.Validate(pb); err != nil {
+			return nil, err
+		}
+		chosen[name] = plannedOf(pb)
+	}
+
+	for _, name := range without {
+		delete(chosen, name)
+	}
+
+	plan := make([]planned, 0, len(chosen))
+	for _, pb := range chosen {
+		plan = append(plan, pb)
+	}
+	sort.Slice(plan, func(i, j int) bool {
+		if plan[i].Order != plan[j].Order {
+			return plan[i].Order < plan[j].Order
+		}
+		return plan[i].Name < plan[j].Name
+	})
+	return plan, nil
+}
+
+func plannedOf(pb *knowledge.Playbook) planned {
+	return planned{Name: pb.Name, Phase: pb.Phase, Order: pb.Order, Steps: pb.Steps}
 }
 
 // integrateMember resolves a --integrates value to the bare id of the cap-scope
@@ -334,60 +515,152 @@ func unresolvedError(unresolved []command.UnfinishedNode) string {
 		capScope, strings.Join(named, ", "))
 }
 
-// buildBrief runs the typed prerequisites against the project root: every check
-// step is executed there, every ask becomes a "?" for the cap, and every say is
-// carried as worker context rather than a gate item.
+// entryRun is what running the plan's entry phase produced: the checklist the
+// brief carries, and the context an entry `say` hands over.
+type entryRun struct {
+	Checklist []Item
+	Context   []string
+}
+
+// runEntry runs every entry-phase playbook's steps in plan order, appending one
+// line to the dispatch's trace per step. It is fail-fast: the first failing
+// check stops the run unless the cap confirmed it, because the user fixes one
+// thing at a time and a list of failures buries the decision.
 //
-// Checks run in order and stop at the first failure unless confirm is set. The
-// user fixes one thing at a time; a list of failures buries the decision.
+// The line is written before anything is decided about the step, so a failure
+// is on the record before the refusal that follows it, and a step that never ran
+// is a step with no line — which is exactly what close refuses on.
 //
-// Each check runs with env, so a prerequisite over the batch's own inputs —
-// which cards, which type, which member — is a mechanical gate rather than a
+// Each check runs with env, so a gate over the dispatch's own inputs — which
+// cards, which type, which member — is a mechanical gate rather than a
 // judgement call.
-func buildBrief(pb *knowledge.Playbook, proj registry.Project, taskType, goal string, cards []string, integrates string, confirm bool) (*Brief, error) {
-	info, err := os.Stat(proj.RootPath)
-	if err != nil {
-		return nil, fmt.Errorf("project %q root %s is unreadable: %w", proj.Name, proj.RootPath, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("project %q root %s is not a directory", proj.Name, proj.RootPath)
-	}
+func runEntry(plan []planned, root string, env []string, lg *trace.Log, project, node string, confirm bool) (entryRun, error) {
+	var run entryRun
 
-	lockedDocs := findLockedDocs(proj.RootPath)
-	env := checkEnv(proj.Name, taskType, goal, cards, integrates)
+	for _, pb := range plan {
+		if pb.Phase != knowledge.PhaseEntry {
+			continue
+		}
+		for i, step := range pb.Steps {
+			start := time.Now()
+			item, status := entryStep(step, root, env, confirm)
 
-	checklist := make([]Item, 0, len(pb.Steps))
-	var context []string
-	for _, step := range pb.Steps {
-		switch step.Kind {
-		case knowledge.KindCheck:
-			item := runCheck(step.Body, proj.RootPath, env)
-			checklist = append(checklist, item)
-			if item.Status == "fail" && !confirm {
-				return nil, fmt.Errorf(
-					"prerequisite check failed: %q; output: %s; tell the user and fix it, or re-run with --confirm to proceed",
-					item.Body, checkOutput(item))
+			if err := lg.Append(project, trace.Line{
+				ID:         trace.StepID(node, pb.Name, i+1),
+				Dispatch:   node,
+				Playbook:   pb.Name,
+				Phase:      pb.Phase,
+				Step:       i + 1,
+				Kind:       step.Kind,
+				Status:     status,
+				DurationMS: time.Since(start).Milliseconds(),
+				Detail:     step.Body,
+			}); err != nil {
+				return run, err
 			}
-		case knowledge.KindAsk:
-			checklist = append(checklist, Item{Kind: step.Kind, Body: step.Body, Status: "?"})
-		default: // say — worker context, not part of the gate
-			context = append(context, step.Body)
+
+			switch step.Kind {
+			case knowledge.KindCheck:
+				run.Checklist = append(run.Checklist, item)
+				if status == trace.StatusFail {
+					return run, fmt.Errorf(
+						"entry check %q (playbook %s step %d) failed: %s; tell the user and fix it, or re-run with --confirm to proceed",
+						step.Body, pb.Name, i+1, checkOutput(item))
+				}
+			case knowledge.KindAsk:
+				run.Checklist = append(run.Checklist, item)
+			case knowledge.KindSay:
+				run.Context = append(run.Context, step.Body)
+			}
 		}
 	}
+	return run, nil
+}
 
-	return &Brief{
-		Goal:       goal,
+// entryStep runs one entry step and returns the checklist item it produces, if
+// it produces one, and the status its trace line carries.
+//
+// A check the cap overrode is recorded `confirmed`, not `fail`: the flag
+// answered the failure, and close refuses a step whose last line is `fail`. The
+// failure itself is not lost — Prepare records a decision naming the check and
+// the output it failed with, exactly as before.
+//
+// An ask the cap did not answer is recorded `skipped`: the step was put to the
+// cap and not answered, and close refuses a plan whose ask is not confirmed. It
+// is confirmable at close, which is where the cap is asked for the verdict
+// anyway.
+func entryStep(step knowledge.Step, root string, env []string, confirm bool) (Item, string) {
+	switch step.Kind {
+	case knowledge.KindCheck:
+		item := runCheck(step.Body, root, env)
+		if item.Status == "fail" && confirm {
+			return item, trace.StatusConfirmed
+		}
+		return item, item.Status
+	case knowledge.KindAsk:
+		item := Item{Kind: step.Kind, Body: step.Body, Status: "?"}
+		if confirm {
+			return item, trace.StatusConfirmed
+		}
+		return item, trace.StatusSkipped
+	default: // say — worker context, not part of the gate
+		return Item{}, trace.StatusLoaded
+	}
+}
+
+// buildBrief composes the brief from the plan. The work-phase steps are the
+// worker's: its `say` steps are obligations and its `use` steps are hints. The
+// entry-phase steps are what the gate ran and what it asked.
+func buildBrief(run entryRun, plan []planned, proj registry.Project, req PrepareRequest, nodeID string) *Brief {
+	brief := &Brief{
+		Goal:       req.Goal,
 		Project:    proj.Name,
 		RootPath:   proj.RootPath,
-		TaskType:   taskType,
-		Playbook:   pb.Name,
-		Checklist:  checklist,
-		Context:    context,
-		LockedDocs: lockedDocs,
+		TaskType:   req.TaskType,
+		Plan:       planEntries(plan),
+		Checklist:  run.Checklist,
+		Context:    run.Context,
+		LockedDocs: findLockedDocs(proj.RootPath),
+		CapNodeID:  nodeID,
 		Notes: []string{
 			"the locked-doc grep matches the marker text anywhere, so it has a known false positive when a repo documents the marker syntax itself",
 		},
-	}, nil
+	}
+
+	for _, pb := range plan {
+		if pb.Phase != knowledge.PhaseWork {
+			continue
+		}
+		for _, step := range pb.Steps {
+			switch step.Kind {
+			case knowledge.KindSay:
+				brief.Obligations = append(brief.Obligations, step.Body)
+			case knowledge.KindUse:
+				brief.Skills = append(brief.Skills, step.Body)
+			}
+		}
+	}
+	return brief
+}
+
+// recordPlan puts the plan on the record twice: as a plan-recorded event on the
+// node, which the exit gate reads, and as the trace's first line, which
+// `fs trace` prints before any step has an outcome. Either write failing is a
+// refusal — a dispatch whose plan cannot be recorded cannot be gated.
+func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan trace.Plan) error {
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("record plan: %w", err)
+	}
+	if resp := h.RecordPlan(capScope, nodeID, payload); !resp.OK {
+		return fmt.Errorf("record plan: %s", resp.Error)
+	}
+	return lg.Append(project, trace.Line{
+		Kind:     trace.KindPlan,
+		Dispatch: nodeID,
+		Tags:     plan.Tags,
+		Plan:     plan.Plan,
+	})
 }
 
 // checkEnv is the dispatch's own inputs, exposed to every check step as FS_*.
@@ -534,7 +807,14 @@ func recordUnresolvedOverride(h *command.Handler, nodeID string, unresolved []co
 }
 
 func recordDecision(h *command.Handler, nodeID, summary string) error {
-	resp := h.TaskUpdate(capScope, nodeID, "", summary, nil)
+	return recordStatus(h, nodeID, "", summary)
+}
+
+// recordStatus writes a decision and, when status is not empty, moves the node
+// to it. It is one event either way: the decision is what a reader needs, and a
+// separate status-changed event would say less about why.
+func recordStatus(h *command.Handler, nodeID, status, summary string) error {
+	resp := h.TaskUpdate(capScope, nodeID, status, summary, nil)
 	if !resp.OK {
 		return fmt.Errorf("record cap decision: %s", resp.Error)
 	}
@@ -557,31 +837,56 @@ func nextCommand(b *Brief) string {
 }
 
 // renderBrief is the text the cap hands the worker: goal, project root, the
-// node the worker owns, the say steps as context, the gate checklist with each
-// check's output, and the locked docs. It also carries the standing worker
-// obligation, so every worker is told how a gap it notices outlives it.
+// node the worker owns, the plan, the work phase's obligations and hints, the
+// gate's checklist with each check's output, and the locked docs.
+//
+// Every obligation in it comes from a playbook. What the worker must do is a
+// file the user can read and edit, not a string compiled into the binary — so
+// nothing here states a rule, it only lays out what the plan says.
 func renderBrief(b *Brief) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Goal: %s\n", b.Goal)
 	fmt.Fprintf(&sb, "Project: %s (root %s)\n", b.Project, b.RootPath)
-	if b.WorkerNode != "" {
-		fmt.Fprintf(&sb, "Note your work on %s — that node already exists and is yours; do not create another.\n", b.WorkerNode)
+
+	node := b.WorkerNode
+	if node == "" {
+		node = "(not created yet — it is created when the brief is delivered)"
 	}
-	// The standing worker obligation. A gap a worker notices must outlive it,
-	// and the only channel that survives is a node: the final message is not
-	// read and closing destroys the transcript.
-	foundBy := b.WorkerNode
-	if foundBy == "" {
-		foundBy = "<your node, PROJECT:NODE>"
+	fmt.Fprintf(&sb, "Your node: %s\n", node)
+
+	sb.WriteString("Plan:\n")
+	if len(b.Plan) == 0 {
+		sb.WriteString("- plan: empty — no playbook's applies_when matched this dispatch's tags\n")
+	} else {
+		for _, entry := range b.Plan {
+			fmt.Fprintf(&sb, "- %s (%s, order %d)\n", entry.Name, entry.Phase, entry.Order)
+		}
 	}
-	fmt.Fprintf(&sb, "Gaps: a gap you flag and do not fix must become a node — "+
-		"`fs task add --kind gap --found-by %s --goal \"...\"` — because your final message is not read and closing destroys your transcript.\n", foundBy)
+
+	if len(b.Obligations) > 0 {
+		sb.WriteString("Obligations:\n")
+		for _, obligation := range b.Obligations {
+			fmt.Fprintf(&sb, "- %s\n", obligation)
+		}
+	}
+
+	if len(b.Skills) > 0 {
+		sb.WriteString("Skills — hints, not requirements: no skill is required to do this " +
+			"work, and loading one is not checked. What is checked is that each playbook above " +
+			"was handed over; whether a hint was followed is the review's judgement, not this " +
+			"dispatch's claim.\n")
+		for _, skill := range b.Skills {
+			fmt.Fprintf(&sb, "- %s\n", skill)
+		}
+	}
+
 	if len(b.Context) > 0 {
 		sb.WriteString("Context:\n")
 		for _, say := range b.Context {
 			fmt.Fprintf(&sb, "- %s\n", say)
 		}
 	}
+
 	sb.WriteString("Checklist:\n")
 	for _, item := range b.Checklist {
 		fmt.Fprintf(&sb, "- [%s] %s\n", item.Status, item.Body)

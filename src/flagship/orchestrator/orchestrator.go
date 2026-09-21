@@ -131,8 +131,11 @@ func (o *Orchestrator) checkPrerequisites(taskType string) error {
 		return nil
 	}
 
-	// Only apply if the trigger matches the task type.
-	if pb.Trigger != "" && pb.Trigger != taskType {
+	// Only apply if it is an entry protocol whose applies_when this task type
+	// satisfies — the same question fs dispatch asks of a plan. This path is
+	// unreachable from the CLI and stays that way; it is kept compiling against
+	// the schema it shares with the gates.
+	if pb.Phase != knowledge.PhaseEntry || !pb.Matches(map[string]any{tagType: taskType}) {
 		return nil
 	}
 
@@ -196,7 +199,8 @@ func (o *Orchestrator) composePrompt(tree *query.Tree, node *query.Node, taskTyp
 	return b.String()
 }
 
-// findProcedures returns all playbooks of type "procedure" matching the task type.
+// findProcedures returns the work protocols whose applies_when the task type
+// satisfies — the playbooks a worker would be measured against.
 func (o *Orchestrator) findProcedures(taskType string) []*knowledge.Playbook {
 	names, err := o.kb.List()
 	if err != nil {
@@ -209,29 +213,22 @@ func (o *Orchestrator) findProcedures(taskType string) []*knowledge.Playbook {
 		if err != nil {
 			continue
 		}
-		if pb.Type == "procedure" && (pb.Trigger == "" || pb.Trigger == taskType) {
+		if pb.Phase == knowledge.PhaseWork && pb.Matches(map[string]any{tagType: taskType}) {
 			result = append(result, pb)
 		}
 	}
 	return result
 }
 
-// resolveSkill returns the skill name for the task type, checking routing
-// playbooks in the knowledge center. Falls back to the task type itself.
+// resolveSkill returns the skill name for the task type. The routing playbooks
+// this used to read went with the `type` field: a skill is now a `use` step
+// inside the work playbook that needs it, so there is nothing left to route
+// through here and the task type is the answer.
 func (o *Orchestrator) resolveSkill(taskType string) string {
-	names, err := o.kb.List()
-	if err != nil {
-		return taskType
-	}
-
-	for _, name := range names {
-		pb, err := o.kb.Get(name)
-		if err != nil {
-			continue
-		}
-		if pb.Type == "routing" && pb.Trigger == taskType && len(pb.Steps) > 0 {
-			return pb.Steps[0].Body
-		}
-	}
 	return taskType
 }
+
+// tagType is the derived tag a task type travels as. It is the dispatch tag set's
+// own key (internal/dispatch), restated here because this package is not the
+// dispatcher and must not import it.
+const tagType = "type"

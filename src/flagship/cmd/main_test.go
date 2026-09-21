@@ -1275,8 +1275,7 @@ func TestCLIKBAddGetListEditRemove(t *testing.T) {
 	dir := t.TempDir()
 
 	playbook := `name: dev-prereqs
-type: prerequisite
-trigger: dev-task
+phase: entry
 steps:
   - check: test -f docs/prd.md
   - check: test -f docs/arch.md
@@ -1335,8 +1334,8 @@ steps:
 	if pbData["name"] != "dev-prereqs" {
 		t.Errorf("name: %v", pbData["name"])
 	}
-	if pbData["trigger"] != "dev-task" {
-		t.Errorf("trigger: %v", pbData["trigger"])
+	if pbData["phase"] != "entry" {
+		t.Errorf("phase: %v", pbData["phase"])
 	}
 
 	// kb list — one item.
@@ -1351,8 +1350,7 @@ steps:
 
 	// kb edit.
 	updated := `name: dev-prereqs
-type: prerequisite
-trigger: dev-task
+phase: entry
 steps:
   - check: test -f docs/prd.md
   - check: test -f docs/arch.md
@@ -1396,36 +1394,41 @@ func TestCLIKBAddRefusesInvalidPlaybooks(t *testing.T) {
 		want string
 	}{
 		{
-			name: "prereq-say",
-			pb: `name: prereq-say
-type: prerequisite
-trigger: t
+			name: "entry-do",
+			pb: `name: entry-do
+phase: entry
 steps:
   - check: test -f AGENTS.md
-  - say: read AGENTS.md before editing
+  - do: rm -rf build
 `,
-			want: "read AGENTS.md before editing",
+			want: "allowed kinds: check, ask, say, include",
 		},
 		{
-			name: "proc-ask",
-			pb: `name: proc-ask
-type: procedure
-trigger: t
+			name: "cap-ask",
+			pb: `name: cap-ask
+phase: cap
 steps:
   - ask: is the acceptance check stated?
 `,
-			want: "allowed kinds: say, check",
+			want: "allowed kinds: say, include",
 		},
 		{
-			name: "route-two",
-			pb: `name: route-two
-type: routing
-trigger: t
+			name: "nowhere-two",
+			pb: `name: nowhere-two
+phase: routing
 steps:
   - say: dev-task
-  - say: review-task
 `,
-			want: "review-task",
+			want: "phases are: cap, entry, work, exit",
+		},
+		{
+			name: "work-check",
+			pb: `name: work-check
+phase: work
+steps:
+  - check: test -f AGENTS.md
+`,
+			want: "allowed kinds: say, use, include",
 		},
 	}
 
@@ -1447,9 +1450,8 @@ steps:
 	}
 }
 
-const dispatchPlaybook = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+const dispatchPlaybook = `name: code-entry
+phase: entry
 steps:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
@@ -1474,7 +1476,7 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", dispatchPlaybook)
+	writeKBPlaybook(t, testHome(t), "code-entry", dispatchPlaybook)
 
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
@@ -1545,7 +1547,7 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 }
 
 // The parallel gate is what --cards exists for. The shipped
-// parallel-prerequisites playbook runs the repo's real check-parallel.sh with
+// parallel-entry playbook runs the repo's real check-parallel.sh with
 // $FS_CARDS, so the batch's disjointness is checked mechanically against *this*
 // dispatch's cards — the one thing a static shell string could not do.
 //
@@ -1561,8 +1563,8 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	writeFileIn(t, root, "c.md", "# C\n\n## Files\nsrc/a.go\n")
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parPrePlaybook, shippedDefault(t, parPrePlaybook))
-	gateBody := shippedStep(t, shippedDefault(t, parPrePlaybook), "check", "$FS_CARDS")
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, shippedDefault(t, parEntryPlaybook))
+	gateBody := shippedStep(t, shippedDefault(t, parEntryPlaybook), "check", "$FS_CARDS")
 	env, _, _ := fakeHerdrOnPath(t)
 
 	// Disjoint cards pass, and the gate's output says what it intersected.
@@ -1673,8 +1675,8 @@ func writeFileIn(t *testing.T, root, rel, content string) {
 	}
 }
 
-// goGit runs git in dir. The prerequisite gate asks whether the root is a repo,
-// so a dispatch test needs one.
+// goGit runs git in dir. The parallel entry gate asks whether the root is a
+// repo, so a dispatch test needs one.
 func goGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -1697,22 +1699,35 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// A missing playbook fails cleanly and names the file the cap must supply.
-func TestCLIDispatchMissingPlaybook(t *testing.T) {
+// A dispatch nothing applies to is not an error. A plan is resolved by matching
+// tags against applies_when, so an unmatched dispatch resolves to no playbook at
+// all — legal, and said out loud rather than hidden behind an empty list.
+func TestCLIDispatchWithNoMatchingPlaybookReportsAnEmptyPlan(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
+	writeKBPlaybook(t, testHome(t), "code-only", `name: code-only
+phase: entry
+applies_when: code
+steps:
+  - check: test -f AGENTS.md
+`)
+
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "no-such-type", "--goal", "x")
-	if code != 1 {
-		t.Errorf("exit = %d, want 1", code)
+	if code != 0 {
+		t.Fatalf("a dispatch nothing applies to is legal, exit %d: %v", code, resp["error"])
 	}
-	if resp["ok"] != false {
-		t.Errorf("ok = %v, want false", resp["ok"])
+	data := resp["data"].(map[string]any)
+	if plan, ok := data["plan"].([]any); ok && len(plan) != 0 {
+		t.Errorf("plan = %v, want none: code-only does not apply to this dispatch", plan)
 	}
-	errMsg, _ := resp["error"].(string)
-	if !strings.Contains(errMsg, "no-such-type-prerequisites") {
-		t.Errorf("error must name the missing playbook, got %q", errMsg)
+	// The cap is told, in the brief it would hand the worker, that nothing
+	// applies — an empty plan that reads as an empty list is a dispatch the cap
+	// cannot tell from a broken one.
+	next, _ := data["next_command"].(string)
+	if !strings.Contains(next, "plan: empty") {
+		t.Errorf("the brief must say the plan is empty, got %q", next)
 	}
 }
 
@@ -1838,9 +1853,8 @@ func TestCLIDispatchFailsFastThenConfirm(t *testing.T) {
 	root := t.TempDir()
 	sentinel := filepath.Join(t.TempDir(), "dispatch-check3-ran")
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", fmt.Sprintf(`name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+	writeKBPlaybook(t, testHome(t), codeEntryPb, fmt.Sprintf(`name: code-entry
+phase: entry
 steps:
   - check: true
   - check: false
@@ -1855,7 +1869,9 @@ steps:
 		t.Errorf("ok = %v, want false", resp["ok"])
 	}
 	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"prerequisite check failed", `"false"`, "tell the user", "--confirm"} {
+	// The refusal names the playbook and the step, so the cap knows which
+	// protocol stopped it rather than only that something did.
+	for _, want := range []string{"entry check", `"false"`, codeEntryPb, "step 2", "tell the user", "--confirm"} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}
@@ -1863,12 +1879,21 @@ steps:
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Errorf("check 3 ran despite check 2 failing: %v", err)
 	}
-	// A refusal records nothing, so the confirm below is not gated by it.
-	if capResp, _ := runFS(t, bin, root, "status", "--project", "cap"); capResp["data"].(map[string]any)["tasks"] != nil {
-		t.Errorf("a refusal must not record a cap node: %v", capResp)
+	// The refusal leaves its evidence behind without inventing an open dispatch:
+	// the attempt's node exists, is done, and carries the refusal as its
+	// decision, so the cap can read what stopped it — and the next dispatch is
+	// not gated by an attempt that never got as far as a worker.
+	refused := capTask(t, bin, root, "dispatch dev-task: sample")
+	if refused["status"] != "done" {
+		t.Errorf("a refused dispatch's node status = %v, want done: it must not stand as an open dispatch", refused["status"])
+	}
+	refusal := `dispatch refused at entry: entry check "false" (playbook code-entry step 2) failed: ` +
+		`(no output); tell the user and fix it, or re-run with --confirm to proceed`
+	if !containsString(refused["decisions"].([]any), refusal) {
+		t.Errorf("refused node decisions = %q, want %q", refused["decisions"], refusal)
 	}
 
-	resp, code = runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "sample")
+	resp, code = runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "confirmed")
 	if code != 0 {
 		t.Fatalf("--confirm exit = %d: %v", code, resp["error"])
 	}
@@ -1876,7 +1901,7 @@ steps:
 		t.Errorf("--confirm must run every check; check 3 did not run: %v", err)
 	}
 
-	task := capTask(t, bin, root, "dispatch dev-task: sample")
+	task := capTask(t, bin, root, "dispatch dev-task: confirmed")
 	want := `--confirm overrode the failing check "false" (output: (no output))`
 	if !containsString(task["decisions"].([]any), want) {
 		t.Errorf("cap decisions = %v, want %q", task["decisions"], want)
@@ -1893,9 +1918,8 @@ func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+	writeKBPlaybook(t, testHome(t), codeEntryPb, `name: code-entry
+phase: entry
 steps:
   - check: true
 `)
@@ -1952,18 +1976,16 @@ steps:
 // dispatch lifecycle runs end to end — split, start, prompt, record, close —
 // without a live terminal. Pane state lives in $HERDR_TEST_STATE.
 
-const herdrTestPlaybook = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+const herdrTestPlaybook = `name: code-entry
+phase: entry
 steps:
   - check: true
 `
 
 // noCheckPlaybook has no check step, so dispatch needs nothing from PATH. Used
 // to reach --deliver with herdr deliberately missing.
-const noCheckPlaybook = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+const noCheckPlaybook = `name: code-entry
+phase: entry
 steps:
   - ask: is this one deliverable
 `
@@ -2271,7 +2293,7 @@ func TestCLIDeliverSplitsASiblingPaneAndCloseTearsItDown(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, script := fakeHerdrOnPath(t)
 
 	capNode, tabID, paneID, workerRef := deliverProbe(t, bin, root, env)
@@ -2299,9 +2321,11 @@ func TestCLIDeliverSplitsASiblingPaneAndCloseTearsItDown(t *testing.T) {
 		t.Errorf("worker node status = %v, want pending", task["status"])
 	}
 
-	// The brief handed to the worker names that node and says not to invent one.
-	if prompt := herdrPrompt(t, state); !strings.Contains(prompt, "Note your work on "+workerRef) {
-		t.Errorf("the brief must name %s; got:\n%s", workerRef, prompt)
+	// The brief names the node that was created for this worker. What it must do
+	// with it — use it, never invent one — is the shipped `worker` playbook's
+	// rule, arriving as an obligation rather than a literal here.
+	if prompt := herdrPrompt(t, state); !strings.Contains(prompt, "Your node: "+workerRef) {
+		t.Errorf("the brief must name %s as the worker's own node; got:\n%s", workerRef, prompt)
 	}
 
 	// The binding is structural: fs log returns the pane and the worker node as
@@ -2376,7 +2400,7 @@ func TestCLIDeliverInAWorktreeStartsTheWorkerInTheWorktreeRootPane(t *testing.T)
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	worktree := t.TempDir()
 	env, state, script := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
@@ -2417,21 +2441,20 @@ func TestCLIDeliverInAWorktreeStartsTheWorkerInTheWorktreeRootPane(t *testing.T)
 	}
 }
 
-// The cleanup gate's checks run in the worktree the dispatch worked in, not the
+// The exit gate's checks run in the worktree the dispatch worked in, not the
 // main checkout. This is the live failure in miniature: the project root is
 // dirty and the worktree is clean and merged, so the shipped checks pass in the
 // worktree and would fail in the root. The dirtiness is asserted at the time, so
 // the test proves what it claims rather than assuming it.
-func TestCLICloseRunsCleanupChecksInTheWorktreeNotTheMainCheckout(t *testing.T) {
+func TestCLICloseRunsExitChecksInTheWorktreeNotTheMainCheckout(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
-	// The shipped parallel-cleanup checks, verbatim: no uncommitted files, and
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
+	// The shipped parallel-exit checks, verbatim: no uncommitted files, and
 	// the branch merged into main.
-	writeKBPlaybook(t, testHome(t), "dev-task-cleanup", `name: dev-task-cleanup
-type: cleanup
-trigger: dev-task
+	writeKBPlaybook(t, testHome(t), codeExitPb, `name: code-exit
+phase: exit
 steps:
   - check: test -z "$(git status --porcelain)"
   - check: git merge-base --is-ancestor HEAD main
@@ -2464,7 +2487,7 @@ steps:
 		t.Fatalf("close exit %d: %v — the checks pass in the worktree even though the main checkout is dirty", code, closed["error"])
 	}
 	data := closed["data"].(map[string]any)
-	if data["cleanup"] != "cleanup gate dev-task-cleanup: 2 checks passed in worktree wWT" {
+	if data["cleanup"] != "exit phase code-exit: 2 checks passed in worktree wWT" {
 		t.Errorf("cleanup = %v, want the checks reported and the tree they ran in", data["cleanup"])
 	}
 }
@@ -2528,12 +2551,13 @@ func shippedTeardown(t *testing.T, playbook string) []string {
 }
 
 // writeCleanupWithTeardown writes a cleanup playbook whose checks are checks and
-// whose actions are the shipped cleanup's declared teardown. The name and
-// trigger are the task type that selects it.
-func writeCleanupWithTeardown(t *testing.T, home, name, taskType, shipped string, checks ...string) {
+// whose actions are the shipped exit playbook's declared teardown. It declares
+// no applies_when, so it is in every dispatch's plan: these tests are about the
+// teardown, not about which tags select it.
+func writeCleanupWithTeardown(t *testing.T, home, name, shipped string, checks ...string) {
 	t.Helper()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "name: %s\ntype: cleanup\ntrigger: %s\nsteps:\n", name, taskType)
+	fmt.Fprintf(&sb, "name: %s\nphase: exit\nsteps:\n", name)
 	for _, check := range checks {
 		fmt.Fprintf(&sb, "  - check: %s\n", check)
 	}
@@ -2580,13 +2604,12 @@ func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
-type: prerequisite
-trigger: parallel
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+phase: entry
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2621,13 +2644,12 @@ func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *test
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
-type: prerequisite
-trigger: parallel
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+phase: entry
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2656,13 +2678,12 @@ func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
-type: prerequisite
-trigger: parallel
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+phase: entry
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2679,7 +2700,7 @@ steps:
 		t.Fatalf("exit = %d, want 1: %v", code, resp)
 	}
 	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"cleanup action failed", "git worktree remove", "untracked files"} {
+	for _, want := range []string{"exit action failed", parExitPlaybook, "git worktree remove", "untracked files"} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}
@@ -2711,13 +2732,12 @@ func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "parallel-prerequisites", `name: parallel-prerequisites
-type: prerequisite
-trigger: parallel
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+phase: entry
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), "parallel-cleanup", "parallel", parCleanPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2755,7 +2775,7 @@ func TestCLIDeliverRefusesAnUnknownWorktreeWorkspace(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, _ := fakeHerdrOnPath(t)
 
 	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", "wNOPE")
@@ -2782,7 +2802,7 @@ func TestCLICloseRefusesAMismatchedWorker(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
@@ -2809,7 +2829,7 @@ func TestCLICloseRefusesWithoutADeliveryRecord(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	prep, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "undelivered")
@@ -2832,7 +2852,7 @@ func TestCLICloseRefusesWhileTheWorkerIsActive(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
@@ -2856,7 +2876,7 @@ func TestCLICloseRefusesWithoutAVerdict(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
@@ -2876,7 +2896,7 @@ func TestCLICloseAbandoned(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	prep, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "undelivered")
@@ -2911,7 +2931,7 @@ func TestCLIDeliverHerdrUnavailable(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", noCheckPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, noCheckPlaybook)
 
 	resp, code := runFSEnv(t, bin, root, []string{"PATH=/nonexistent"}, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 1 {
@@ -2964,7 +2984,7 @@ func TestCLIDeliverNamesEachWorkerAgentUniquely(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, script := fakeHerdrOnPath(t)
 
 	_, _, firstPane, firstWorker := deliverProbe(t, bin, root, env)
@@ -2992,7 +3012,7 @@ func TestCLIPendingReportsWhatIsWaiting(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, script := fakeHerdrOnPath(t)
 
 	firstNode, _, _, firstWorker := deliverProbe(t, bin, root, env)
@@ -3052,7 +3072,7 @@ func TestCLIPendingReportsAnUndeliveredDispatchUnlinked(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), "dev-task-prerequisites", herdrTestPlaybook)
+	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	prep, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "never delivered")
@@ -3158,9 +3178,8 @@ func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), intPrePlaybook, `name: integrate-prerequisites
-type: prerequisite
-trigger: integrate
+	writeKBPlaybook(t, testHome(t), intEntryPlaybook, `name: integration-entry
+phase: entry
 steps:
   - check: true
 `)
@@ -3250,13 +3269,12 @@ func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
 	goGit(t, root, "merge-base", "--is-ancestor", "HEAD", "main")
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parPrePlaybook, `name: parallel-prerequisites
-type: prerequisite
-trigger: parallel
+	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+phase: entry
 steps:
   - check: true
 `)
-	writeKBPlaybook(t, testHome(t), parCleanPlaybook, shippedDefault(t, parCleanPlaybook))
+	writeKBPlaybook(t, testHome(t), parExitPlaybook, shippedDefault(t, parExitPlaybook))
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = fsOnPath(t, bin, env)
@@ -3276,10 +3294,10 @@ steps:
 	}
 	closed, code := runFSEnv(t, bin, root, env, "close", "--node", member, "--decision", "read the worker node; verified")
 	if code == 0 {
-		t.Fatalf("a hand-merged member must be refused by parallel-cleanup, got %v", closed)
+		t.Fatalf("a hand-merged member must be refused by parallel-exit, got %v", closed)
 	}
 	errMsg, _ := closed["error"].(string)
-	for _, want := range []string{"cleanup check failed", "fs integrated", member} {
+	for _, want := range []string{"exit check failed", parExitPlaybook, "fs integrated", member} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("refusal %q must mention %q", errMsg, want)
 		}
@@ -3287,15 +3305,13 @@ steps:
 
 	// Now integrate it the dispatched way, per member: an integration dispatch
 	// names it, is closed done, and the member's gate passes.
-	writeKBPlaybook(t, testHome(t), intPrePlaybook, `name: integrate-prerequisites
-type: prerequisite
-trigger: integrate
+	writeKBPlaybook(t, testHome(t), intEntryPlaybook, `name: integration-entry
+phase: entry
 steps:
   - check: true
 `)
-	writeKBPlaybook(t, testHome(t), intCleanPlaybook, `name: integrate-cleanup
-type: cleanup
-trigger: integrate
+	writeKBPlaybook(t, testHome(t), intExitPlaybook, `name: integration-exit
+phase: exit
 steps:
   - check: true
 `)

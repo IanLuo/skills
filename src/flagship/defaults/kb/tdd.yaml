@@ -1,0 +1,13 @@
+name: tdd
+phase: work
+applies_when: code
+order: 40
+steps:
+  # The loop. "When a test is skipped, record why" is here because a skipped test
+  # is the quietest way to make a red suite green, and the record is the only
+  # thing that distinguishes a deliberate skip from a hidden failure.
+  - say: characterise the current behaviour with a failing test before you change it — red first, and see it fail for the reason you expect
+  - say: make it pass with the narrowest change that does; resist fixing anything the failing test did not ask about
+  - say: run the broader check after green — the package, then the suite — because a local pass is not a suite pass
+  - say: when you skip or disable a test, record why on your node; an unexplained skip is a failure with better manners
+  - use: dev-task — the red/green loop as this project runs it

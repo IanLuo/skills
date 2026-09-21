@@ -14,11 +14,16 @@ import (
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
+	"github.com/flagship-dev/flagship/internal/trace"
 )
 
-const devPlaybook = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+// devPlaybook is the entry gate for `code` work: two checks and two asks,
+// carrying `applies_when: code` so only a dispatch that declares --tag code
+// selects it. A playbook's name no longer selects anything.
+const devPlaybook = `name: code-entry
+phase: entry
+applies_when: code
+order: 10
 steps:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
@@ -26,19 +31,31 @@ steps:
   - ask: is the acceptance check for this deliverable stated
 `
 
-const passingPlaybook = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+// codeWork is the same dispatch's work playbook: a `say` step that becomes an
+// obligation and a `use` step that becomes a hint. Both are text in a file a
+// user can edit, which is the model's whole point.
+const codeWork = `name: code-work
+phase: work
+applies_when: code
+order: 20
+steps:
+  - say: run the suite before you claim the work is done
+  - use: tdd
+`
+
+const passingEntry = `name: code-entry
+phase: entry
+applies_when: code
 steps:
   - check: true
 `
 
-// failFastPlaybook passes, then fails, then touches a sentinel. A failing check
-// must stop the run, so the sentinel is the proof that check 3 never ran.
-func failFastPlaybook(sentinel string) string {
-	return fmt.Sprintf(`name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+// failFastEntryPlaybook passes, then fails, then touches a sentinel. A failing
+// check must stop the run, so the sentinel is the proof that check 3 never ran.
+func failFastEntryPlaybook(sentinel string) string {
+	return fmt.Sprintf(`name: code-entry
+phase: entry
+applies_when: code
 steps:
   - check: true
   - check: false
@@ -46,27 +63,41 @@ steps:
 `, sentinel)
 }
 
-// fixture wires a handler, registry, and knowledge center isolated in temp dirs.
+// integrationEntryPlaybook is an integration's entry gate. `type=integrate` is a
+// derived tag — the dispatch's own --type sets it — so this playbook loads
+// without any declared --tag.
+const integrationEntryPlaybook = `name: integration-entry
+phase: entry
+applies_when: type=integrate
+steps:
+  - check: true
+`
+
+// fixture wires a handler, registry, knowledge center, and trace store isolated
+// in temp dirs. fsRoot is the temp HOME's `~/.fs`: both scopes hang off it, so
+// nothing a test does can reach the operator's real knowledge center or logs.
 type fixture struct {
 	h       *command.Handler
 	reg     *registry.Registry
 	kc      *knowledge.Center
+	lg      *trace.Log
 	storeDB string
+	fsRoot  string
 	kbDir   string
 }
 
 func newFixture(t *testing.T, root string) *fixture {
 	t.Helper()
-	dir := t.TempDir()
+	fsRoot := t.TempDir()
 
-	dbPath := filepath.Join(dir, "store.db")
+	dbPath := filepath.Join(fsRoot, "store.db")
 	h, err := command.NewHandler(dbPath)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
 	t.Cleanup(func() { h.Close() })
 
-	reg, err := registry.Open(filepath.Join(dir, "registry.db"))
+	reg, err := registry.Open(filepath.Join(fsRoot, "registry.db"))
 	if err != nil {
 		t.Fatalf("registry.Open: %v", err)
 	}
@@ -75,17 +106,23 @@ func newFixture(t *testing.T, root string) *fixture {
 		t.Fatalf("Register: %v", err)
 	}
 
-	kbDir := filepath.Join(dir, "kb")
-	kc, err := knowledge.Open(kbDir)
+	// knowledge.Open takes the fs root, not the playbooks directory: it is the
+	// scope above `kb/` that a project's own playbooks are named against.
+	kc, err := knowledge.Open(fsRoot)
 	if err != nil {
 		t.Fatalf("knowledge.Open: %v", err)
 	}
+
+	lg := trace.Open(filepath.Join(fsRoot, "projects"))
 
 	// Tests create cap-scope dispatch nodes, and one left unresolved makes later
 	// dispatches refuse. Close them, so the suite never becomes order-dependent.
 	t.Cleanup(func() { resolveCapScope(h) })
 
-	return &fixture{h: h, reg: reg, kc: kc, storeDB: dbPath, kbDir: kbDir}
+	return &fixture{
+		h: h, reg: reg, kc: kc, lg: lg,
+		storeDB: dbPath, fsRoot: fsRoot, kbDir: filepath.Join(fsRoot, "kb"),
+	}
 }
 
 // resolveCapScope marks every node in the cap scope done. Best-effort: cleanup
@@ -111,19 +148,31 @@ func capDecisions(t *testing.T, f *fixture, nodeID string) []string {
 	return task.Decisions
 }
 
-func (f *fixture) writePlaybook(t *testing.T, name, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.kbDir, name+".yaml"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+// devReq is the ordinary dispatch these tests prepare: a dev-task into skills
+// that declares the `code` tag, which is what selects the fixtures above.
+func devReq(goal string) dispatch.PrepareRequest {
+	return dispatch.PrepareRequest{
+		Project: "skills", TaskType: "dev-task", Goal: goal, Tags: []string{"code"},
 	}
 }
 
-// close runs the close-out gate against this fixture's store, registry, and
-// knowledge center, so tests exercise the real signature without repeating it.
-// A test that cares what the exit gate does writes the playbook it wants with
-// writePlaybook.
+// prepare runs the dispatch gate against this fixture's store, registry,
+// knowledge center, and trace log, so tests exercise the real signature without
+// repeating it.
+func (f *fixture) prepare(req dispatch.PrepareRequest) command.Response {
+	return dispatch.Prepare(f.h, f.reg, f.kc, f.lg, req)
+}
+
+// close runs the close-out gate the same way.
 func (f *fixture) close(hc dispatch.HerdrCLI, req dispatch.CloseRequest) command.Response {
-	return dispatch.Close(f.h, hc, f.reg, f.kc, req)
+	return dispatch.Close(f.h, hc, f.reg, f.kc, f.lg, req)
+}
+
+// writePlaybook puts one playbook in the global scope, the way fs bootstrap or a
+// user's editor would.
+func (f *fixture) writePlaybook(t *testing.T, name, content string) {
+	t.Helper()
+	writeFile(t, filepath.Join(f.kbDir, name+".yaml"), content)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -136,30 +185,30 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestPrepareMissingPlaybook(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "no-such-type", "x", nil, "", false, false)
-	if resp.OK {
-		t.Fatal("expected failure for a missing playbook")
+// traceOf reads a dispatch's trace, so a test can assert what was recorded and
+// not only what was returned.
+func traceOf(t *testing.T, f *fixture, project, node string) []trace.Line {
+	t.Helper()
+	lines, err := f.lg.Read(project, node)
+	if err != nil {
+		t.Fatalf("read trace for %s: %v", node, err)
 	}
-	if !strings.Contains(resp.Error, "no-such-type-prerequisites") {
-		t.Errorf("error must name the missing playbook, got %q", resp.Error)
-	}
-	if !strings.Contains(resp.Error, "never improvise") {
-		t.Errorf("error must say to stop, not improvise, got %q", resp.Error)
-	}
+	return lines
 }
 
-func TestPrepareBriefListsEveryStep(t *testing.T) {
+// The brief carries the plan the tags resolved — each playbook with its phase
+// and the order it declared — alongside the entry gate's checklist and the work
+// playbook's own obligations and hints.
+func TestPrepareBriefCarriesThePlanAndEveryStep(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "AGENTS.md"), "# agents\n")
 	writeFile(t, filepath.Join(root, "docs", "prd.md"), "<!-- specs:locked: prd -->\n")
 
 	f := newFixture(t, root)
-	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
+	f.writePlaybook(t, "code-entry", devPlaybook)
+	f.writePlaybook(t, "code-work", codeWork)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -171,9 +220,16 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 	if brief.Goal != "sample" || brief.Project != "skills" || brief.RootPath != root {
 		t.Errorf("brief header = %+v", brief)
 	}
-	if brief.Playbook != "dev-task-prerequisites" {
-		t.Errorf("playbook = %q", brief.Playbook)
+
+	// The plan is the resolution of the tags, recorded in order.
+	wantPlan := []trace.PlanEntry{
+		{Name: "code-entry", Phase: knowledge.PhaseEntry, Order: 10},
+		{Name: "code-work", Phase: knowledge.PhaseWork, Order: 20},
 	}
+	if !slices.Equal(brief.Plan, wantPlan) {
+		t.Errorf("plan = %+v, want %+v", brief.Plan, wantPlan)
+	}
+
 	if len(brief.Checklist) != 4 {
 		t.Fatalf("checklist has %d items, want the 2 checks + 2 asks", len(brief.Checklist))
 	}
@@ -213,6 +269,16 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 		}
 	}
 
+	// The worker's obligations and hints are the work playbook's own steps, and
+	// they travel in the text the cap sends — not a string compiled into the
+	// binary. This is what makes the brief something a user can edit.
+	if !slices.Equal(brief.Obligations, []string{"run the suite before you claim the work is done"}) {
+		t.Errorf("obligations = %v, want the work playbook's say step", brief.Obligations)
+	}
+	if !slices.Equal(brief.Skills, []string{"tdd"}) {
+		t.Errorf("skills = %v, want the work playbook's use step", brief.Skills)
+	}
+
 	if len(brief.LockedDocs) != 1 || brief.LockedDocs[0] != filepath.Join("docs", "prd.md") {
 		t.Errorf("locked_docs = %v, want [docs/prd.md]", brief.LockedDocs)
 	}
@@ -224,24 +290,28 @@ func TestPrepareBriefListsEveryStep(t *testing.T) {
 		!strings.Contains(brief.NextCommand, "herdr agent prompt") {
 		t.Errorf("next_command must be the herdr split/start/prompt line, got %q", brief.NextCommand)
 	}
-	// The standing worker obligation travels in the brief the command sends, so
-	// a worker learns how a gap outlives it before it starts.
-	if !strings.Contains(brief.NextCommand, "--kind gap") ||
-		!strings.Contains(brief.NextCommand, "your final message is not read") {
-		t.Errorf("next_command must carry the worker obligation, got %q", brief.NextCommand)
+	for _, want := range []string{
+		"run the suite before you claim the work is done",
+		"- tdd",
+		"- code-entry (entry, order 10)",
+		"- code-work (work, order 20)",
+	} {
+		if !strings.Contains(brief.NextCommand, want) {
+			t.Errorf("the brief handed to the worker must carry %q, got %q", want, brief.NextCommand)
+		}
 	}
 }
 
 func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "check3-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
+	f.writePlaybook(t, "code-entry", failFastEntryPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if resp.OK {
 		t.Fatal("a failing check must refuse, not prepare a brief")
 	}
-	for _, want := range []string{"prerequisite check failed", `"false"`, "tell the user", "--confirm"} {
+	for _, want := range []string{"entry check", `"false"`, "code-entry", "step 2", "tell the user", "--confirm"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
@@ -250,23 +320,53 @@ func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
 		t.Errorf("check 3 ran despite check 2 failing: stat err = %v", err)
 	}
 
-	// A refusal must leave nothing behind: a cap node here would make every
-	// later dispatch refuse.
-	nodes, err := f.h.UnfinishedIn("cap")
+	// The nodes come before the entry gate — the trace is named after the node,
+	// and an entry step's outcome belongs on the record — so a refusal rolls the
+	// node back rather than leaving it out. Nothing outstanding is left to gate
+	// the next dispatch, and the attempt is legible.
+	unfinished, err := f.h.UnfinishedIn("cap")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(nodes) != 0 {
-		t.Errorf("cap scope has %d nodes after a refusal, want 0", len(nodes))
+	if len(unfinished) != 0 {
+		t.Errorf("cap scope has %d open nodes after a refusal, want 0", len(unfinished))
+	}
+	nodes := scopeTasks(t, f, "cap")
+	if len(nodes) != 1 {
+		t.Fatalf("cap scope has %d nodes, want the one rolled-back attempt", len(nodes))
+	}
+	if nodes[0].Status != "done" {
+		t.Errorf("refused dispatch status = %q, want done", nodes[0].Status)
+	}
+	if !strings.Contains(strings.Join(nodes[0].Decisions, " "), "dispatch refused at entry") {
+		t.Errorf("refused dispatch decisions = %v, want the refusal recorded", nodes[0].Decisions)
+	}
+
+	// Both steps ran to the point of failure, and both are on the trace: the
+	// passing one, and the failing one the refusal follows.
+	lines := traceOf(t, f, "skills", nodes[0].NodeID)
+	var steps []trace.Line
+	for _, ln := range lines {
+		if ln.Kind != trace.KindPlan {
+			steps = append(steps, ln)
+		}
+	}
+	if len(steps) != 2 {
+		t.Fatalf("trace has %d step lines, want the two steps that ran: %+v", len(steps), steps)
+	}
+	if steps[0].Status != trace.StatusPass || steps[1].Status != trace.StatusFail {
+		t.Errorf("trace statuses = %q, %q, want pass then fail", steps[0].Status, steps[1].Status)
 	}
 }
 
 func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 	sentinel := filepath.Join(t.TempDir(), "check3-ran")
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(sentinel))
+	f.writePlaybook(t, "code-entry", failFastEntryPlaybook(sentinel))
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", true, false)
+	req := devReq("sample")
+	req.Confirm = true
+	resp := f.prepare(req)
 	if !resp.OK {
 		t.Fatalf("--confirm must prepare despite the failure: %s", resp.Error)
 	}
@@ -286,15 +386,15 @@ func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 
 func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+	f.writePlaybook(t, "code-entry", passingEntry)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, "", false, false)
+	first := f.prepare(devReq("first"))
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
 	firstID := first.Data.(*dispatch.Brief).CapNodeID
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, false)
+	resp := f.prepare(devReq("second"))
 	if resp.OK {
 		t.Fatal("expected refusal while a dispatch is unresolved")
 	}
@@ -304,7 +404,9 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 		}
 	}
 
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, true)
+	override := devReq("second")
+	override.AllowUnresolved = true
+	confirmed := f.prepare(override)
 	if !confirmed.OK {
 		t.Fatalf("--allow-unresolved dispatch: %s", confirmed.Error)
 	}
@@ -322,44 +424,49 @@ func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 // flag had.
 func TestPrepareOverridesDoNotCoverEachOther(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, "", false, false)
+	f.writePlaybook(t, "code-entry", passingEntry)
+	first := f.prepare(devReq("first"))
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
 	firstID := first.Data.(*dispatch.Brief).CapNodeID
 
 	// Now the checks fail: the fixture holds an unresolved dispatch and a
-	// failing prerequisite at the same time.
-	f.writePlaybook(t, "dev-task-prerequisites", failFastPlaybook(filepath.Join(t.TempDir(), "check3-ran")))
+	// failing entry check at the same time.
+	f.writePlaybook(t, "code-entry", failFastEntryPlaybook(filepath.Join(t.TempDir(), "check3-ran")))
 
-	byUnresolved := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, true)
-	if byUnresolved.OK {
+	byUnresolved := devReq("second")
+	byUnresolved.AllowUnresolved = true
+	resp := f.prepare(byUnresolved)
+	if resp.OK {
 		t.Fatal("--allow-unresolved must not override a failing check")
 	}
-	for _, want := range []string{"prerequisite check failed", "--confirm"} {
-		if !strings.Contains(byUnresolved.Error, want) {
-			t.Errorf("--allow-unresolved refusal %q must mention %q", byUnresolved.Error, want)
+	for _, want := range []string{"entry check", "--confirm"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("--allow-unresolved refusal %q must mention %q", resp.Error, want)
 		}
 	}
 
-	byConfirm := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", true, false)
-	if byConfirm.OK {
+	byConfirm := devReq("second")
+	byConfirm.Confirm = true
+	resp = f.prepare(byConfirm)
+	if resp.OK {
 		t.Fatal("--confirm must not override an unresolved dispatch")
 	}
 	for _, want := range []string{"unresolved dispatches", firstID, "--allow-unresolved"} {
-		if !strings.Contains(byConfirm.Error, want) {
-			t.Errorf("--confirm refusal %q must mention %q", byConfirm.Error, want)
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("--confirm refusal %q must mention %q", resp.Error, want)
 		}
 	}
 
-	// Neither refusal proceeded: the only cap node is still the first dispatch.
-	nodes, err := f.h.UnfinishedIn("cap")
+	// Neither refusal proceeded: the second attempt was rolled back, so the only
+	// open node is still the first dispatch.
+	unfinished, err := f.h.UnfinishedIn("cap")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(nodes) != 1 || nodes[0].NodeID != firstID {
-		t.Errorf("cap nodes = %v, want only the first dispatch %s", nodes, firstID)
+	if len(unfinished) != 1 || unfinished[0].NodeID != firstID {
+		t.Errorf("open cap nodes = %v, want only the first dispatch %s", unfinished, firstID)
 	}
 }
 
@@ -367,9 +474,9 @@ func TestPrepareOverridesDoNotCoverEachOther(t *testing.T) {
 // goal was rewritten still blocks a new dispatch.
 func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+	f.writePlaybook(t, "code-entry", passingEntry)
 
-	first := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "first", nil, "", false, false)
+	first := f.prepare(devReq("first"))
 	if !first.OK {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
@@ -378,7 +485,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 		t.Fatalf("task edit: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "second", nil, "", false, false)
+	resp := f.prepare(devReq("second"))
 	if resp.OK {
 		t.Fatal("a dispatch whose goal was rewritten must still gate")
 	}
@@ -391,7 +498,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 // about dispatches, so that work must never block a new dispatch.
 func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+	f.writePlaybook(t, "code-entry", passingEntry)
 
 	added := f.h.TaskAdd("cap", "cap loop", nil)
 	if !added.OK {
@@ -402,7 +509,7 @@ func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 		t.Fatalf("task block: %s", resp.Error)
 	}
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("a non-dispatch cap node must not gate: %s", resp.Error)
 	}
@@ -411,16 +518,16 @@ func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 // Regression for the original defect: meaning comes from the declared kind, not
 // from words in the body. A check no keyword could match still runs.
 func TestPrepareRunsCheckWhateverItsWording(t *testing.T) {
-	const reworded = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+	const reworded = `name: code-entry
+phase: entry
+applies_when: code
 steps:
   - check: echo reworded
 `
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", reworded)
+	f.writePlaybook(t, "code-entry", reworded)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -446,26 +553,28 @@ steps:
 
 // A check runs with the dispatch's own inputs in its environment, named FS_*.
 //
-// This is what makes the parallel gate possible at all: the batch's cards exist
-// nowhere a static shell string can read, so a prerequisite over them could not
-// be written without it. printenv rather than echo is deliberate — it fails on
-// an absent variable, so passing proves each one is set, while an empty FS_CARDS
-// must be visible as set-and-empty rather than mistaken for a missing env.
+// This is what makes a gate over the dispatch itself possible at all: which
+// cards, which type, which member exist nowhere a static shell string can read.
+// printenv rather than echo is deliberate — it fails on an absent variable, so
+// passing proves each one is set, while an empty FS_CARDS must be visible as
+// set-and-empty rather than mistaken for a missing env.
 func TestPrepareGivesEveryCheckTheDispatchEnv(t *testing.T) {
-	const envPlaybook = `name: dev-task-prerequisites
-type: prerequisite
-trigger: dev-task
+	const envPlaybook = `name: code-entry
+phase: entry
+applies_when: code
 steps:
   - check: printenv FS_PROJECT; printenv FS_TYPE; printenv FS_GOAL; printenv FS_CARDS
 `
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", envPlaybook)
+	f.writePlaybook(t, "code-entry", envPlaybook)
 
-	withCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", []string{"a.md", "b.md"}, "", false, false)
-	if !withCards.OK {
-		t.Fatalf("Prepare with cards: %s", withCards.Error)
+	withCards := devReq("sample")
+	withCards.Cards = []string{"a.md", "b.md"}
+	resp := f.prepare(withCards)
+	if !resp.OK {
+		t.Fatalf("Prepare with cards: %s", resp.Error)
 	}
-	brief := withCards.Data.(*dispatch.Brief)
+	brief := resp.Data.(*dispatch.Brief)
 	if len(brief.Checklist) != 1 {
 		t.Fatalf("checklist = %+v, want the one check", brief.Checklist)
 	}
@@ -476,11 +585,11 @@ steps:
 	// FS_CARDS is exported empty rather than left absent, so a gate that reads
 	// it can tell "this dispatch named no cards" from "this step has no env".
 	// The first dispatch has to be resolved first: an outstanding one gates the
-	// next unless --confirm overrides it.
+	// next.
 	if resp := f.h.TaskUpdate("cap", brief.CapNodeID, "done", "test cleanup", nil); !resp.OK {
 		t.Fatalf("resolving the first dispatch: %s", resp.Error)
 	}
-	noCards := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	noCards := f.prepare(devReq("sample"))
 	if !noCards.OK {
 		t.Fatalf("Prepare without cards: %s", noCards.Error)
 	}
@@ -494,17 +603,17 @@ steps:
 func TestPrepareSayIsContextNotGate(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "AGENTS.md"), "# agents\n")
-	const procedure = `name: dev-task-prerequisites
-type: procedure
-trigger: dev-task
+	const procedure = `name: code-entry
+phase: entry
+applies_when: code
 steps:
   - say: read AGENTS.md before editing
   - check: test -f AGENTS.md
 `
 	f := newFixture(t, root)
-	f.writePlaybook(t, "dev-task-prerequisites", procedure)
+	f.writePlaybook(t, "code-entry", procedure)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -526,9 +635,9 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	writeFile(t, filepath.Join(root, "AGENTS.md"), "# agents\n")
 	writeFile(t, filepath.Join(root, "docs", "prd.md"), "<!-- specs:locked: prd -->\n")
 	f := newFixture(t, root)
-	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
+	f.writePlaybook(t, "code-entry", devPlaybook)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -552,11 +661,16 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("cap scope has %d events, want task-created + decision-recorded", len(events))
+	// Three events, in the order Prepare appends them: the node, the decision
+	// naming the project it was dispatched to, and the plan it is measured
+	// against — which the exit gate reads rather than re-deriving it.
+	if len(events) != 3 {
+		t.Fatalf("cap scope has %d events, want task-created + decision-recorded + plan-recorded", len(events))
 	}
-	if events[0].Type != store.TaskCreated {
-		t.Errorf("event 0 = %s, want task-created", events[0].Type)
+	for i, want := range []store.EventType{store.TaskCreated, store.DecisionRecorded, store.PlanRecorded} {
+		if events[i].Type != want {
+			t.Errorf("event %d = %s, want %s", i, events[i].Type, want)
+		}
 	}
 	if events[0].NodeID == nil || *events[0].NodeID != brief.CapNodeID {
 		t.Errorf("task-created node_id = %v, want %s", events[0].NodeID, brief.CapNodeID)
@@ -564,59 +678,135 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	if !strings.Contains(string(events[0].Payload), "dispatch dev-task: sample") {
 		t.Errorf("task-created payload = %s, want goal 'dispatch dev-task: sample'", events[0].Payload)
 	}
-	if events[1].Type != store.DecisionRecorded {
-		t.Errorf("event 1 = %s, want decision-recorded", events[1].Type)
-	}
 	if !strings.Contains(string(events[1].Payload), "skills") {
 		t.Errorf("decision payload = %s, want the target project named", events[1].Payload)
+	}
+	for _, want := range []string{`"name":"code-entry"`, `"phase":"entry"`, `"tags":{"code":true`} {
+		if !strings.Contains(string(events[2].Payload), want) {
+			t.Errorf("plan payload = %s, want it to carry %s", events[2].Payload, want)
+		}
+	}
+
+	// The same plan is the trace's first line, so `fs trace` shows what the
+	// dispatch was measured against before any step has an outcome. It comes
+	// before the entry steps' own lines, which are written as they run.
+	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	if len(lines) == 0 || lines[0].Kind != trace.KindPlan {
+		t.Fatalf("trace = %+v, want the plan line first", lines)
+	}
+	if len(lines[0].Plan) != 1 || lines[0].Plan[0].Name != "code-entry" ||
+		lines[0].Plan[0].Phase != "entry" || lines[0].Plan[0].Order != 10 {
+		t.Errorf("plan line = %+v, want the resolved plan", lines[0])
+	}
+	if lines[0].Dispatch != brief.CapNodeID {
+		t.Errorf("plan line dispatch = %q, want %q", lines[0].Dispatch, brief.CapNodeID)
 	}
 }
 
 func TestPrepareRequiresArgs(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", devPlaybook)
+	f.writePlaybook(t, "code-entry", devPlaybook)
 
 	for _, tc := range []struct{ project, taskType, goal string }{
 		{"", "dev-task", "x"},
 		{"skills", "", "x"},
 		{"skills", "dev-task", ""},
 	} {
-		resp := dispatch.Prepare(f.h, f.reg, f.kc, tc.project, tc.taskType, tc.goal, nil, "", false, false)
+		resp := f.prepare(dispatch.PrepareRequest{
+			Project: tc.project, TaskType: tc.taskType, Goal: tc.goal, Tags: []string{"code"},
+		})
 		if resp.OK {
 			t.Errorf("Prepare(%q, %q, %q) should fail", tc.project, tc.taskType, tc.goal)
 		}
 	}
 }
 
-// A playbook's trigger must agree with the task type its name selects it for.
-// dispatch loads "<type>-prerequisites", so a trigger naming another type is a
-// contradiction: refuse, naming both values.
-func TestPrepareRefusesAPlaybookWhoseTriggerContradictsItsType(t *testing.T) {
+// A dispatch whose tags select no playbook is legal: the plan is empty, and both
+// the brief and the trace say so rather than leaving the absence to be read as a
+// missing record. An empty plan the exit gate can see is what makes "nothing was
+// declared" different from "nothing was recorded".
+func TestPrepareWithNoMatchingPlaybookIsALegalEmptyPlan(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", `name: dev-task-prerequisites
-type: prerequisite
-trigger: nonsense
+	f.writePlaybook(t, "code-entry", devPlaybook)
+
+	// The playbook is tagged `code`; this dispatch declares nothing.
+	req := dispatch.PrepareRequest{Project: "skills", TaskType: "research", Goal: "explore"}
+	resp := f.prepare(req)
+	if !resp.OK {
+		t.Fatalf("an empty plan must not refuse: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+	if len(brief.Plan) != 0 {
+		t.Errorf("plan = %+v, want none", brief.Plan)
+	}
+	if !strings.Contains(brief.NextCommand, "plan: empty") {
+		t.Errorf("the brief must say the plan is empty, got %q", brief.NextCommand)
+	}
+
+	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	recorded, ok := trace.PlanOf(lines)
+	if !ok {
+		t.Fatal("an empty plan must still be recorded: a trace with no plan line cannot be gated")
+	}
+	if len(recorded.Plan) != 0 {
+		t.Errorf("recorded plan = %+v, want an empty plan with its tags", recorded.Plan)
+	}
+	if recorded.Tags["type"] != "research" {
+		t.Errorf("recorded tags = %v, want the dispatch's own type", recorded.Tags)
+	}
+}
+
+// `applies_when` is optional, and an absent one is a silence rather than a
+// contradiction: a playbook that declares no terms loads for every dispatch.
+func TestPrepareSelectsAPlaybookWithNoAppliesWhen(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+phase: work
 steps:
-  - check: true
+  - say: note your work on the node you were given
 `)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
-	if resp.OK {
-		t.Fatal("a contradictory trigger must refuse, not prepare a brief")
+	resp := f.prepare(devReq("sample"))
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
 	}
-	for _, want := range []string{"nonsense", `"dev-task"`, "empty"} {
+	brief := resp.Data.(*dispatch.Brief)
+	if len(brief.Plan) != 1 || brief.Plan[0].Name != "worker" {
+		t.Fatalf("plan = %+v, want the playbook that declares no applies_when", brief.Plan)
+	}
+	if !strings.Contains(brief.NextCommand, "note your work on the node you were given") {
+		t.Errorf("its say step must reach the worker, got %q", brief.NextCommand)
+	}
+}
+
+// A playbook is held to the schema its phase declares before it can run half its
+// steps. This is a configuration error, not a gate: --confirm must not override
+// it, and nothing is left behind.
+func TestPrepareRefusesAPlaybookWithAStepItsPhaseForbids(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", `name: code-entry
+phase: entry
+applies_when: code
+steps:
+  - do: touch unexpected
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("a step the phase forbids must refuse, not prepare a brief")
+	}
+	for _, want := range []string{"code-entry", "step 1", `kind "do"`, "allowed kinds: check, ask, say, include"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
 	}
 
-	// The refusal is a config error, not a gate: --confirm must not override it.
-	confirmed := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", true, false)
-	if confirmed.OK {
-		t.Fatal("--confirm must not override a contradictory trigger")
+	confirmed := devReq("sample")
+	confirmed.Confirm = true
+	if resp := f.prepare(confirmed); resp.OK {
+		t.Fatal("--confirm must not override a playbook that is not legal for its phase")
 	}
 
-	// And nothing was left behind to gate the next dispatch.
 	nodes, err := f.h.UnfinishedIn("cap")
 	if err != nil {
 		t.Fatal(err)
@@ -626,30 +816,40 @@ steps:
 	}
 }
 
-// The field is optional. The name is what selects a playbook, so an absent
-// trigger is a silence, not a contradiction — the shipped playbooks rely on it.
-func TestPrepareAcceptsAPlaybookWithNoTrigger(t *testing.T) {
+// Seeding never deletes, so after an upgrade the knowledge center still holds
+// the playbooks the removed schema named. They are refused rather than skipped:
+// a dispatch that silently dropped a protocol would be a dispatch that silently
+// changed what it gates. This is why the operator migration after `fs bootstrap`
+// is not cosmetic — one file left behind refuses every dispatch, not just its
+// own.
+func TestPrepareRefusesWhileAPlaybookFromTheRemovedSchemaIsOnDisk(t *testing.T) {
 	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
 	f.writePlaybook(t, "dev-task-prerequisites", `name: dev-task-prerequisites
 type: prerequisite
+trigger: dev-task
 steps:
   - check: true
 `)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
-	if !resp.OK {
-		t.Fatalf("an empty trigger must be accepted: %s", resp.Error)
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("a playbook from the removed schema must refuse the dispatch, not be skipped")
+	}
+	for _, want := range []string{"dev-task-prerequisites", "removed field", "fs kb remove dev-task-prerequisites"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("cap scope has %d nodes after a refusal, want 0", len(nodes))
 	}
 }
-
-// passingIntegratePlaybook is the integrate entry gate in its simplest honest
-// form: a gate test is about the pipework, not about the shipped wording.
-const passingIntegratePlaybook = `name: integrate-prerequisites
-type: prerequisite
-trigger: integrate
-steps:
-  - check: true
-`
 
 // --integrates names the member this integration merges. The link is written
 // into the integration's task-created payload, and events are immutable, so a
@@ -657,7 +857,7 @@ steps:
 // refused, naming it.
 func TestPrepareRefusesAnIntegratesThatIsNotADispatchNode(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "integrate-prerequisites", passingIntegratePlaybook)
+	f.writePlaybook(t, "integration-entry", integrationEntryPlaybook)
 
 	gap := addCapKindNode(t, f, "a gap, never dispatched", query.KindGap)
 	for _, tc := range []struct{ ref, want string }{
@@ -666,7 +866,9 @@ func TestPrepareRefusesAnIntegratesThatIsNotADispatchNode(t *testing.T) {
 		{"other:t-1", "names scope other"},
 		{"cap:", "names no node"},
 	} {
-		resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge", nil, tc.ref, false, false)
+		resp := f.prepare(dispatch.PrepareRequest{
+			Project: "skills", TaskType: "integrate", Goal: "merge", Integrates: tc.ref,
+		})
 		if resp.OK {
 			t.Errorf("--integrates %s must be refused", tc.ref)
 			continue
@@ -694,10 +896,12 @@ func TestPrepareRefusesAnIntegratesThatIsNotADispatchNode(t *testing.T) {
 // readable from the node without parsing any goal text.
 func TestPrepareRecordsTheMemberOnTheIntegrationNode(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "integrate-prerequisites", passingIntegratePlaybook)
+	f.writePlaybook(t, "integration-entry", integrationEntryPlaybook)
 
 	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge member", nil, member, false, false)
+	resp := f.prepare(dispatch.PrepareRequest{
+		Project: "skills", TaskType: "integrate", Goal: "merge member", Integrates: member,
+	})
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -725,12 +929,17 @@ func TestPrepareRecordsTheMemberOnTheIntegrationNode(t *testing.T) {
 // Every other open dispatch still refuses.
 func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "integrate-prerequisites", passingIntegratePlaybook)
+	f.writePlaybook(t, "integration-entry", integrationEntryPlaybook)
 
 	member := addCapKindNode(t, f, "dispatch parallel: member one", query.KindDispatch)
+	intReq := func() dispatch.PrepareRequest {
+		return dispatch.PrepareRequest{
+			Project: "skills", TaskType: "integrate", Goal: "merge one", Integrates: member,
+		}
+	}
 
 	// Only the named member is open: the integration prepares without an override.
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge one", nil, member, false, false)
+	resp := f.prepare(intReq())
 	if !resp.OK {
 		t.Fatalf("the member it integrates must not trip the unresolved gate: %s", resp.Error)
 	}
@@ -738,7 +947,7 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testi
 	// A second, unrelated dispatch is open now, so the same call refuses and
 	// names it — and the member it names is still not the reason.
 	other := addCapKindNode(t, f, "dispatch parallel: member two", query.KindDispatch)
-	resp = dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge one", nil, member, false, false)
+	resp = f.prepare(intReq())
 	if resp.OK {
 		t.Fatal("another open dispatch must still trip the gate")
 	}
@@ -746,9 +955,10 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testi
 		t.Errorf("refusal %q must name %s and the override", resp.Error, other)
 	}
 
-	// The override is still the way past it, and it is recorded.
-	resp = dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge one", nil, member, false, true)
-	if !resp.OK {
+	// The override is still the way past it.
+	override := intReq()
+	override.AllowUnresolved = true
+	if resp := f.prepare(override); !resp.OK {
 		t.Fatalf("--allow-unresolved must proceed: %s", resp.Error)
 	}
 }
@@ -757,16 +967,18 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testi
 // about this integration and not about the batch.
 func TestPrepareGivesChecksTheIntegratesLink(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "integrate-prerequisites", `name: integrate-prerequisites
-type: prerequisite
-trigger: integrate
+	f.writePlaybook(t, "integration-entry", `name: integration-entry
+phase: entry
+applies_when: type=integrate
 steps:
   - check: printenv FS_INTEGRATES
   - check: printenv FS_CARDS
 `)
 
 	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "integrate", "merge", nil, member, false, false)
+	resp := f.prepare(dispatch.PrepareRequest{
+		Project: "skills", TaskType: "integrate", Goal: "merge", Integrates: member,
+	})
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
@@ -788,9 +1000,9 @@ steps:
 // empty FS_INTEGRATES rather than a missing one.
 func TestPrepareWithoutIntegratesRecordsNoLink(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "dev-task-prerequisites", passingPlaybook)
+	f.writePlaybook(t, "code-entry", passingEntry)
 
-	resp := dispatch.Prepare(f.h, f.reg, f.kc, "skills", "dev-task", "sample", nil, "", false, false)
+	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
