@@ -1,6 +1,12 @@
 name: worker
 phase: work
 order: 10
+# The standing realization: worker has no applies_when, so it matches every
+# dispatch, and these two fields are how the plan resolves what runs it. engine:
+# names the dispatcher; agent: names the kind of agent that carries the brief.
+# A project that shadows this playbook changes the harness for that project.
+engine: herdr
+agent: pi
 steps:
   # Every worker's standing obligations, selected by every dispatch: an empty
   # applies_when matches everything, which is why this file is the one place a

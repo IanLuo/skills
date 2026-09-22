@@ -24,6 +24,8 @@ const devPlaybook = `name: code-entry
 phase: entry
 applies_when: code
 order: 10
+engine: herdr
+agent: pi
 steps:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
@@ -46,6 +48,8 @@ steps:
 const passingEntry = `name: code-entry
 phase: entry
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - check: true
 `
@@ -56,6 +60,8 @@ func failFastEntryPlaybook(sentinel string) string {
 	return fmt.Sprintf(`name: code-entry
 phase: entry
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - check: true
   - check: false
@@ -69,6 +75,8 @@ steps:
 const integrationEntryPlaybook = `name: integration-entry
 phase: entry
 applies_when: type=integrate
+engine: herdr
+agent: pi
 steps:
   - check: true
 `
@@ -521,6 +529,8 @@ func TestPrepareRunsCheckWhateverItsWording(t *testing.T) {
 	const reworded = `name: code-entry
 phase: entry
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - check: echo reworded
 `
@@ -562,6 +572,8 @@ func TestPrepareGivesEveryCheckTheDispatchEnv(t *testing.T) {
 	const envPlaybook = `name: code-entry
 phase: entry
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - check: printenv FS_PROJECT; printenv FS_TYPE; printenv FS_GOAL; printenv FS_CARDS
 `
@@ -606,6 +618,8 @@ func TestPrepareSayIsContextNotGate(t *testing.T) {
 	const procedure = `name: code-entry
 phase: entry
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - say: read AGENTS.md before editing
   - check: test -f AGENTS.md
@@ -721,38 +735,36 @@ func TestPrepareRequiresArgs(t *testing.T) {
 	}
 }
 
-// A dispatch whose tags select no playbook is legal: the plan is empty, and both
-// the brief and the trace say so rather than leaving the absence to be read as a
-// missing record. An empty plan the exit gate can see is what makes "nothing was
-// declared" different from "nothing was recorded".
-func TestPrepareWithNoMatchingPlaybookIsALegalEmptyPlan(t *testing.T) {
+// A plan that declares neither engine nor agent is refused before any node is
+// created, naming worker.yaml as the place to declare them. There is no
+// built-in fallback: a default in Go is the policy these fields exist to remove.
+func TestPrepareRefusesWhenNoPlaybookDeclaresTheRealization(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "code-entry", devPlaybook)
+	f.writePlaybook(t, "code-entry", `name: code-entry
+phase: entry
+applies_when: code
+steps:
+  - check: true
+`)
 
-	// The playbook is tagged `code`; this dispatch declares nothing.
-	req := dispatch.PrepareRequest{Project: "skills", TaskType: "research", Goal: "explore"}
-	resp := f.prepare(req)
-	if !resp.OK {
-		t.Fatalf("an empty plan must not refuse: %s", resp.Error)
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("a plan declaring neither engine nor agent must refuse")
 	}
-	brief := resp.Data.(*dispatch.Brief)
-	if len(brief.Plan) != 0 {
-		t.Errorf("plan = %+v, want none", brief.Plan)
-	}
-	if !strings.Contains(brief.NextCommand, "plan: empty") {
-		t.Errorf("the brief must say the plan is empty, got %q", brief.NextCommand)
+	for _, want := range []string{"worker.yaml", "engine", "agent"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
 	}
 
-	lines := traceOf(t, f, "skills", brief.CapNodeID)
-	recorded, ok := trace.PlanOf(lines)
-	if !ok {
-		t.Fatal("an empty plan must still be recorded: a trace with no plan line cannot be gated")
+	// The refusal happens before the cap node exists: a broken configuration
+	// leaves nothing behind to gate the next dispatch.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(recorded.Plan) != 0 {
-		t.Errorf("recorded plan = %+v, want an empty plan with its tags", recorded.Plan)
-	}
-	if recorded.Tags["type"] != "research" {
-		t.Errorf("recorded tags = %v, want the dispatch's own type", recorded.Tags)
+	if len(nodes) != 0 {
+		t.Errorf("cap scope has %d nodes after a realization refusal, want 0", len(nodes))
 	}
 }
 
@@ -762,6 +774,8 @@ func TestPrepareSelectsAPlaybookWithNoAppliesWhen(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", `name: worker
 phase: work
+engine: herdr
+agent: pi
 steps:
   - say: note your work on the node you were given
 `)
@@ -776,6 +790,108 @@ steps:
 	}
 	if !strings.Contains(brief.NextCommand, "note your work on the node you were given") {
 		t.Errorf("its say step must reach the worker, got %q", brief.NextCommand)
+	}
+}
+
+// Two situation-specific declarations that disagree refuse, naming both
+// playbooks and both values — a dispatch cannot run two harnesses, and two
+// claims to the realization are not averaged.
+func TestPrepareRefusesWhenSituationSpecificDeclarationsDisagree(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+phase: work
+engine: herdr
+agent: pi
+steps:
+  - say: note your node
+`)
+	f.writePlaybook(t, "one", `name: one
+phase: work
+applies_when: code
+engine: other
+steps:
+  - say: one
+`)
+	f.writePlaybook(t, "two", `name: two
+phase: work
+applies_when: code
+engine: another
+steps:
+  - say: two
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("two situation-specific declarations that disagree must refuse")
+	}
+	for _, want := range []string{"one", "two", "other", "another", "conflicting engines"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// A declared engine fs cannot dispatch with refuses, naming herdr as the only
+// adapter it has. The engine is a constraint today, not a choice.
+func TestPrepareRefusesWhenTheDeclaredEngineIsNotDispatchable(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+phase: work
+engine: other
+agent: pi
+steps:
+  - say: note your node
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("a declared engine fs cannot dispatch with must refuse")
+	}
+	for _, want := range []string{`"other"`, "herdr"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// A situation-specific declaration overrides the standing one, and the resolved
+// pair is what the brief carries, the trace records, and the herdr line names.
+func TestPrepareSituationSpecificOverridesTheStandingRealization(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+phase: work
+engine: herdr
+agent: pi
+steps:
+  - say: note your node
+`)
+	f.writePlaybook(t, "code-entry", `name: code-entry
+phase: entry
+applies_when: code
+agent: claude
+steps:
+  - check: true
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+	if brief.Engine != "herdr" || brief.Agent != "claude" {
+		t.Errorf("realization = %s/%s, want herdr/claude (situation-specific agent overrides standing)", brief.Engine, brief.Agent)
+	}
+	if !strings.Contains(brief.NextCommand, "--kind claude") {
+		t.Errorf("next_command must carry the resolved agent, got %q", brief.NextCommand)
+	}
+
+	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	recorded, ok := trace.PlanOf(lines)
+	if !ok {
+		t.Fatal("the plan line is missing")
+	}
+	if recorded.Engine != "herdr" || recorded.Agent != "claude" {
+		t.Errorf("recorded realization = %s/%s, want herdr/claude", recorded.Engine, recorded.Agent)
 	}
 }
 
@@ -970,6 +1086,8 @@ func TestPrepareGivesChecksTheIntegratesLink(t *testing.T) {
 	f.writePlaybook(t, "integration-entry", `name: integration-entry
 phase: entry
 applies_when: type=integrate
+engine: herdr
+agent: pi
 steps:
   - check: printenv FS_INTEGRATES
   - check: printenv FS_CARDS

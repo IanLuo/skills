@@ -110,10 +110,14 @@ phase: entry                # required: cap | entry | work | exit
 applies_when: code          # optional, default empty = matches every dispatch.
                             # comma-separated terms, ALL must hold. term = `k` (present) or `k=v`
 order: 10                   # optional, default 500; ascending; ties by name
+engine: herdr               # optional: the dispatcher this protocol's steps are written for
+agent: pi                   # optional: the kind of agent that runs this work
 steps:                      # required, non-empty
   - check: test -f AGENTS.md
   - ask: a locked PRD is present, and it names this one deliverable
 ```
+
+`engine:` and `agent:` are how the work is **realized** — both are playbook fields, never Go constants. They resolve from the plan in two passes: the *standing* declaration is a playbook with no `applies_when` (the shipped `worker` declares `engine: herdr` and `agent: pi`), and a *situation-specific* declaration in a selected playbook overrides it. Two situation-specific declarations that disagree refuse, naming both playbooks and both values; a plan declaring neither refuses, naming `worker.yaml` as where to declare them; and a declared engine other than the one fs dispatches with refuses. Both values are recorded on the dispatch and in its trace. Each must be a single non-empty token when present.
 
 A step is `kind: body`. The closed kind vocabulary is `say | use | check | ask | do | include`:
 
@@ -137,7 +141,7 @@ Which kinds a phase allows is a closed table — anything else is refused at wri
 
 `include` is allowed in every phase (it is spliced away before validation, and what it splices must itself be legal for the including playbook's phase).
 
-The old fields `type:`, `trigger:`, and `engine_scope:` are **refused at parse** with a message naming the replacement — `trigger: cap` → `phase: cap`; `engine_scope: herdr` → `applies_when: engine=herdr`; `type: prerequisite|cleanup` → the `phase` of the moment plus a matching `applies_when`. They never half-work.
+The old fields `type:`, `trigger:`, and `engine_scope:` are **refused at parse** with a message naming the replacement — `trigger: cap` → `phase: cap`; `engine_scope: herdr` → `engine: herdr` (the declaration that now exists), or the term `applies_when: engine=herdr` when the intent is to *match* an engine rather than declare one; `type: prerequisite|cleanup` → the `phase` of the moment plus a matching `applies_when`. They never half-work.
 
 ### Selection
 
@@ -146,7 +150,7 @@ The old fields `type:`, `trigger:`, and `engine_scope:` are **refused at parse**
 | tag | source |
 |---|---|
 | `type=<T>` | `--type` — derived |
-| `engine=herdr` | the dispatcher — derived |
+| `engine=<T>` | the plan's resolved `engine:` declaration — not a constant |
 | `k` / `k=v` | `--tag`, repeatable — declared |
 
 A declared `--tag` may not restate `type` or `engine` (those are set by the dispatch itself). `applies_when` matches presence and equality only — no ranges, no negation. An empty `applies_when` matches every dispatch; that is how the `worker` playbook loads for every dispatch.
@@ -291,7 +295,7 @@ Every entry check runs with the dispatch's own inputs in its environment, so a g
 
 ### Delivering
 
-`fs dispatch --deliver` delivers the brief itself: it splits the pane, creates the worker's node in the target project **before** the agent starts (the brief has to name it — *note your work on `<project>:<node>`; do not create another*), starts a `pi` agent named `dispatch-<type>-<node>`, sends the brief, appends a `loaded` line per `work` playbook, records the binding as a `delivery-recorded` event, and marks the cap node `active`. A failure after the node exists rolls it back — a delivery that did not happen leaves no `loaded` lines, so close refuses it.
+`fs dispatch --deliver` delivers the brief itself: it splits the pane, creates the worker's node in the target project **before** the agent starts (the brief has to name it — *note your work on `<project>:<node>`; do not create another*), starts an agent of the plan's resolved kind (the shipped `worker` declares `agent: pi`) named `dispatch-<type>-<node>`, sends the brief, appends a `loaded` line per `work` playbook, records the binding as a `delivery-recorded` event, and marks the cap node `active`. A failure after the node exists rolls it back — a delivery that did not happen leaves no `loaded` lines, so close refuses it.
 
 The brief carries: the goal, the plan, the `work`-phase playbooks' `say` steps as **Obligations** and `use` steps as **Skills** (in plan order, under a heading stating they are hints and that no skill is required), the entry gate's checklist with each check's output, and the locked docs. No worker obligation is a Go string literal — every one comes from a playbook.
 
@@ -396,7 +400,7 @@ These are non-negotiable:
 | `task-unblocked` | `task unblock` | `{}` |
 | `metadata-changed` | `task edit` | `{field, old_value, new_value}` |
 | `delivery-recorded` | `dispatch --deliver` | `{pane_id, tab_id, agent, engine, project, node, type, worktree, worktree_path}` |
-| `plan-recorded` | `dispatch` | `{plan, tags}` — the ordered playbooks and the tag set that selected them |
+| `plan-recorded` | `dispatch` | `{plan, tags, engine, agent}` — the ordered playbooks, the tag set that selected them, and the resolved realization |
 
 Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`. `commit_sha` is the git HEAD of the project the event is about — the resolved project's registered `root_path` (`status`/`query`/`log`/`task *`), the dispatched-to project (`dispatch`), the worker's project (`close`), or the root being created (`project create`); the cwd's HEAD only when no project is referenced (`unfinished`), and null when that is not a git repo.
 

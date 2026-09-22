@@ -185,6 +185,14 @@ def main():
             check(f"{name}: order is an integer", re.fullmatch(r"-?\d+", one_line(order)) is not None,
                   f"order: {order!r}")
 
+        # engine: and agent: are optional; when present each is one non-empty
+        # token — a name, not an expression.
+        for field in ("engine", "agent"):
+            if field in pb:
+                check(f"{name}: {field} is a single non-empty token",
+                      re.fullmatch(r"[A-Za-z0-9_.-]+", one_line(pb[field])) is not None,
+                      f"{field}: {pb[field]!r}")
+
         steps = pb["steps"]
         check(f"{name}: declares at least one step", bool(steps), "no steps")
 

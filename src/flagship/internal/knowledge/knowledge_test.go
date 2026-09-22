@@ -757,7 +757,7 @@ func TestRemovedFieldsAreRefusedNamingTheReplacement(t *testing.T) {
 		{
 			name: "engine_scope",
 			pb:   "name: p\nphase: cap\nengine_scope: herdr\nsteps:\n  - say: x\n",
-			want: []string{"removed field `engine_scope: herdr`", "applies_when: engine=herdr"},
+			want: []string{"removed field `engine_scope: herdr`", "`engine: herdr`", "applies_when: engine=herdr", "match an engine"},
 		},
 		{
 			name: "type",
@@ -806,6 +806,37 @@ func TestEveryPhaseAcceptsItsOwnKinds(t *testing.T) {
 				t.Fatalf("a legal %s playbook must be accepted: %v", phase, err)
 			}
 		})
+	}
+}
+
+// engine: and agent: are parsed and resolved, and each must be a single
+// non-empty token when present — a name, not an expression.
+func TestEngineAndAgentAreParsedAndValidated(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := kc.Add("worker", []byte("name: worker\nphase: work\nengine: herdr\nagent: pi\nsteps:\n  - say: x\n")); err != nil {
+		t.Fatalf("a playbook declaring engine and agent must be accepted: %v", err)
+	}
+	got, err := kc.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Engine != "herdr" || got.Agent != "pi" {
+		t.Errorf("engine/agent = %q/%q, want herdr/pi", got.Engine, got.Agent)
+	}
+
+	for _, tc := range []struct{ field, val string }{
+		{"engine", "her dr"},
+		{"agent", "pi=1"},
+		{"engine", ""},
+	} {
+		body := "name: worker\nphase: work\n" + tc.field + ": " + tc.val + "\nsteps:\n  - say: x\n"
+		if err := kc.Add("bad-"+tc.field, []byte(body)); err == nil {
+			t.Errorf("%s %q must be refused as not a single non-empty token", tc.field, tc.val)
+		}
 	}
 }
 

@@ -46,11 +46,21 @@ import (
 // scope is just a string, so it is never registered and never created.
 const capScope = "cap"
 
-// SessionTags is the tag set the cap's own session runs under: the engine it
-// dispatches through. A `phase: cap` playbook tagged for that engine loads into
-// the session's standing rules.
-func SessionTags() map[string]any {
-	return map[string]any{engineTag: herdrEngine}
+// SessionTags is the tag set the cap's own session runs under. The engine tag
+// is the standing declaration the playbooks resolve — not a constant — so a
+// `phase: cap` playbook tagged `engine=herdr` loads only because a standing
+// playbook declares that engine. It is the same resolution a dispatch uses, so
+// the prompt cannot drift from what a dispatch would run.
+func SessionTags(kc *knowledge.Center) (map[string]any, error) {
+	standing, err := standingRealization(kc)
+	if err != nil {
+		return nil, err
+	}
+	tags := map[string]any{}
+	if standing.engine != "" {
+		tags[engineTag] = standing.engine
+	}
+	return tags, nil
 }
 
 // engineTag is the derived tag naming the dispatcher.
@@ -92,6 +102,12 @@ type Brief struct {
 	Notes       []string `json:"notes"`
 	CapNodeID   string   `json:"cap_node_id"`
 	NextCommand string   `json:"next_command"`
+
+	// Engine and Agent are the realization the plan resolved: which dispatcher
+	// runs the work and which kind of agent carries the brief. Both are playbook
+	// declarations, never constants — Deliver starts the agent the plan named.
+	Engine string `json:"engine,omitempty"`
+	Agent  string `json:"agent,omitempty"`
 
 	// WorkerNode is the node created for the worker in the target project, as
 	// "<project>:<node>". Deliver sets it before the brief is sent, because the
@@ -178,10 +194,32 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	// plan records the resolution, so nothing downstream re-derives it.
 	kc = kc.InProject(proj.Name)
 
+	// Pass 1 of the realization: the standing declaration — a playbook whose
+	// applies_when is empty, knowable without selecting anything — stamps the
+	// engine into the tag set, which is what the selection below can match on.
+	standing, err := standingRealization(kc)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+	if standing.engine != "" {
+		tags[engineTag] = standing.engine
+	}
+
 	plan, err := buildPlan(kc, tags, req.Also, req.Without)
 	if err != nil {
 		return errResp("dispatch: " + err.Error())
 	}
+
+	// Pass 2: the situation-specific declarations in the selected plan override
+	// the standing one. The three realization refusals — no declaration, two
+	// situation-specific declarations that disagree, and an engine fs cannot
+	// dispatch with — fire here, before any node is created, so a broken
+	// configuration leaves nothing behind.
+	real, err := resolveRealization(plan, standing)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+	tags[engineTag] = real.engine
 
 	// Gate: a dispatch the cap prepared but never delivered is still open work.
 	// Refuse to pile another one on top of it unless the cap says to proceed.
@@ -210,7 +248,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 
-	recorded := trace.Plan{Plan: planEntries(plan), Tags: tags}
+	recorded := trace.Plan{Plan: planEntries(plan), Tags: tags, Engine: real.engine, Agent: real.agent}
 	if err := recordPlan(h, lg, nodeID, req.Project, recorded); err != nil {
 		return errResp("dispatch: " + refuseEntry(h, nodeID, err.Error()))
 	}
@@ -221,7 +259,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 		return errResp("dispatch: " + refuseEntry(h, nodeID, err.Error()))
 	}
 
-	brief := buildBrief(run, plan, proj, req, nodeID)
+	brief := buildBrief(run, plan, proj, req, nodeID, real)
 	brief.NextCommand = nextCommand(brief)
 
 	// Each override is recorded by the flag that granted it, on the node it
@@ -256,7 +294,7 @@ func refuseEntry(h *command.Handler, nodeID, msg string) string {
 // tag that silently moves `type` is a tag that silently changes which protocol
 // runs.
 func tagSet(taskType string, declared []string) (map[string]any, error) {
-	tags := map[string]any{typeTag: taskType, engineTag: herdrEngine}
+	tags := map[string]any{typeTag: taskType}
 
 	for _, term := range declared {
 		key, value, hasValue := strings.Cut(term, "=")
@@ -278,13 +316,16 @@ func tagSet(taskType string, declared []string) (map[string]any, error) {
 	return tags, nil
 }
 
-// planned is one playbook in a dispatch's plan: where it sits, and the protocol
-// it resolved to, includes and all.
+// planned is one playbook in a dispatch's plan: where it sits, the protocol it
+// resolved to, includes and all, and its realization declarations.
 type planned struct {
-	Name  string
-	Phase string
-	Order int
-	Steps []knowledge.Step
+	Name        string
+	Phase       string
+	Order       int
+	Steps       []knowledge.Step
+	AppliesWhen []string
+	Engine      string
+	Agent       string
 }
 
 // planEntries is the plan as it is recorded: the ordered playbooks without
@@ -366,7 +407,125 @@ func buildPlan(kc *knowledge.Center, tags map[string]any, also, without []string
 }
 
 func plannedOf(pb *knowledge.Playbook) planned {
-	return planned{Name: pb.Name, Phase: pb.Phase, Order: pb.Order, Steps: pb.Steps}
+	return planned{
+		Name:        pb.Name,
+		Phase:       pb.Phase,
+		Order:       pb.Order,
+		Steps:       pb.Steps,
+		AppliesWhen: pb.AppliesWhen,
+		Engine:      pb.Engine,
+		Agent:       pb.Agent,
+	}
+}
+
+// realization is the resolved pair: which engine dispatches the work and which
+// kind of agent runs it. Both are playbook declarations, never Go constants.
+type realization struct {
+	engine string
+	agent  string
+}
+
+// standingRealization is pass 1 of the resolution: the declarations on playbooks
+// whose applies_when is empty, which match every dispatch and so are knowable
+// without selecting anything. The engine it finds is what pass 2's selection
+// needs as a tag.
+//
+// Two standing declarations that disagree are refused rather than averaged —
+// there is one default, and two claims to it are a broken configuration.
+func standingRealization(kc *knowledge.Center) (realization, error) {
+	names, err := kc.List()
+	if err != nil {
+		return realization{}, err
+	}
+
+	var real realization
+	var engineFrom, agentFrom string
+	for _, name := range names {
+		pb, err := kc.Get(name)
+		if err != nil {
+			return realization{}, err
+		}
+		if len(pb.AppliesWhen) > 0 {
+			continue // situation-specific; pass 2 reads it
+		}
+		if pb.Engine != "" {
+			if real.engine != "" && real.engine != pb.Engine {
+				return realization{}, fmt.Errorf(
+					"dispatch: playbooks %s and %s both declare the standing engine and disagree (%s and %s)",
+					engineFrom, pb.Name, real.engine, pb.Engine)
+			}
+			real.engine, engineFrom = pb.Engine, pb.Name
+		}
+		if pb.Agent != "" {
+			if real.agent != "" && real.agent != pb.Agent {
+				return realization{}, fmt.Errorf(
+					"dispatch: playbooks %s and %s both declare the standing agent and disagree (%s and %s)",
+					agentFrom, pb.Name, real.agent, pb.Agent)
+			}
+			real.agent, agentFrom = pb.Agent, pb.Name
+		}
+	}
+	return real, nil
+}
+
+// resolveRealization is pass 2: the situation-specific declarations in the
+// selected plan override the standing ones, and two of them that disagree
+// refuse, naming both playbooks and both values. A plan declaring neither — no
+// standing and no situation-specific declaration — refuses naming worker.yaml
+// as the place to declare them, and a resolved engine that is not the one fs
+// dispatches with refuses rather than routing into the void.
+func resolveRealization(plan []planned, standing realization) (realization, error) {
+	real := standing
+
+	var engine, engineFrom, agent, agentFrom string
+	for _, pb := range plan {
+		if len(pb.AppliesWhen) == 0 {
+			continue // standing; already resolved in pass 1
+		}
+		if pb.Engine != "" {
+			if engine != "" && engine != pb.Engine {
+				return realization{}, fmt.Errorf(
+					"dispatch: playbooks %s and %s declare conflicting engines (%s and %s); a dispatch cannot run two harnesses",
+					engineFrom, pb.Name, engine, pb.Engine)
+			}
+			engine, engineFrom = pb.Engine, pb.Name
+		}
+		if pb.Agent != "" {
+			if agent != "" && agent != pb.Agent {
+				return realization{}, fmt.Errorf(
+					"dispatch: playbooks %s and %s declare conflicting agents (%s and %s); a dispatch cannot run two kinds of agent",
+					agentFrom, pb.Name, agent, pb.Agent)
+			}
+			agent, agentFrom = pb.Agent, pb.Name
+		}
+	}
+	if engine != "" {
+		real.engine = engine
+	}
+	if agent != "" {
+		real.agent = agent
+	}
+
+	if real.engine == "" || real.agent == "" {
+		var missing []string
+		if real.engine == "" {
+			missing = append(missing, "engine")
+		}
+		if real.agent == "" {
+			missing = append(missing, "agent")
+		}
+		return realization{}, fmt.Errorf(
+			"dispatch: no playbook declares the realization's %s — declare %s in worker.yaml (the standing playbook with no applies_when)",
+			strings.Join(missing, " and "), strings.Join(missing, " and "))
+	}
+
+	if real.engine != "herdr" {
+		return realization{}, fmt.Errorf(
+			"dispatch: the plan resolves to engine %q, but fs dispatches through herdr; declare `engine: herdr` (fs has no other adapter to route to)",
+			real.engine)
+	}
+
+	return real, nil
 }
 
 // integrateMember resolves a --integrates value to the bare id of the cap-scope
@@ -611,7 +770,7 @@ func entryStep(step knowledge.Step, root string, env []string, confirm bool) (It
 // buildBrief composes the brief from the plan. The work-phase steps are the
 // worker's: its `say` steps are obligations and its `use` steps are hints. The
 // entry-phase steps are what the gate ran and what it asked.
-func buildBrief(run entryRun, plan []planned, proj registry.Project, req PrepareRequest, nodeID string) *Brief {
+func buildBrief(run entryRun, plan []planned, proj registry.Project, req PrepareRequest, nodeID string, real realization) *Brief {
 	brief := &Brief{
 		Goal:       req.Goal,
 		Project:    proj.Name,
@@ -622,6 +781,8 @@ func buildBrief(run entryRun, plan []planned, proj registry.Project, req Prepare
 		Context:    run.Context,
 		LockedDocs: findLockedDocs(proj.RootPath),
 		CapNodeID:  nodeID,
+		Engine:     real.engine,
+		Agent:      real.agent,
 		Notes: []string{
 			"the locked-doc grep matches the marker text anywhere, so it has a known false positive when a repo documents the marker syntax itself",
 		},
@@ -660,6 +821,8 @@ func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan 
 		Dispatch: nodeID,
 		Tags:     plan.Tags,
 		Plan:     plan.Plan,
+		Engine:   plan.Engine,
+		Agent:    plan.Agent,
 	})
 }
 
@@ -822,7 +985,8 @@ func recordStatus(h *command.Handler, nodeID, status, summary string) error {
 }
 
 // nextCommand is the herdr line the cap runs to deliver the brief to a worker.
-// dispatch does not run it.
+// dispatch does not run it. The agent kind is the plan's resolved `agent:`, not
+// a constant — it is the same value Deliver hands to herdr agent start.
 //
 // It splits a sibling pane of the cap's own rather than creating a tab: the
 // split is anchored to the cap's pane, and therefore to the cap's workspace, so
@@ -831,9 +995,9 @@ func nextCommand(b *Brief) string {
 	name := "dispatch-" + b.TaskType
 	return fmt.Sprintf(
 		`P=$(herdr pane split --current --direction right --no-focus --cwd %s | jq -r '.result.pane.pane_id') && `+
-			`herdr agent start %s --kind pi --pane "$P" && `+
+			`herdr agent start %s --kind %s --pane "$P" && `+
 			`herdr agent prompt %s %s --wait --timeout 120000`,
-		shellQuote(b.RootPath), name, name, shellQuote(renderBrief(b)))
+		shellQuote(b.RootPath), name, b.Agent, name, shellQuote(renderBrief(b)))
 }
 
 // renderBrief is the text the cap hands the worker: goal, project root, the

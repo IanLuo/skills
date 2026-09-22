@@ -71,12 +71,15 @@ type Step struct {
 }
 
 // Playbook is the structured config entity: a named protocol, the moment it runs
-// in, the situations it is for, where it sits in the order, and its steps.
+// in, the situations it is for, where it sits in the order, how the work is
+// realized (engine and agent), and its steps.
 type Playbook struct {
 	Name        string   `json:"name" yaml:"name"`
 	Phase       string   `json:"phase" yaml:"phase"`
 	AppliesWhen []string `json:"-" yaml:"-"`
 	Order       int      `json:"order" yaml:"order"`
+	Engine      string   `json:"engine,omitempty" yaml:"engine"`
+	Agent       string   `json:"agent,omitempty" yaml:"agent"`
 	Steps       []Step   `json:"steps" yaml:"steps"`
 }
 
@@ -485,6 +488,16 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			}
 		case "steps":
 			inSteps = true
+		case "engine":
+			if val == "" {
+				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `engine:`; engine must be a single non-empty token", name)
+			}
+			pb.Engine = val
+		case "agent":
+			if val == "" {
+				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `agent:`; agent must be a single non-empty token", name)
+			}
+			pb.Agent = val
 		case "type", "trigger", "engine_scope":
 			return nil, removedFieldError(name, key, val)
 		}
@@ -514,7 +527,7 @@ func removedFieldError(name, key, val string) error {
 			"the replacement is `phase: %s`", val)
 	case "engine_scope":
 		replacement = fmt.Sprintf(
-			"the replacement is the term `applies_when: engine=%s`", val)
+			"the replacement is `engine: %s` — the declaration that now exists; use the term `applies_when: engine=%s` only when the intent is to match an engine rather than declare one", val, val)
 	case "type":
 		replacement = "the replacement is `phase` — `entry` for a prerequisite, " +
 			"`exit` for a cleanup — with an `applies_when` term naming the work it matches"
@@ -564,6 +577,24 @@ func isKind(kind string) bool {
 	return slices.Contains(AllKinds, kind)
 }
 
+// validRealizationToken reports whether s is a single non-empty token — the
+// shape an `engine:` or `agent:` value must take. It is a name, not an
+// expression, so no whitespace and no `=`.
+func validRealizationToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '.', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Validate holds a resolved playbook to the schema: a name, a known phase, at
 // least one step, and only the kinds its phase allows. It runs on the write path
 // and wherever a playbook is matched, so a broken playbook is refused before it
@@ -580,6 +611,16 @@ func Validate(pb *Playbook) error {
 	}
 	if len(pb.Steps) == 0 {
 		return fmt.Errorf("knowledge: playbook %q has no steps; a playbook is a protocol, so it has at least one", pb.Name)
+	}
+
+	for _, field := range []struct{ name, val string }{
+		{"engine", pb.Engine}, {"agent", pb.Agent},
+	} {
+		if field.val != "" && !validRealizationToken(field.val) {
+			return fmt.Errorf(
+				"knowledge: playbook %q declares %s %q; %s must be a single non-empty token",
+				pb.Name, field.name, field.val, field.name)
+		}
 	}
 
 	for i, step := range pb.Steps {
@@ -622,6 +663,8 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Phase       string `json:"phase"`
 		AppliesWhen string `json:"applies_when,omitempty"`
 		Order       int    `json:"order"`
+		Engine      string `json:"engine,omitempty"`
+		Agent       string `json:"agent,omitempty"`
 		Steps       []Step `json:"steps"`
 	}
 	return json.Marshal(file{
@@ -629,6 +672,8 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Phase:       pb.Phase,
 		AppliesWhen: pb.AppliesWhenString(),
 		Order:       pb.Order,
+		Engine:      pb.Engine,
+		Agent:       pb.Agent,
 		Steps:       pb.Steps,
 	})
 }

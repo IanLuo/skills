@@ -49,13 +49,14 @@ type fakeHerdr struct {
 	paneExists    bool
 	paneExistsErr error
 
-	created   []string
-	started   []string
-	prompts   []promptCall
-	closed    []string
-	rooted    []string
-	checkouts []string
-	verified  []string
+	created    []string
+	started    []string
+	startKinds []string
+	prompts    []promptCall
+	closed     []string
+	rooted     []string
+	checkouts  []string
+	verified   []string
 }
 
 // promptCall is one brief handed to a pane, so a test can read the text the
@@ -86,8 +87,9 @@ func (f *fakeHerdr) WorktreeCheckout(wsID string) (string, error) {
 	return f.checkoutPath, nil
 }
 
-func (f *fakeHerdr) StartAgent(paneID, name string) error {
+func (f *fakeHerdr) StartAgent(paneID, name, kind string) error {
 	f.started = append(f.started, paneID+"/"+name)
+	f.startKinds = append(f.startKinds, kind)
 	return f.startErr
 }
 
@@ -130,6 +132,8 @@ func writeGates(t *testing.T, f *fixture) {
 const codeExit = `name: code-exit
 phase: exit
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - check: true
 `
@@ -138,13 +142,13 @@ steps:
 // `steps:`, so a test states the protocol it is about and nothing else.
 func exitGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
-	f.writePlaybook(t, "code-exit", "name: code-exit\nphase: exit\napplies_when: code\nsteps:\n"+steps)
+	f.writePlaybook(t, "code-exit", "name: code-exit\nphase: exit\napplies_when: code\nengine: herdr\nagent: pi\nsteps:\n"+steps)
 }
 
 // entryGate does the same for the entry phase.
 func entryGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
-	f.writePlaybook(t, "code-entry", "name: code-entry\nphase: entry\napplies_when: code\nsteps:\n"+steps)
+	f.writePlaybook(t, "code-entry", "name: code-entry\nphase: entry\napplies_when: code\nengine: herdr\nagent: pi\nsteps:\n"+steps)
 }
 
 // parallelExitGate writes the exit playbook a parallel dispatch selects: its
@@ -153,14 +157,14 @@ func entryGate(t *testing.T, f *fixture, steps string) {
 func parallelExitGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
 	f.writePlaybook(t, "parallel-exit",
-		"name: parallel-exit\nphase: exit\napplies_when: type=parallel\nsteps:\n"+steps)
+		"name: parallel-exit\nphase: exit\napplies_when: type=parallel\nengine: herdr\nagent: pi\nsteps:\n"+steps)
 }
 
 // integrationExitGate writes the exit playbook an integration selects.
 func integrationExitGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
 	f.writePlaybook(t, "integration-exit",
-		"name: integration-exit\nphase: exit\napplies_when: type=integrate\nsteps:\n"+steps)
+		"name: integration-exit\nphase: exit\napplies_when: type=integrate\nengine: herdr\nagent: pi\nsteps:\n"+steps)
 }
 
 // parallelReq is a worktree batch's dispatch, so the fixtures tagged for it load.
@@ -422,7 +426,7 @@ func TestDeliverRecordsThePaneAndWorkerBindingStructurally(t *testing.T) {
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
 
 	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
-	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
+	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID, Engine: "herdr", Agent: "pi"}
 
 	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
 	if !resp.OK {
@@ -484,6 +488,8 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	f.writePlaybook(t, "worker", `name: worker
 phase: work
 applies_when: code
+engine: herdr
+agent: pi
 steps:
   - say: a final message is not read; record what is durable on your node
 `)
@@ -1038,6 +1044,7 @@ func TestCloseClosesADispatchWhoseGoalWasEdited(t *testing.T) {
 
 func TestCloseRefusesWithoutADeliveryRecord(t *testing.T) {
 	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
 	brief := prepareOnly(t, f, devReq("sample"))
 
 	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{

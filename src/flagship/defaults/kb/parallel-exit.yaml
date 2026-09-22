@@ -4,7 +4,9 @@ applies_when: type=parallel
 order: 10
 # The declared actions call herdr — closing the member's worktree workspace is a
 # herdr action. The schema's `engine_scope: herdr` field said so; the field is
-# gone, and the steps below still say it where it matters.
+# gone, and this declaration — plus the steps below — still says it where it
+# matters.
+engine: herdr
 steps:
   # The member's exit gate. It checks the process, not the outcome.
   #

@@ -750,7 +750,11 @@ func kbList(args []string) {
 func kbPrompt(args []string) {
 	kc := openKB(flagVal(args, "--project", ""))
 
-	prompt, err := kc.Prompt(shippedKB(), dispatch.SessionTags())
+	tags, err := dispatch.SessionTags(kc)
+	if err != nil {
+		promptError(err)
+	}
+	prompt, err := kc.Prompt(shippedKB(), tags)
 	if err != nil {
 		promptError(err)
 	}

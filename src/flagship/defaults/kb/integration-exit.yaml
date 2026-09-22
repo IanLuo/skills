@@ -4,7 +4,9 @@ applies_when: type=integrate
 order: 10
 # The declared actions call herdr — closing the member's worktree workspace is a
 # herdr action. The schema's `engine_scope: herdr` field said so; the field is
-# gone, and the steps below still say it where it matters.
+# gone, and this declaration — plus the steps below — still says it where it
+# matters.
+engine: herdr
 steps:
   # The integration's own exit gate. The suite must be green on the merged tree.
   # `tests/run.sh` is this repo's declared suite, so it runs here rather than

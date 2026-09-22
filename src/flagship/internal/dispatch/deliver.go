@@ -1,7 +1,7 @@
 // Delivery: handing a prepared brief to a worker and recording the binding.
 //
-// herdr is the declared dispatcher — it is the derived `engine=herdr` tag every
-// dispatch carries — so shelling out to its CLI is a deliberate coupling, not an
+// herdr is the dispatcher the plan resolves — the `engine:` the playbooks
+// declare — so shelling out to its CLI is a deliberate coupling, not an
 // accident. The HerdrCLI interface exists only so the gates can be exercised
 // without a live terminal.
 package dispatch
@@ -19,13 +19,6 @@ import (
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/trace"
 )
-
-// agentKind is the agent the dispatcher launches in the worker pane. It matches
-// the herdr line the brief carries as next_command.
-const agentKind = "pi"
-
-// herdrEngine names the dispatcher in the delivery record.
-const herdrEngine = "herdr"
 
 // ErrPaneGone reports that a pane no longer exists. Closing an already-closed
 // pane is a success, not a failure: the dispatch is simply already torn down.
@@ -79,8 +72,9 @@ type HerdrCLI interface {
 	// recorded. ErrNoWorktree means the workspace could not be resolved, which a
 	// gate refuses on rather than guessing.
 	WorktreeCheckout(wsID string) (string, error)
-	// StartAgent starts an interactive agent named name in an existing pane.
-	StartAgent(paneID, name string) error
+	// StartAgent starts an interactive agent named name in an existing pane,
+	// of the kind the plan's `agent:` field resolved to.
+	StartAgent(paneID, name, kind string) error
 	// Prompt submits text to the agent hosted by paneID.
 	Prompt(paneID, text string) error
 	// Agents reports every agent herdr knows, by name, with the state herdr
@@ -126,7 +120,7 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 	}
 
 	agent := workerAgent(brief.TaskType, workerID)
-	if err := hc.StartAgent(paneID, agent); err != nil {
+	if err := hc.StartAgent(paneID, agent, brief.Agent); err != nil {
 		abandonWorker(hc, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("start agent %s: %v", agent, err))
 		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
@@ -152,7 +146,7 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 		PaneID:       paneID,
 		TabID:        tabID,
 		Agent:        agent,
-		Engine:       herdrEngine,
+		Engine:       brief.Engine,
 		Project:      brief.Project,
 		Node:         workerID,
 		Type:         brief.TaskType,
@@ -302,8 +296,8 @@ func (herdrCLI) SplitPane(cwd string) (string, string, error) {
 	return resp.Result.Pane.PaneID, resp.Result.Pane.TabID, nil
 }
 
-func (herdrCLI) StartAgent(paneID, name string) error {
-	_, err := runHerdr("agent", "start", name, "--kind", agentKind, "--pane", paneID)
+func (herdrCLI) StartAgent(paneID, name, kind string) error {
+	_, err := runHerdr("agent", "start", name, "--kind", kind, "--pane", paneID)
 	return err
 }
 

@@ -1452,6 +1452,8 @@ steps:
 
 const dispatchPlaybook = `name: code-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
@@ -1563,6 +1565,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	writeFileIn(t, root, "c.md", "# C\n\n## Files\nsrc/a.go\n")
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeWorkerPlaybook(t)
 	writeKBPlaybook(t, testHome(t), parEntryPlaybook, shippedDefault(t, parEntryPlaybook))
 	gateBody := shippedStep(t, shippedDefault(t, parEntryPlaybook), "check", "$FS_CARDS")
 	env, _, _ := fakeHerdrOnPath(t)
@@ -1699,10 +1702,10 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// A dispatch nothing applies to is not an error. A plan is resolved by matching
-// tags against applies_when, so an unmatched dispatch resolves to no playbook at
-// all — legal, and said out loud rather than hidden behind an empty list.
-func TestCLIDispatchWithNoMatchingPlaybookReportsAnEmptyPlan(t *testing.T) {
+// A dispatch whose plan declares no realization refuses, naming worker.yaml as
+// the place to declare it — the missing-protocol signal, not an error to be
+// papered over with a Go default.
+func TestCLIDispatchRefusesWhenNothingDeclaresTheRealization(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
@@ -1715,19 +1718,14 @@ steps:
 `)
 
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "no-such-type", "--goal", "x")
-	if code != 0 {
-		t.Fatalf("a dispatch nothing applies to is legal, exit %d: %v", code, resp["error"])
+	if code != 1 {
+		t.Fatalf("a dispatch nothing declares a realization for must refuse, exit %d: %v", code, resp)
 	}
-	data := resp["data"].(map[string]any)
-	if plan, ok := data["plan"].([]any); ok && len(plan) != 0 {
-		t.Errorf("plan = %v, want none: code-only does not apply to this dispatch", plan)
-	}
-	// The cap is told, in the brief it would hand the worker, that nothing
-	// applies — an empty plan that reads as an empty list is a dispatch the cap
-	// cannot tell from a broken one.
-	next, _ := data["next_command"].(string)
-	if !strings.Contains(next, "plan: empty") {
-		t.Errorf("the brief must say the plan is empty, got %q", next)
+	errMsg, _ := resp["error"].(string)
+	for _, want := range []string{"worker.yaml", "engine", "agent"} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("refusal %q must mention %q", errMsg, want)
+		}
 	}
 }
 
@@ -1741,6 +1739,16 @@ func writeKBPlaybook(t *testing.T, home, name, content string) {
 	if err := os.WriteFile(filepath.Join(kbDir, name+".yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeWorkerPlaybook seeds the standing worker playbook — engine: herdr,
+// agent: pi — in the isolated home, the way fs bootstrap would. A dispatch
+// resolves its realization from a playbook, and the shipped worker is the one
+// that declares it; these CLI tests write their own gates, so they bring the
+// standing declaration with them.
+func writeWorkerPlaybook(t *testing.T) {
+	t.Helper()
+	writeKBPlaybook(t, testHome(t), "worker", shippedDefault(t, "worker"))
 }
 
 // scopeTasks returns every task in a scope, via fs status.
@@ -1853,8 +1861,11 @@ func TestCLIDispatchFailsFastThenConfirm(t *testing.T) {
 	root := t.TempDir()
 	sentinel := filepath.Join(t.TempDir(), "dispatch-check3-ran")
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	writeWorkerPlaybook(t)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, fmt.Sprintf(`name: code-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
   - check: false
@@ -1920,6 +1931,8 @@ func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, `name: code-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
@@ -1978,6 +1991,8 @@ steps:
 
 const herdrTestPlaybook = `name: code-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `
@@ -1986,6 +2001,8 @@ steps:
 // to reach --deliver with herdr deliberately missing.
 const noCheckPlaybook = `name: code-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - ask: is this one deliverable
 `
@@ -2606,6 +2623,8 @@ func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
@@ -2646,6 +2665,8 @@ func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *test
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
@@ -2680,6 +2701,8 @@ func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
@@ -2734,6 +2757,8 @@ func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
@@ -3180,6 +3205,8 @@ func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), intEntryPlaybook, `name: integration-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
@@ -3271,6 +3298,8 @@ func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
 phase: entry
+engine: herdr
+agent: pi
 steps:
   - check: true
 `)
