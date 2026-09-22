@@ -193,7 +193,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		PaneID: delivery.PaneID,
 	}
 	if delivered {
-		result.Trace = lg.Path(req.NodeID)
+		result.Trace = lg.Path(delivery.Project, req.NodeID)
 		// The plan resolved both scopes at dispatch time, so its exit playbooks
 		// may live in the target project's KB. Close resolves the same way — the
 		// dispatch's project, not the cap's terminal — or a project-scoped exit
@@ -312,7 +312,7 @@ func closeBatch(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *kno
 	kc = kc.InProject(project)
 	delivery := command.DeliveryRecord{Project: project}
 
-	result := CloseResult{NodeID: req.NodeID, Trace: lg.Path(req.NodeID)}
+	result := CloseResult{NodeID: req.NodeID, Trace: lg.Path(project, req.NodeID)}
 
 	if !req.Abandoned {
 		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan, req.Confirm, false); err != nil {

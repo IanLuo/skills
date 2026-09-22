@@ -236,7 +236,7 @@ func rewriteTrace(t *testing.T, f *fixture, project, node string, keep func(trac
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
-	path := f.lg.Path(node)
+	path := f.lg.Path(project, node)
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove trace: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestCloseRefusesADispatchWithNoTrace(t *testing.T) {
 	writeGates(t, f)
 	brief := runDispatch(t, f, devReq("sample"))
 
-	if err := os.Remove(f.lg.Path(brief.CapNodeID)); err != nil {
+	if err := os.Remove(f.lg.Path(brief.Project, brief.CapNodeID)); err != nil {
 		t.Fatalf("remove the trace: %v", err)
 	}
 
@@ -1157,7 +1157,7 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	if decisions := capDecisions(t, f, brief.CapNodeID); !contains(decisions, "verified the worker's node") {
 		t.Errorf("decisions = %v, want the verdict", decisions)
 	}
-	if result.Trace != f.lg.Path(brief.CapNodeID) {
+	if result.Trace != f.lg.Path(brief.Project, brief.CapNodeID) {
 		t.Errorf("result trace = %q, want the path the gate read", result.Trace)
 	}
 }

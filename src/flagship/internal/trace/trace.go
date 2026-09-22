@@ -1,11 +1,13 @@
 // Package trace records what a dispatch actually ran.
 //
-// One JSONL file per dispatch, under ~/.fs/traces/<node>.jsonl: the plan the
-// dispatch was measured against as its first line, then one line per step
-// outcome. The file is filed flat, keyed by the node alone, and the project the
-// dispatch acted on is a field on every line — never a directory in the path.
-// It is append-only, never deleted at close, and never transmitted — its whole
-// purpose is to outlive the worker's transcript and the pane.
+// One JSONL file per dispatch, under ~/.fs/traces/<project>.<node>.jsonl: the
+// plan the dispatch was measured against as its first line, then one line per
+// step outcome. The file is filed flat; the project leads the name because a
+// person browsing the directory should recognise the file, and a dot separates
+// the halves because both contain hyphens. The project the dispatch acted on is
+// a field on every line as well — the name is for a person, the field for the
+// program. It is append-only, never deleted at close, and never transmitted —
+// its whole purpose is to outlive the worker's transcript and the pane.
 //
 // The package reads and writes; it never gates. A gate reads this file and
 // decides; trace only refuses to lose a line, because an outcome that cannot be
@@ -110,9 +112,11 @@ type Log struct {
 // keeps no empty directory.
 func Open(tracesDir string) *Log { return &Log{root: tracesDir} }
 
-// Path is one dispatch's trace file, located from the node alone.
-func (l *Log) Path(node string) string {
-	return filepath.Join(l.root, node+".jsonl")
+// Path is one dispatch's trace file: <project>.<node>.jsonl. Writing a line
+// knows the project, so it constructs the path directly; reading does not, so
+// Read locates the file by globbing the node.
+func (l *Log) Path(project, node string) string {
+	return filepath.Join(l.root, project+"."+node+".jsonl")
 }
 
 // Append writes one line to a dispatch's trace. The write is a refusal if it
@@ -141,23 +145,29 @@ func (l *Log) Append(project string, ln Line) error {
 		return fmt.Errorf("trace: encode line: %w", err)
 	}
 
-	f, err := os.OpenFile(l.Path(ln.Dispatch), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	path := l.Path(project, ln.Dispatch)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("trace: open %s: %w", l.Path(ln.Dispatch), err)
+		return fmt.Errorf("trace: open %s: %w", path, err)
 	}
 	defer f.Close()
 
 	if _, err := f.Write(append(encoded, '\n')); err != nil {
-		return fmt.Errorf("trace: write %s: %w", l.Path(ln.Dispatch), err)
+		return fmt.Errorf("trace: write %s: %w", path, err)
 	}
 	return nil
 }
 
-// Read returns every line of a dispatch's trace, in the order written. A trace
-// that was never written is an error naming the file rather than an empty
-// timeline: absence is not the same as "nothing ran".
+// Read returns every line of a dispatch's trace, in the order written. The file
+// is located from the node alone by globbing traces/*.<node>.jsonl: the node no
+// longer spells the path, so the glob is the lookup. A trace that was never
+// written is an error naming the node rather than an empty timeline: absence is
+// not the same as "nothing ran".
 func (l *Log) Read(node string) ([]Line, error) {
-	path := l.Path(node)
+	path, err := l.resolve(node)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -188,6 +198,27 @@ func (l *Log) Read(node string) ([]Line, error) {
 		return nil, fmt.Errorf("no trace was written for %q", node)
 	}
 	return lines, nil
+}
+
+// resolve locates a dispatch's trace file from the node alone, by globbing
+// traces/*.<node>.jsonl. More than one match refuses naming them rather than
+// picking one: the node is the key the caller has, and a key that opens two
+// files is a collision to report, not a choice to make.
+func (l *Log) resolve(node string) (string, error) {
+	pattern := filepath.Join(l.root, "*."+node+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", fmt.Errorf("trace: glob %s: %w", pattern, err)
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no trace was written for %q", node)
+	case 1:
+		return matches[0], nil
+	default:
+		sort.Strings(matches)
+		return "", fmt.Errorf("trace: node %q matches %d traces (%s) — refusing to pick one", node, len(matches), strings.Join(matches, ", "))
+	}
 }
 
 // Render is the text view of one dispatch's timeline: one line per record,

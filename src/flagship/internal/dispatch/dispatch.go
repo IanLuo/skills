@@ -6,7 +6,7 @@
 // that plan once, records it on the cap node, runs the plan's `entry` steps
 // against the target project's root, and renders the brief from the plan's
 // `work` steps. Every step that runs appends a line to the dispatch's trace
-// under ~/.fs/traces/<node>.jsonl, which is what close-out gates against.
+// under ~/.fs/traces/<project>.<node>.jsonl, which is what close-out gates against.
 //
 // Every check step sees the dispatch's own inputs as FS_* (see checkEnv), so a
 // gate can ask about this dispatch — which cards — and not only about the world.

@@ -1202,7 +1202,7 @@ func closeCmd(args []string) {
 }
 
 // traceLog is the trace store: one JSONL file per dispatch under
-// ~/.fs/traces/<node>.jsonl. It is opened once per command; nothing is
+// ~/.fs/traces/<project>.<node>.jsonl. It is opened once per command; nothing is
 // created until a line is written.
 func traceLog() *trace.Log {
 	return trace.Open(filepath.Join(fsHome(), "traces"))
@@ -1248,7 +1248,7 @@ func traceCmd(args []string) {
 
 	if hasFlag(args, "--json") {
 		output(command.Response{OK: true, Data: map[string]any{
-			"node": node, "project": project, "path": traceLog().Path(node), "lines": lines,
+			"node": node, "project": project, "path": traceLog().Path(project, node), "lines": lines,
 		}})
 		return
 	}
