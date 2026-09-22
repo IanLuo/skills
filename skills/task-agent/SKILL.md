@@ -62,21 +62,21 @@ Two modes, both invoked by you in the main checkout:
    ```bash
    fs dispatch --project <project> --type integrate --goal "merge <task> into main"
    ```
-   The entry gate checks the member's tree and its branch still exist, and asks you
-   to confirm the order and that main has no foreign staged changes — answer it.
+   The entry gate checks the member's dispatch node exists (`fs task get
+   $FS_INTEGRATES --project cap --kind dispatch`), and asks you to confirm the
+   order and that main has no foreign staged changes — answer it.
    Deliver the brief (`--deliver`): that worker merges, runs the suite, and deletes
    the branch and worktree. Then **read the worker's node** — the node, not the
    dispatch's success, is the truth about whether the merge happened — and close it:
    ```bash
    fs close --node <cap-node> --decision "<verdict from the worker's node>"
    ```
-   `fs close` runs the `integrate-cleanup` exit gate (suite green, no linked
-   worktree left, no unmerged branch left) before it marks the dispatch done. The
-   gate is about the whole batch: integrate a batch's members in one dispatch — or
-   have merged and torn down every earlier member — before closing, or it refuses.
-5. **Confirm the teardown.** `fs close` removes the worktree the delivery names and
-   the integration worker deletes the branch. If either remains, the exit gate
-   refuses — fix it rather than closing anyway.
+   `fs close` runs the `integration-exit` exit gate — `bash tests/run.sh` green,
+   then the ask "was the integration verdict recorded and read" — and the declared
+   teardown steps (branch, worktree, workspace), before it marks the dispatch done.
+5. **Confirm the teardown.** The exit playbook's `do` steps remove the worktree the
+   delivery names, delete the branch, and close the workspace; its postcondition
+   checks refuse if any remains. Fix it rather than closing anyway.
 ### end --abort
 
 Task failed or abandoned — remove the worktree + delete the branch, no merge, no review:
