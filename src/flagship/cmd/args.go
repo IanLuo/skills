@@ -252,7 +252,9 @@ func checkArgs(name string, args []string) {
 // usageError reports a usage mistake as the usual envelope with exit 2, keeping
 // it distinct from an app error's exit 1.
 func usageError(format string, args ...any) {
-	resp := command.Response{OK: false, Error: fmt.Sprintf(format, args...)}
+	msg := fmt.Sprintf(format, args...)
+	logRefusal(msg)
+	resp := command.Response{OK: false, Error: msg}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(resp)

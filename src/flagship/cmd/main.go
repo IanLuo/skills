@@ -15,16 +15,56 @@ import (
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/knowledge"
+	"github.com/flagship-dev/flagship/internal/logging"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
 	"github.com/flagship-dev/flagship/internal/trace"
 )
 
-// logger is the structured logger for the CLI. JSON to stderr (ARCHITECTURE R4).
-var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+// logger is the structured logger for the CLI: JSON to stderr (ARCHITECTURE R4),
+// and the same lines teed to the running log under ~/.fs/logs. It is built in
+// main once the level is known; the file sink is best-effort and never gates.
+var logger *slog.Logger
+
+// stripGlobalVerbose pulls the global -v/--verbose flag out of the args before
+// the per-subcommand allowlist runs. checkArgs refuses unknown flags, and -v
+// must work for every subcommand, so it is handled here, once, rather than
+// added to every subcommand's spec.
+func stripGlobalVerbose(args []string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	verbose := false
+	for _, a := range args {
+		if a == "-v" || a == "--verbose" {
+			verbose = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, verbose
+}
+
+// logDir is ~/.fs/logs, resolved without creating anything: the sink creates
+// the directory lazily on its first write, so a --help or a command that never
+// logs touches nothing on disk.
+func logDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".fs", "logs")
+}
 
 func main() {
+	args, verbose := stripGlobalVerbose(os.Args[1:])
+	os.Args = append([]string{os.Args[0]}, args...)
+
+	level, err := logging.ResolveLevel(os.Getenv("FS_LOG_LEVEL"), verbose)
+	if err != nil {
+		fatal(err.Error())
+	}
+	logger = logging.NewLogger(logDir(), level)
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -1085,6 +1125,21 @@ func dispatchCmd(args []string) {
 	})
 	if resp.OK {
 		brief := resp.Data.(*dispatch.Brief)
+		names := make([]string, 0, len(brief.Plan))
+		for _, p := range brief.Plan {
+			names = append(names, p.Name)
+		}
+		// DEBUG carries the shapes a diagnosis needs: the tags that selected the
+		// plan, the plan itself, and where the playbooks that produced it live.
+		logger.Debug("plan resolved",
+			"command", "dispatch",
+			"project", project,
+			"type", taskType,
+			"tags", strings.Join(multiFlag(args, "--tag"), ","),
+			"plan", strings.Join(names, ","),
+			"engine", brief.Engine,
+			"agent", brief.Agent,
+			"kb_paths", strings.Join([]string{kbDir(), projectKBDir(project)}, ","))
 		brief.Worktree = worktree
 		if deliver {
 			resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), traceLog(), brief)
@@ -1226,8 +1281,35 @@ func nodeArg(projectID, nodeID string) (string, string) {
 	return project, node
 }
 
+// commandName derives the command a log line belongs to, from the process args:
+// "task-add", "project-create", "close", or the bare top-level command.
+func commandName() string {
+	if len(os.Args) < 2 {
+		return "fs"
+	}
+	name := os.Args[1]
+	if (name == "task" || name == "project" || name == "kb") && len(os.Args) > 2 && !strings.HasPrefix(os.Args[2], "-") {
+		name += "-" + os.Args[2]
+	}
+	return name
+}
+
+// logRefusal records a refused command: a WARN line naming the command and the
+// reason, so a refusal is visible in the running log even when its envelope is
+// the only thing on stdout. It is best-effort and never fails anything; it is a
+// no-op before the logger is built (an unparseable FS_LOG_LEVEL refuses first).
+func logRefusal(reason string) {
+	if logger == nil {
+		return
+	}
+	logger.Warn("command refused", "command", commandName(), "reason", reason)
+}
+
 // output prints a Response as JSON to stdout and exits with appropriate code.
 func output(resp command.Response) {
+	if !resp.OK {
+		logRefusal(resp.Error)
+	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(resp)
@@ -1296,6 +1378,7 @@ func isHelp(arg string) bool {
 }
 
 func fatal(msg string) {
+	logRefusal(msg)
 	resp := command.Response{OK: false, Error: msg}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

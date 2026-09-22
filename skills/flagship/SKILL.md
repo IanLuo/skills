@@ -55,7 +55,7 @@ In a fresh session, `fs project list` is always the first command — it shows a
 
 ## CLI reference
 
-Every command but one returns JSON to stdout: `{"ok": true, "data": {...}}` or `{"ok": false, "error": "..."}`. Exit codes: 0=success, 1=app error, 2=usage. Logs go to stderr. The one exception is `fs kb prompt`, which prints plain text to stdout (its whole point is to pipe into a prompt).
+Every command but one returns JSON to stdout: `{"ok": true, "data": {...}}` or `{"ok": false, "error": "..."}`. Exit codes: 0=success, 1=app error, 2=usage. Logs go to stderr and are teed to `~/.fs/logs/fs.log` (see The running log). The one exception is `fs kb prompt`, which prints plain text to stdout (its whole point is to pipe into a prompt).
 
 Exit 2 means the command line itself was wrong: an unknown flag, a flag missing its value, or a stray positional where the subcommand takes none. It is refused, never ignored — a typo'd flag is an error, not a no-op that reports success. Every subcommand answers `--help` / `-h` / `help` with its usage on stderr and exit 0, without touching the store, the registry, or `~/.fs`.
 
@@ -413,6 +413,21 @@ Everything lives under `~/.fs/` — no project directory is written to:
 - `~/.fs/kb/` — global knowledge center (YAML playbooks)
 - `~/.fs/projects/<project>/kb/` — a project's own playbooks, shadowing global by name
 - `~/.fs/projects/<project>/logs/<node>.jsonl` — one dispatch's trace
+- `~/.fs/logs/fs.log` — the running log (JSON lines, rotating; see The running log)
+
+## The running log
+
+Every `fs` invocation appends one line per notable step to `~/.fs/logs/fs.log` — JSON lines (slog's `time`/`level`/`msg` plus the command's own fields such as `command`, `project`, `node_id`). It is the same JSON the process writes to stderr, teed to a file that outlives the pane, so a command run with stderr discarded still leaves its record. `project` is a field on each line, never a directory split. Read it with the tools that already filter it:
+
+```bash
+tail -f ~/.fs/logs/fs.log                             # watch it
+jq -c 'select(.project=="skills")' ~/.fs/logs/fs.log # one project's lines
+grep '"command refused"' ~/.fs/logs/fs.log            # every refusal, with its reason
+```
+
+The level defaults to INFO; `-v`/`--verbose` turns it up to DEBUG (the flag works on every subcommand), and `FS_LOG_LEVEL=debug|info|warn|error` is the environment fallback, the flag winning. An unparseable level is refused, naming the accepted values. The file rotates at 4 MiB keeping three files (`fs.log`, `fs.log.1`, `fs.log.2`).
+
+**It never gates.** Nothing in fs reads the log back to make a decision; a write failure (an unwritable `~/.fs/logs`, a full disk) produces at most a WARN on stderr and never fails the command. This is the running log's whole distinction from the **trace** (`~/.fs/projects/<project>/logs/<node>.jsonl`): the trace records what a dispatch ran and a missing trace line refuses a close; the log records what a process did and its absence refuses nothing. `fs log` reads *events*, not this file — the two are not each other.
 
 ## Project identity
 
