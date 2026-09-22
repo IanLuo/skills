@@ -95,6 +95,9 @@ func main() {
 	case "integrated":
 		checkArgs("integrated", os.Args[2:])
 		integratedCmd(os.Args[2:])
+	case "batch":
+		checkArgs("batch", os.Args[2:])
+		batchCmd(os.Args[2:])
 	case "close":
 		checkArgs("close", os.Args[2:])
 		closeCmd(os.Args[2:])
@@ -177,10 +180,12 @@ Commands:
   kb remove NAME [--project P]                  Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
                                                [--integrates MEMBER_NODE]
+                                               [--batch BATCH_NODE]
                                                [--tag K[=V]] [--also NAME]
                                                [--without NAME]
                                                [--confirm] [--allow-unresolved]
                                                [--deliver] [--worktree WS]
+                                               [--worktree-new]
                                                Prepare a dispatch brief; --deliver
                                                also hands it to a worker pane;
                                                --cards names the batch's cards,
@@ -190,8 +195,12 @@ Commands:
                                                merges, recorded on the dispatch's
                                                own task-created payload and seen
                                                by every check as $FS_INTEGRATES;
+                                               --batch names the batch node this
+                                               dispatch is a member of (its cap
+                                               node is the batch's child);
                                                --worktree names the herdr worktree
-                                               workspace to tear down at close.
+                                               workspace to tear down at close, and
+                                               --worktree-new creates one instead.
                                                --tag declares situation terms on
                                                top of the derived type= and
                                                engine= tags; --also forces a
@@ -206,6 +215,11 @@ Commands:
                                                integration dispatch that names
                                                this member cap node; exit 1 when
                                                none does
+  batch BATCH_NODE                            Exit 0 iff every member of the
+                                               batch has a done integration
+                                               naming it; exit 1 naming the
+                                               unintegrated ones. A batch with
+                                               no members is refused
   close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
                                                Close out a dispatch: run the exit
                                                phase of the plan it recorded, then
@@ -1083,7 +1097,9 @@ func dispatchCmd(args []string) {
 	taskType := flagVal(args, "--type", "")
 	goal := flagVal(args, "--goal", "")
 	worktree := flagVal(args, "--worktree", "")
+	worktreeNew := hasFlag(args, "--worktree-new")
 	integrates := flagVal(args, "--integrates", "")
+	batch := flagVal(args, "--batch", "")
 	cards := cardsFlag(args)
 	confirm := hasFlag(args, "--confirm")
 	allowUnresolved := hasFlag(args, "--allow-unresolved")
@@ -1097,6 +1113,9 @@ func dispatchCmd(args []string) {
 	}
 	if goal == "" {
 		fatal("--goal is required")
+	}
+	if worktree != "" && worktreeNew {
+		fatal("--worktree names an existing workspace and --worktree-new creates one; a dispatch runs in one worktree, not both")
 	}
 
 	kc := openKB("")
@@ -1117,6 +1136,7 @@ func dispatchCmd(args []string) {
 		Goal:            goal,
 		Cards:           cards,
 		Integrates:      integrates,
+		Batch:           batch,
 		Tags:            multiFlag(args, "--tag"),
 		Also:            multiFlag(args, "--also"),
 		Without:         multiFlag(args, "--without"),
@@ -1141,6 +1161,7 @@ func dispatchCmd(args []string) {
 			"agent", brief.Agent,
 			"kb_paths", strings.Join([]string{kbDir(), projectKBDir(project)}, ","))
 		brief.Worktree = worktree
+		brief.WorktreeNew = worktreeNew
 		if deliver {
 			resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), traceLog(), brief)
 		}
@@ -1274,6 +1295,20 @@ func integratedCmd(args []string) {
 	defer h.Close()
 
 	output(dispatch.Integrated(h, args[0]))
+}
+
+// batchCmd answers a batch's question: is every member integrated? It is the
+// batch's exit gate and the fact that replaces the cap's "is this the next
+// merge" ask — a read with an exit code, mirroring fs integrated.
+func batchCmd(args []string) {
+	if len(args) < 1 {
+		fatal("fs batch: BATCH_NODE required")
+	}
+
+	h := openHandler("")
+	defer h.Close()
+
+	output(dispatch.Batch(h, args[0]))
 }
 
 // nodeArg splits a "<project>:<node>" node argument into the project it names

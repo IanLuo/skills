@@ -132,13 +132,22 @@ comma-separated list.
 --integrates names the member cap node an integration merges. It must exist in
 the cap scope and be a dispatch node; the link is recorded on this dispatch's own
 task-created payload, so fs integrated can answer the member's question from the
-record rather than from a goal string."`,
+record rather than from a goal string.
+
+--batch names the batch node this dispatch is a member of. It must be a
+kind: batch node; the member's cap node is recorded as the batch's child
+(parent_node_id), and the tag member is derived so the member playbooks load.
+
+--worktree-new creates the worktree (herdr worktree create) instead of naming an
+existing one with --worktree; the created workspace and checkout path are
+recorded on the delivery exactly as --worktree records them, so the existing
+teardown removes them with no new flags.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--cards": true, "--integrates": true,
+			"--cards": true, "--integrates": true, "--batch": true,
 			"--tag": true, "--also": true, "--without": true,
 			"--confirm": false, "--allow-unresolved": false,
-			"--deliver": false, "--worktree": true,
+			"--deliver": false, "--worktree": true, "--worktree-new": false,
 		},
 	},
 	"close": {
@@ -184,6 +193,17 @@ project root, so an action that removes the worktree does not stand inside it.`,
 	"pending":    {usage: "Usage: fs pending"},
 	"integrated": {
 		usage:       "Usage: fs integrated MEMBER_NODE",
+		positionals: 1,
+	},
+	"batch": {
+		usage: `Usage: fs batch BATCH_NODE
+
+Answer a batch's question: is every member integrated? Exit 0 iff every member
+has a done integration dispatch naming it; exit 1 naming the unintegrated
+members otherwise. A batch with no members is refused rather than read as
+complete. On success the payload carries each member and the resources its
+delivery opened (worktree, checkout path, pane) — what the batch's teardown
+loops over.`,
 		positionals: 1,
 	},
 	"trace": {

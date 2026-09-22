@@ -72,6 +72,11 @@ type HerdrCLI interface {
 	// recorded. ErrNoWorktree means the workspace could not be resolved, which a
 	// gate refuses on rather than guessing.
 	WorktreeCheckout(wsID string) (string, error)
+	// CreateWorktree creates a new worktree workspace rooted at cwd and returns
+	// its workspace id and checkout path. It is the mechanism behind
+	// --worktree-new: the workspace's root pane sits at the checkout, which is
+	// what the delivery record must keep for the teardown to remove it.
+	CreateWorktree(cwd string) (workspaceID, checkout string, err error)
 	// StartAgent starts an interactive agent named name in an existing pane,
 	// of the kind the plan's `agent:` field resolved to.
 	StartAgent(paneID, name, kind string) error
@@ -105,6 +110,19 @@ type HerdrCLI interface {
 // rollbackWorker): a failed delivery neither leaves outstanding work behind nor
 // claims a delivery that did not happen.
 func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) command.Response {
+	// --worktree-new creates the worktree rather than naming an existing one:
+	// the workspace and its checkout path are recorded on the delivery exactly
+	// as --worktree records them, so the existing teardown removes them with no
+	// new flags. The creation happens before the worker's pane is found because
+	// the worker starts inside the tree.
+	if brief.WorktreeNew {
+		workspace, _, err := hc.CreateWorktree(brief.RootPath)
+		if err != nil {
+			return deliverErr(brief, fmt.Errorf("create worktree: %w", err))
+		}
+		brief.Worktree = workspace
+	}
+
 	paneID, tabID, worktreePath, err := workerPane(hc, brief)
 	if err != nil {
 		return deliverErr(brief, err)
@@ -342,6 +360,35 @@ func (h herdrCLI) WorktreeRootPane(wsID string) (string, string, string, error) 
 	return "", "", "", fmt.Errorf(
 		"%w: workspace %s has %d pane(s) and none sits at the worktree checkout %s",
 		ErrNoRootPane, wsID, len(resp.Result.Panes), checkout)
+}
+
+// CreateWorktree creates a new worktree workspace rooted at cwd and returns its
+// workspace id and checkout path. herdr worktree create reports the workspace as
+// .result.workspace.workspace_id and the checkout as
+// .result.workspace.worktree.checkout_path.
+func (herdrCLI) CreateWorktree(cwd string) (string, string, error) {
+	out, err := runHerdr("worktree", "create", "--cwd", cwd, "--no-focus")
+	if err != nil {
+		return "", "", err
+	}
+
+	var resp struct {
+		Result struct {
+			Workspace struct {
+				WorkspaceID string `json:"workspace_id"`
+				Worktree    struct {
+					CheckoutPath string `json:"checkout_path"`
+				} `json:"worktree"`
+			} `json:"workspace"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return "", "", fmt.Errorf("herdr worktree create: parse response: %w", err)
+	}
+	if resp.Result.Workspace.WorkspaceID == "" {
+		return "", "", errors.New("herdr worktree create: response carried no workspace id")
+	}
+	return resp.Result.Workspace.WorkspaceID, resp.Result.Workspace.Worktree.CheckoutPath, nil
 }
 
 // WorktreeCheckout returns the checkout path of the worktree workspace wsID, or

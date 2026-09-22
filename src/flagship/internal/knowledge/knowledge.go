@@ -17,6 +17,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/flagship-dev/flagship/internal/query"
 )
 
 // Phases: the moment a playbook runs in.
@@ -80,7 +82,13 @@ type Playbook struct {
 	Order       int      `json:"order" yaml:"order"`
 	Engine      string   `json:"engine,omitempty" yaml:"engine"`
 	Agent       string   `json:"agent,omitempty" yaml:"agent"`
-	Steps       []Step   `json:"steps" yaml:"steps"`
+	// Creates names the node kind a dispatch of this playbook's situation
+	// leaves behind. It is the playbook's declaration of what the node is, so
+	// no Go map from task type to kind exists. Empty means the standing
+	// default, dispatch; the consumer resolves it rather than storing a
+	// default here.
+	Creates string `json:"creates,omitempty" yaml:"creates"`
+	Steps   []Step `json:"steps" yaml:"steps"`
 }
 
 // Matches reports whether every term of applies_when holds for a tag set. An
@@ -498,6 +506,11 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `agent:`; agent must be a single non-empty token", name)
 			}
 			pb.Agent = val
+		case "creates":
+			if val == "" {
+				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `creates:`; creates names the node kind and must be a single non-empty token", name)
+			}
+			pb.Creates = val
 		case "type", "trigger", "engine_scope":
 			return nil, removedFieldError(name, key, val)
 		}
@@ -623,6 +636,15 @@ func Validate(pb *Playbook) error {
 		}
 	}
 
+	// `creates` names the node kind a dispatch leaves behind, so it must be one
+	// of the kinds the store's closed vocabulary knows. The empty default is
+	// resolved by the consumer, not stored here.
+	if pb.Creates != "" && !query.ValidKind(query.Kind(pb.Creates)) {
+		return fmt.Errorf(
+			"knowledge: playbook %q declares creates %q; creates must be one of %s (or omitted for the dispatch default)",
+			pb.Name, pb.Creates, strings.Join([]string{string(query.KindWork), string(query.KindDispatch), string(query.KindGap), string(query.KindBatch)}, ", "))
+	}
+
 	for i, step := range pb.Steps {
 		// `include` is legal in every phase. It is spliced away before anything
 		// runs — a resolved playbook never carries one — and what it splices is
@@ -665,6 +687,7 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Order       int    `json:"order"`
 		Engine      string `json:"engine,omitempty"`
 		Agent       string `json:"agent,omitempty"`
+		Creates     string `json:"creates,omitempty"`
 		Steps       []Step `json:"steps"`
 	}
 	return json.Marshal(file{
@@ -674,6 +697,7 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Order:       pb.Order,
 		Engine:      pb.Engine,
 		Agent:       pb.Agent,
+		Creates:     pb.Creates,
 		Steps:       pb.Steps,
 	})
 }

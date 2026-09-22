@@ -16,22 +16,32 @@ import (
 // phase and its applies_when and by nothing else, so the names below say which
 // phase gate each one is rather than what it used to be called.
 const (
-	capPlaybook      = "cap"
-	codeEntryPb      = "code-entry"
-	codeExitPb       = "code-exit"
-	herdrPlaybook    = "herdr"
-	parEntryPlaybook = "parallel-entry"
-	parExitPlaybook  = "parallel-exit"
-	intEntryPlaybook = "integration-entry"
-	intExitPlaybook  = "integration-exit"
+	capPlaybook   = "cap"
+	codeEntryPb   = "code-entry"
+	codeExitPb    = "code-exit"
+	herdrPlaybook = "herdr"
+	batchEntryPb  = "batch-entry"
+	batchExitPb   = "batch-exit"
+	memberPb      = "member"
+	memberExitPb  = "member-exit"
+	intEntryPb    = "integration-entry"
+	intExitPb     = "integration-exit"
+
+	// Stub playbooks a worktree-teardown test writes: an entry playbook that
+	// declares the realization and a passing check, and an exit playbook that
+	// carries the shipped teardown. Both have no applies_when, so they sit in
+	// every dispatch's plan — those tests are about the teardown, not about
+	// which tags select it.
+	teardownEntryPb = "teardown-entry"
+	teardownExitPb  = "teardown-exit"
 )
 
 // shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
 // of them; the cap's standing rules are built from the cap-phase ones.
 var shippedPlaybooks = []string{
 	capPlaybook, herdrPlaybook, "worker", codeEntryPb, codeExitPb, "plan",
-	"development", "tdd", "review", "research", parEntryPlaybook, parExitPlaybook,
-	intEntryPlaybook, intExitPlaybook,
+	"development", "tdd", "review", "research", batchEntryPb, batchExitPb,
+	memberPb, memberExitPb, intEntryPb, intExitPb,
 }
 
 // shippedDefault is a default the binary is expected to carry. The test process
@@ -325,9 +335,9 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 // bin/ is out of reach; tests/check-parallel covers the script's own behaviour.
 func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	bin := getFS(t)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, shippedDefault(t, parEntryPlaybook))
+	writeKBPlaybook(t, testHome(t), batchEntryPb, shippedDefault(t, batchEntryPb))
 
-	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", parEntryPlaybook)
+	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", batchEntryPb)
 	if code != 0 {
 		t.Fatalf("kb get exit %d: %v", code, resp["error"])
 	}
@@ -335,7 +345,7 @@ func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	// The gate reads the batch from the dispatch itself: $FS_CARDS is the
 	// variable fs dispatch --cards exports. Naming the variable rather than the
 	// whole command pins the wiring while leaving the playbook's wording free.
-	want := shippedStep(t, shippedDefault(t, parEntryPlaybook), "check", "$FS_CARDS")
+	want := shippedStep(t, shippedDefault(t, batchEntryPb), "check", "$FS_CARDS")
 	var checks []string
 	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
 		step := raw.(map[string]any)
@@ -348,7 +358,7 @@ func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 			return
 		}
 	}
-	t.Errorf("the parallel gate's checks are %v, want one running %q", checks, want)
+	t.Errorf("the batch gate's checks are %v, want one running %q", checks, want)
 }
 
 // fs kb prompt is the delivery path for the playbooks: the cap's standing rules
@@ -505,55 +515,60 @@ func preconditionsOf(steps []map[string]any) []string {
 func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	bin := getFS(t)
 
-	// The member's exit gate checks the process, not the outcome. The
-	// merged-ness check it replaced asserted an outcome a hand merge satisfies,
-	// so it is deleted rather than kept beside the stronger check. Everything
-	// after the declared teardown is a postcondition about this member's own
-	// tree or workspace, named by $FS_WORKTREE*, never about the batch.
-	memberSteps := stepsOf(t, bin, parExitPlaybook)
-	pre := preconditionsOf(memberSteps)
-	if len(pre) != 1 || pre[0] != "fs integrated $FS_NODE" {
-		t.Errorf("parallel-exit's pre-teardown checks = %v, want the integration link alone", pre)
+	// The member's exit gate checks the process, not the outcome, and it owns no
+	// teardown: the member's tree is the batch's, so there is no do step and no
+	// postcondition here. The merged-ness check it replaced asserted an outcome a
+	// hand merge satisfies, so it is deleted rather than kept beside the
+	// stronger check.
+	memberSteps := stepsOf(t, bin, memberExitPb)
+	if pre := preconditionsOf(memberSteps); len(pre) != 1 || pre[0] != "fs integrated $FS_NODE" {
+		t.Errorf("member-exit's checks = %v, want the integration link alone", pre)
 	}
-	for _, body := range postconditionsOf(t, parExitPlaybook, memberSteps) {
-		if !strings.Contains(body, "FS_WORKTREE") {
-			t.Errorf("parallel-exit postcondition %q is not about this member's own worktree/workspace", body)
-		}
+	if len(bodiesOf(memberSteps, "do")) != 0 {
+		t.Errorf("member-exit declares teardown: a member's tree is the batch's to remove")
 	}
 	if asks := bodiesOf(memberSteps, "ask"); len(asks) != 1 ||
 		!strings.Contains(asks[0], "its worker node") {
-		t.Errorf("parallel-exit asks = %v, want the one question about this member's node", asks)
+		t.Errorf("member-exit asks = %v, want the one question about this member's node", asks)
 	}
 
-	// The integration's exit gate keeps what the integration owns, and it is the
-	// same teardown: a worktree or branch check is batch-global when it does not
-	// name this dispatch's own tree — it belongs to no single member, and it
-	// makes a per-member integration impossible while any other member is
-	// unfinished. The suite check is the integration's own: it runs on the tree
-	// the worker merged into.
-	intSteps := stepsOf(t, bin, intExitPlaybook)
+	// The integration's exit gate keeps what the integration owns: the suite
+	// check on the tree it merged into. The six teardown steps it used to share
+	// with parallel-exit are gone — they are the batch's, not a per-member
+	// integration's.
+	intSteps := stepsOf(t, bin, intExitPb)
 	if got := preconditionsOf(intSteps); len(got) != 1 || !strings.Contains(got[0], "tests/run.sh") {
-		t.Errorf("integration-exit's pre-teardown checks = %v, want the repo suite alone", got)
+		t.Errorf("integration-exit's checks = %v, want the repo suite alone", got)
 	}
-	for _, body := range postconditionsOf(t, intExitPlaybook, intSteps) {
-		if !strings.Contains(body, "FS_WORKTREE") {
-			t.Errorf("integration-exit postcondition %q is not about this dispatch's own worktree", body)
-		}
-	}
-	for _, body := range bodiesOf(intSteps, "check") {
-		if (strings.Contains(body, "worktree") || strings.Contains(body, "branch")) &&
-			!strings.Contains(body, "FS_WORKTREE") {
-			t.Errorf("integration-exit check %q is batch-global; it belongs to no single member", body)
-		}
+	if len(bodiesOf(intSteps, "do")) != 0 {
+		t.Errorf("integration-exit declares teardown: a member's tree is the batch's to remove")
 	}
 	if asks := bodiesOf(intSteps, "ask"); len(asks) != 1 ||
 		!strings.Contains(asks[0], "integration verdict") {
 		t.Errorf("integration-exit asks = %v, want the one question this integration owns", asks)
 	}
 
+	// The batch's exit gate is where the fan-out's teardown lives, declared once.
+	// Its first step is the fs batch gate — the read that refuses, naming the
+	// unintegrated members, before any teardown — and every step after it
+	// iterates the batch's members, so a member's tree is removed only after
+	// every member is integrated.
+	batchSteps := stepsOf(t, bin, batchExitPb)
+	if pre := preconditionsOf(batchSteps); len(pre) != 1 || !strings.Contains(pre[0], "fs batch $FS_NODE") {
+		t.Errorf("batch-exit's gate = %v, want the fs batch read alone", pre)
+	}
+	if actions := bodiesOf(batchSteps, "do"); len(actions) != 3 {
+		t.Errorf("batch-exit declares %d teardown actions, want 3 (branch, worktree, workspace)", len(actions))
+	}
+	for _, body := range postconditionsOf(t, batchExitPb, batchSteps) {
+		if !strings.Contains(body, "fs batch") {
+			t.Errorf("batch-exit postcondition %q is not scoped to the batch's members", body)
+		}
+	}
+
 	// The entry gate is member-scoped, and its compound ask is split: a rubric
 	// cannot partition two questions asked as one.
-	entry := bodiesOf(stepsOf(t, bin, intEntryPlaybook), "check")
+	entry := bodiesOf(stepsOf(t, bin, intEntryPb), "check")
 	if len(entry) != 1 || !strings.Contains(entry[0], "fs task get") || !strings.Contains(entry[0], "$FS_INTEGRATES") {
 		t.Errorf("integration-entry checks = %v, want the member check on $FS_INTEGRATES", entry)
 	}
@@ -562,7 +577,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 			t.Errorf("integration-entry check %q is repo-wide; it cannot be run per member", body)
 		}
 	}
-	if asks := bodiesOf(stepsOf(t, bin, intEntryPlaybook), "ask"); len(asks) != 2 {
+	if asks := bodiesOf(stepsOf(t, bin, intEntryPb), "ask"); len(asks) != 2 {
 		t.Errorf("integration-entry asks = %v, want the order and the staged-changes question apart", asks)
 	}
 
@@ -581,6 +596,11 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	}
 	if len(bodiesOf(dev, "do")) == 0 {
 		t.Error("code-exit declares no teardown: a dispatch that had a worktree would leak its checkout")
+	}
+	for _, body := range bodiesOf(dev, "do") {
+		if !strings.Contains(body, "FS_BATCH") {
+			t.Errorf("code-exit action %q does not defer on FS_BATCH — a member's tree would not survive its close", body)
+		}
 	}
 	for _, body := range postconditionsOf(t, codeExitPb, dev) {
 		if !strings.Contains(body, "FS_WORKTREE") {

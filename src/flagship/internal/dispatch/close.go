@@ -112,10 +112,24 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	if err != nil {
 		return errResp("close: " + err.Error())
 	}
+	if node.Kind == query.KindBatch {
+		return closeBatch(h, hc, reg, kc, lg, req)
+	}
 	if node.Kind != query.KindDispatch {
 		return errResp(fmt.Sprintf(
 			"close: %s is not a dispatch node — its kind is %q, want %q",
 			req.NodeID, node.Kind, query.KindDispatch))
+	}
+
+	// A member belongs to a batch when its cap node's parent is a kind: batch
+	// node. FS_BATCH is that node's id, exported to the exit steps so code-exit
+	// defers its teardown to the batch — the marker is one value, derived from
+	// the structural parent link, never guessed from a goal string.
+	batch := ""
+	if node.ParentNodeID != "" {
+		if parent, ok := scopeNode(h, capScope, node.ParentNodeID); ok && parent.Kind == query.KindBatch {
+			batch = node.ParentNodeID
+		}
 	}
 
 	decision := req.Decision
@@ -207,12 +221,12 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// and so does a refusal here — the teardown below is only ever reached by a
 	// close that is going to succeed.
 	if !req.Abandoned {
-		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan, req.Confirm); err != nil {
+		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan, req.Confirm, true); err != nil {
 			return errResp(err.Error())
 		}
 	}
 
-	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, plan, req.Confirm, req.Abandoned)
+	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, plan, req.Confirm, req.Abandoned)
 	if err != nil {
 		return errResp(err.Error())
 	}
@@ -230,7 +244,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// by-product of it: a close that leaves the exit phase unrecorded would leave
 	// a trace that reads as a dispatch which was never closed.
 	if !req.Abandoned {
-		if err := gateExit(kc, lg, req.NodeID, plan); err != nil {
+		if err := gateExit(kc, lg, req.NodeID, plan, true); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -265,6 +279,90 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		return errResp("mark node done: " + resp.Error)
 	}
 	return command.Response{OK: true, Data: result}
+}
+
+// closeBatch closes out a batch node. A batch has no delivery and no worker of
+// its own — it is the parent its members hang from — so the delivery and worker
+// gates do not apply, and neither does the work-playbook handover gate: the
+// plan's worker playbook was never handed to anyone by design. What does apply
+// is the batch's own exit phase, batch-exit, whose first step is the fs batch
+// gate — so a batch whose members are not all integrated refuses before any
+// teardown runs, naming the unintegrated members in the check's output.
+//
+// The batch's exit actions run in the main checkout — its declared teardown
+// removes members' worktrees and branches, which are git state of the project —
+// so the project is recovered from the trace's plan line, the one structured
+// record of which project the batch was dispatched into.
+func closeBatch(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
+	if req.Decision == "" {
+		return errResp("--decision is required: record the verdict this close-out rests on")
+	}
+
+	plan, err := recordedPlan(h, req.NodeID)
+	if err != nil {
+		return errResp("close: " + err.Error())
+	}
+
+	project, err := batchProject(lg, req.NodeID)
+	if err != nil {
+		return errResp("close: " + err.Error())
+	}
+	// The batch's exit playbooks are resolved from the project's scope the same
+	// way a dispatch's are, so a project-scoped batch-exit is honoured.
+	kc = kc.InProject(project)
+	delivery := command.DeliveryRecord{Project: project}
+
+	result := CloseResult{NodeID: req.NodeID, Trace: lg.Path(req.NodeID)}
+
+	if !req.Abandoned {
+		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan, req.Confirm, false); err != nil {
+			return errResp(err.Error())
+		}
+	}
+
+	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, "", "", plan, req.Confirm, req.Abandoned)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	result.Cleanup = run.Note
+	result.Actions = run.Actions
+	for _, confirmation := range run.Confirmations {
+		if err := recordDecision(h, req.NodeID, confirmation); err != nil {
+			return errResp(err.Error())
+		}
+	}
+
+	if !req.Abandoned {
+		if err := gateExit(kc, lg, req.NodeID, plan, false); err != nil {
+			return errResp(err.Error())
+		}
+	}
+
+	decision := req.Decision
+	if req.Abandoned {
+		decision = "abandoned, never delivered: " + req.Reason
+	}
+	result.Decision = decision
+	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
+		return errResp("mark node done: " + resp.Error)
+	}
+	return command.Response{OK: true, Data: result}
+}
+
+// batchProject returns the project a batch was dispatched into, read from the
+// trace's plan line — the one structured record of it, since a batch node has
+// no delivery record to name a project.
+func batchProject(lg *trace.Log, nodeID string) (string, error) {
+	lines, err := lg.Read(nodeID)
+	if err != nil {
+		return "", err
+	}
+	for _, ln := range lines {
+		if ln.Project != "" {
+			return ln.Project, nil
+		}
+	}
+	return "", fmt.Errorf("the batch's trace for %s records no project, so its teardown has no checkout to run in", nodeID)
 }
 
 // recordedPlan reads the plan a dispatch recorded at preparation time. A
@@ -390,13 +488,15 @@ func lastLines(lines []trace.Line) map[string]trace.Line {
 // gap means, which is why the same list can be a refusal at close and a report
 // in `fs trace`.
 func Deviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace.Line, nodeID string) ([]string, error) {
-	return phaseDeviations(kc, plan, lines, nodeID, knowledge.PhaseEntry, knowledge.PhaseExit)
+	return phaseDeviations(kc, plan, lines, nodeID, true, knowledge.PhaseEntry, knowledge.PhaseExit)
 }
 
 // phaseDeviations is Deviations over a subset of the plan's phases, which is how
 // the close gate checks the entry phase before the teardown and the exit phase
-// after it.
-func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace.Line, nodeID string, phases ...string) ([]string, error) {
+// after it. requireWork toggles the work-playbook handover check: a dispatched
+// worker must have its work playbooks handed over, but a batch was never
+// delivered, so its plan's worker playbook has no `loaded` line by design.
+func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace.Line, nodeID string, requireWork bool, phases ...string) ([]string, error) {
 	last := lastLines(lines)
 	var gaps []string
 
@@ -427,7 +527,7 @@ func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace
 	}
 
 	for _, entry := range plan {
-		if entry.Phase != knowledge.PhaseWork {
+		if !requireWork || entry.Phase != knowledge.PhaseWork {
 			continue
 		}
 		line, recorded := last[trace.StepID(nodeID, entry.Name, 0)]
@@ -449,7 +549,7 @@ func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace
 // asks, at the same point in the close, so there is one place to answer a
 // question and never two. A check is different: a failed one was the cap's to
 // accept when it dispatched, and a close is not where it gets accepted.
-func gateEntry(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, nodeID string, plan []trace.PlanEntry, confirm bool) error {
+func gateEntry(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, nodeID string, plan []trace.PlanEntry, confirm, requireWork bool) error {
 	lines, err := lg.Read(nodeID)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
@@ -462,7 +562,7 @@ func gateEntry(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery
 		}
 	}
 
-	gaps, err := phaseDeviations(kc, plan, lines, nodeID, knowledge.PhaseEntry)
+	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.PhaseEntry)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
@@ -524,12 +624,12 @@ func confirmAsks(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delive
 // That is not redundancy for its own sake: the two passes are one gate split by
 // the teardown, and a gate that only ever verified the half it was looking at
 // would let a close pass on a plan it never fully read.
-func gateExit(kc *knowledge.Center, lg *trace.Log, nodeID string, plan []trace.PlanEntry) error {
+func gateExit(kc *knowledge.Center, lg *trace.Log, nodeID string, plan []trace.PlanEntry, requireWork bool) error {
 	lines, err := lg.Read(nodeID)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
-	gaps, err := phaseDeviations(kc, plan, lines, nodeID, knowledge.PhaseEntry, knowledge.PhaseExit)
+	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.PhaseEntry, knowledge.PhaseExit)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
@@ -605,7 +705,7 @@ type exitRun struct {
 // is a decision about the work, not a licence to leak the tree it ran in — and
 // one that fails is a warning, never a refusal, for the same reason: a stuck
 // teardown must not keep a node open.
-func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
+func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
 	steps, err := flatten(kc, plan, knowledge.PhaseExit)
 	if err != nil {
 		return exitRun{}, fmt.Errorf("close: %v", err)
@@ -650,20 +750,28 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 	// integrates, and — for an action that has to remove a tree — the pane and
 	// the worktree the delivery opened. FS_CARDS is exported empty — a close has
 	// no batch to offer — and stays present rather than missing, so a step can
-	// tell "this dispatch named no cards" from "this step has no env".
-	env := exitEnv(delivery, capNodeID, integrates)
+	// tell "this dispatch named no cards" from "this step has no env". FS_BATCH
+	// is the batch node when this dispatch is a member of one, empty otherwise:
+	// it is the marker code-exit's teardown defers on, so a member's tree is
+	// owned by the batch, not the member.
+	env := exitEnv(delivery, capNodeID, integrates, batch)
 
 	var run exitRun
 	checks, asks, says := 0, 0, 0
 	names := playbookNames(steps)
 	tree := "" // the tree the checks run in; resolved before the first check
 
+	worker := ""
+	if delivery.Project != "" && delivery.Node != "" {
+		worker = delivery.Project + ":" + delivery.Node
+	}
+
 	for i, step := range steps {
 		id := trace.StepID(capNodeID, step.Playbook, step.Index)
 		line := trace.Line{
 			ID:       id,
 			Dispatch: capNodeID,
-			Worker:   delivery.Project + ":" + delivery.Node,
+			Worker:   worker,
 			Playbook: step.Playbook,
 			Phase:    knowledge.PhaseExit,
 			Step:     step.Index,
@@ -845,7 +953,7 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // FS_PANE, FS_WORKTREE, and FS_WORKTREE_PATH name what the delivery opened. They
 // are what lets a declared action be about this dispatch's own tree — removing
 // it, deleting its branch — without the mechanism knowing how.
-func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates string) []string {
+func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch string) []string {
 	worker := ""
 	if delivery.Project != "" && delivery.Node != "" {
 		worker = delivery.Project + ":" + delivery.Node
@@ -860,6 +968,7 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates string) []st
 		"FS_PANE=" + delivery.PaneID,
 		"FS_WORKTREE=" + delivery.Worktree,
 		"FS_WORKTREE_PATH=" + delivery.WorktreePath,
+		"FS_BATCH=" + batch,
 	}
 }
 

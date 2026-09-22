@@ -1,7 +1,12 @@
-name: parallel-entry
+name: batch-entry
 phase: entry
-applies_when: type=parallel
+applies_when: type=batch
 order: 10
+# This dispatch leaves a kind: batch node — the fan-out's parent, which its
+# members name with --batch. creates is the playbook's declaration of the node
+# kind, so there is no Go map from task type to kind: a batch is a batch because
+# this playbook says so, read from the plan after selection.
+creates: batch
 steps:
   - check: test -d .git
   # herdr resolves the workspace from the invoking pane's HERDR_* environment,
@@ -14,5 +19,8 @@ steps:
   # mechanical check on this dispatch rather than a judgement call. With no
   # --cards, check-parallel.sh refuses and names the flag — a check with no
   # input must not pass vacuously.
+  #
+  # This gate runs once for the fan-out — here — instead of once per member,
+  # which is the whole reason the batch is a dispatched node.
   - check: bin/check-parallel.sh $FS_CARDS
   - ask: is the batch small enough that the merges are reviewable one at a time

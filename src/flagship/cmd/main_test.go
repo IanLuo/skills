@@ -1566,12 +1566,12 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeWorkerPlaybook(t)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, shippedDefault(t, parEntryPlaybook))
-	gateBody := shippedStep(t, shippedDefault(t, parEntryPlaybook), "check", "$FS_CARDS")
+	writeKBPlaybook(t, testHome(t), batchEntryPb, shippedDefault(t, batchEntryPb))
+	gateBody := shippedStep(t, shippedDefault(t, batchEntryPb), "check", "$FS_CARDS")
 	env, _, _ := fakeHerdrOnPath(t)
 
 	// Disjoint cards pass, and the gate's output says what it intersected.
-	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch", "--cards", "a.md,b.md")
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch", "--cards", "a.md,b.md")
 	if code != 0 {
 		t.Fatalf("disjoint cards must pass the gate, exit %d: %v", code, resp["error"])
 	}
@@ -1581,7 +1581,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 
 	// --cards is repeatable, and the two forms name the same batch.
 	resolveCapScope(t, bin, root)
-	repeated, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch", "--cards", "a.md", "--cards", "b.md")
+	repeated, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch", "--cards", "a.md", "--cards", "b.md")
 	if code != 0 {
 		t.Fatalf("--cards twice must name the same batch, exit %d: %v", code, repeated["error"])
 	}
@@ -1591,7 +1591,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 
 	// Overlapping cards are refused, and the refusal names the shared path.
 	resolveCapScope(t, bin, root)
-	overlap, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch", "--cards", "a.md,c.md")
+	overlap, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch", "--cards", "a.md,c.md")
 	if code != 1 {
 		t.Fatalf("overlapping cards must be refused, exit %d: %v", code, overlap)
 	}
@@ -1605,7 +1605,7 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	// With no cards the gate refuses instead of passing vacuously, and the
 	// message names the flag the caller forgot.
 	resolveCapScope(t, bin, root)
-	noCards, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "parallel", "--goal", "batch")
+	noCards, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch")
 	if code != 1 {
 		t.Fatalf("a gate with no cards must refuse, exit %d: %v", code, noCards)
 	}
@@ -2595,13 +2595,13 @@ func mergeIntoMain(t *testing.T, root, worktree, branch string) {
 	goGit(t, root, "merge", "-q", "--ff-only", branch)
 }
 
-// deliverParallelInWorktree prepares and delivers a parallel dispatch bound to a
+// deliverWorktreeDispatch prepares and delivers a dev-task dispatch bound to a
 // real worktree workspace, and marks the worker's node done so the close-out
 // gate has something to sign off. It returns the cap node.
-func deliverParallelInWorktree(t *testing.T, bin, root string, env []string, worktree, ws string) string {
+func deliverWorktreeDispatch(t *testing.T, bin, root string, env []string, worktree, ws string) string {
 	t.Helper()
 	delivered, code := runFSEnv(t, bin, root, env,
-		"dispatch", "--deliver", "--project", "skills", "--type", "parallel", "--goal", "sample", "--worktree", ws)
+		"dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", ws)
 	if code != 0 {
 		t.Fatalf("dispatch --deliver exit %d: %v", code, delivered["error"])
 	}
@@ -2621,14 +2621,14 @@ func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
 phase: entry
 engine: herdr
 agent: pi
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2636,7 +2636,7 @@ steps:
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverParallelInWorktree(t, bin, root, env, worktree, "wWT")
+	capNode := deliverWorktreeDispatch(t, bin, root, env, worktree, "wWT")
 
 	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
 	if code != 0 {
@@ -2663,21 +2663,21 @@ func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *test
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
 phase: entry
 engine: herdr
 agent: pi
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
 
 	env, _, _ := fakeHerdrOnPath(t)
 	deliverEnv := append(append([]string{}, env...), "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverParallelInWorktree(t, bin, root, deliverEnv, worktree, "wWT")
+	capNode := deliverWorktreeDispatch(t, bin, root, deliverEnv, worktree, "wWT")
 
 	// Close without the worktree environment: every herdr call about wWT reports
 	// workspace_not_found, and the recorded path is all the steps need.
@@ -2699,14 +2699,14 @@ func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
 phase: entry
 engine: herdr
 agent: pi
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2716,14 +2716,14 @@ steps:
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverParallelInWorktree(t, bin, root, env, worktree, "wWT")
+	capNode := deliverWorktreeDispatch(t, bin, root, env, worktree, "wWT")
 
 	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1: %v", code, resp)
 	}
 	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"exit action failed", parExitPlaybook, "git worktree remove", "untracked files"} {
+	for _, want := range []string{"exit action failed", teardownExitPb, "git worktree remove", "untracked files"} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}
@@ -2731,7 +2731,7 @@ steps:
 	// The refusal left everything where it was: the checkout is still there, so
 	// the cap can clean it and close again.
 	assertWorktreeListed(t, root, resolved)
-	if task := capTask(t, bin, root, "dispatch parallel: sample"); task["status"] == "done" {
+	if task := capTask(t, bin, root, "dispatch dev-task: sample"); task["status"] == "done" {
 		t.Errorf("cap node status = %v, a refused close must leave it open", task["status"])
 	}
 
@@ -2755,21 +2755,21 @@ func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
 phase: entry
 engine: herdr
 agent: pi
 steps:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), parExitPlaybook, parExitPlaybook, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverParallelInWorktree(t, bin, root, env, worktree, "wWT")
+	capNode := deliverWorktreeDispatch(t, bin, root, env, worktree, "wWT")
 
 	// The tree and branch are removed by hand, as a retry after a partial
 	// teardown leaves them: the declared steps must see nothing to do.
@@ -3203,7 +3203,7 @@ func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), intEntryPlaybook, `name: integration-entry
+	writeKBPlaybook(t, testHome(t), intEntryPb, `name: integration-entry
 phase: entry
 engine: herdr
 agent: pi
@@ -3211,7 +3211,7 @@ steps:
   - check: true
 `)
 
-	member := capNodeOf(t, bin, root, "dispatch parallel: member", "dispatch")
+	member := capNodeOf(t, bin, root, "dispatch dev-task: member", "dispatch")
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "integrate", "--goal", "merge the member", "--integrates", member)
 	if code != 0 {
 		t.Fatalf("dispatch --integrates exit %d: %v", code, resp["error"])
@@ -3243,7 +3243,7 @@ func TestCLITaskGetAnswersWithAnExitCode(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
-	member := capNodeOf(t, bin, root, "dispatch parallel: member", "dispatch")
+	member := capNodeOf(t, bin, root, "dispatch dev-task: member", "dispatch")
 	resp, code := runFS(t, bin, root, "task", "get", member, "--project", "cap", "--kind", "dispatch")
 	if code != 0 {
 		t.Fatalf("task get exit %d: %v", code, resp["error"])
@@ -3296,19 +3296,24 @@ func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
 	goGit(t, root, "merge-base", "--is-ancestor", "HEAD", "main")
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), parEntryPlaybook, `name: parallel-entry
+	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
 phase: entry
 engine: herdr
 agent: pi
 steps:
   - check: true
 `)
-	writeKBPlaybook(t, testHome(t), parExitPlaybook, shippedDefault(t, parExitPlaybook))
+	writeKBPlaybook(t, testHome(t), memberExitPb, shippedDefault(t, memberExitPb))
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = fsOnPath(t, bin, env)
 
-	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "parallel", "--goal", "member")
+	// A member is a dispatch that names a batch: --batch records its parent, and
+	// the member tag it derives is what selects member-exit. The batch node is
+	// created directly — the batch's own creation is not what this test is
+	// about.
+	batchNode := capNodeOf(t, bin, root, "the batch", "batch")
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "member", "--batch", batchNode)
 	if code != 0 {
 		t.Fatalf("dispatch --deliver exit %d: %v", code, resp["error"])
 	}
@@ -3323,10 +3328,10 @@ steps:
 	}
 	closed, code := runFSEnv(t, bin, root, env, "close", "--node", member, "--decision", "read the worker node; verified")
 	if code == 0 {
-		t.Fatalf("a hand-merged member must be refused by parallel-exit, got %v", closed)
+		t.Fatalf("a hand-merged member must be refused by member-exit, got %v", closed)
 	}
 	errMsg, _ := closed["error"].(string)
-	for _, want := range []string{"exit check failed", parExitPlaybook, "fs integrated", member} {
+	for _, want := range []string{"exit check failed", memberExitPb, "fs integrated", member} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("refusal %q must mention %q", errMsg, want)
 		}
@@ -3334,12 +3339,12 @@ steps:
 
 	// Now integrate it the dispatched way, per member: an integration dispatch
 	// names it, is closed done, and the member's gate passes.
-	writeKBPlaybook(t, testHome(t), intEntryPlaybook, `name: integration-entry
+	writeKBPlaybook(t, testHome(t), intEntryPb, `name: integration-entry
 phase: entry
 steps:
   - check: true
 `)
-	writeKBPlaybook(t, testHome(t), intExitPlaybook, `name: integration-exit
+	writeKBPlaybook(t, testHome(t), intExitPb, `name: integration-exit
 phase: exit
 steps:
   - check: true

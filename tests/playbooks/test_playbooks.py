@@ -3,7 +3,7 @@
 test_playbooks.py — the shipped playbooks are a contract, so they are checked
 like one.
 
-fs ships 14 playbooks in src/flagship/defaults/kb. They are the protocols a
+fs ships 16 playbooks in src/flagship/defaults/kb. They are the protocols a
 dispatch is measured against, and they are data: a typo in a phase or a step
 kind is a protocol that refuses at the worst moment, and a `use:` naming a skill
 this repo does not ship is a hint that sends a worker looking for nothing. Both
@@ -13,7 +13,7 @@ deleted rather than corrected. This test is what keeps the replacement honest.
 
 What it checks, per playbook:
 
-  1. The set is exactly the 14 the schema ships — no file added or dropped
+  1. The set is exactly the 16 the schema ships — no file added or dropped
      without this list moving with it.
   2. Each file parses, its `name` is its file name, its phase is one of
      cap/entry/work/exit, and its `order`, when given, is an integer.
@@ -70,8 +70,10 @@ SHIPPED = [
     "tdd",
     "review",
     "research",
-    "parallel-entry",
-    "parallel-exit",
+    "batch-entry",
+    "batch-exit",
+    "member",
+    "member-exit",
     "integration-entry",
     "integration-exit",
 ]
@@ -163,7 +165,7 @@ def main():
     check("the skills tree is readable", len(skills) > 5, f"found {sorted(skills)}")
 
     found = sorted(p.stem for p in KB.glob("*.yaml"))
-    check("the shipped set is exactly the 14", found == sorted(SHIPPED),
+    check("the shipped set is exactly the 16", found == sorted(SHIPPED),
           f"on disk: {found}; expected: {sorted(SHIPPED)}")
 
     for name in sorted(SHIPPED):

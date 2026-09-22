@@ -69,6 +69,15 @@ const engineTag = "engine"
 // typeTag is the derived tag naming the dispatch's task type.
 const typeTag = "type"
 
+// batchTag is the derived situation tag naming a batch: it is stamped from the
+// plan's `creates: batch` declaration, and batch-exit matches on it.
+const batchTag = "batch"
+
+// memberTag is the derived situation tag naming a member of a batch: a
+// dispatch that named --batch, so it works in its own worktree and defers its
+// teardown to the batch. member and member-exit match on it.
+const memberTag = "member"
+
 // Item is one gate step in the brief's checklist: a check the dispatcher ran,
 // or an ask only the cap can confirm. Body is the shell command for a check.
 type Item struct {
@@ -121,6 +130,12 @@ type Brief struct {
 	// in the project root.
 	Worktree string `json:"worktree,omitempty"`
 
+	// WorktreeNew asks Deliver to create the worktree itself (--worktree-new)
+	// rather than name an existing one. It is set by the CLI after Prepare, the
+	// same way Worktree is; Deliver creates the workspace and records both
+	// Worktree and WorktreePath exactly as --worktree does.
+	WorktreeNew bool `json:"worktree_new,omitempty"`
+
 	// Delivery is the pane binding, set only when fs dispatch --deliver handed
 	// the brief to a worker. It is recorded as a delivery-recorded event; this
 	// field is the same binding echoed back to the caller.
@@ -141,6 +156,10 @@ type PrepareRequest struct {
 	// Also forces a playbook into the plan; Without drops one the tags selected.
 	Also    []string
 	Without []string
+
+	// Batch names the batch this dispatch is a member of (--batch). A member's
+	// cap node is the batch's child, and the tag `member` is derived from it.
+	Batch string
 
 	Confirm         bool
 	AllowUnresolved bool
@@ -173,7 +192,17 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 		return errResp("--goal is required")
 	}
 
-	tags, err := tagSet(req.TaskType, req.Tags)
+	tags, err := tagSet(req.TaskType, req.Tags, req.Batch != "")
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+
+	// A dispatch that names --batch is a member of that batch: its cap node is
+	// the batch's child and it works in its own worktree. The batch node must
+	// already be a kind: batch node — the parent link is written into the
+	// task-created payload, an immutable event, so a wrong link is refused here
+	// before anything is recorded, naming what the node is.
+	batch, err := batchMember(h, req.Batch)
 	if err != nil {
 		return errResp("dispatch: " + err.Error())
 	}
@@ -210,6 +239,24 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 		return errResp("dispatch: " + err.Error())
 	}
 
+	// The node kind is declared by the plan, not mapped from the task type:
+	// batch-entry carries `creates: batch`, and a dispatch whose plan declares
+	// nothing leaves a dispatch node (the default). The batch situation tag is
+	// stamped the same way — from the plan's declaration — so batch-exit, which
+	// matches `batch`, is selected in a second pass. There is deliberately no
+	// `if taskType == "batch"` anywhere.
+	creates, err := resolveCreates(plan)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+	if creates == query.KindBatch {
+		tags[batchTag] = true
+		plan, err = buildPlan(kc, tags, req.Also, req.Without)
+		if err != nil {
+			return errResp("dispatch: " + err.Error())
+		}
+	}
+
 	// Pass 2: the situation-specific declarations in the selected plan override
 	// the standing one. The three realization refusals — no declaration, two
 	// situation-specific declarations that disagree, and an engine fs cannot
@@ -243,7 +290,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	// entry step's outcome on the record. It is not left behind by a refusal: a
 	// refused entry gate rolls it back below, marked done with the refusal as
 	// its decision, so the attempt is legible and no open dispatch is invented.
-	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member)
+	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member, creates, batch)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
@@ -293,8 +340,11 @@ func refuseEntry(h *command.Handler, nodeID, msg string) string {
 // and every declared term. A declared term may not restate a derived one — a
 // tag that silently moves `type` is a tag that silently changes which protocol
 // runs.
-func tagSet(taskType string, declared []string) (map[string]any, error) {
+func tagSet(taskType string, declared []string, member bool) (map[string]any, error) {
 	tags := map[string]any{typeTag: taskType}
+	if member {
+		tags[memberTag] = true
+	}
 
 	for _, term := range declared {
 		key, value, hasValue := strings.Cut(term, "=")
@@ -302,7 +352,7 @@ func tagSet(taskType string, declared []string) (map[string]any, error) {
 		if key == "" {
 			return nil, fmt.Errorf("--tag %q names no tag", term)
 		}
-		if key == typeTag || key == engineTag {
+		if key == typeTag || key == engineTag || key == memberTag || key == batchTag {
 			return nil, fmt.Errorf(
 				"--tag %s restates a derived tag; %s is set by the dispatch itself and cannot be declared",
 				key, key)
@@ -326,6 +376,7 @@ type planned struct {
 	AppliesWhen []string
 	Engine      string
 	Agent       string
+	Creates     string
 }
 
 // planEntries is the plan as it is recorded: the ordered playbooks without
@@ -415,6 +466,7 @@ func plannedOf(pb *knowledge.Playbook) planned {
 		AppliesWhen: pb.AppliesWhen,
 		Engine:      pb.Engine,
 		Agent:       pb.Agent,
+		Creates:     pb.Creates,
 	}
 }
 
@@ -619,6 +671,149 @@ func Integrated(h *command.Handler, member string) command.Response {
 type IntegratedResult struct {
 	Member       string `json:"member"`
 	IntegratedBy string `json:"integrated_by"`
+}
+
+// resolveCreates reads the node kind a dispatch leaves behind from its plan:
+// the `creates:` declaration on a situation-specific playbook, defaulting to
+// dispatch. It is how a batch node is a batch — batch-entry declares
+// `creates: batch` — without a Go map from task type to kind. Two declarations
+// that disagree refuse, naming both, rather than averaging.
+func resolveCreates(plan []planned) (query.Kind, error) {
+	var kind query.Kind
+	from := ""
+	for _, pb := range plan {
+		if pb.Creates == "" {
+			continue
+		}
+		k := query.Kind(pb.Creates)
+		if kind != "" && k != kind {
+			return "", fmt.Errorf(
+				"dispatch: playbooks %s and %s declare conflicting node kinds (%s and %s); a dispatch creates one kind of node",
+				from, pb.Name, kind, k)
+		}
+		kind, from = k, pb.Name
+	}
+	if kind == "" {
+		return query.KindDispatch, nil
+	}
+	return kind, nil
+}
+
+// batchMember resolves a --batch value to the bare id of the batch node it
+// names, or "" when the flag was not given. A member's parent link is written
+// into its task-created payload — an immutable event — so naming a node that is
+// not a batch is refused here, before the write, naming what the node is.
+func batchMember(h *command.Handler, batch string) (string, error) {
+	if batch == "" {
+		return "", nil
+	}
+	ref, err := bareNodeID(batch)
+	if err != nil {
+		return "", err
+	}
+	node, err := capNode(h, ref)
+	if err != nil {
+		return "", fmt.Errorf("--batch %s: %v", batch, err)
+	}
+	if node.Kind != query.KindBatch {
+		return "", fmt.Errorf(
+			"--batch %s names a %q node, not a %s node — a member's parent is a kind: batch node, and the link cannot be corrected after it is written",
+			batch, node.Kind, query.KindBatch)
+	}
+	return ref, nil
+}
+
+// BatchMember is one member of a batch, as fs batch reports it: the node, the
+// project its worker lived in, and the resources its delivery opened — the
+// worktree, checkout path and pane the batch's declared teardown removes.
+type BatchMember struct {
+	Node         string `json:"node"`
+	Project      string `json:"project,omitempty"`
+	Worktree     string `json:"worktree,omitempty"`
+	WorktreePath string `json:"worktree_path,omitempty"`
+	Pane         string `json:"pane,omitempty"`
+	IntegratedBy string `json:"integrated_by,omitempty"`
+}
+
+// BatchResult is the data payload of fs batch: the batch node, its members, and
+// the answer the read just gave. Complete is never vacuously true.
+type BatchResult struct {
+	Batch    string        `json:"batch"`
+	Complete bool          `json:"complete"`
+	Members  []BatchMember `json:"members"`
+}
+
+// Batch answers the batch's question: is every member integrated? It is a read
+// with an exit code — 0 iff every member has a done integration dispatch naming
+// it, 1 naming the unintegrated members otherwise. A batch with no members is
+// refused rather than read as complete: vacuously true is not complete.
+//
+// Members are the batch's children: cap-scope dispatch nodes whose
+// parent_node_id names the batch. Each member's integration is the same read fs
+// integrated makes, so the batch gate can never disagree with a member's own
+// gate. The member list carries each delivery's resources, which is what the
+// batch's declared teardown loops over when every member is integrated.
+func Batch(h *command.Handler, batch string) command.Response {
+	ref, err := bareNodeID(batch)
+	if err != nil {
+		return errResp("batch: " + err.Error())
+	}
+	node, err := capNode(h, ref)
+	if err != nil {
+		return errResp("batch: " + err.Error())
+	}
+	if node.Kind != query.KindBatch {
+		return errResp(fmt.Sprintf(
+			"batch: %s is a %q node, not a %s node — fs batch reads a kind: batch node",
+			ref, node.Kind, query.KindBatch))
+	}
+
+	resp := h.StatusIn(capScope, "")
+	if !resp.OK {
+		return errResp("batch: " + resp.Error)
+	}
+	result, ok := resp.Data.(command.StatusResult)
+	if !ok {
+		return errResp("batch: read scope " + capScope + ": no status payload")
+	}
+
+	members := make([]BatchMember, 0)
+	var unintegrated []string
+	for _, task := range result.Tasks {
+		if task.ParentNodeID != ref || task.Kind != query.KindDispatch {
+			continue
+		}
+		member := BatchMember{Node: task.NodeID}
+		if d, recorded, err := h.DeliveryFor(capScope, task.NodeID); err == nil && recorded {
+			member.Project = d.Project
+			member.Worktree = d.Worktree
+			member.WorktreePath = d.WorktreePath
+			member.Pane = d.PaneID
+		}
+		if integrated := Integrated(h, task.NodeID); integrated.OK {
+			if ir, ok := integrated.Data.(IntegratedResult); ok {
+				member.IntegratedBy = ir.IntegratedBy
+			}
+		} else {
+			unintegrated = append(unintegrated, task.NodeID)
+		}
+		members = append(members, member)
+	}
+
+	if len(members) == 0 {
+		return errResp(fmt.Sprintf(
+			"batch: %s has no members — a batch with no members is not complete; dispatch its members with fs dispatch --batch %s",
+			ref, ref))
+	}
+	if len(unintegrated) > 0 {
+		return errResp(fmt.Sprintf(
+			"batch: %s is not complete — %d member(s) have no done integration naming them: %s; merge each with a dispatched integration (fs dispatch --type integrate --integrates <member>)",
+			ref, len(unintegrated), strings.Join(unintegrated, ", ")))
+	}
+
+	return command.Response{OK: true, Data: BatchResult{
+		Batch: ref, Complete: true, Members: members,
+	}}
 }
 
 // withoutNode drops one node id from a list. It is how the member an
@@ -920,11 +1115,16 @@ func findLockedDocs(root string) []string {
 }
 
 // recordCapNode writes the cap's two events for this dispatch: the node itself —
-// carrying the member it integrates, when it integrates one — and the decision
-// naming the project the work went to. It returns the node id so the cap can
-// read its own dispatch back.
-func recordCapNode(h *command.Handler, taskType, goal, project, integrates string) (string, error) {
-	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), query.KindDispatch, "", integrates, nil)
+// carrying the member it integrates (when it integrates one), the node kind the
+// plan declared (creates), and the batch it is a member of (as its parent) — and
+// the decision naming the project the work went to. It returns the node id so
+// the cap can read its own dispatch back.
+func recordCapNode(h *command.Handler, taskType, goal, project, integrates string, kind query.Kind, parent string) (string, error) {
+	var parentPtr *string
+	if parent != "" {
+		parentPtr = &parent
+	}
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, parentPtr)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}

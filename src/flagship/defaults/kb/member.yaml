@@ -1,0 +1,11 @@
+name: member
+phase: work
+applies_when: member
+order: 10
+steps:
+  # What a member's worker is told, over and above the standing worker rules.
+  # A member is a dispatch inside a batch: it works in a worktree the batch
+  # owns, never touches main, and its branch is merged by a dispatched
+  # integration — never by the member itself.
+  - say: you are a member of a batch — you work in your own worktree, you never touch main, your branch is merged by a dispatched integration, and your tree outlives your own close (the batch removes it once every member is integrated)
+  - say: do not merge your own branch and do not delete your own worktree — both belong to the batch, whose exit gate tears them down after every member is integrated

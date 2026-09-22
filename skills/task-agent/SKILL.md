@@ -65,18 +65,22 @@ Two modes, both invoked by you in the main checkout:
    The entry gate checks the member's dispatch node exists (`fs task get
    $FS_INTEGRATES --project cap --kind dispatch`), and asks you to confirm the
    order and that main has no foreign staged changes — answer it.
-   Deliver the brief (`--deliver`): that worker merges, runs the suite, and deletes
-   the branch and worktree. Then **read the worker's node** — the node, not the
-   dispatch's success, is the truth about whether the merge happened — and close it:
+   Deliver the brief (`--deliver`): that worker merges and runs the suite. Then
+   **read the worker's node** — the node, not the dispatch's success, is the
+   truth about whether the merge happened — and close it:
    ```bash
    fs close --node <cap-node> --decision "<verdict from the worker's node>"
    ```
    `fs close` runs the `integration-exit` exit gate — `bash tests/run.sh` green,
-   then the ask "was the integration verdict recorded and read" — and the declared
-   teardown steps (branch, worktree, workspace), before it marks the dispatch done.
-5. **Confirm the teardown.** The exit playbook's `do` steps remove the worktree the
-   delivery names, delete the branch, and close the workspace; its postcondition
-   checks refuse if any remains. Fix it rather than closing anyway.
+   then the ask "was the integration verdict recorded and read" — and marks the
+   dispatch done. It no longer tears the member's tree down: that teardown
+   (branch, worktree, workspace) lives once in `batch-exit`, scoped to a batch's
+   members, so a single integration never removes a tree the batch still owns.
+5. **Confirm the teardown.** For a single hand-created worktree the coordinator
+   removes it (and its branch) as in `--abort` below; inside a batch, the
+   batch's `batch-exit` `do` steps remove each member's worktree and branch and
+   close its workspace once `fs batch <node>` reports every member integrated —
+   its postcondition checks refuse if any remains.
 ### end --abort
 
 Task failed or abandoned — remove the worktree + delete the branch, no merge, no review:

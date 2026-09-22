@@ -49,14 +49,22 @@ type fakeHerdr struct {
 	paneExists    bool
 	paneExistsErr error
 
-	created    []string
-	started    []string
-	startKinds []string
-	prompts    []promptCall
-	closed     []string
-	rooted     []string
-	checkouts  []string
-	verified   []string
+	// worktreeNewID/worktreeNewPath/worktreeNewErr stand in for --worktree-new:
+	// CreateWorktree returns the workspace id and checkout path a real
+	// `herdr worktree create` would, which Deliver records on the delivery.
+	worktreeNewID   string
+	worktreeNewPath string
+	worktreeNewErr  error
+
+	created          []string
+	worktreesCreated []string
+	started          []string
+	startKinds       []string
+	prompts          []promptCall
+	closed           []string
+	rooted           []string
+	checkouts        []string
+	verified         []string
 }
 
 // promptCall is one brief handed to a pane, so a test can read the text the
@@ -85,6 +93,14 @@ func (f *fakeHerdr) WorktreeCheckout(wsID string) (string, error) {
 		return "", f.checkoutErr
 	}
 	return f.checkoutPath, nil
+}
+
+func (f *fakeHerdr) CreateWorktree(cwd string) (string, string, error) {
+	f.worktreesCreated = append(f.worktreesCreated, cwd)
+	if f.worktreeNewErr != nil {
+		return "", "", f.worktreeNewErr
+	}
+	return f.worktreeNewID, f.worktreeNewPath, nil
 }
 
 func (f *fakeHerdr) StartAgent(paneID, name, kind string) error {

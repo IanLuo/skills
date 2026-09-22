@@ -155,7 +155,7 @@ The old fields `type:`, `trigger:`, and `engine_scope:` are **refused at parse**
 
 A declared `--tag` may not restate `type` or `engine` (those are set by the dispatch itself). `applies_when` matches presence and equality only — no ranges, no negation. An empty `applies_when` matches every dispatch; that is how the `worker` playbook loads for every dispatch.
 
-So `fs dispatch --project P --type dev-task --tag code` loads the `code`-situated playbooks; `--type parallel` alone loads `parallel-entry`/`parallel-exit` (they match the derived `type=parallel`); `--type research` alone loads nothing but `worker` — the `research` playbook matches the declared tag `research`, so `--tag research` is what selects it.
+So `fs dispatch --project P --type dev-task --tag code` loads the `code`-situated playbooks; `--type batch` loads `batch-entry` (matching the derived `type=batch`) and — because `batch-entry` declares `creates: batch` — the `batch` situation tag that selects `batch-exit`; a dispatch that names `--batch NODE` derives the `member` tag and loads `member`/`member-exit`; `--type research` alone loads nothing but `worker` — the `research` playbook matches the declared tag `research`, so `--tag research` is what selects it.
 
 `--also NAME` forces a playbook into the plan that the tags did not select (a name that does not resolve is refused, and so is a `cap`-phase name — those load into the session, not a plan). `--without NAME` drops one the tags did select, and it has the last word over `--also`. An empty plan is legal and reported `plan: empty` — never hidden; with the shipped set it cannot happen, because `worker` always matches.
 
@@ -171,7 +171,7 @@ A node with no trace prints `no trace was written for <node>` and exits 1 — ne
 
 Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/`. A project playbook with the same `name` as a global one **replaces** it for a dispatch into that project; `fs kb list` prints each playbook's `scope` (`global` or the project name) beside its state. `include: <name>` splices that playbook's steps at that position, resolved in the same scope order (project first, then global); a cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
 
-### The 14 shipped playbooks
+### The 16 shipped playbooks
 
 `fs bootstrap` seeds these into `~/.fs/kb/` (see Knowledge center below):
 
@@ -187,10 +187,12 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 | `tdd` | work | `code` | 40 | red → green → broader check; record why a test was skipped. |
 | `review` | work | `code` | 50 | re-read your own diff against the bar before claiming done; record what it flags. |
 | `research` | work | `research` | 20 | sources named on the node; say what would falsify the answer. |
-| `parallel-entry` | entry | `type=parallel` | 10 | the batch's cards are disjoint (`bin/check-parallel.sh $FS_CARDS`); ask: is the batch small enough to review. |
-| `parallel-exit` | exit | `type=parallel` | 10 | `fs integrated $FS_NODE`; ask: was the result read; then the declared teardown and postconditions. |
+| `batch-entry` | entry | `type=batch` | 10 | the fan-out's one entry gate: `test -d .git`, `herdr worktree list --cwd .`, `bin/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review. Declares `creates: batch` — the node kind is the playbook's declaration, not a type-to-kind map. |
+| `batch-exit` | exit | `batch` | 10 | the one place the fan-out's teardown is declared: `fs batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions, scoped to the members. |
+| `member` | work | `member` | 10 | what a member's worker is told: your worktree is the batch's, never touch main, your branch is merged by a dispatched integration. |
+| `member-exit` | exit | `member` | 10 | `fs integrated $FS_NODE`; ask: was the result read. No teardown — the member's tree is the batch's. |
 | `integration-entry` | entry | `type=integrate` | 10 | `fs task get $FS_INTEGRATES --project cap --kind dispatch`; ask: next merge in order, main free of foreign staged changes. |
-| `integration-exit` | exit | `type=integrate` | 10 | `bash tests/run.sh` green; ask: was the verdict recorded and read; then the declared teardown and postconditions. |
+| `integration-exit` | exit | `type=integrate` | 10 | `bash tests/run.sh` green; ask: was the verdict recorded and read. |
 
 ### Knowledge center
 
@@ -213,7 +215,7 @@ pi --append-system-prompt "$(fs kb prompt)"
 
 No blank lines, deliberately: line breaks would split it into separate blocks. The headers are what make a stale prompt detectable — they say which playbooks went in and where each came from.
 
-Fourteen playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
+Sixteen playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
 
 ```bash
 fs bootstrap                           # seed ~/.fs/kb from the binary's playbooks
@@ -243,10 +245,15 @@ fs dispatch --project P --type T --goal "Implement auth" [--tag K[=V]] [--also N
 
 # Prepare and deliver: split a sibling pane of your own, start the worker, send
 # the brief, record it. --worktree names the herdr worktree workspace the
-# dispatch runs in, so close can remove it. --cards names the batch's cards
-# (comma-separated, repeatable); every check step sees them as $FS_CARDS.
-# --integrates names the member cap node an integration merges.
-fs dispatch --deliver --project P --type T --goal "Implement auth" [--cards CARD[,CARD…]] [--integrates MEMBER_NODE] [--worktree WS]
+# dispatch runs in, so close can remove it; --worktree-new creates one instead.
+# --cards names the batch's cards (comma-separated, repeatable); every check
+# step sees them as $FS_CARDS. --integrates names the member cap node an
+# integration merges. --batch names the batch node this dispatch is a member of.
+fs dispatch --deliver --project P --type T --goal "Implement auth" [--cards CARD[,CARD…]] [--integrates MEMBER_NODE] [--batch BATCH_NODE] [--worktree WS] [--worktree-new]
+
+# Is a batch complete? Exit 0 iff every member has a done integration naming it;
+# exit 1 naming the unintegrated ones. A batch with no members is refused.
+fs batch BATCH_NODE
 
 # Close out a dispatch: run the exit phase of the plan it recorded, then close
 # its pane, then mark the node done. Refuses while the trace does not account
@@ -318,6 +325,7 @@ Exit steps get the closing dispatch's own inputs in their environment:
 | `FS_PANE` | the pane the delivery opened |
 | `FS_WORKTREE` | the worktree workspace the dispatch ran in; empty without one |
 | `FS_WORKTREE_PATH` | that worktree's checkout path; empty without one |
+| `FS_BATCH` | the batch node this dispatch is a member of; empty outside a batch — the marker `code-exit`'s teardown defers on |
 
 Exit `check` steps run in the tree the dispatch worked in (the worktree, or the project root when there was none or the tree is gone); exit `do` steps run in the project root, so an action that removes the worktree does not stand inside it.
 
@@ -325,7 +333,15 @@ The teardown is **declared, not machinery**: `fs close` closes the pane (every d
 
 The gate can check that the worker's node exists and is `done`, and that the trace accounts for the plan. It **cannot** check that the cap actually read that node; reading it is still the cap's job.
 
-**Parallel batches.** A parallel dispatch declares its cards' files so the batch can be checked mechanically rather than judged:
+**Batches.** A batch is a dispatched `kind: batch` node that holds a fan-out: `fs dispatch --project P --type batch --cards a,b,c` runs `batch-entry` (git, the worktree listing, the cards' disjointness, the reviewability ask) and leaves the batch node as the parent. Each member is an ordinary dispatch whose cap node is the batch's child:
+
+```bash
+fs dispatch --project P --type dev-task --tag code --batch <batch-node> --worktree-new --deliver
+```
+
+The member works in its own worktree; its own close runs `member-exit` (`fs integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code-exit`'s teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch-exit` tears each member's branch, worktree and workspace down, declared once.
+
+A batch's cards declare their files so the fan-out can be checked mechanically:
 
 ```markdown
 ## Files
@@ -333,7 +349,7 @@ src/flagship/cmd/main.go
 internal/registry/registry.go
 ```
 
-`bin/check-parallel.sh <card…>` intersects the cards' declared sets and refuses an overlap — or a card with no file list. The shipped `parallel-entry` playbook puts it in the entry gate, and that gate reads the batch from the dispatch itself: `fs dispatch --cards` exports the cards as `$FS_CARDS`, so one playbook covers every batch instead of being edited per batch. `parallel-exit` guards the exit: `fs integrated $FS_NODE` passes only when a done integration dispatch names this member.
+`bin/check-parallel.sh <card…>` intersects the cards' declared sets and refuses an overlap — or a card with no file list. `batch-entry` puts it in the entry gate, and that gate reads the cards from the dispatch itself: `fs dispatch --cards` exports them as `$FS_CARDS`.
 
 ## Task status
 
