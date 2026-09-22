@@ -216,11 +216,11 @@ func runDispatch(t *testing.T, f *fixture, req dispatch.PrepareRequest) *dispatc
 // edit left inconsistent with the plan.
 func rewriteTrace(t *testing.T, f *fixture, project, node string, keep func(trace.Line) (trace.Line, bool)) {
 	t.Helper()
-	lines, err := f.lg.Read(project, node)
+	lines, err := f.lg.Read(node)
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
-	path := f.lg.Path(project, node)
+	path := f.lg.Path(node)
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove trace: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestDeliverRecordsALoadedLinePerWorkPlaybook(t *testing.T) {
 	f.writePlaybook(t, "code-exit", codeExit)
 	brief := runDispatch(t, f, devReq("sample"))
 
-	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	lines := traceOf(t, f, brief.CapNodeID)
 	loaded := map[string]string{}
 	statuses := map[string]bool{}
 	for _, ln := range lines {
@@ -807,7 +807,7 @@ func TestCloseRefusesADispatchWithNoTrace(t *testing.T) {
 	writeGates(t, f)
 	brief := runDispatch(t, f, devReq("sample"))
 
-	if err := os.Remove(f.lg.Path("skills", brief.CapNodeID)); err != nil {
+	if err := os.Remove(f.lg.Path(brief.CapNodeID)); err != nil {
 		t.Fatalf("remove the trace: %v", err)
 	}
 
@@ -925,7 +925,7 @@ func TestCloseAnswersTheEntryAskWithConfirm(t *testing.T) {
 		}
 	}
 	// The refusal is before the exit phase, so the exit check has not run.
-	for _, ln := range traceOf(t, f, "skills", brief.CapNodeID) {
+	for _, ln := range traceOf(t, f, brief.CapNodeID) {
 		if ln.Playbook == "code-exit" {
 			t.Errorf("the exit phase ran despite the entry gate refusing: %+v", ln)
 		}
@@ -1141,7 +1141,7 @@ func TestCloseClosesThePaneAndMarksTheNodeDone(t *testing.T) {
 	if decisions := capDecisions(t, f, brief.CapNodeID); !contains(decisions, "verified the worker's node") {
 		t.Errorf("decisions = %v, want the verdict", decisions)
 	}
-	if result.Trace != f.lg.Path("skills", brief.CapNodeID) {
+	if result.Trace != f.lg.Path(brief.CapNodeID) {
 		t.Errorf("result trace = %q, want the path the gate read", result.Trace)
 	}
 }
@@ -1222,9 +1222,10 @@ func TestCloseRefusesARecordWithNoNode(t *testing.T) {
 	}
 }
 
-// A record written before deliveries carried a project cannot be traced: a
-// trace lives under the project it belongs to. Close refuses rather than gating
-// against some other project's logs.
+// A record written before deliveries carried a project names no root for the
+// exit phase. The trace is located by node alone now, so that is no longer the
+// refusal; the exit gate is: a declared check needs a project root, and the
+// record names none.
 func TestCloseRefusesARecordThatNamesNoProject(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "code-exit", codeExit)
@@ -1236,10 +1237,12 @@ func TestCloseRefusesARecordThatNamesNoProject(t *testing.T) {
 		NodeID: brief.CapNodeID, Worker: "skills:" + workerID, Decision: "verified",
 	})
 	if resp.OK {
-		t.Fatal("a record that names no project has no trace, so it cannot be gated")
+		t.Fatal("a record that names no project leaves no root for the exit phase")
 	}
-	if !strings.Contains(resp.Error, "no trace was written for") {
-		t.Errorf("error %q must say the trace could not be found", resp.Error)
+	for _, want := range []string{"exit phase cannot run", `project "" not found`} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
 	}
 }
 

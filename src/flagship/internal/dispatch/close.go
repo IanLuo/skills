@@ -179,7 +179,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		PaneID: delivery.PaneID,
 	}
 	if delivered {
-		result.Trace = lg.Path(delivery.Project, req.NodeID)
+		result.Trace = lg.Path(req.NodeID)
 		// The plan resolved both scopes at dispatch time, so its exit playbooks
 		// may live in the target project's KB. Close resolves the same way — the
 		// dispatch's project, not the cap's terminal — or a project-scoped exit
@@ -230,7 +230,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// by-product of it: a close that leaves the exit phase unrecorded would leave
 	// a trace that reads as a dispatch which was never closed.
 	if !req.Abandoned {
-		if err := gateExit(kc, lg, delivery.Project, req.NodeID, plan); err != nil {
+		if err := gateExit(kc, lg, req.NodeID, plan); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -450,7 +450,7 @@ func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace
 // question and never two. A check is different: a failed one was the cap's to
 // accept when it dispatched, and a close is not where it gets accepted.
 func gateEntry(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, nodeID string, plan []trace.PlanEntry, confirm bool) error {
-	lines, err := lg.Read(delivery.Project, nodeID)
+	lines, err := lg.Read(nodeID)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
@@ -524,8 +524,8 @@ func confirmAsks(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delive
 // That is not redundancy for its own sake: the two passes are one gate split by
 // the teardown, and a gate that only ever verified the half it was looking at
 // would let a close pass on a plan it never fully read.
-func gateExit(kc *knowledge.Center, lg *trace.Log, project, nodeID string, plan []trace.PlanEntry) error {
-	lines, err := lg.Read(project, nodeID)
+func gateExit(kc *knowledge.Center, lg *trace.Log, nodeID string, plan []trace.PlanEntry) error {
+	lines, err := lg.Read(nodeID)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}

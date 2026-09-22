@@ -1,9 +1,11 @@
 // Package trace records what a dispatch actually ran.
 //
-// One JSONL file per dispatch, under ~/.fs/projects/<project>/logs/<node>.jsonl:
-// the plan the dispatch was measured against as its first line, then one line per
-// step outcome. It is append-only, never deleted at close, and never transmitted
-// — its whole purpose is to outlive the worker's transcript and the pane.
+// One JSONL file per dispatch, under ~/.fs/traces/<node>.jsonl: the plan the
+// dispatch was measured against as its first line, then one line per step
+// outcome. The file is filed flat, keyed by the node alone, and the project the
+// dispatch acted on is a field on every line — never a directory in the path.
+// It is append-only, never deleted at close, and never transmitted — its whole
+// purpose is to outlive the worker's transcript and the pane.
 //
 // The package reads and writes; it never gates. A gate reads this file and
 // decides; trace only refuses to lose a line, because an outcome that cannot be
@@ -78,6 +80,7 @@ type Line struct {
 	TS         string         `json:"ts"`
 	ID         string         `json:"id,omitempty"`
 	Dispatch   string         `json:"dispatch"`
+	Project    string         `json:"project,omitempty"`
 	Worker     string         `json:"worker,omitempty"`
 	Playbook   string         `json:"playbook,omitempty"`
 	Phase      string         `json:"phase,omitempty"`
@@ -97,23 +100,19 @@ func StepID(dispatch, playbook string, step int) string {
 	return fmt.Sprintf("%s/%s/%d", dispatch, playbook, step)
 }
 
-// Log is the trace store: every project's logs directory under one root.
+// Log is the trace store: one flat directory holding one file per dispatch.
 type Log struct {
-	root string // ~/.fs/projects
+	root string // ~/.fs/traces
 }
 
-// Open returns the trace store rooted at projectsDir, which is ~/.fs/projects.
+// Open returns the trace store rooted at tracesDir, which is ~/.fs/traces.
 // Nothing is created until a line is appended: a machine that never dispatches
-// keeps no empty directory, and a project with no logs is simply a project that
-// never dispatched.
-func Open(projectsDir string) *Log { return &Log{root: projectsDir} }
+// keeps no empty directory.
+func Open(tracesDir string) *Log { return &Log{root: tracesDir} }
 
-// Dir is one project's logs directory.
-func (l *Log) Dir(project string) string { return filepath.Join(l.root, project, "logs") }
-
-// Path is one dispatch's trace file.
-func (l *Log) Path(project, node string) string {
-	return filepath.Join(l.Dir(project), node+".jsonl")
+// Path is one dispatch's trace file, located from the node alone.
+func (l *Log) Path(node string) string {
+	return filepath.Join(l.root, node+".jsonl")
 }
 
 // Append writes one line to a dispatch's trace. The write is a refusal if it
@@ -125,13 +124,16 @@ func (l *Log) Append(project string, ln Line) error {
 	if ln.Dispatch == "" {
 		return errors.New("trace: a line must name its dispatch")
 	}
+	// The project is set here, on the way in, so no call site can forget it: a
+	// line without it would be a record that cannot say which tree it describes.
+	ln.Project = project
 	if ln.TS == "" {
 		ln.TS = time.Now().UTC().Format(time.RFC3339)
 	}
 	ln.Detail = truncate(ln.Detail, maxDetail)
 
-	if err := os.MkdirAll(l.Dir(project), 0o755); err != nil {
-		return fmt.Errorf("trace: create %s: %w", l.Dir(project), err)
+	if err := os.MkdirAll(l.root, 0o755); err != nil {
+		return fmt.Errorf("trace: create %s: %w", l.root, err)
 	}
 
 	encoded, err := json.Marshal(ln)
@@ -139,14 +141,14 @@ func (l *Log) Append(project string, ln Line) error {
 		return fmt.Errorf("trace: encode line: %w", err)
 	}
 
-	f, err := os.OpenFile(l.Path(project, ln.Dispatch), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(l.Path(ln.Dispatch), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("trace: open %s: %w", l.Path(project, ln.Dispatch), err)
+		return fmt.Errorf("trace: open %s: %w", l.Path(ln.Dispatch), err)
 	}
 	defer f.Close()
 
 	if _, err := f.Write(append(encoded, '\n')); err != nil {
-		return fmt.Errorf("trace: write %s: %w", l.Path(project, ln.Dispatch), err)
+		return fmt.Errorf("trace: write %s: %w", l.Path(ln.Dispatch), err)
 	}
 	return nil
 }
@@ -154,8 +156,8 @@ func (l *Log) Append(project string, ln Line) error {
 // Read returns every line of a dispatch's trace, in the order written. A trace
 // that was never written is an error naming the file rather than an empty
 // timeline: absence is not the same as "nothing ran".
-func (l *Log) Read(project, node string) ([]Line, error) {
-	path := l.Path(project, node)
+func (l *Log) Read(node string) ([]Line, error) {
+	path := l.Path(node)
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -186,27 +188,6 @@ func (l *Log) Read(project, node string) ([]Line, error) {
 		return nil, fmt.Errorf("no trace was written for %q", node)
 	}
 	return lines, nil
-}
-
-// Projects that have a trace for node, in sorted order. It is how `fs trace`
-// finds a dispatch's file when the caller did not name its project.
-func (l *Log) ProjectsFor(node string) []string {
-	entries, err := os.ReadDir(l.root)
-	if err != nil {
-		return nil
-	}
-
-	var projects []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(l.Path(entry.Name(), node)); err == nil {
-			projects = append(projects, entry.Name())
-		}
-	}
-	sort.Strings(projects)
-	return projects
 }
 
 // Render is the text view of one dispatch's timeline: one line per record,

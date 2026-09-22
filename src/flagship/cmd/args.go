@@ -200,9 +200,9 @@ refuses on, so what this prints is what would stop a close.
 A node with no trace prints "no trace was written for <node>" and exits 1. There
 is no empty timeline that reads as success.
 
-  --project PROJECT_ID  the project whose logs hold the trace. Without it, the
-                        trace is found by searching every project's logs, and
-                        more than one match is refused as ambiguous.
+  --project PROJECT_ID  an assertion, not a selector: the trace is located by
+                        NODE alone, and a line whose project field disagrees
+                        with this value is refused.
   --json                the raw lines, as the JSON envelope`,
 		flags:       map[string]bool{"--project": true, "--json": false},
 		positionals: 1,

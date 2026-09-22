@@ -121,7 +121,7 @@ func newFixture(t *testing.T, root string) *fixture {
 		t.Fatalf("knowledge.Open: %v", err)
 	}
 
-	lg := trace.Open(filepath.Join(fsRoot, "projects"))
+	lg := trace.Open(filepath.Join(fsRoot, "traces"))
 
 	// Tests create cap-scope dispatch nodes, and one left unresolved makes later
 	// dispatches refuse. Close them, so the suite never becomes order-dependent.
@@ -195,9 +195,9 @@ func writeFile(t *testing.T, path, content string) {
 
 // traceOf reads a dispatch's trace, so a test can assert what was recorded and
 // not only what was returned.
-func traceOf(t *testing.T, f *fixture, project, node string) []trace.Line {
+func traceOf(t *testing.T, f *fixture, node string) []trace.Line {
 	t.Helper()
-	lines, err := f.lg.Read(project, node)
+	lines, err := f.lg.Read(node)
 	if err != nil {
 		t.Fatalf("read trace for %s: %v", node, err)
 	}
@@ -352,7 +352,7 @@ func TestPrepareStopsAtFirstFailingCheck(t *testing.T) {
 
 	// Both steps ran to the point of failure, and both are on the trace: the
 	// passing one, and the failing one the refusal follows.
-	lines := traceOf(t, f, "skills", nodes[0].NodeID)
+	lines := traceOf(t, f, nodes[0].NodeID)
 	var steps []trace.Line
 	for _, ln := range lines {
 		if ln.Kind != trace.KindPlan {
@@ -704,7 +704,7 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	// The same plan is the trace's first line, so `fs trace` shows what the
 	// dispatch was measured against before any step has an outcome. It comes
 	// before the entry steps' own lines, which are written as they run.
-	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	lines := traceOf(t, f, brief.CapNodeID)
 	if len(lines) == 0 || lines[0].Kind != trace.KindPlan {
 		t.Fatalf("trace = %+v, want the plan line first", lines)
 	}
@@ -885,7 +885,7 @@ steps:
 		t.Errorf("next_command must carry the resolved agent, got %q", brief.NextCommand)
 	}
 
-	lines := traceOf(t, f, "skills", brief.CapNodeID)
+	lines := traceOf(t, f, brief.CapNodeID)
 	recorded, ok := trace.PlanOf(lines)
 	if !ok {
 		t.Fatal("the plan line is missing")

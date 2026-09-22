@@ -161,9 +161,9 @@ So `fs dispatch --project P --type dev-task --tag code` loads the `code`-situate
 
 ### The plan and the trace
 
-The plan is produced once: printed in the brief, recorded on the cap's dispatch node as a `plan-recorded` event, and written as the trace's first line. The trace is one JSONL file per dispatch at `~/.fs/projects/<project>/logs/<node>.jsonl`, append-only, never deleted at close. `fs trace NODE [--project P] [--json]` renders it: the plan, then one line per step outcome, ending with `deviation: …` or `deviation: none` (the same comparison `fs close` refuses on).
+The plan is produced once: printed in the brief, recorded on the cap's dispatch node as a `plan-recorded` event, and written as the trace's first line. The trace is one JSONL file per dispatch at `~/.fs/traces/<node>.jsonl`, filed flat and keyed by the node alone, append-only, never deleted at close. `fs trace NODE [--project P] [--json]` renders it: the plan, then one line per step outcome, ending with `deviation: …` or `deviation: none` (the same comparison `fs close` refuses on). `--project` is an assertion, not a selector — the file is located by NODE alone, and a line whose project field disagrees is refused.
 
-Each step line carries `ts`, `id` (`<dispatch>/<playbook>/<step>`), `dispatch`, `playbook`, `phase`, `step` (1-based), `kind`, `status`, `duration_ms`, and `detail` (the step body, truncated — **never** the command's output, so a check that prints a secret cannot write it into the trace). The `worker` field is present only on lines written once a worker node exists — the `loaded` lines and the exit lines. Statuses are `pass | fail | confirmed | loaded | skipped | refused`. There is deliberately no `followed`: the trace records that a playbook was loaded and a step ran, never that a worker obeyed.
+Each step line carries `ts`, `id` (`<dispatch>/<playbook>/<step>`), `dispatch`, `project`, `playbook`, `phase`, `step` (1-based), `kind`, `status`, `duration_ms`, and `detail` (the step body, truncated — **never** the command's output, so a check that prints a secret cannot write it into the trace). The `worker` field is present only on lines written once a worker node exists — the `loaded` lines and the exit lines. Statuses are `pass | fail | confirmed | loaded | skipped | refused`. There is deliberately no `followed`: the trace records that a playbook was loaded and a step ran, never that a worker obeyed.
 
 A node with no trace prints `no trace was written for <node>` and exits 1 — never an empty timeline that reads as success.
 
@@ -412,7 +412,7 @@ Everything lives under `~/.fs/` — no project directory is written to:
 - `~/.fs/registry.db` — global project registry
 - `~/.fs/kb/` — global knowledge center (YAML playbooks)
 - `~/.fs/projects/<project>/kb/` — a project's own playbooks, shadowing global by name
-- `~/.fs/projects/<project>/logs/<node>.jsonl` — one dispatch's trace
+- `~/.fs/traces/<node>.jsonl` — one dispatch's trace (flat, keyed by the node)
 - `~/.fs/logs/fs.log` — the running log (JSON lines, rotating; see The running log)
 
 ## The running log
@@ -427,7 +427,7 @@ grep '"command refused"' ~/.fs/logs/fs.log            # every refusal, with its 
 
 The level defaults to INFO; `-v`/`--verbose` turns it up to DEBUG (the flag works on every subcommand), and `FS_LOG_LEVEL=debug|info|warn|error` is the environment fallback, the flag winning. An unparseable level is refused, naming the accepted values. The file rotates at 4 MiB keeping three files (`fs.log`, `fs.log.1`, `fs.log.2`).
 
-**It never gates.** Nothing in fs reads the log back to make a decision; a write failure (an unwritable `~/.fs/logs`, a full disk) produces at most a WARN on stderr and never fails the command. This is the running log's whole distinction from the **trace** (`~/.fs/projects/<project>/logs/<node>.jsonl`): the trace records what a dispatch ran and a missing trace line refuses a close; the log records what a process did and its absence refuses nothing. `fs log` reads *events*, not this file — the two are not each other.
+**It never gates.** Nothing in fs reads the log back to make a decision; a write failure (an unwritable `~/.fs/logs`, a full disk) produces at most a WARN on stderr and never fails the command. This is the running log's whole distinction from the **trace** (`~/.fs/traces/<node>.jsonl`): the trace records what a dispatch ran and a missing trace line refuses a close; the log records what a process did and its absence refuses nothing. `fs log` reads *events*, not this file — the two are not each other.
 
 ## Project identity
 

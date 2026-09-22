@@ -1181,10 +1181,10 @@ func closeCmd(args []string) {
 }
 
 // traceLog is the trace store: one JSONL file per dispatch under
-// ~/.fs/projects/<project>/logs/. It is opened once per command; nothing is
+// ~/.fs/traces/<node>.jsonl. It is opened once per command; nothing is
 // created until a line is written.
 func traceLog() *trace.Log {
-	return trace.Open(filepath.Join(fsHome(), "projects"))
+	return trace.Open(filepath.Join(fsHome(), "traces"))
 }
 
 // traceCmd prints one dispatch's trace: the plan it was measured against, then
@@ -1201,34 +1201,33 @@ func traceCmd(args []string) {
 	}
 	node := args[0]
 
+	// The file is located from the node alone, so --project is not a selector.
+	// When it is given it is an assertion: a line whose `project` field disagrees
+	// is refused, never silently ignored.
 	project := flagVal(args, "--project", "")
-	if project == "" {
-		// The trace's directory is the project the dispatch ran against, and a
-		// node id alone does not name it. One match is unambiguous; several mean
-		// the caller has to say which, rather than the command guessing.
-		switch matches := traceLog().ProjectsFor(node); len(matches) {
-		case 1:
-			project = matches[0]
-		case 0:
-			output(command.Response{OK: false, Error: fmt.Sprintf("no trace was written for %q", node)})
-			return
-		default:
-			output(command.Response{OK: false, Error: fmt.Sprintf(
-				"traces for %q exist in more than one project (%s) — name one with --project",
-				node, strings.Join(matches, ", "))})
-			return
-		}
-	}
 
-	lines, err := traceLog().Read(project, node)
+	lines, err := traceLog().Read(node)
 	if err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
 		return
 	}
 
+	if project != "" {
+		for _, ln := range lines {
+			if ln.Project != project {
+				output(command.Response{OK: false, Error: fmt.Sprintf(
+					"trace %s is for project %q, not %q — --project is an assertion, and this trace disagrees",
+					node, ln.Project, project)})
+				return
+			}
+		}
+	} else {
+		project = traceProject(lines)
+	}
+
 	if hasFlag(args, "--json") {
 		output(command.Response{OK: true, Data: map[string]any{
-			"node": node, "project": project, "path": traceLog().Path(project, node), "lines": lines,
+			"node": node, "project": project, "path": traceLog().Path(node), "lines": lines,
 		}})
 		return
 	}
@@ -1247,6 +1246,18 @@ func traceCmd(args []string) {
 		gaps = []string{"the trace records no plan, so there is nothing to measure it against"}
 	}
 	fmt.Print(trace.Render(lines, gaps))
+}
+
+// traceProject is the project a trace records on its lines: the first non-empty
+// one, which the plan line carries on every dispatch written since the field
+// existed. It is what --json reports when the caller did not assert a project.
+func traceProject(lines []trace.Line) string {
+	for _, ln := range lines {
+		if ln.Project != "" {
+			return ln.Project
+		}
+	}
+	return ""
 }
 
 // integratedCmd answers a member's question: was it merged by a done integration
