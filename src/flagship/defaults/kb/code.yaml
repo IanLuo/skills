@@ -1,11 +1,16 @@
-name: code-exit
+name: code
 applies_when: code
 order: 10
-# The do steps below call `herdr workspace close`, so this playbook declares the
+# The exit do steps call `herdr workspace close`, so this playbook declares the
 # engine its steps are written for — the constraint fs can check, so a plan that
 # resolved to a different engine refuses rather than running a herdr command into
 # the void.
 engine: herdr
+entry:
+  - check: test -f AGENTS.md
+  - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
+  - ask: a locked PRD is present, and it names this one deliverable
+  - ask: is the acceptance check for this deliverable stated
 exit:
   # Ordinary code work's exit gate. Until this playbook existed every dev-task
   # close printed "no cleanup gate": entry was guarded, exit was not.

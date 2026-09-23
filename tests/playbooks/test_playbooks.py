@@ -3,7 +3,7 @@
 test_playbooks.py — the shipped playbooks are a contract, so they are checked
 like one.
 
-fs ships 13 playbooks in src/flagship/defaults/kb. They are the protocols a
+fs ships 12 playbooks in src/flagship/defaults/kb. They are the protocols a
 dispatch is measured against, and they are data: a typo in a section or a step
 kind is a protocol that refuses at the worst moment, and a `use:` naming a skill
 this repo does not ship is a hint that sends a worker looking for nothing. Both
@@ -15,7 +15,7 @@ One file is one participant: the moment is a section (`cap:`, `entry:`, `work:`,
 `exit:`), not a field, so a playbook that takes part in two moments declares two
 sections in the same file. What it checks, per playbook:
 
-  1. The set is exactly the 13 the schema ships — no file added or dropped
+  1. The set is exactly the 12 the schema ships — no file added or dropped
      without this list moving with it.
   2. Each file parses, its `name` is its file name, it declares at least one
      section, and its `order`, when given, is an integer.
@@ -65,8 +65,7 @@ SHIPPED = [
     "cap",
     "herdr",
     "worker",
-    "code-entry",
-    "code-exit",
+    "code",
     "plan",
     "development",
     "tdd",
@@ -175,7 +174,7 @@ def main():
     check("the skills tree is readable", len(skills) > 5, f"found {sorted(skills)}")
 
     found = sorted(p.stem for p in KB.glob("*.yaml"))
-    check("the shipped set is exactly the 13", found == sorted(SHIPPED),
+    check("the shipped set is exactly the 12", found == sorted(SHIPPED),
           f"on disk: {found}; expected: {sorted(SHIPPED)}")
 
     for name in sorted(SHIPPED):

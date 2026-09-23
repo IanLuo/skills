@@ -123,9 +123,9 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	}
 
 	// A member belongs to a batch when its cap node's parent is a kind: batch
-	// node. FS_BATCH is that node's id, exported to the exit steps so code-exit
-	// defers its teardown to the batch — the marker is one value, derived from
-	// the structural parent link, never guessed from a goal string.
+	// node. FS_BATCH is that node's id, exported to the exit steps so code's
+	// teardown defers to the batch — the marker is one value, derived from the
+	// structural parent link, never guessed from a goal string.
 	batch := ""
 	if node.ParentNodeID != "" {
 		if parent, ok := scopeNode(h, capScope, node.ParentNodeID); ok && parent.Kind == query.KindBatch {
@@ -602,7 +602,7 @@ func confirmAsks(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delive
 			ID:       trace.StepID(nodeID, step.Playbook, step.Index),
 			Dispatch: nodeID,
 			Playbook: step.Playbook,
-			Phase:    phase,
+			Moment:   phase,
 			Step:     step.Index,
 			Kind:     step.Kind,
 			Status:   trace.StatusConfirmed,
@@ -756,8 +756,8 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 	// no batch to offer — and stays present rather than missing, so a step can
 	// tell "this dispatch named no cards" from "this step has no env". FS_BATCH
 	// is the batch node when this dispatch is a member of one, empty otherwise:
-	// it is the marker code-exit's teardown defers on, so a member's tree is
-	// owned by the batch, not the member.
+	// it is the marker code's teardown defers on, so a member's tree is owned by
+	// the batch, not the member.
 	env := exitEnv(delivery, capNodeID, integrates, batch)
 
 	var run exitRun
@@ -777,7 +777,7 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 			Dispatch: capNodeID,
 			Worker:   worker,
 			Playbook: step.Playbook,
-			Phase:    knowledge.MomentExit,
+			Moment:   knowledge.MomentExit,
 			Step:     step.Index,
 			Kind:     step.Kind,
 			Detail:   step.Body,

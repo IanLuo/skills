@@ -105,7 +105,7 @@ A **playbook** is a protocol for one participant. It declares the moments it tak
 Playbooks are YAML files. Global ones live at `~/.fs/kb/<name>.yaml`; a project's own live at `~/.fs/projects/<project>/kb/<name>.yaml`. The schema is `name`/`applies_when`/`order`/`engine`/`agent`/`creates` plus one section per moment the playbook serves:
 
 ```yaml
-name: code-entry            # required; must equal the file name
+name: code                  # required; must equal the file name
 applies_when: code          # optional, default empty = matches every dispatch.
                             # comma-separated terms, ALL must hold. term = `k` (present) or `k=v`
 order: 10                   # optional, default 500; ascending within each moment; ties by name
@@ -162,7 +162,7 @@ So `fs dispatch --project P --type dev-task --tag code` loads the `code`-situate
 
 The plan is produced once: printed in the brief, recorded on the cap's dispatch node as a `plan-recorded` event, and written as the trace's first line. A plan entry is `{name, moments, order}` — `moments` names the sections the playbook serves, so one entry can be both an `entry` and an `exit` participant. The trace is one JSONL file per dispatch at `~/.fs/traces/<project>.<node>.jsonl`, filed flat and append-only, never deleted at close: the project leads the name so a person browsing the directory recognises the file, and a dot separates the halves because both contain hyphens. `fs trace NODE [--project P] [--json]` renders it: the plan, then one line per step outcome, ending with `deviation: …` or `deviation: none` (the same comparison `fs close` refuses on). `--project` is an assertion, not a selector — the file is located by NODE alone (globbing `*.<node>.jsonl`), and a line whose project field disagrees is refused.
 
-Each step line carries `ts`, `id` (`<dispatch>/<playbook>/<step>`), `dispatch`, `project`, `playbook`, `phase`, `step` (1-based), `kind`, `status`, `duration_ms`, and `detail` (the step body, truncated — **never** the command's output, so a check that prints a secret cannot write it into the trace). The `worker` field is present only on lines written once a worker node exists — the `loaded` lines and the exit lines. Statuses are `pass | fail | confirmed | loaded | skipped | refused`. There is deliberately no `followed`: the trace records that a playbook was loaded and a step ran, never that a worker obeyed.
+Each step line carries `ts`, `id` (`<dispatch>/<playbook>/<step>`), `dispatch`, `project`, `playbook`, `moment`, `step` (1-based), `kind`, `status`, `duration_ms`, and `detail` (the step body, truncated — **never** the command's output, so a check that prints a secret cannot write it into the trace). The `worker` field is present only on lines written once a worker node exists — the `loaded` lines and the exit lines. Statuses are `pass | fail | confirmed | loaded | skipped | refused`. There is deliberately no `followed`: the trace records that a playbook was loaded and a step ran, never that a worker obeyed.
 
 A node with no trace prints `no trace was written for <node>` and exits 1 — never an empty timeline that reads as success.
 
@@ -170,7 +170,7 @@ A node with no trace prints `no trace was written for <node>` and exits 1 — ne
 
 Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/`. A project playbook with the same `name` as a global one **replaces** it for a dispatch into that project; `fs kb list` prints each playbook's `scope` (`global` or the project name) beside its state. `include: <name>` splices that playbook's steps at that position, resolved in the same scope order (project first, then global); a cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
 
-### The 13 shipped playbooks
+### The 12 shipped playbooks
 
 `fs bootstrap` seeds these into `~/.fs/kb/` (see Knowledge center below):
 
@@ -179,8 +179,7 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 | `cap` | cap | — | 10 | the cap's standing rules: hold the plan, elicit decisions, `fs pending` first, close what's ready, file a gap when dispatch refuses for want of a playbook. |
 | `herdr` | cap | `engine=herdr` | 20 | herdr-operative rules: never wait, never poll — `fs pending` is the read. |
 | `worker` | work | — | 10 | every worker's standing obligations: note your node, never invent one, file gaps as `kind: gap`, a claim without its command is not evidence. |
-| `code-entry` | entry | `code` | 10 | `test -f AGENTS.md`; the locked-doc grep; ask: a locked PRD names this deliverable; ask: is the acceptance check stated. |
-| `code-exit` | exit | `code` | 10 | ask: is the worker's node complete; then the declared teardown (branch, worktree, herdr workspace); then postcondition checks. |
+| `code` | entry, exit | `code` | 10 | one file for the code participant: its `entry:` is `test -f AGENTS.md`, the locked-doc grep, and the asks a locked PRD names this deliverable and the acceptance check is stated; its `exit:` is the ask that the worker's node is complete, then the declared teardown (branch, worktree, herdr workspace) and its postconditions. Declares `engine: herdr` because those `do` steps call it. |
 | `plan` | work | `code` | 20 | the locked spec governs; state the plan; ask the cap when the spec is silent, never improvise. |
 | `development` | work | `code` | 30 | the code bar: smallest structure, surgical diffs, own your orphans, refactor as its own step. |
 | `tdd` | work | `code` | 40 | red → green → broader check; record why a test was skipped. |
@@ -321,7 +320,7 @@ Exit steps get the closing dispatch's own inputs in their environment:
 | `FS_PANE` | the pane the delivery opened |
 | `FS_WORKTREE` | the worktree workspace the dispatch ran in; empty without one |
 | `FS_WORKTREE_PATH` | that worktree's checkout path; empty without one |
-| `FS_BATCH` | the batch node this dispatch is a member of; empty outside a batch — the marker `code-exit`'s teardown defers on |
+| `FS_BATCH` | the batch node this dispatch is a member of; empty outside a batch — the marker `code`'s teardown defers on |
 
 Exit `check` steps run in the tree the dispatch worked in (the worktree, or the project root when there was none or the tree is gone); exit `do` steps run in the project root, so an action that removes the worktree does not stand inside it.
 
@@ -335,7 +334,7 @@ The gate can check that the worker's node exists and is `done`, and that the tra
 fs dispatch --project P --type dev-task --tag code --batch <batch-node> --worktree-new --deliver
 ```
 
-The member works in its own worktree; its own close runs `member`'s `exit:` section (`fs integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code-exit`'s teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch`'s `exit:` section tears each member's branch, worktree and workspace down, declared once.
+The member works in its own worktree; its own close runs `member`'s `exit:` section (`fs integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code`'s exit teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch`'s `exit:` section tears each member's branch, worktree and workspace down, declared once.
 
 A batch's cards declare their files so the fan-out can be checked mechanically:
 

@@ -3,6 +3,7 @@ package trace
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,52 @@ func TestReadRefusesWhenNodeMatchesMoreThanOneTrace(t *testing.T) {
 	}
 	if _, err := lg.Read("t-dup"); err == nil {
 		t.Fatal("a node matching two traces must refuse")
+	}
+}
+
+// A step line says `moment`, the same word the plan line uses for the sections a
+// playbook serves: one file that called the plan's list `moments` and each
+// step's own moment `phase` disagreed with itself. Lines written before the
+// rename carry `phase`, and the reader still accepts them — tolerance for a
+// historical record, not a second spelling going forward.
+func TestReadAcceptsTheLegacyPhaseField(t *testing.T) {
+	dir := t.TempDir()
+	lg := Open(dir)
+	legacy := `{"ts":"2026-09-21T12:00:01Z","id":"t-legacy/code/1","dispatch":"t-legacy",` +
+		`"project":"skills","playbook":"code","phase":"entry","step":1,"kind":"check","status":"pass"}`
+	if err := os.WriteFile(filepath.Join(dir, "skills.t-legacy.jsonl"), []byte(legacy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := lg.Read("t-legacy")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(lines) != 1 || lines[0].Moment != "entry" {
+		t.Errorf("a legacy line's moment = %q, want %q", lines[0].Moment, "entry")
+	}
+}
+
+// What is written says `moment` and does not also say `phase`: the legacy field
+// is read, never written, so a new trace file is internally consistent.
+func TestAppendWritesMomentAndNotPhase(t *testing.T) {
+	dir := t.TempDir()
+	lg := Open(dir)
+	if err := lg.Append("skills", Line{
+		ID: "t-step/code/1", Dispatch: "t-step", Playbook: "code",
+		Moment: "work", Step: 1, Kind: KindLoaded, Status: StatusLoaded,
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "skills.t-step.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"moment":"work"`) {
+		t.Errorf("a step line must carry moment:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "phase") {
+		t.Errorf("a step line must not carry phase:\n%s", raw)
 	}
 }

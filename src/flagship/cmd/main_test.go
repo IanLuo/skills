@@ -2615,7 +2615,7 @@ agent: pi
 entry:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2656,7 +2656,7 @@ agent: pi
 entry:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2691,7 +2691,7 @@ agent: pi
 entry:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")
@@ -2746,7 +2746,7 @@ agent: pi
 entry:
   - check: true
 `)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
+	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
 
 	worktree, resolved := realWorktree(t, root)
 	mergeIntoMain(t, root, worktree, "batch-test-a")

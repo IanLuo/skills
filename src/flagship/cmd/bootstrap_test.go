@@ -16,13 +16,19 @@ import (
 // phase and its applies_when and by nothing else, so the names below say which
 // phase gate each one is rather than what it used to be called.
 const (
-	capPlaybook    = "cap"
-	codeEntryPb    = "code-entry"
-	codeExitPb     = "code-exit"
-	herdrPlaybook  = "herdr"
-	batchPb        = "batch"
-	memberPb       = "member"
-	integrationPb  = "integration"
+	capPlaybook   = "cap"
+	codePb        = "code"
+	herdrPlaybook = "herdr"
+	batchPb       = "batch"
+	memberPb      = "member"
+	integrationPb = "integration"
+
+	// Fixture playbooks a test writes into its own home. A playbook may be
+	// called anything, so these keep the two names the code participant used to
+	// ship under: they are not the shipped set, and nothing here asserts they
+	// are.
+	codeEntryPb = "code-entry"
+	codeExitPb  = "code-exit"
 
 	// Stub playbooks a worktree-teardown test writes: an entry playbook that
 	// declares the realization and a passing check, and an exit playbook that
@@ -36,7 +42,7 @@ const (
 // shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
 // of them; the cap's standing rules are built from the cap-phase ones.
 var shippedPlaybooks = []string{
-	capPlaybook, herdrPlaybook, "worker", codeEntryPb, codeExitPb, "plan",
+	capPlaybook, herdrPlaybook, "worker", codePb, "plan",
 	"development", "tdd", "review", "research", batchPb, memberPb, integrationPb,
 }
 
@@ -209,7 +215,7 @@ func TestCLIBootstrapNeverOverwritesAPlaybook(t *testing.T) {
 	if got := readRaw(t, filepath.Join(home, ".fs", "kb", capPlaybook+".yaml")); got != mine {
 		t.Errorf("bootstrap modified an existing playbook:\ngot  %q\nwant %q", got, mine)
 	}
-	if seeded[codeEntryPb]["action"] != "created" {
+	if seeded[codePb]["action"] != "created" {
 		t.Errorf("an absent playbook must still be created: %v", seeded)
 	}
 }
@@ -229,9 +235,9 @@ func TestCLIKBListReportsDrift(t *testing.T) {
 	}
 
 	// A one-line change is edited.
-	devPath := filepath.Join(kbDir, codeEntryPb+".yaml")
+	devPath := filepath.Join(kbDir, codePb+".yaml")
 	writeRaw(t, devPath, readRaw(t, devPath)+"  - say: an added step\n")
-	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[codeEntryPb]; state["state"] != "edited" {
+	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[codePb]; state["state"] != "edited" {
 		t.Errorf("an edited playbook = %v, want state edited", state)
 	}
 
@@ -392,8 +398,10 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 			t.Errorf("kb prompt must contain %q; got:\n%s", want, stdout)
 		}
 	}
-	// An entry playbook is a gate a dispatch runs, not a standing rule.
-	if strings.Contains(stdout, codeEntryPb) {
+	// An entry playbook is a gate a dispatch runs, not a standing rule. The
+	// header shape is what makes this precise: `code` is also an ordinary word
+	// the cap's own rules may use.
+	if strings.Contains(stdout, "# "+codePb+" — moments") {
 		t.Errorf("an entry playbook must not be part of the prompt:\n%s", stdout)
 	}
 
@@ -586,28 +594,28 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// first, because the teardown destroys the tree the answer is about: a
 	// question asked after the worktree is gone is a question about a checkout
 	// nobody can look at any more.
-	dev := stepsOf(t, bin, codeExitPb, "exit")
+	dev := stepsOf(t, bin, codePb, "exit")
 	if len(dev) == 0 || dev[0]["kind"] != "ask" {
-		t.Errorf("code-exit's first step = %v, want the ask before the teardown", dev)
+		t.Errorf("code's first exit step = %v, want the ask before the teardown", dev)
 	}
 	asks := bodiesOf(dev, "ask")
 	if len(asks) != 1 || !strings.Contains(asks[0], "nothing important died with its transcript") {
-		t.Errorf("code-exit asks = %v, want the question about the worker's node", asks)
+		t.Errorf("code's exit asks = %v, want the question about the worker's node", asks)
 	}
 	if len(bodiesOf(dev, "do")) == 0 {
-		t.Error("code-exit declares no teardown: a dispatch that had a worktree would leak its checkout")
+		t.Error("code's exit section declares no teardown: a dispatch that had a worktree would leak its checkout")
 	}
 	for _, body := range bodiesOf(dev, "do") {
 		if !strings.Contains(body, "FS_BATCH") {
-			t.Errorf("code-exit action %q does not defer on FS_BATCH — a member's tree would not survive its close", body)
+			t.Errorf("code's exit action %q does not defer on FS_BATCH — a member's tree would not survive its close", body)
 		}
 	}
-	for _, body := range postconditionsOf(t, codeExitPb, dev) {
+	for _, body := range postconditionsOf(t, codePb, dev) {
 		if !strings.Contains(body, "FS_WORKTREE") {
-			t.Errorf("code-exit postcondition %q is not about this dispatch's own worktree", body)
+			t.Errorf("code's exit postcondition %q is not about this dispatch's own worktree", body)
 		}
 	}
 	if pre := preconditionsOf(dev); len(pre) != 0 {
-		t.Errorf("code-exit pre-teardown checks = %v, want none: neither a clean tree nor a merged branch can be made true here", pre)
+		t.Errorf("code's exit pre-teardown checks = %v, want none: neither a clean tree nor a merged branch can be made true here", pre)
 	}
 }

@@ -202,7 +202,7 @@ func recordLoaded(lg *trace.Log, brief *Brief) error {
 			Dispatch: brief.CapNodeID,
 			Worker:   brief.WorkerNode,
 			Playbook: entry.Name,
-			Phase:    knowledge.MomentWork,
+			Moment:   knowledge.MomentWork,
 			Kind:     trace.KindLoaded,
 			Status:   trace.StatusLoaded,
 			Detail:   "handed to " + brief.WorkerNode,

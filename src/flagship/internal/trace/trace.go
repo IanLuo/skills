@@ -77,8 +77,8 @@ type Plan struct {
 }
 
 // Line is one JSONL record. A plan line carries Tags and Plan; a step line
-// carries the id, the playbook, the phase, the 1-based step and its status; a
-// `loaded` line carries the playbook, phase work, step 0 and status loaded.
+// carries the id, the playbook, the moment, the 1-based step and its status; a
+// `loaded` line carries the playbook, moment work, step 0 and status loaded.
 type Line struct {
 	TS         string         `json:"ts"`
 	ID         string         `json:"id,omitempty"`
@@ -86,7 +86,7 @@ type Line struct {
 	Project    string         `json:"project,omitempty"`
 	Worker     string         `json:"worker,omitempty"`
 	Playbook   string         `json:"playbook,omitempty"`
-	Phase      string         `json:"phase,omitempty"`
+	Moment     string         `json:"moment,omitempty"`
 	Step       int            `json:"step,omitempty"`
 	Kind       string         `json:"kind"`
 	Status     string         `json:"status,omitempty"`
@@ -96,6 +96,25 @@ type Line struct {
 	Plan       []PlanEntry    `json:"plan,omitempty"`
 	Engine     string         `json:"engine,omitempty"`
 	Agent      string         `json:"agent,omitempty"`
+}
+
+// UnmarshalJSON reads a record, taking `phase` as the moment on a line written
+// before the field was renamed. Tolerance for historical records is the whole of
+// it: `moment` is the spelling, and no line written now carries `phase`.
+func (ln *Line) UnmarshalJSON(b []byte) error {
+	type plain Line // a copy without this method, so decoding cannot recurse here
+	var v struct {
+		plain
+		Phase string `json:"phase,omitempty"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*ln = Line(v.plain)
+	if ln.Moment == "" {
+		ln.Moment = v.Phase
+	}
+	return nil
 }
 
 // StepID is the trackable id of one step: <dispatch>/<playbook>/<step>.
