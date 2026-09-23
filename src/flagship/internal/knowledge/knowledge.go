@@ -1,10 +1,11 @@
 // Package knowledge implements the Knowledge Center — YAML read/write/parse
 // for playbooks. It is the sole owner of config file schema.
 //
-// A playbook is a protocol for a kind of work. It declares the moment it runs in
-// (`phase`), the situations it is for (`applies_when`), and where it sits in the
-// order; the planner matches those declarations against a dispatch's tags, so a
-// playbook can express a situation instead of a name.
+// A playbook is a protocol for one participant. It declares the moments it takes
+// part in as sections (`cap:`, `entry:`, `work:`, `exit:`), the situations it is
+// for (`applies_when`), and where it sits in the order; the planner matches those
+// declarations against a dispatch's tags, so a playbook can express a situation
+// instead of a name.
 package knowledge
 
 import (
@@ -21,13 +22,20 @@ import (
 	"github.com/flagship-dev/flagship/internal/query"
 )
 
-// Phases: the moment a playbook runs in.
+// Moments: when a playbook's steps run. The moment is a section, not a field —
+// one file is one participant, and the moment decides when its steps run, never
+// its position in the file.
 const (
-	PhaseCap   = "cap"   // the cap's standing rules, in the session prompt
-	PhaseEntry = "entry" // before the worker starts
-	PhaseWork  = "work"  // the worker's brief
-	PhaseExit  = "exit"  // at close
+	MomentCap   = "cap"   // the cap's standing rules, in the session prompt
+	MomentEntry = "entry" // before the worker starts
+	MomentWork  = "work"  // the worker's brief
+	MomentExit  = "exit"  // at close
 )
+
+// canonicalMoments is the fixed order moments run in, and the order a playbook's
+// steps are numbered in. A playbook serving two moments carries one `order` used
+// in both, and the step indexes never mix them because this order never changes.
+var canonicalMoments = []string{MomentCap, MomentEntry, MomentWork, MomentExit}
 
 // Step kinds. A step declares what it is, so nothing has to guess from its
 // wording: check runs a shell command and reports pass/fail, do runs a shell
@@ -46,16 +54,16 @@ const (
 // AllKinds is the closed step vocabulary, in the order errors list it.
 var AllKinds = []string{KindSay, KindUse, KindCheck, KindAsk, KindDo, KindInclude}
 
-// allowedKinds is the closed step vocabulary per phase. A gate may assert or
+// allowedKinds is the closed step vocabulary per moment. A gate may assert or
 // ask; only exit may act, because a teardown is an action and nothing else can
-// verify what it achieved. `include` is allowed in every phase — it is resolved
+// verify what it achieved. `include` is allowed in every moment — it is resolved
 // away before validation, and what it splices must itself be legal for the
-// including playbook's phase.
+// including section's moment.
 var allowedKinds = map[string][]string{
-	PhaseCap:   {KindSay},
-	PhaseEntry: {KindCheck, KindAsk, KindSay},
-	PhaseWork:  {KindSay, KindUse},
-	PhaseExit:  {KindCheck, KindAsk, KindDo, KindSay},
+	MomentCap:   {KindSay},
+	MomentEntry: {KindCheck, KindAsk, KindSay},
+	MomentWork:  {KindSay, KindUse},
+	MomentExit:  {KindCheck, KindAsk, KindDo, KindSay},
 }
 
 // defaultOrder is where a playbook sits when it does not say. Well below the
@@ -72,12 +80,20 @@ type Step struct {
 	Body string `json:"body" yaml:"body"`
 }
 
-// Playbook is the structured config entity: a named protocol, the moment it runs
-// in, the situations it is for, where it sits in the order, how the work is
-// realized (engine and agent), and its steps.
+// Section is one moment's steps, in the order the file spells them. A playbook
+// declares one section per moment it takes part in; a moment declared more than
+// once contributes its steps in file order via StepsFor.
+type Section struct {
+	Moment string
+	Steps  []Step
+}
+
+// Playbook is the structured config entity: a named protocol for one
+// participant, the moments it takes part in, the situations it is for, where it
+// sits in the order, how the work is realized (engine and agent), and its
+// sections.
 type Playbook struct {
 	Name        string   `json:"name" yaml:"name"`
-	Phase       string   `json:"phase" yaml:"phase"`
 	AppliesWhen []string `json:"-" yaml:"-"`
 	Order       int      `json:"order" yaml:"order"`
 	Engine      string   `json:"engine,omitempty" yaml:"engine"`
@@ -88,7 +104,72 @@ type Playbook struct {
 	// default, dispatch; the consumer resolves it rather than storing a
 	// default here.
 	Creates string `json:"creates,omitempty" yaml:"creates"`
-	Steps   []Step `json:"steps" yaml:"steps"`
+	// Sections holds one entry per declared moment, in file order.
+	Sections []Section `json:"-"`
+}
+
+// StepsFor returns the steps of one moment's section — every occurrence of that
+// moment in the file, in file order — or nil when the playbook does not serve it.
+func (pb *Playbook) StepsFor(moment string) []Step {
+	var steps []Step
+	for _, section := range pb.Sections {
+		if section.Moment == moment {
+			steps = append(steps, section.Steps...)
+		}
+	}
+	return steps
+}
+
+// Moments returns the moments the playbook serves, in canonical order. A moment
+// with no steps is not served, so an empty section does not claim a moment.
+func (pb *Playbook) Moments() []string {
+	var moments []string
+	for _, moment := range canonicalMoments {
+		if len(pb.StepsFor(moment)) > 0 {
+			moments = append(moments, moment)
+		}
+	}
+	return moments
+}
+
+// Serves reports whether the playbook has steps for one moment.
+func (pb *Playbook) Serves(moment string) bool {
+	return len(pb.StepsFor(moment)) > 0
+}
+
+// IndexedStep is one step of a resolved playbook, with the moment it runs in and
+// its 1-based index within the playbook's flattened step list — the index the
+// trace's step id carries, so two moments of one playbook never collide.
+type IndexedStep struct {
+	Moment string
+	Index  int
+	Step   Step
+}
+
+// IndexedSteps flattens a playbook's sections in canonical moment order,
+// numbering steps 1-based across the whole playbook.
+func (pb *Playbook) IndexedSteps() []IndexedStep {
+	var out []IndexedStep
+	index := 0
+	for _, moment := range canonicalMoments {
+		for _, step := range pb.StepsFor(moment) {
+			index++
+			out = append(out, IndexedStep{Moment: moment, Index: index, Step: step})
+		}
+	}
+	return out
+}
+
+// addStep appends one step to a moment's section, creating it when the moment
+// has not been declared yet.
+func (pb *Playbook) addStep(moment string, step Step) {
+	for i := range pb.Sections {
+		if pb.Sections[i].Moment == moment {
+			pb.Sections[i].Steps = append(pb.Sections[i].Steps, step)
+			return
+		}
+	}
+	pb.Sections = append(pb.Sections, Section{Moment: moment, Steps: []Step{step}})
 }
 
 // Matches reports whether every term of applies_when holds for a tag set. An
@@ -416,21 +497,26 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 		return nil, err
 	}
 
-	steps := make([]Step, 0, len(pb.Steps))
-	for i, step := range pb.Steps {
-		if step.Kind != KindInclude {
-			steps = append(steps, step)
-			continue
+	for si := range pb.Sections {
+		section := &pb.Sections[si]
+		steps := make([]Step, 0, len(section.Steps))
+		for i, step := range section.Steps {
+			if step.Kind != KindInclude {
+				steps = append(steps, step)
+				continue
+			}
+			included, err := c.resolve(step.Body, append(stack, path))
+			if err != nil {
+				return nil, fmt.Errorf("knowledge: %s %s step %d (include: %s): %w", name, section.Moment, i+1, step.Body, err)
+			}
+			for _, is := range included.IndexedSteps() {
+				steps = append(steps, is.Step)
+			}
 		}
-		included, err := c.resolve(step.Body, append(stack, path))
-		if err != nil {
-			return nil, fmt.Errorf("knowledge: %s step %d (include: %s): %w", name, i+1, step.Body, err)
-		}
-		steps = append(steps, included.Steps...)
+		section.Steps = steps
 	}
-	pb.Steps = steps
 
-	// A spliced step has to be legal for the playbook that spliced it, or the
+	// A spliced step has to be legal for the section that spliced it, or the
 	// include would put a `do` in a gate that may only assert.
 	if err := Validate(pb); err != nil {
 		return nil, err
@@ -442,21 +528,24 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 // We use a minimal YAML parser to avoid external dependencies.
 // Format:
 //
-//	name: tdd
-//	phase: work
-//	applies_when: code
-//	order: 40
-//	steps:
-//	  - say: characterise current behavior with a failing test first
-//	  - use: dev-task — the TDD loop and the code bar
-//	  - include: code-exit
+//	name: batch
+//	applies_when: type=batch
+//	order: 10
+//	engine: herdr
+//	entry:
+//	  - check: test -d .git
+//	exit:
+//	  - check: fs batch $FS_NODE
+//
+// The moment is a section, not a field: `cap:`, `entry:`, `work:` and `exit:`
+// each hold a list of steps, in any combination and any textual order.
 //
 // name is the name the file is expected to carry, and is used only to say so in
 // a refusal; "" leaves the mismatch to be reported by the caller.
 func parsePlaybook(name string, data []byte) (*Playbook, error) {
 	pb := &Playbook{Order: defaultOrder}
 	lines := strings.Split(string(data), "\n")
-	inSteps := false
+	moment := ""
 	hasOrder := false
 
 	for _, line := range lines {
@@ -465,13 +554,13 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			continue
 		}
 
-		if inSteps {
-			if strings.HasPrefix(trimmed, "- ") {
-				pb.Steps = append(pb.Steps, parseStep(strings.TrimPrefix(trimmed, "- ")))
-				continue
+		if strings.HasPrefix(trimmed, "- ") {
+			if moment != "" {
+				pb.addStep(moment, parseStep(strings.TrimPrefix(trimmed, "- ")))
 			}
-			inSteps = false
+			continue
 		}
+		moment = ""
 
 		parts := strings.SplitN(trimmed, ":", 2)
 		if len(parts) != 2 {
@@ -483,8 +572,6 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 		switch key {
 		case "name":
 			pb.Name = val
-		case "phase":
-			pb.Phase = val
 		case "applies_when":
 			pb.AppliesWhen = splitTerms(val)
 		case "order":
@@ -494,8 +581,6 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			} else {
 				return nil, fmt.Errorf("knowledge: playbook %q has order %q, which is not a number", name, val)
 			}
-		case "steps":
-			inSteps = true
 		case "engine":
 			if val == "" {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `engine:`; engine must be a single non-empty token", name)
@@ -511,7 +596,9 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `creates:`; creates names the node kind and must be a single non-empty token", name)
 			}
 			pb.Creates = val
-		case "type", "trigger", "engine_scope":
+		case MomentCap, MomentEntry, MomentWork, MomentExit:
+			moment = key
+		case "phase", "steps", "type", "trigger", "engine_scope":
 			return nil, removedFieldError(name, key, val)
 		}
 	}
@@ -519,8 +606,8 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 	if !hasOrder {
 		pb.Order = defaultOrder
 	}
-	if pb.Name == "" && pb.Phase == "" && len(pb.Steps) == 0 {
-		return nil, fmt.Errorf("knowledge: playbook %q declares nothing — no name, no phase, no steps", name)
+	if pb.Name == "" && len(pb.Sections) == 0 {
+		return nil, fmt.Errorf("knowledge: playbook %q declares nothing — no name, no sections", name)
 	}
 	if pb.Name != "" && name != "" && pb.Name != name {
 		return nil, fmt.Errorf(
@@ -536,18 +623,25 @@ func removedFieldError(name, key, val string) error {
 	var replacement string
 	switch key {
 	case "trigger":
-		replacement = fmt.Sprintf(
-			"the replacement is `phase: %s`", val)
+		replacement = fmt.Sprintf("the replacement is the `%s:` section", val)
 	case "engine_scope":
 		replacement = fmt.Sprintf(
 			"the replacement is `engine: %s` — the declaration that now exists; use the term `applies_when: engine=%s` only when the intent is to match an engine rather than declare one", val, val)
 	case "type":
-		replacement = "the replacement is `phase` — `entry` for a prerequisite, " +
-			"`exit` for a cleanup — with an `applies_when` term naming the work it matches"
+		replacement = "the replacement is the section of that moment — `entry:` for a prerequisite, " +
+			"`exit:` for a cleanup — plus an `applies_when` term naming the work it matches"
+	case "phase":
+		replacement = fmt.Sprintf("the replacement is the `%s:` section holding the same list", val)
+	case "steps":
+		replacement = "the replacement is one section per moment — `cap:`, `entry:`, `work:`, `exit:` — each holding its own list"
 	}
 
-	msg := fmt.Sprintf("knowledge: playbook %q carries the removed field `%s: %s`; %s",
-		name, key, val, replacement)
+	field := key
+	if val != "" {
+		field = key + ": " + val
+	}
+	msg := fmt.Sprintf("knowledge: playbook %q carries the removed field `%s`; %s",
+		name, field, replacement)
 	if name != "" {
 		msg += fmt.Sprintf("; run `fs kb remove %s` once its replacement is in place", name)
 	}
@@ -608,21 +702,22 @@ func validRealizationToken(s string) bool {
 	return true
 }
 
-// Validate holds a resolved playbook to the schema: a name, a known phase, at
-// least one step, and only the kinds its phase allows. It runs on the write path
-// and wherever a playbook is matched, so a broken playbook is refused before it
-// runs half its steps.
+// Validate holds a resolved playbook to the schema: a name, known moments, at
+// least one step, and only the kinds each moment allows. It runs on the write
+// path and wherever a playbook is matched, so a broken playbook is refused
+// before it runs half its steps.
 func Validate(pb *Playbook) error {
 	if pb.Name == "" {
 		return fmt.Errorf("knowledge: a playbook must declare a name")
 	}
-	allowed, ok := allowedKinds[pb.Phase]
-	if !ok {
-		return fmt.Errorf(
-			"knowledge: playbook %q has phase %q; phases are: %s",
-			pb.Name, pb.Phase, strings.Join([]string{PhaseCap, PhaseEntry, PhaseWork, PhaseExit}, ", "))
+	for _, section := range pb.Sections {
+		if _, ok := allowedKinds[section.Moment]; !ok {
+			return fmt.Errorf(
+				"knowledge: playbook %q has moment %q; moments are: %s",
+				pb.Name, section.Moment, strings.Join(canonicalMoments, ", "))
+		}
 	}
-	if len(pb.Steps) == 0 {
+	if len(pb.IndexedSteps()) == 0 {
 		return fmt.Errorf("knowledge: playbook %q has no steps; a playbook is a protocol, so it has at least one", pb.Name)
 	}
 
@@ -645,33 +740,37 @@ func Validate(pb *Playbook) error {
 			pb.Name, pb.Creates, strings.Join([]string{string(query.KindWork), string(query.KindDispatch), string(query.KindGap), string(query.KindBatch)}, ", "))
 	}
 
-	for i, step := range pb.Steps {
-		// `include` is legal in every phase. It is spliced away before anything
-		// runs — a resolved playbook never carries one — and what it splices is
-		// held to this playbook's phase by the validation resolve runs afterwards.
-		// A file being written, though, still carries the include step, so it is
-		// permitted here or no playbook that includes another could be written.
-		if step.Kind == KindInclude {
-			if strings.TrimSpace(step.Body) == "" {
-				return fmt.Errorf(
-					"knowledge: %s playbook %q step %d has kind %q with an empty body; an include step names the playbook to splice",
-					pb.Phase, pb.Name, i+1, step.Kind)
+	for _, section := range pb.Sections {
+		allowed := allowedKinds[section.Moment]
+		for i, step := range section.Steps {
+			// `include` is legal in every moment. It is spliced away before
+			// anything runs — a resolved playbook never carries one — and what it
+			// splices is held to this section's moment by the validation resolve
+			// runs afterwards. A file being written, though, still carries the
+			// include step, so it is permitted here or no playbook that includes
+			// another could be written.
+			if step.Kind == KindInclude {
+				if strings.TrimSpace(step.Body) == "" {
+					return fmt.Errorf(
+						"knowledge: %s playbook %q step %d has kind %q with an empty body; an include step names the playbook to splice",
+						section.Moment, pb.Name, i+1, step.Kind)
+				}
+				continue
 			}
-			continue
-		}
-		if !slices.Contains(allowed, step.Kind) {
-			return fmt.Errorf(
-				"knowledge: %s playbook %q step %d (%q) has kind %q; allowed kinds: %s",
-				pb.Phase, pb.Name, i+1, step.Body, step.Kind,
-				strings.Join(append(slices.Clone(allowed), KindInclude), ", "))
-		}
-		// A step is named by its kind, so a use or do with nothing in it reads
-		// as guidance or an action and carries neither.
-		if (step.Kind == KindUse || step.Kind == KindDo) && strings.TrimSpace(step.Body) == "" {
-			return fmt.Errorf(
-				"knowledge: %s playbook %q step %d has kind %q with an empty body; a %s step names %s",
-				pb.Phase, pb.Name, i+1, step.Kind, step.Kind,
-				map[string]string{KindUse: "a skill and when to use it", KindDo: "the shell command to run"}[step.Kind])
+			if !slices.Contains(allowed, step.Kind) {
+				return fmt.Errorf(
+					"knowledge: %s playbook %q step %d (%q) has kind %q; allowed kinds: %s",
+					section.Moment, pb.Name, i+1, step.Body, step.Kind,
+					strings.Join(append(slices.Clone(allowed), KindInclude), ", "))
+			}
+			// A step is named by its kind, so a use or do with nothing in it reads
+			// as guidance or an action and carries neither.
+			if (step.Kind == KindUse || step.Kind == KindDo) && strings.TrimSpace(step.Body) == "" {
+				return fmt.Errorf(
+					"knowledge: %s playbook %q step %d has kind %q with an empty body; a %s step names %s",
+					section.Moment, pb.Name, i+1, step.Kind, step.Kind,
+					map[string]string{KindUse: "a skill and when to use it", KindDo: "the shell command to run"}[step.Kind])
+			}
 		}
 	}
 	return nil
@@ -682,22 +781,26 @@ func Validate(pb *Playbook) error {
 func (pb *Playbook) MarshalJSON() ([]byte, error) {
 	type file struct {
 		Name        string `json:"name"`
-		Phase       string `json:"phase"`
 		AppliesWhen string `json:"applies_when,omitempty"`
 		Order       int    `json:"order"`
 		Engine      string `json:"engine,omitempty"`
 		Agent       string `json:"agent,omitempty"`
 		Creates     string `json:"creates,omitempty"`
-		Steps       []Step `json:"steps"`
+		Cap         []Step `json:"cap,omitempty"`
+		Entry       []Step `json:"entry,omitempty"`
+		Work        []Step `json:"work,omitempty"`
+		Exit        []Step `json:"exit,omitempty"`
 	}
 	return json.Marshal(file{
 		Name:        pb.Name,
-		Phase:       pb.Phase,
 		AppliesWhen: pb.AppliesWhenString(),
 		Order:       pb.Order,
 		Engine:      pb.Engine,
 		Agent:       pb.Agent,
 		Creates:     pb.Creates,
-		Steps:       pb.Steps,
+		Cap:         pb.StepsFor(MomentCap),
+		Entry:       pb.StepsFor(MomentEntry),
+		Work:        pb.StepsFor(MomentWork),
+		Exit:        pb.StepsFor(MomentExit),
 	})
 }

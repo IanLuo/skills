@@ -1275,8 +1275,7 @@ func TestCLIKBAddGetListEditRemove(t *testing.T) {
 	dir := t.TempDir()
 
 	playbook := `name: dev-prereqs
-phase: entry
-steps:
+entry:
   - check: test -f docs/prd.md
   - check: test -f docs/arch.md
 `
@@ -1334,8 +1333,8 @@ steps:
 	if pbData["name"] != "dev-prereqs" {
 		t.Errorf("name: %v", pbData["name"])
 	}
-	if pbData["phase"] != "entry" {
-		t.Errorf("phase: %v", pbData["phase"])
+	if _, ok := pbData["entry"].([]any); !ok {
+		t.Errorf("entry section missing: %v", pbData)
 	}
 
 	// kb list — one item.
@@ -1350,8 +1349,7 @@ steps:
 
 	// kb edit.
 	updated := `name: dev-prereqs
-phase: entry
-steps:
+entry:
   - check: test -f docs/prd.md
   - check: test -f docs/arch.md
   - check: go vet ./...
@@ -1364,7 +1362,7 @@ steps:
 
 	// Verify edit.
 	resp, _ = runKB("kb", "get", "dev-prereqs")
-	steps := resp["data"].(map[string]any)["steps"].([]any)
+	steps := resp["data"].(map[string]any)["entry"].([]any)
 	if len(steps) != 3 {
 		t.Fatalf("expected 3 steps after edit, got %d", len(steps))
 	}
@@ -1396,8 +1394,7 @@ func TestCLIKBAddRefusesInvalidPlaybooks(t *testing.T) {
 		{
 			name: "entry-do",
 			pb: `name: entry-do
-phase: entry
-steps:
+entry:
   - check: test -f AGENTS.md
   - do: rm -rf build
 `,
@@ -1406,8 +1403,7 @@ steps:
 		{
 			name: "cap-ask",
 			pb: `name: cap-ask
-phase: cap
-steps:
+cap:
   - ask: is the acceptance check stated?
 `,
 			want: "allowed kinds: say, include",
@@ -1419,13 +1415,12 @@ phase: routing
 steps:
   - say: dev-task
 `,
-			want: "phases are: cap, entry, work, exit",
+			want: "removed field `phase: routing`",
 		},
 		{
 			name: "work-check",
 			pb: `name: work-check
-phase: work
-steps:
+work:
   - check: test -f AGENTS.md
 `,
 			want: "allowed kinds: say, use, include",
@@ -1451,10 +1446,9 @@ steps:
 }
 
 const dispatchPlaybook = `name: code-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
   - ask: a locked PRD is present, and it names this one deliverable
@@ -1566,8 +1560,8 @@ func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeWorkerPlaybook(t)
-	writeKBPlaybook(t, testHome(t), batchEntryPb, shippedDefault(t, batchEntryPb))
-	gateBody := shippedStep(t, shippedDefault(t, batchEntryPb), "check", "$FS_CARDS")
+	writeKBPlaybook(t, testHome(t), batchPb, shippedDefault(t, batchPb))
+	gateBody := shippedStep(t, shippedDefault(t, batchPb), "check", "$FS_CARDS")
 	env, _, _ := fakeHerdrOnPath(t)
 
 	// Disjoint cards pass, and the gate's output says what it intersected.
@@ -1711,9 +1705,8 @@ func TestCLIDispatchRefusesWhenNothingDeclaresTheRealization(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
 	writeKBPlaybook(t, testHome(t), "code-only", `name: code-only
-phase: entry
 applies_when: code
-steps:
+entry:
   - check: test -f AGENTS.md
 `)
 
@@ -1863,10 +1856,9 @@ func TestCLIDispatchFailsFastThenConfirm(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeWorkerPlaybook(t)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, fmt.Sprintf(`name: code-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
   - check: false
   - check: touch %s
@@ -1930,10 +1922,9 @@ func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, `name: code-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
 
@@ -1990,20 +1981,18 @@ steps:
 // without a live terminal. Pane state lives in $HERDR_TEST_STATE.
 
 const herdrTestPlaybook = `name: code-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `
 
 // noCheckPlaybook has no check step, so dispatch needs nothing from PATH. Used
 // to reach --deliver with herdr deliberately missing.
 const noCheckPlaybook = `name: code-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - ask: is this one deliverable
 `
 
@@ -2471,8 +2460,7 @@ func TestCLICloseRunsExitChecksInTheWorktreeNotTheMainCheckout(t *testing.T) {
 	// The shipped parallel-exit checks, verbatim: no uncommitted files, and
 	// the branch merged into main.
 	writeKBPlaybook(t, testHome(t), codeExitPb, `name: code-exit
-phase: exit
-steps:
+exit:
   - check: test -z "$(git status --porcelain)"
   - check: git merge-base --is-ancestor HEAD main
 `)
@@ -2574,7 +2562,7 @@ func shippedTeardown(t *testing.T, playbook string) []string {
 func writeCleanupWithTeardown(t *testing.T, home, name, shipped string, checks ...string) {
 	t.Helper()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "name: %s\nphase: exit\nsteps:\n", name)
+	fmt.Fprintf(&sb, "name: %s\nexit:\n", name)
 	for _, check := range checks {
 		fmt.Fprintf(&sb, "  - check: %s\n", check)
 	}
@@ -2622,10 +2610,9 @@ func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
 	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
@@ -2664,10 +2651,9 @@ func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *test
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
 	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
@@ -2700,10 +2686,9 @@ func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
 	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
@@ -2756,10 +2741,9 @@ func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
 	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codeExitPb, "true")
@@ -3203,11 +3187,10 @@ func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), intEntryPb, `name: integration-entry
-phase: entry
+	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
 
@@ -3297,13 +3280,12 @@ func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-phase: entry
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `)
-	writeKBPlaybook(t, testHome(t), memberExitPb, shippedDefault(t, memberExitPb))
+	writeKBPlaybook(t, testHome(t), memberPb, shippedDefault(t, memberPb))
 
 	env, _, _ := fakeHerdrOnPath(t)
 	env = fsOnPath(t, bin, env)
@@ -3331,7 +3313,7 @@ steps:
 		t.Fatalf("a hand-merged member must be refused by member-exit, got %v", closed)
 	}
 	errMsg, _ := closed["error"].(string)
-	for _, want := range []string{"exit check failed", memberExitPb, "fs integrated", member} {
+	for _, want := range []string{"exit check failed", memberPb, "fs integrated", member} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("refusal %q must mention %q", errMsg, want)
 		}
@@ -3339,14 +3321,10 @@ steps:
 
 	// Now integrate it the dispatched way, per member: an integration dispatch
 	// names it, is closed done, and the member's gate passes.
-	writeKBPlaybook(t, testHome(t), intEntryPb, `name: integration-entry
-phase: entry
-steps:
+	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
+entry:
   - check: true
-`)
-	writeKBPlaybook(t, testHome(t), intExitPb, `name: integration-exit
-phase: exit
-steps:
+exit:
   - check: true
 `)
 	resp, code = runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "integrate", "--goal", "merge the member", "--integrates", member)

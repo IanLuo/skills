@@ -3,22 +3,24 @@
 test_playbooks.py — the shipped playbooks are a contract, so they are checked
 like one.
 
-fs ships 16 playbooks in src/flagship/defaults/kb. They are the protocols a
-dispatch is measured against, and they are data: a typo in a phase or a step
+fs ships 13 playbooks in src/flagship/defaults/kb. They are the protocols a
+dispatch is measured against, and they are data: a typo in a section or a step
 kind is a protocol that refuses at the worst moment, and a `use:` naming a skill
 this repo does not ship is a hint that sends a worker looking for nothing. Both
 have happened — the cap's standing rules carried a closed list of skill names
 that had gone stale, naming a skill this repo does not ship, and the list was
 deleted rather than corrected. This test is what keeps the replacement honest.
 
-What it checks, per playbook:
+One file is one participant: the moment is a section (`cap:`, `entry:`, `work:`,
+`exit:`), not a field, so a playbook that takes part in two moments declares two
+sections in the same file. What it checks, per playbook:
 
-  1. The set is exactly the 16 the schema ships — no file added or dropped
+  1. The set is exactly the 13 the schema ships — no file added or dropped
      without this list moving with it.
-  2. Each file parses, its `name` is its file name, its phase is one of
-     cap/entry/work/exit, and its `order`, when given, is an integer.
-  3. Every step's kind is one the phase allows — the same table fs enforces, so
-     a playbook that passes here is one `fs kb add` would accept.
+  2. Each file parses, its `name` is its file name, it declares at least one
+     section, and its `order`, when given, is an integer.
+  3. Every step's kind is one the section's moment allows — the same table fs
+     enforces, so a playbook that passes here is one `fs kb add` would accept.
   4. `use`, `do` and `include` steps carry a body: each one names something, and
      a nameless one is a step with no content that reads as if it had some.
   5. Every `applies_when` term is `k` or `k=v` — the only two forms the matcher
@@ -70,23 +72,20 @@ SHIPPED = [
     "tdd",
     "review",
     "research",
-    "batch-entry",
-    "batch-exit",
+    "batch",
     "member",
-    "member-exit",
-    "integration-entry",
-    "integration-exit",
+    "integration",
 ]
 
 # allowedKinds in src/flagship/internal/knowledge/knowledge.go. `include` is
-# legal in every phase and is spliced away before anything runs.
+# legal in every moment and is spliced away before anything runs.
 ALLOWED = {
     "cap": {"say"},
     "entry": {"check", "ask", "say"},
     "work": {"say", "use"},
     "exit": {"check", "ask", "do", "say"},
 }
-PHASES = ["cap", "entry", "work", "exit"]
+MOMENTS = ["cap", "entry", "work", "exit"]
 NEEDS_BODY = {"use", "do", "include"}
 
 PASS, FAILS = 0, []
@@ -104,9 +103,10 @@ def check(name, cond, detail=""):
 
 def parse(path):
     """Parse one playbook the way the Go parser does: top-level `key:` lines,
-    `- kind: body` steps, `#` comments dropped, blank lines ignored."""
-    playbook = {"steps": []}
-    key = None
+    `- kind: body` steps under a moment section, `#` comments dropped, blank
+    lines ignored."""
+    playbook = {}
+    moment = None
     for raw in path.read_text().splitlines():
         line = raw.split("#", 1)[0].rstrip() if raw.lstrip().startswith("#") else raw
         if line.lstrip().startswith("#"):
@@ -115,16 +115,18 @@ def parse(path):
             continue
         if line.startswith("  - "):
             kind, _, body = line[4:].partition(":")
-            playbook["steps"].append((kind.strip(), body.strip()))
+            if moment is not None:
+                playbook.setdefault(moment, []).append((kind.strip(), body.strip()))
         elif line.startswith("  "):
-            if key:  # a continuation of a folded value; nothing here uses one
-                playbook[key] += " " + line.strip()
+            continue  # a continuation of a folded value; nothing here uses one
         else:
             key, _, value = line.partition(":")
             key, value = key.strip(), value.strip()
-            if key == "steps":
-                key = None
+            if key in MOMENTS:
+                moment = key
+                playbook.setdefault(key, [])
             else:
+                moment = None
                 playbook[key] = value
     return playbook
 
@@ -147,8 +149,16 @@ def skill_names():
     return {p.name for p in SKILLS.iterdir() if (p / "SKILL.md").is_file()}
 
 
+def all_steps(playbook):
+    """Every step in a playbook, across its sections, in canonical moment order."""
+    steps = []
+    for moment in MOMENTS:
+        steps.extend(playbook.get(moment, []))
+    return steps
+
+
 def steps_of(playbook, kind):
-    return [body for k, body in playbook["steps"] if k == kind]
+    return [body for k, body in all_steps(playbook) if k == kind]
 
 
 def skill_of(body):
@@ -165,7 +175,7 @@ def main():
     check("the skills tree is readable", len(skills) > 5, f"found {sorted(skills)}")
 
     found = sorted(p.stem for p in KB.glob("*.yaml"))
-    check("the shipped set is exactly the 16", found == sorted(SHIPPED),
+    check("the shipped set is exactly the 13", found == sorted(SHIPPED),
           f"on disk: {found}; expected: {sorted(SHIPPED)}")
 
     for name in sorted(SHIPPED):
@@ -178,9 +188,9 @@ def main():
         check(f"{name}: declares its own name", pb.get("name") == name,
               f"name: {pb.get('name')!r}")
 
-        phase = pb.get("phase", "")
-        check(f"{name}: phase is one of {'/'.join(PHASES)}", phase in ALLOWED,
-              f"phase: {phase!r}")
+        sections = [m for m in MOMENTS if m in pb]
+        check(f"{name}: declares at least one section", bool(sections),
+              "no section declared")
 
         order = pb.get("order")
         if order is not None:
@@ -195,37 +205,37 @@ def main():
                       re.fullmatch(r"[A-Za-z0-9_.-]+", one_line(pb[field])) is not None,
                       f"{field}: {pb[field]!r}")
 
-        steps = pb["steps"]
+        steps = all_steps(pb)
         check(f"{name}: declares at least one step", bool(steps), "no steps")
 
-        if phase in ALLOWED:
-            for i, (kind, body) in enumerate(steps, start=1):
-                check(f"{name}: step {i} kind {kind!r} is allowed in phase {phase}",
-                      kind in ALLOWED[phase] | {"include"},
-                      f"allowed kinds: {', '.join(sorted(ALLOWED[phase] | {'include'}))}")
+        for moment in sections:
+            for i, (kind, body) in enumerate(pb[moment], start=1):
+                check(f"{name}: {moment} step {i} kind {kind!r} is allowed",
+                      kind in ALLOWED[moment] | {"include"},
+                      f"allowed kinds: {', '.join(sorted(ALLOWED[moment] | {'include'}))}")
                 if kind in NEEDS_BODY:
-                    check(f"{name}: step {i} ({kind}) carries a body", bool(body),
+                    check(f"{name}: {moment} step {i} ({kind}) carries a body", bool(body),
                           f"a {kind} step names what it is for")
 
-            if "applies_when" in pb:
-                terms = one_line(pb["applies_when"]).split()
-                check(f"{name}: applies_when is not empty when declared", bool(terms),
-                      "an empty applies_when belongs on a playbook that omits the key")
-                # A term MAY match a derived tag — `type=parallel` and
-                # `engine=herdr` are how a playbook selects itself by task type
-                # and by engine. What may not restate a derived tag is a
-                # *declared* --tag, which is a dispatch-time rule, not a schema
-                # one.
-                for term in terms:
-                    check(f"{name}: tag {term!r} is a k or k=v term",
-                          re.fullmatch(r"[A-Za-z0-9_.-]+(=[^\s]*)?", term) is not None,
-                          f"{term!r} is not a tag term")
+        if "applies_when" in pb:
+            terms = one_line(pb["applies_when"]).split()
+            check(f"{name}: applies_when is not empty when declared", bool(terms),
+                  "an empty applies_when belongs on a playbook that omits the key")
+            # A term MAY match a derived tag — `type=parallel` and
+            # `engine=herdr` are how a playbook selects itself by task type
+            # and by engine. What may not restate a derived tag is a
+            # *declared* --tag, which is a dispatch-time rule, not a schema
+            # one.
+            for term in terms:
+                check(f"{name}: tag {term!r} is a k or k=v term",
+                      re.fullmatch(r"[A-Za-z0-9_.-]+(=[^\s]*)?", term) is not None,
+                      f"{term!r} is not a tag term")
 
-            for i, body in enumerate(steps_of(pb, "use"), start=1):
-                skill = skill_of(body)
-                check(f"{name}: use {i} names a skill that exists ({skill})",
-                      skill in skills,
-                      f"{skill!r} has no {SKILLS / skill / 'SKILL.md'}")
+        for i, body in enumerate(steps_of(pb, "use"), start=1):
+            skill = skill_of(body)
+            check(f"{name}: use {i} names a skill that exists ({skill})",
+                  skill in skills,
+                  f"{skill!r} has no {SKILLS / skill / 'SKILL.md'}")
 
         for path_ref in re.findall(r"skills/([A-Za-z0-9_.-]+)/", " ".join(b for _, b in steps)):
             check(f"{name}: the path skills/{path_ref}/ resolves",
@@ -244,7 +254,7 @@ def main():
     # applies_when is what makes that true, and the node rule is the reason it
     # had to be a playbook rather than a line in the brief renderer.
     worker = parse(KB / "worker.yaml")
-    check("worker: phase is work", worker.get("phase") == "work", f"phase: {worker.get('phase')!r}")
+    check("worker: serves work", "work" in worker, f"sections: {sorted(worker)}")
     check("worker: declares no applies_when, so every dispatch carries it",
           "applies_when" not in worker, f"applies_when: {worker.get('applies_when')!r}")
     says = " ".join(steps_of(worker, "say"))

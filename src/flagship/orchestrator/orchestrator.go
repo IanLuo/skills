@@ -135,12 +135,12 @@ func (o *Orchestrator) checkPrerequisites(taskType string) error {
 	// satisfies — the same question fs dispatch asks of a plan. This path is
 	// unreachable from the CLI and stays that way; it is kept compiling against
 	// the schema it shares with the gates.
-	if pb.Phase != knowledge.PhaseEntry || !pb.Matches(map[string]any{tagType: taskType}) {
+	if !pb.Serves(knowledge.MomentEntry) || !pb.Matches(map[string]any{tagType: taskType}) {
 		return nil
 	}
 
 	var missing []string
-	for _, step := range pb.Steps {
+	for _, step := range pb.StepsFor(knowledge.MomentEntry) {
 		if !o.prereqChecker(step.Body) {
 			missing = append(missing, step.Body)
 		}
@@ -189,7 +189,7 @@ func (o *Orchestrator) composePrompt(tree *query.Tree, node *query.Node, taskTyp
 		b.WriteString("## Procedures\n")
 		for _, pb := range procedures {
 			fmt.Fprintf(&b, "### %s\n", pb.Name)
-			for _, step := range pb.Steps {
+			for _, step := range pb.StepsFor(knowledge.MomentWork) {
 				fmt.Fprintf(&b, "- %s\n", step.Body)
 			}
 			b.WriteString("\n")
@@ -213,7 +213,7 @@ func (o *Orchestrator) findProcedures(taskType string) []*knowledge.Playbook {
 		if err != nil {
 			continue
 		}
-		if pb.Phase == knowledge.PhaseWork && pb.Matches(map[string]any{tagType: taskType}) {
+		if pb.Serves(knowledge.MomentWork) && pb.Matches(map[string]any{tagType: taskType}) {
 			result = append(result, pb)
 		}
 	}

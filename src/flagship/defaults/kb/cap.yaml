@@ -1,7 +1,6 @@
 name: cap
-phase: cap
 order: 10
-steps:
+cap:
   # The cap's standing rules. Selected by the session's tags and handed over by
   # fs kb prompt — unlike every other phase, which a dispatch selects.
   #

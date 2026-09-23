@@ -1,8 +1,27 @@
-name: integration-exit
-phase: exit
+name: integration
 applies_when: type=integrate
 order: 10
-steps:
+entry:
+  # Integration is a dispatch too: a worker merges the batch's branches into main
+  # on its own card, and the coordinator's part is to decide the order, answer
+  # these asks, read the verdict on the worker's node, and close.
+  #
+  # This gate is member-scoped: every step is about the one member this
+  # integration names. $FS_INTEGRATES is the --integrates value, so the check
+  # asks about *this* integration's member and nothing else. The repo-wide greps
+  # it replaces — "more than one worktree exists", "every registered branch
+  # exists" — asked about the whole batch, so closing member 1's integration
+  # required members 2..n to be finished first, and the gate could not be run per
+  # member at all. They are deleted.
+  #
+  # Checks run at the project root — the main checkout — and ask fs and git,
+  # never herdr: herdr resolves a workspace from the invoking pane's HERDR_*
+  # environment, so a check that called it would answer about the cap's pane
+  # rather than about this project.
+  - check: fs task get $FS_INTEGRATES --project cap --kind dispatch
+  - ask: is this the next merge in order
+  - ask: is main free of foreign staged changes
+exit:
   # The integration's own exit gate. The suite must be green on the merged tree.
   # `tests/run.sh` is this repo's declared suite, so it runs here rather than
   # being taken on the worker's word.

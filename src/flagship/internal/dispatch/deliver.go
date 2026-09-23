@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
@@ -193,7 +194,7 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 // cannot see inside the worker, and nothing here pretends otherwise.
 func recordLoaded(lg *trace.Log, brief *Brief) error {
 	for _, entry := range brief.Plan {
-		if entry.Phase != knowledge.PhaseWork {
+		if !slices.Contains(entry.Moments, knowledge.MomentWork) {
 			continue
 		}
 		if err := lg.Append(brief.Project, trace.Line{
@@ -201,7 +202,7 @@ func recordLoaded(lg *trace.Log, brief *Brief) error {
 			Dispatch: brief.CapNodeID,
 			Worker:   brief.WorkerNode,
 			Playbook: entry.Name,
-			Phase:    entry.Phase,
+			Phase:    knowledge.MomentWork,
 			Kind:     trace.KindLoaded,
 			Status:   trace.StatusLoaded,
 			Detail:   "handed to " + brief.WorkerNode,

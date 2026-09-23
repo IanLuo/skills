@@ -11,20 +11,18 @@ import (
 )
 
 const samplePlaybook = `name: code-entry
-phase: entry
 applies_when: code
 order: 10
-steps:
+entry:
   - check: test -f AGENTS.md
   - ask: is the spec locked?
   - check: grep -rl 'specs:locked' .
 `
 
 const samplePlaybook2 = `name: code-review
-phase: work
 applies_when: code
 order: 50
-steps:
+work:
   - say: read the diff
   - use: review-task — the review loop
 `
@@ -79,8 +77,8 @@ func TestAddAndGet(t *testing.T) {
 	if pb.Name != "code-entry" {
 		t.Errorf("name: %s", pb.Name)
 	}
-	if pb.Phase != knowledge.PhaseEntry {
-		t.Errorf("phase: %s", pb.Phase)
+	if !pb.Serves(knowledge.MomentEntry) {
+		t.Errorf("moments: %v", pb.Moments())
 	}
 	if got := pb.AppliesWhenString(); got != "code" {
 		t.Errorf("applies_when: %s", got)
@@ -88,14 +86,15 @@ func TestAddAndGet(t *testing.T) {
 	if pb.Order != 10 {
 		t.Errorf("order: %d", pb.Order)
 	}
-	if len(pb.Steps) != 3 {
-		t.Fatalf("expected 3 steps, got %d", len(pb.Steps))
+	steps := pb.StepsFor(knowledge.MomentEntry)
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(steps))
 	}
-	if pb.Steps[0] != (knowledge.Step{Kind: knowledge.KindCheck, Body: "test -f AGENTS.md"}) {
-		t.Errorf("step 0: %+v", pb.Steps[0])
+	if steps[0] != (knowledge.Step{Kind: knowledge.KindCheck, Body: "test -f AGENTS.md"}) {
+		t.Errorf("step 0: %+v", steps[0])
 	}
-	if pb.Steps[1].Kind != knowledge.KindAsk {
-		t.Errorf("step 1 kind: %s", pb.Steps[1].Kind)
+	if steps[1].Kind != knowledge.KindAsk {
+		t.Errorf("step 1 kind: %s", steps[1].Kind)
 	}
 }
 
@@ -107,8 +106,7 @@ func TestOrderDefaultsWhenAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	const noOrder = `name: worker
-phase: work
-steps:
+work:
   - say: note your node
 `
 	if err := kc.Add("worker", []byte(noOrder)); err != nil {
@@ -225,11 +223,12 @@ func TestEdit(t *testing.T) {
 	}
 
 	pb, _ := kc.Get("code-entry")
-	if len(pb.Steps) != 3 {
-		t.Fatalf("expected 3 steps after edit, got %d", len(pb.Steps))
+	steps := pb.StepsFor(knowledge.MomentEntry)
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 steps after edit, got %d", len(steps))
 	}
-	if pb.Steps[2].Body != "go vet ./..." {
-		t.Errorf("last step = %+v, want the appended check", pb.Steps[2])
+	if steps[2].Body != "go vet ./..." {
+		t.Errorf("last step = %+v, want the appended check", steps[2])
 	}
 }
 
@@ -289,8 +288,7 @@ func TestStepKindDefaultsToSay(t *testing.T) {
 	}
 
 	const prose = `name: p
-phase: work
-steps:
+work:
   - read AGENTS.md at the project root
   - grep -rl for the specs:locked marker
   - say: read this: carefully
@@ -305,8 +303,8 @@ steps:
 		{Kind: knowledge.KindSay, Body: "grep -rl for the specs:locked marker"},
 		{Kind: knowledge.KindSay, Body: "read this: carefully"},
 	}
-	if !reflect.DeepEqual(pb.Steps, want) {
-		t.Errorf("steps = %+v, want %+v", pb.Steps, want)
+	if got := pb.StepsFor(knowledge.MomentWork); !reflect.DeepEqual(got, want) {
+		t.Errorf("steps = %+v, want %+v", got, want)
 	}
 }
 
@@ -321,8 +319,7 @@ func TestAddValidatesStepKinds(t *testing.T) {
 		{
 			name: "entry refuses use",
 			pb: `name: p
-phase: entry
-steps:
+entry:
   - check: test -f AGENTS.md
   - use: dev-task — the code bar
 `,
@@ -331,8 +328,7 @@ steps:
 		{
 			name: "entry refuses do",
 			pb: `name: p
-phase: entry
-steps:
+entry:
   - check: test -f AGENTS.md
   - do: rm -rf build
 `,
@@ -341,8 +337,7 @@ steps:
 		{
 			name: "work refuses check",
 			pb: `name: p
-phase: work
-steps:
+work:
   - say: read the diff
   - check: go test ./...
 `,
@@ -351,8 +346,7 @@ steps:
 		{
 			name: "work refuses ask",
 			pb: `name: p
-phase: work
-steps:
+work:
   - say: read the diff
   - ask: is the acceptance check stated?
 `,
@@ -361,8 +355,7 @@ steps:
 		{
 			name: "cap refuses check",
 			pb: `name: p
-phase: cap
-steps:
+cap:
   - say: hold the plan
   - check: true
 `,
@@ -371,27 +364,16 @@ steps:
 		{
 			name: "exit refuses use",
 			pb: `name: p
-phase: exit
-steps:
+exit:
   - check: true
   - use: dev-task
 `,
 			want: []string{"exit playbook", `"use"`, "allowed kinds: check, ask, do, say, include"},
 		},
 		{
-			name: "an unknown phase names the phases there are",
-			pb: `name: p
-phase: procedure
-steps:
-  - say: anything
-`,
-			want: []string{`"procedure"`, "phases are: cap, entry, work, exit"},
-		},
-		{
 			name: "work refuses an empty use",
 			pb: `name: p
-phase: work
-steps:
+work:
   - say: read the diff
   - use:
 `,
@@ -400,8 +382,7 @@ steps:
 		{
 			name: "exit refuses an empty do",
 			pb: `name: p
-phase: exit
-steps:
+exit:
   - check: true
   - do:
 `,
@@ -410,8 +391,7 @@ steps:
 		{
 			name: "every phase refuses an empty include",
 			pb: `name: p
-phase: work
-steps:
+work:
   - say: read the diff
   - include:
 `,
@@ -420,14 +400,12 @@ steps:
 		{
 			name: "a playbook with no steps is not a protocol",
 			pb: `name: p
-phase: work
 `,
 			want: []string{"no steps"},
 		},
 		{
 			name: "a playbook with no name declares nothing",
-			pb: `phase: work
-steps:
+			pb: `work:
   - say: anything
 `,
 			want: []string{"must declare a name"},
@@ -435,9 +413,8 @@ steps:
 		{
 			name: "an order that is not a number is refused",
 			pb: `name: p
-phase: work
 order: soon
-steps:
+work:
   - say: read the diff
 `,
 			want: []string{`"soon"`, "not a number"},
@@ -473,18 +450,17 @@ func TestIncludeIsAllowedInEveryPhase(t *testing.T) {
 	}
 
 	const included = `name: shared-say
-phase: work
-steps:
+work:
   - say: a shared rule
 `
 	if err := kc.Add("shared-say", []byte(included)); err != nil {
 		t.Fatalf("Add shared-say: %v", err)
 	}
 
-	for _, phase := range []string{knowledge.PhaseCap, knowledge.PhaseEntry, knowledge.PhaseWork, knowledge.PhaseExit} {
+	for _, phase := range []string{knowledge.MomentCap, knowledge.MomentEntry, knowledge.MomentWork, knowledge.MomentExit} {
 		t.Run(phase, func(t *testing.T) {
 			name := "ph-" + phase
-			body := "name: " + name + "\nphase: " + phase + "\nsteps:\n  - include: shared-say\n"
+			body := "name: " + name + "\n" + phase + ":\n  - include: shared-say\n"
 			if err := kc.Add(name, []byte(body)); err != nil {
 				t.Fatalf("a %s playbook must accept an include: %v", phase, err)
 			}
@@ -494,8 +470,8 @@ steps:
 			}
 			// The include is spliced away: the resolved playbook carries the
 			// included step, not the include.
-			if len(pb.Steps) != 1 || pb.Steps[0] != (knowledge.Step{Kind: knowledge.KindSay, Body: "a shared rule"}) {
-				t.Errorf("resolved steps = %+v, want the spliced say", pb.Steps)
+			if got := pb.StepsFor(phase); len(got) != 1 || got[0] != (knowledge.Step{Kind: knowledge.KindSay, Body: "a shared rule"}) {
+				t.Errorf("resolved steps = %+v, want the spliced say", got)
 			}
 		})
 	}
@@ -509,16 +485,14 @@ func TestIncludeRefusesStepsIllegalForTheIncludingPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	const acting = `name: acting
-phase: exit
-steps:
+exit:
   - do: rm -rf build
 `
 	if err := kc.Add("acting", []byte(acting)); err != nil {
 		t.Fatalf("Add acting: %v", err)
 	}
 	const gate = `name: gate
-phase: entry
-steps:
+entry:
   - check: true
   - include: acting
 `
@@ -546,8 +520,7 @@ func TestIncludeSplicesInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	const middle = `name: middle
-phase: work
-steps:
+work:
   - say: spliced one
   - say: spliced two
 `
@@ -555,8 +528,7 @@ steps:
 		t.Fatal(err)
 	}
 	const outer = `name: outer
-phase: work
-steps:
+work:
   - say: before
   - include: middle
   - say: after
@@ -570,7 +542,7 @@ steps:
 		t.Fatalf("Get: %v", err)
 	}
 	var bodies []string
-	for _, step := range pb.Steps {
+	for _, step := range pb.StepsFor(knowledge.MomentWork) {
 		bodies = append(bodies, step.Body)
 	}
 	want := []string{"before", "spliced one", "spliced two", "after"}
@@ -586,8 +558,7 @@ func TestIncludeCycleIsRefusedNamingTheChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	const loop = `name: loop
-phase: work
-steps:
+work:
   - say: first
   - include: loop
 `
@@ -611,7 +582,7 @@ func TestIncludeMutualCycleIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, other := range map[string]string{"a": "b", "b": "a"} {
-		body := "name: " + name + "\nphase: work\nsteps:\n  - say: x\n  - include: " + other + "\n"
+		body := "name: " + name + "\nwork:\n  - say: x\n  - include: " + other + "\n"
 		if err := kc.Add(name, []byte(body)); err != nil {
 			t.Fatalf("Add %s: %v", name, err)
 		}
@@ -636,8 +607,7 @@ func TestProjectScopeShadowsTheGlobalOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := global.Add("code-exit", []byte(`name: code-exit
-phase: exit
-steps:
+exit:
   - say: the global teardown
 `)); err != nil {
 		t.Fatal(err)
@@ -645,8 +615,7 @@ steps:
 
 	project := global.InProject("skills")
 	if err := project.Add("code-exit", []byte(`name: code-exit
-phase: exit
-steps:
+exit:
   - say: this project's teardown
   - include: code-exit
 `)); err != nil {
@@ -658,7 +627,7 @@ steps:
 		t.Fatalf("Get: %v", err)
 	}
 	var bodies []string
-	for _, step := range pb.Steps {
+	for _, step := range pb.StepsFor(knowledge.MomentExit) {
 		bodies = append(bodies, step.Body)
 	}
 	// The project's say first, then the global playbook's — the include saw the
@@ -674,8 +643,8 @@ steps:
 	if err != nil {
 		t.Fatalf("global Get: %v", err)
 	}
-	if len(globalPB.Steps) != 1 || globalPB.Steps[0].Body != "the global teardown" {
-		t.Errorf("the global playbook was shadowed in its own scope: %+v", globalPB.Steps)
+	if got := globalPB.StepsFor(knowledge.MomentExit); len(got) != 1 || got[0].Body != "the global teardown" {
+		t.Errorf("the global playbook was shadowed in its own scope: %+v", got)
 	}
 	if _, err := os.Stat(projectKBPath(fsRoot, "skills", "code-exit")); err != nil {
 		t.Errorf("the project playbook is not in the project's KB: %v", err)
@@ -730,7 +699,7 @@ func TestHasDistinguishesAbsentFromBroken(t *testing.T) {
 	}
 
 	// Written by hand, bypassing the write path: present, but not a playbook.
-	if err := os.WriteFile(kbPath(fsRoot, "broken"), []byte("name: broken\nphase: nonsense\nsteps:\n  - say: x\n"), 0o644); err != nil {
+	if err := os.WriteFile(kbPath(fsRoot, "broken"), []byte("name: broken\nnonsense:\n  - say: x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !kc.Has("broken") {
@@ -751,18 +720,28 @@ func TestRemovedFieldsAreRefusedNamingTheReplacement(t *testing.T) {
 	}{
 		{
 			name: "trigger",
-			pb:   "name: p\nphase: cap\ntrigger: cap\nsteps:\n  - say: x\n",
-			want: []string{"removed field `trigger: cap`", "the replacement is `phase: cap`"},
+			pb:   "name: p\ntrigger: cap\ncap:\n  - say: x\n",
+			want: []string{"removed field `trigger: cap`", "the replacement is the `cap:` section"},
 		},
 		{
 			name: "engine_scope",
-			pb:   "name: p\nphase: cap\nengine_scope: herdr\nsteps:\n  - say: x\n",
+			pb:   "name: p\nengine_scope: herdr\ncap:\n  - say: x\n",
 			want: []string{"removed field `engine_scope: herdr`", "`engine: herdr`", "applies_when: engine=herdr", "match an engine"},
 		},
 		{
 			name: "type",
-			pb:   "name: p\ntype: prerequisite\nsteps:\n  - check: true\n",
-			want: []string{"removed field `type: prerequisite`", "`phase`", "`entry`", "`exit`"},
+			pb:   "name: p\ntype: prerequisite\nentry:\n  - check: true\n",
+			want: []string{"removed field `type: prerequisite`", "`entry:`", "`exit:`", "applies_when"},
+		},
+		{
+			name: "phase",
+			pb:   "name: p\nphase: entry\nsteps:\n  - check: true\n",
+			want: []string{"removed field `phase: entry`", "the replacement is the `entry:` section"},
+		},
+		{
+			name: "steps",
+			pb:   "name: p\nsteps:\n  - check: true\n",
+			want: []string{"removed field `steps`", "one section per moment"},
 		},
 	}
 	for _, tc := range cases {
@@ -791,19 +770,19 @@ func TestRemovedFieldsAreRefusedNamingTheReplacement(t *testing.T) {
 // from the other side: a legal playbook of every phase is accepted.
 func TestEveryPhaseAcceptsItsOwnKinds(t *testing.T) {
 	cases := map[string]string{
-		knowledge.PhaseCap:   "name: p\nphase: cap\nsteps:\n  - say: hold the plan\n",
-		knowledge.PhaseEntry: "name: p\nphase: entry\nsteps:\n  - check: true\n  - ask: is it stated\n  - say: context\n",
-		knowledge.PhaseWork:  "name: p\nphase: work\nsteps:\n  - say: do the work\n  - use: dev-task — the code bar\n",
-		knowledge.PhaseExit:  "name: p\nphase: exit\nsteps:\n  - check: true\n  - ask: is it reviewed\n  - do: rm -rf build\n  - say: done\n",
+		knowledge.MomentCap:   "name: p\ncap:\n  - say: hold the plan\n",
+		knowledge.MomentEntry: "name: p\nentry:\n  - check: true\n  - ask: is it stated\n  - say: context\n",
+		knowledge.MomentWork:  "name: p\nwork:\n  - say: do the work\n  - use: dev-task — the code bar\n",
+		knowledge.MomentExit:  "name: p\nexit:\n  - check: true\n  - ask: is it reviewed\n  - do: rm -rf build\n  - say: done\n",
 	}
-	for phase, pb := range cases {
-		t.Run(phase, func(t *testing.T) {
+	for moment, pb := range cases {
+		t.Run(moment, func(t *testing.T) {
 			kc, err := knowledge.Open(tempFS(t))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := kc.Add("p", []byte(pb)); err != nil {
-				t.Fatalf("a legal %s playbook must be accepted: %v", phase, err)
+				t.Fatalf("a legal %s playbook must be accepted: %v", moment, err)
 			}
 		})
 	}
@@ -817,7 +796,7 @@ func TestEngineAndAgentAreParsedAndValidated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := kc.Add("worker", []byte("name: worker\nphase: work\nengine: herdr\nagent: pi\nsteps:\n  - say: x\n")); err != nil {
+	if err := kc.Add("worker", []byte("name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: x\n")); err != nil {
 		t.Fatalf("a playbook declaring engine and agent must be accepted: %v", err)
 	}
 	got, err := kc.Get("worker")
@@ -833,7 +812,7 @@ func TestEngineAndAgentAreParsedAndValidated(t *testing.T) {
 		{"agent", "pi=1"},
 		{"engine", ""},
 	} {
-		body := "name: worker\nphase: work\n" + tc.field + ": " + tc.val + "\nsteps:\n  - say: x\n"
+		body := "name: worker\n" + tc.field + ": " + tc.val + "\nwork:\n  - say: x\n"
 		if err := kc.Add("bad-"+tc.field, []byte(body)); err == nil {
 			t.Errorf("%s %q must be refused as not a single non-empty token", tc.field, tc.val)
 		}
@@ -852,7 +831,7 @@ func TestGetRefusesAPlaybookThatIsNotLegalForItsPhase(t *testing.T) {
 	}
 
 	if err := os.WriteFile(kbPath(fsRoot, "hand-edited"),
-		[]byte("name: hand-edited\nphase: entry\nsteps:\n  - do: rm -rf build\n"), 0o644); err != nil {
+		[]byte("name: hand-edited\nentry:\n  - do: rm -rf build\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -885,7 +864,7 @@ func TestMatches(t *testing.T) {
 		{[]string{"absent", "code"}, false},
 	}
 	for _, tc := range cases {
-		pb := &knowledge.Playbook{Name: "p", Phase: knowledge.PhaseWork, AppliesWhen: tc.when}
+		pb := &knowledge.Playbook{Name: "p", AppliesWhen: tc.when}
 		if got := pb.Matches(tags); got != tc.want {
 			t.Errorf("Matches(%v) = %v, want %v", tc.when, got, tc.want)
 		}
@@ -899,7 +878,7 @@ func TestAppliesWhenDropsEmptyTerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kc.Add("p", []byte("name: p\nphase: work\napplies_when: code, ,\nsteps:\n  - say: x\n")); err != nil {
+	if err := kc.Add("p", []byte("name: p\napplies_when: code, ,\nwork:\n  - say: x\n")); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	pb, _ := kc.Get("p")
@@ -924,9 +903,32 @@ func TestMarshalJSONShowsTheFileSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalJSON: %v", err)
 	}
-	for _, want := range []string{`"name":"code-entry"`, `"phase":"entry"`, `"applies_when":"code"`, `"order":10`} {
+	for _, want := range []string{`"name":"code-entry"`, `"entry":[`, `"applies_when":"code"`, `"order":10`} {
 		if !strings.Contains(string(encoded), want) {
 			t.Errorf("json %s must carry %s", encoded, want)
+		}
+	}
+}
+
+// The moment vocabulary is closed, and Validate is the backstop for a playbook
+// constructed with a moment that is not one of the four: a parser never
+// produces one, but a resolved playbook is held to the same table the write
+// path is.
+func TestValidateRefusesAnUnknownMoment(t *testing.T) {
+	pb := &knowledge.Playbook{
+		Name: "p",
+		Sections: []knowledge.Section{{
+			Moment: "procedure",
+			Steps:  []knowledge.Step{{Kind: knowledge.KindSay, Body: "anything"}},
+		}},
+	}
+	err := knowledge.Validate(pb)
+	if err == nil {
+		t.Fatal("a playbook with an unknown moment must be refused")
+	}
+	for _, want := range []string{`"procedure"`, "moments are: cap, entry, work, exit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must contain %q", err, want)
 		}
 	}
 }

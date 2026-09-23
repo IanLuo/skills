@@ -55,12 +55,13 @@ const KindLoaded = "loaded"
 // cannot write it here.
 const maxDetail = 512
 
-// PlanEntry is one playbook in a dispatch's plan: what it is called, which phase
-// it runs in, and where it sits in the order.
+// PlanEntry is one playbook in a dispatch's plan: what it is called, the moments
+// it serves, and where it sits in the order. One entry can be both an entry and
+// an exit participant — `batch` and `member` each are.
 type PlanEntry struct {
-	Name  string `json:"name"`
-	Phase string `json:"phase"`
-	Order int    `json:"order"`
+	Name    string   `json:"name"`
+	Moments []string `json:"moments"`
+	Order   int      `json:"order"`
 }
 
 // Plan is the payload recorded on the dispatch node as a plan-recorded event,
@@ -249,7 +250,7 @@ func renderLine(ln Line) string {
 	case KindPlan:
 		var plan []string
 		for _, e := range ln.Plan {
-			plan = append(plan, fmt.Sprintf("%s(%s/%d)", e.Name, e.Phase, e.Order))
+			plan = append(plan, fmt.Sprintf("%s(%s/%d)", e.Name, strings.Join(e.Moments, "+"), e.Order))
 		}
 		tags := "no tags"
 		if len(ln.Tags) > 0 {

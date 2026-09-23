@@ -21,12 +21,11 @@ import (
 // carrying `applies_when: code` so only a dispatch that declares --tag code
 // selects it. A playbook's name no longer selects anything.
 const devPlaybook = `name: code-entry
-phase: entry
 applies_when: code
 order: 10
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
   - ask: a locked PRD is present, and it names this one deliverable
@@ -37,20 +36,18 @@ steps:
 // obligation and a `use` step that becomes a hint. Both are text in a file a
 // user can edit, which is the model's whole point.
 const codeWork = `name: code-work
-phase: work
 applies_when: code
 order: 20
-steps:
+work:
   - say: run the suite before you claim the work is done
   - use: tdd
 `
 
 const passingEntry = `name: code-entry
-phase: entry
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `
 
@@ -58,11 +55,10 @@ steps:
 // check must stop the run, so the sentinel is the proof that check 3 never ran.
 func failFastEntryPlaybook(sentinel string) string {
 	return fmt.Sprintf(`name: code-entry
-phase: entry
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
   - check: false
   - check: touch %s
@@ -73,11 +69,10 @@ steps:
 // derived tag — the dispatch's own --type sets it — so this playbook loads
 // without any declared --tag.
 const integrationEntryPlaybook = `name: integration-entry
-phase: entry
 applies_when: type=integrate
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: true
 `
 
@@ -231,11 +226,17 @@ func TestPrepareBriefCarriesThePlanAndEveryStep(t *testing.T) {
 
 	// The plan is the resolution of the tags, recorded in order.
 	wantPlan := []trace.PlanEntry{
-		{Name: "code-entry", Phase: knowledge.PhaseEntry, Order: 10},
-		{Name: "code-work", Phase: knowledge.PhaseWork, Order: 20},
+		{Name: "code-entry", Moments: []string{knowledge.MomentEntry}, Order: 10},
+		{Name: "code-work", Moments: []string{knowledge.MomentWork}, Order: 20},
 	}
-	if !slices.Equal(brief.Plan, wantPlan) {
-		t.Errorf("plan = %+v, want %+v", brief.Plan, wantPlan)
+	if len(brief.Plan) != len(wantPlan) {
+		t.Fatalf("plan = %+v, want %+v", brief.Plan, wantPlan)
+	}
+	for i := range wantPlan {
+		if brief.Plan[i].Name != wantPlan[i].Name || brief.Plan[i].Order != wantPlan[i].Order ||
+			!slices.Equal(brief.Plan[i].Moments, wantPlan[i].Moments) {
+			t.Errorf("plan[%d] = %+v, want %+v", i, brief.Plan[i], wantPlan[i])
+		}
 	}
 
 	if len(brief.Checklist) != 4 {
@@ -527,11 +528,10 @@ func TestPrepareIgnoresNonDispatchCapBacklog(t *testing.T) {
 // from words in the body. A check no keyword could match still runs.
 func TestPrepareRunsCheckWhateverItsWording(t *testing.T) {
 	const reworded = `name: code-entry
-phase: entry
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: echo reworded
 `
 	f := newFixture(t, t.TempDir())
@@ -570,11 +570,10 @@ steps:
 // set-and-empty rather than mistaken for a missing env.
 func TestPrepareGivesEveryCheckTheDispatchEnv(t *testing.T) {
 	const envPlaybook = `name: code-entry
-phase: entry
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: printenv FS_PROJECT; printenv FS_TYPE; printenv FS_GOAL; printenv FS_CARDS
 `
 	f := newFixture(t, t.TempDir())
@@ -616,11 +615,10 @@ func TestPrepareSayIsContextNotGate(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "AGENTS.md"), "# agents\n")
 	const procedure = `name: code-entry
-phase: entry
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+entry:
   - say: read AGENTS.md before editing
   - check: test -f AGENTS.md
 `
@@ -695,7 +693,7 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 	if !strings.Contains(string(events[1].Payload), "skills") {
 		t.Errorf("decision payload = %s, want the target project named", events[1].Payload)
 	}
-	for _, want := range []string{`"name":"code-entry"`, `"phase":"entry"`, `"tags":{"code":true`} {
+	for _, want := range []string{`"name":"code-entry"`, `"moments":["entry"]`, `"tags":{"code":true`} {
 		if !strings.Contains(string(events[2].Payload), want) {
 			t.Errorf("plan payload = %s, want it to carry %s", events[2].Payload, want)
 		}
@@ -709,7 +707,7 @@ func TestPrepareCreatesCapNode(t *testing.T) {
 		t.Fatalf("trace = %+v, want the plan line first", lines)
 	}
 	if len(lines[0].Plan) != 1 || lines[0].Plan[0].Name != "code-entry" ||
-		lines[0].Plan[0].Phase != "entry" || lines[0].Plan[0].Order != 10 {
+		!slices.Equal(lines[0].Plan[0].Moments, []string{knowledge.MomentEntry}) || lines[0].Plan[0].Order != 10 {
 		t.Errorf("plan line = %+v, want the resolved plan", lines[0])
 	}
 	if lines[0].Dispatch != brief.CapNodeID {
@@ -741,9 +739,8 @@ func TestPrepareRequiresArgs(t *testing.T) {
 func TestPrepareRefusesWhenNoPlaybookDeclaresTheRealization(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "code-entry", `name: code-entry
-phase: entry
 applies_when: code
-steps:
+entry:
   - check: true
 `)
 
@@ -773,10 +770,9 @@ steps:
 func TestPrepareSelectsAPlaybookWithNoAppliesWhen(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", `name: worker
-phase: work
 engine: herdr
 agent: pi
-steps:
+work:
   - say: note your work on the node you were given
 `)
 
@@ -799,24 +795,21 @@ steps:
 func TestPrepareRefusesWhenSituationSpecificDeclarationsDisagree(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", `name: worker
-phase: work
 engine: herdr
 agent: pi
-steps:
+work:
   - say: note your node
 `)
 	f.writePlaybook(t, "one", `name: one
-phase: work
 applies_when: code
 engine: other
-steps:
+work:
   - say: one
 `)
 	f.writePlaybook(t, "two", `name: two
-phase: work
 applies_when: code
 engine: another
-steps:
+work:
   - say: two
 `)
 
@@ -836,10 +829,9 @@ steps:
 func TestPrepareRefusesWhenTheDeclaredEngineIsNotDispatchable(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", `name: worker
-phase: work
 engine: other
 agent: pi
-steps:
+work:
   - say: note your node
 `)
 
@@ -859,17 +851,15 @@ steps:
 func TestPrepareSituationSpecificOverridesTheStandingRealization(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", `name: worker
-phase: work
 engine: herdr
 agent: pi
-steps:
+work:
   - say: note your node
 `)
 	f.writePlaybook(t, "code-entry", `name: code-entry
-phase: entry
 applies_when: code
 agent: claude
-steps:
+entry:
   - check: true
 `)
 
@@ -901,9 +891,8 @@ steps:
 func TestPrepareRefusesAPlaybookWithAStepItsPhaseForbids(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "code-entry", `name: code-entry
-phase: entry
 applies_when: code
-steps:
+entry:
   - do: touch unexpected
 `)
 
@@ -1084,11 +1073,10 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testi
 func TestPrepareGivesChecksTheIntegratesLink(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "integration-entry", `name: integration-entry
-phase: entry
 applies_when: type=integrate
 engine: herdr
 agent: pi
-steps:
+entry:
   - check: printenv FS_INTEGRATES
   - check: printenv FS_CARDS
 `)

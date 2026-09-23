@@ -1,8 +1,7 @@
 name: review
-phase: work
 applies_when: code
 order: 50
-steps:
+work:
   # Self-review before the claim. It is ordered last because it is the last thing
   # you do before saying the work is done, and it is the only step whose input is
   # your own diff rather than the card.

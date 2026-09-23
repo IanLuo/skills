@@ -1,8 +1,7 @@
 name: code-entry
-phase: entry
 applies_when: code
 order: 10
-steps:
+entry:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
   - ask: a locked PRD is present, and it names this one deliverable

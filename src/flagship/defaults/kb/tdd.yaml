@@ -1,8 +1,7 @@
 name: tdd
-phase: work
 applies_when: code
 order: 40
-steps:
+work:
   # The loop. "When a test is skipped, record why" is here because a skipped test
   # is the quietest way to make a red suite green, and the record is the only
   # thing that distinguishes a deliberate skip from a hidden failure.

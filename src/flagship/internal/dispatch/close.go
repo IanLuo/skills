@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
@@ -436,23 +437,26 @@ type planStep struct {
 // deliberate: a playbook edited between dispatch and close is refused by the
 // trace gate — its steps no longer line up with the lines already written —
 // rather than silently running a different protocol than the one dispatched.
-func flatten(kc *knowledge.Center, plan []trace.PlanEntry, phase string) ([]planStep, error) {
+func flatten(kc *knowledge.Center, plan []trace.PlanEntry, moment string) ([]planStep, error) {
 	var steps []planStep
 	for _, entry := range plan {
-		if entry.Phase != phase {
+		if !slices.Contains(entry.Moments, moment) {
 			continue
 		}
 		pb, err := kc.Get(entry.Name)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"the plan names %s playbook %s, which cannot be read: %v", phase, entry.Name, err)
+				"the plan names %s playbook %s, which cannot be read: %v", moment, entry.Name, err)
 		}
-		for i, step := range pb.Steps {
+		for _, is := range pb.IndexedSteps() {
+			if is.Moment != moment {
+				continue
+			}
 			steps = append(steps, planStep{
 				Playbook: entry.Name,
-				Index:    i + 1,
-				Kind:     step.Kind,
-				Body:     step.Body,
+				Index:    is.Index,
+				Kind:     is.Step.Kind,
+				Body:     is.Step.Body,
 			})
 		}
 	}
@@ -488,7 +492,7 @@ func lastLines(lines []trace.Line) map[string]trace.Line {
 // gap means, which is why the same list can be a refusal at close and a report
 // in `fs trace`.
 func Deviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace.Line, nodeID string) ([]string, error) {
-	return phaseDeviations(kc, plan, lines, nodeID, true, knowledge.PhaseEntry, knowledge.PhaseExit)
+	return phaseDeviations(kc, plan, lines, nodeID, true, knowledge.MomentEntry, knowledge.MomentExit)
 }
 
 // phaseDeviations is Deviations over a subset of the plan's phases, which is how
@@ -527,7 +531,7 @@ func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace
 	}
 
 	for _, entry := range plan {
-		if !requireWork || entry.Phase != knowledge.PhaseWork {
+		if !requireWork || !slices.Contains(entry.Moments, knowledge.MomentWork) {
 			continue
 		}
 		line, recorded := last[trace.StepID(nodeID, entry.Name, 0)]
@@ -556,13 +560,13 @@ func gateEntry(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery
 	}
 
 	if confirm {
-		lines, err = confirmAsks(h, kc, lg, delivery, nodeID, plan, knowledge.PhaseEntry, lines)
+		lines, err = confirmAsks(h, kc, lg, delivery, nodeID, plan, knowledge.MomentEntry, lines)
 		if err != nil {
 			return fmt.Errorf("close: %v", err)
 		}
 	}
 
-	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.PhaseEntry)
+	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.MomentEntry)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
@@ -629,7 +633,7 @@ func gateExit(kc *knowledge.Center, lg *trace.Log, nodeID string, plan []trace.P
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
-	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.PhaseEntry, knowledge.PhaseExit)
+	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.MomentEntry, knowledge.MomentExit)
 	if err != nil {
 		return fmt.Errorf("close: %v", err)
 	}
@@ -706,7 +710,7 @@ type exitRun struct {
 // one that fails is a warning, never a refusal, for the same reason: a stuck
 // teardown must not keep a node open.
 func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
-	steps, err := flatten(kc, plan, knowledge.PhaseExit)
+	steps, err := flatten(kc, plan, knowledge.MomentExit)
 	if err != nil {
 		return exitRun{}, fmt.Errorf("close: %v", err)
 	}
@@ -773,7 +777,7 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 			Dispatch: capNodeID,
 			Worker:   worker,
 			Playbook: step.Playbook,
-			Phase:    knowledge.PhaseExit,
+			Phase:    knowledge.MomentExit,
 			Step:     step.Index,
 			Kind:     step.Kind,
 			Detail:   step.Body,

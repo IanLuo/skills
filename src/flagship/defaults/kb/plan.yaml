@@ -1,8 +1,7 @@
 name: plan
-phase: work
 applies_when: code
 order: 20
-steps:
+work:
   # The worker's planning rule. The locked spec is the authority; the plan is
   # yours to state and the cap's to read.
   #

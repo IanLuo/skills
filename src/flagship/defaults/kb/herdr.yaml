@@ -1,8 +1,7 @@
 name: herdr
-phase: cap
 applies_when: engine=herdr
 order: 20
-steps:
+cap:
   # herdr-operative rules, loaded only for a session that dispatches through
   # herdr — the engine tag is derived, not declared, so this playbook cannot be
   # selected by a session that is not running one.

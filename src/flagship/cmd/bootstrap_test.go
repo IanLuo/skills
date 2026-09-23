@@ -16,16 +16,13 @@ import (
 // phase and its applies_when and by nothing else, so the names below say which
 // phase gate each one is rather than what it used to be called.
 const (
-	capPlaybook   = "cap"
-	codeEntryPb   = "code-entry"
-	codeExitPb    = "code-exit"
-	herdrPlaybook = "herdr"
-	batchEntryPb  = "batch-entry"
-	batchExitPb   = "batch-exit"
-	memberPb      = "member"
-	memberExitPb  = "member-exit"
-	intEntryPb    = "integration-entry"
-	intExitPb     = "integration-exit"
+	capPlaybook    = "cap"
+	codeEntryPb    = "code-entry"
+	codeExitPb     = "code-exit"
+	herdrPlaybook  = "herdr"
+	batchPb        = "batch"
+	memberPb       = "member"
+	integrationPb  = "integration"
 
 	// Stub playbooks a worktree-teardown test writes: an entry playbook that
 	// declares the realization and a passing check, and an exit playbook that
@@ -40,8 +37,7 @@ const (
 // of them; the cap's standing rules are built from the cap-phase ones.
 var shippedPlaybooks = []string{
 	capPlaybook, herdrPlaybook, "worker", codeEntryPb, codeExitPb, "plan",
-	"development", "tdd", "review", "research", batchEntryPb, batchExitPb,
-	memberPb, memberExitPb, intEntryPb, intExitPb,
+	"development", "tdd", "review", "research", batchPb, memberPb, integrationPb,
 }
 
 // shippedDefault is a default the binary is expected to carry. The test process
@@ -203,7 +199,7 @@ func TestCLIBootstrapNeverOverwritesAPlaybook(t *testing.T) {
 	dir := t.TempDir()
 	home := testHome(t)
 
-	mine := "# mine: keep this line\nname: cap\nphase: cap\nsteps:\n  - say: mine\n"
+	mine := "# mine: keep this line\nname: cap\ncap:\n  - say: mine\n"
 	writeKBPlaybook(t, home, capPlaybook, mine)
 
 	seeded := playbooksOf(t, runFSOK(t, bin, dir, "bootstrap"))
@@ -241,14 +237,14 @@ func TestCLIKBListReportsDrift(t *testing.T) {
 
 	// A playbook whose stamp matches its own body but not the shipped default
 	// was seeded from a default that has since moved on: stale, not edited.
-	older := "name: cap\nphase: cap\nsteps:\n  - say: older\n"
+	older := "name: cap\ncap:\n  - say: older\n"
 	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
 	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[capPlaybook]; state["state"] != "stale" {
 		t.Errorf("a stale playbook = %v, want state stale", state)
 	}
 
 	// A hand-written playbook with no shipped default is local.
-	writeKBPlaybook(t, home, "hand-written", "name: hand-written\nphase: work\nsteps:\n  - say: mine\n")
+	writeKBPlaybook(t, home, "hand-written", "name: hand-written\nwork:\n  - say: mine\n")
 	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))["hand-written"]; state["state"] != "local" {
 		t.Errorf("a local playbook = %v, want state local", state)
 	}
@@ -335,9 +331,9 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 // bin/ is out of reach; tests/check-parallel covers the script's own behaviour.
 func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	bin := getFS(t)
-	writeKBPlaybook(t, testHome(t), batchEntryPb, shippedDefault(t, batchEntryPb))
+	writeKBPlaybook(t, testHome(t), batchPb, shippedDefault(t, batchPb))
 
-	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", batchEntryPb)
+	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", batchPb)
 	if code != 0 {
 		t.Fatalf("kb get exit %d: %v", code, resp["error"])
 	}
@@ -345,9 +341,9 @@ func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	// The gate reads the batch from the dispatch itself: $FS_CARDS is the
 	// variable fs dispatch --cards exports. Naming the variable rather than the
 	// whole command pins the wiring while leaving the playbook's wording free.
-	want := shippedStep(t, shippedDefault(t, batchEntryPb), "check", "$FS_CARDS")
+	want := shippedStep(t, shippedDefault(t, batchPb), "check", "$FS_CARDS")
 	var checks []string
-	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
+	for _, raw := range resp["data"].(map[string]any)["entry"].([]any) {
 		step := raw.(map[string]any)
 		if step["kind"] != "check" {
 			continue
@@ -388,8 +384,8 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 	for _, want := range []string{
 		"Standing rules for this session",
 		"not suggestions",
-		"# cap — phase cap; default, stamp sha256:",
-		"# herdr — phase cap; default, stamp sha256:",
+		"# cap — moments cap; default, stamp sha256:",
+		"# herdr — moments cap; default, stamp sha256:",
 		shippedStep(t, shippedDefault(t, herdrPlaybook), "say", ""),
 	} {
 		if !strings.Contains(stdout, want) {
@@ -416,14 +412,14 @@ func TestCLIKBPromptMarksAStalePlaybook(t *testing.T) {
 	home := testHome(t)
 	runFSOK(t, bin, dir, "bootstrap")
 
-	older := "name: cap\nphase: cap\nsteps:\n  - say: older\n"
+	older := "name: cap\ncap:\n  - say: older\n"
 	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
 
 	stdout, _, code := rawFS(t, bin, dir, home, "kb", "prompt")
 	if code != 0 {
 		t.Fatalf("kb prompt exit = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "# cap — phase cap; stale, stamp sha256:") {
+	if !strings.Contains(stdout, "# cap — moments cap; stale, stamp sha256:") {
 		t.Errorf("a stale playbook must be marked stale in the prompt:\n%s", stdout)
 	}
 }
@@ -444,18 +440,22 @@ func TestCLIKBPromptOnAFreshHomeSaysToBootstrap(t *testing.T) {
 	}
 }
 
-// stepsOf returns one shipped playbook's steps, parsed by the binary itself —
-// the same parse the dispatcher and the exit gate use.
-func stepsOf(t *testing.T, bin, name string) []map[string]any {
+// stepsOf returns one shipped playbook's steps in one moment's section, parsed
+// by the binary itself — the same parse the dispatcher and the exit gate use.
+func stepsOf(t *testing.T, bin, name, moment string) []map[string]any {
 	t.Helper()
 	writeKBPlaybook(t, testHome(t), name, shippedDefault(t, name))
 	resp, code := runFS(t, bin, t.TempDir(), "kb", "get", name)
 	if code != 0 {
 		t.Fatalf("kb get %s exit %d: %v", name, code, resp["error"])
 	}
+	raw, ok := resp["data"].(map[string]any)[moment].([]any)
+	if !ok {
+		t.Fatalf("kb get %s has no %q section: %v", name, moment, resp["data"])
+	}
 	var steps []map[string]any
-	for _, raw := range resp["data"].(map[string]any)["steps"].([]any) {
-		steps = append(steps, raw.(map[string]any))
+	for _, r := range raw {
+		steps = append(steps, r.(map[string]any))
 	}
 	return steps
 }
@@ -520,7 +520,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// postcondition here. The merged-ness check it replaced asserted an outcome a
 	// hand merge satisfies, so it is deleted rather than kept beside the
 	// stronger check.
-	memberSteps := stepsOf(t, bin, memberExitPb)
+	memberSteps := stepsOf(t, bin, memberPb, "exit")
 	if pre := preconditionsOf(memberSteps); len(pre) != 1 || pre[0] != "fs integrated $FS_NODE" {
 		t.Errorf("member-exit's checks = %v, want the integration link alone", pre)
 	}
@@ -536,7 +536,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// check on the tree it merged into. The six teardown steps it used to share
 	// with parallel-exit are gone — they are the batch's, not a per-member
 	// integration's.
-	intSteps := stepsOf(t, bin, intExitPb)
+	intSteps := stepsOf(t, bin, integrationPb, "exit")
 	if got := preconditionsOf(intSteps); len(got) != 1 || !strings.Contains(got[0], "tests/run.sh") {
 		t.Errorf("integration-exit's checks = %v, want the repo suite alone", got)
 	}
@@ -553,14 +553,14 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// unintegrated members, before any teardown — and every step after it
 	// iterates the batch's members, so a member's tree is removed only after
 	// every member is integrated.
-	batchSteps := stepsOf(t, bin, batchExitPb)
+	batchSteps := stepsOf(t, bin, batchPb, "exit")
 	if pre := preconditionsOf(batchSteps); len(pre) != 1 || !strings.Contains(pre[0], "fs batch $FS_NODE") {
 		t.Errorf("batch-exit's gate = %v, want the fs batch read alone", pre)
 	}
 	if actions := bodiesOf(batchSteps, "do"); len(actions) != 3 {
 		t.Errorf("batch-exit declares %d teardown actions, want 3 (branch, worktree, workspace)", len(actions))
 	}
-	for _, body := range postconditionsOf(t, batchExitPb, batchSteps) {
+	for _, body := range postconditionsOf(t, batchPb, batchSteps) {
 		if !strings.Contains(body, "fs batch") {
 			t.Errorf("batch-exit postcondition %q is not scoped to the batch's members", body)
 		}
@@ -568,7 +568,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 
 	// The entry gate is member-scoped, and its compound ask is split: a rubric
 	// cannot partition two questions asked as one.
-	entry := bodiesOf(stepsOf(t, bin, intEntryPb), "check")
+	entry := bodiesOf(stepsOf(t, bin, integrationPb, "entry"), "check")
 	if len(entry) != 1 || !strings.Contains(entry[0], "fs task get") || !strings.Contains(entry[0], "$FS_INTEGRATES") {
 		t.Errorf("integration-entry checks = %v, want the member check on $FS_INTEGRATES", entry)
 	}
@@ -577,7 +577,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 			t.Errorf("integration-entry check %q is repo-wide; it cannot be run per member", body)
 		}
 	}
-	if asks := bodiesOf(stepsOf(t, bin, intEntryPb), "ask"); len(asks) != 2 {
+	if asks := bodiesOf(stepsOf(t, bin, integrationPb, "entry"), "ask"); len(asks) != 2 {
 		t.Errorf("integration-entry asks = %v, want the order and the staged-changes question apart", asks)
 	}
 
@@ -586,7 +586,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// first, because the teardown destroys the tree the answer is about: a
 	// question asked after the worktree is gone is a question about a checkout
 	// nobody can look at any more.
-	dev := stepsOf(t, bin, codeExitPb)
+	dev := stepsOf(t, bin, codeExitPb, "exit")
 	if len(dev) == 0 || dev[0]["kind"] != "ask" {
 		t.Errorf("code-exit's first step = %v, want the ask before the teardown", dev)
 	}

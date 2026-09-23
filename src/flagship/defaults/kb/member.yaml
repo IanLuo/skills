@@ -1,11 +1,29 @@
 name: member
-phase: work
 applies_when: member
 order: 10
-steps:
+work:
   # What a member's worker is told, over and above the standing worker rules.
   # A member is a dispatch inside a batch: it works in a worktree the batch
   # owns, never touches main, and its branch is merged by a dispatched
   # integration — never by the member itself.
   - say: you are a member of a batch — you work in your own worktree, you never touch main, your branch is merged by a dispatched integration, and your tree outlives your own close (the batch removes it once every member is integrated)
   - say: do not merge your own branch and do not delete your own worktree — both belong to the batch, whose exit gate tears them down after every member is integrated
+exit:
+  # The member's own exit gate. It checks the process, not the outcome, and it
+  # is the whole of the member's close: no teardown lives here, because the
+  # member's tree is owned by the batch, not by the member. The batch's
+  # batch-exit removes it once every member is integrated.
+  #
+  # `fs integrated $FS_NODE` exits 0 only when a done integration dispatch
+  # carries this member on its own task-created payload. The check it replaces —
+  # `git merge-base --is-ancestor HEAD main` — asserted an outcome, and a hand
+  # merge satisfies it: it could not tell a dispatched integration from a bypass.
+  # `fs integrated` is strictly stronger, so the merged-ness check is deleted
+  # rather than kept beside it.
+  #
+  # Checks run with cwd set to the tree the member worked in — its worktree, or
+  # the worker project's root when the dispatch had none — and with the closing
+  # dispatch's own inputs in the environment: $FS_NODE above all, the cap node
+  # being closed.
+  - check: fs integrated $FS_NODE
+  - ask: has this member's result been read from its worker node

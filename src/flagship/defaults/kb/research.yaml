@@ -1,8 +1,7 @@
 name: research
-phase: work
 applies_when: research
 order: 20
-steps:
+work:
   # Research work answers a question rather than changing code, so its bar is
   # about the answer being checkable by someone who was not there.
   - say: name your sources on your node, not in your transcript — a transcript dies with the pane and the node is what a verifier reads

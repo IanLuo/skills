@@ -118,22 +118,19 @@ func TestPrepareBatchMemberDerivesTheMemberTag(t *testing.T) {
 	batch := mustAdd(t, f.h, "cap", "the batch", query.KindBatch, "", nil)
 
 	f.writePlaybook(t, "worker", `name: worker
-phase: work
 engine: herdr
 agent: pi
-steps:
+work:
   - say: use the node your brief names
 `)
 	f.writePlaybook(t, "member", `name: member
-phase: work
 applies_when: member
-steps:
+work:
   - say: you are a member of a batch
 `)
 	f.writePlaybook(t, "member-exit", `name: member-exit
-phase: exit
 applies_when: member
-steps:
+exit:
   - check: true
 `)
 
@@ -171,12 +168,11 @@ steps:
 func TestPrepareBatchDispatchCreatesABatchNode(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "batch-entry", `name: batch-entry
-phase: entry
 applies_when: type=batch
 engine: herdr
 agent: pi
 creates: batch
-steps:
+entry:
   - check: true
 `)
 
@@ -198,10 +194,9 @@ steps:
 }
 
 const workerPlaybook = `name: worker
-phase: work
 engine: herdr
 agent: pi
-steps:
+work:
   - say: use the node your brief names
 `
 
@@ -214,15 +209,13 @@ func TestCloseExportsFSBatchForAMember(t *testing.T) {
 
 	f.writePlaybook(t, "worker", workerPlaybook)
 	f.writePlaybook(t, "member", `name: member
-phase: work
 applies_when: member
-steps:
+work:
   - say: you are a member of a batch
 `)
 	f.writePlaybook(t, "member-exit", `name: member-exit
-phase: exit
 applies_when: member
-steps:
+exit:
   - do: test -n "$FS_BATCH"
 `)
 
@@ -243,9 +236,8 @@ func TestCloseDoesNotExportFSBatchOutsideABatch(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", workerPlaybook)
 	f.writePlaybook(t, "code-exit", `name: code-exit
-phase: exit
 applies_when: code
-steps:
+exit:
   - do: test -z "$FS_BATCH"
 `)
 

@@ -370,9 +370,9 @@ func tagSet(taskType string, declared []string, member bool) (map[string]any, er
 // resolved to, includes and all, and its realization declarations.
 type planned struct {
 	Name        string
-	Phase       string
+	Moments     []string
 	Order       int
-	Steps       []knowledge.Step
+	Indexed     []knowledge.IndexedStep
 	AppliesWhen []string
 	Engine      string
 	Agent       string
@@ -384,7 +384,7 @@ type planned struct {
 func planEntries(plan []planned) []trace.PlanEntry {
 	entries := make([]trace.PlanEntry, 0, len(plan))
 	for _, pb := range plan {
-		entries = append(entries, trace.PlanEntry{Name: pb.Name, Phase: pb.Phase, Order: pb.Order})
+		entries = append(entries, trace.PlanEntry{Name: pb.Name, Moments: pb.Moments, Order: pb.Order})
 	}
 	return entries
 }
@@ -413,7 +413,7 @@ func buildPlan(kc *knowledge.Center, tags map[string]any, also, without []string
 		if err != nil {
 			return nil, err
 		}
-		if pb.Phase == knowledge.PhaseCap || !pb.Matches(tags) {
+		if (len(pb.Moments()) == 1 && pb.Serves(knowledge.MomentCap)) || !pb.Matches(tags) {
 			continue
 		}
 		if err := knowledge.Validate(pb); err != nil {
@@ -430,9 +430,9 @@ func buildPlan(kc *knowledge.Center, tags map[string]any, also, without []string
 		if err != nil {
 			return nil, fmt.Errorf("--also %s: %w", name, err)
 		}
-		if pb.Phase == knowledge.PhaseCap {
+		if len(pb.Moments()) == 1 && pb.Serves(knowledge.MomentCap) {
 			return nil, fmt.Errorf(
-				"--also %s: a `phase: cap` playbook loads into the session's standing rules, not into a dispatch's plan", name)
+				"--also %s: a `cap:`-only playbook loads into the session's standing rules, not into a dispatch's plan", name)
 		}
 		if err := knowledge.Validate(pb); err != nil {
 			return nil, err
@@ -460,9 +460,9 @@ func buildPlan(kc *knowledge.Center, tags map[string]any, also, without []string
 func plannedOf(pb *knowledge.Playbook) planned {
 	return planned{
 		Name:        pb.Name,
-		Phase:       pb.Phase,
+		Moments:     pb.Moments(),
 		Order:       pb.Order,
-		Steps:       pb.Steps,
+		Indexed:     pb.IndexedSteps(),
 		AppliesWhen: pb.AppliesWhen,
 		Engine:      pb.Engine,
 		Agent:       pb.Agent,
@@ -892,19 +892,20 @@ func runEntry(plan []planned, root string, env []string, lg *trace.Log, project,
 	var run entryRun
 
 	for _, pb := range plan {
-		if pb.Phase != knowledge.PhaseEntry {
-			continue
-		}
-		for i, step := range pb.Steps {
+		for _, is := range pb.Indexed {
+			if is.Moment != knowledge.MomentEntry {
+				continue
+			}
+			step := is.Step
 			start := time.Now()
 			item, status := entryStep(step, root, env, confirm)
 
 			if err := lg.Append(project, trace.Line{
-				ID:         trace.StepID(node, pb.Name, i+1),
+				ID:         trace.StepID(node, pb.Name, is.Index),
 				Dispatch:   node,
 				Playbook:   pb.Name,
-				Phase:      pb.Phase,
-				Step:       i + 1,
+				Phase:      is.Moment,
+				Step:       is.Index,
 				Kind:       step.Kind,
 				Status:     status,
 				DurationMS: time.Since(start).Milliseconds(),
@@ -919,7 +920,7 @@ func runEntry(plan []planned, root string, env []string, lg *trace.Log, project,
 				if status == trace.StatusFail {
 					return run, fmt.Errorf(
 						"entry check %q (playbook %s step %d) failed: %s; tell the user and fix it, or re-run with --confirm to proceed",
-						step.Body, pb.Name, i+1, checkOutput(item))
+						step.Body, pb.Name, is.Index, checkOutput(item))
 				}
 			case knowledge.KindAsk:
 				run.Checklist = append(run.Checklist, item)
@@ -984,10 +985,11 @@ func buildBrief(run entryRun, plan []planned, proj registry.Project, req Prepare
 	}
 
 	for _, pb := range plan {
-		if pb.Phase != knowledge.PhaseWork {
-			continue
-		}
-		for _, step := range pb.Steps {
+		for _, is := range pb.Indexed {
+			if is.Moment != knowledge.MomentWork {
+				continue
+			}
+			step := is.Step
 			switch step.Kind {
 			case knowledge.KindSay:
 				brief.Obligations = append(brief.Obligations, step.Body)
@@ -1223,7 +1225,7 @@ func renderBrief(b *Brief) string {
 		sb.WriteString("- plan: empty — no playbook's applies_when matched this dispatch's tags\n")
 	} else {
 		for _, entry := range b.Plan {
-			fmt.Fprintf(&sb, "- %s (%s, order %d)\n", entry.Name, entry.Phase, entry.Order)
+			fmt.Fprintf(&sb, "- %s (%s, order %d)\n", entry.Name, strings.Join(entry.Moments, "+"), entry.Order)
 		}
 	}
 

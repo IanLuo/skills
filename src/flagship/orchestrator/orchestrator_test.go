@@ -133,9 +133,8 @@ func TestRunTaskIncludesProcedures(t *testing.T) {
 
 	// Add a procedure for dev-task.
 	kc.Add("dev-task-procedure", []byte(`name: dev-task-procedure
-phase: work
 applies_when: type=dev-task
-steps:
+work:
   - say: write failing test first
   - say: implement the narrowest change
   - say: run tests
@@ -186,9 +185,8 @@ func TestRunTaskBlocksOnMissingPrerequisite(t *testing.T) {
 
 	// Add a prerequisite playbook that requires a spec.
 	kc.Add("task-prerequisites", []byte(`name: task-prerequisites
-phase: entry
 applies_when: type=dev-task
-steps:
+entry:
   - check: ensure locked spec exists
   - check: ensure architecture doc exists
 `))
@@ -218,9 +216,8 @@ func TestRunTaskPassesPrerequisiteWhenDocsExist(t *testing.T) {
 
 	// Add prerequisite playbook.
 	kc.Add("task-prerequisites", []byte(`name: task-prerequisites
-phase: entry
 applies_when: type=dev-task
-steps:
+entry:
   - check: ensure locked spec exists
   - check: ensure architecture doc exists
 `))

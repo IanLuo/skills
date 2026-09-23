@@ -98,21 +98,20 @@ fs task knowledge NODE_ID --summary "JWT refresh tokens expire after 7 days" [--
 
 ## Playbooks
 
-A **playbook** is a protocol for a kind of work. It declares the moment it runs in (`phase`), the situations it is for (`applies_when`), and where it sits in the order; a dispatch matches those declarations against its tags, so a playbook expresses a situation instead of a name.
+A **playbook** is a protocol for one participant. It declares the moments it takes part in as sections (`cap:`, `entry:`, `work:`, `exit:`), the situations it is for (`applies_when`), and where it sits in the order; a dispatch matches those declarations against its tags, so a playbook expresses a situation instead of a name. The moment is a section, not a field: one file is one participant, read top to bottom, and the moment decides when its steps run — never its position in the file.
 
 ### Schema
 
-Playbooks are YAML files. Global ones live at `~/.fs/kb/<name>.yaml`; a project's own live at `~/.fs/projects/<project>/kb/<name>.yaml`. The schema is `name`/`phase`/`applies_when`/`order`/`steps`:
+Playbooks are YAML files. Global ones live at `~/.fs/kb/<name>.yaml`; a project's own live at `~/.fs/projects/<project>/kb/<name>.yaml`. The schema is `name`/`applies_when`/`order`/`engine`/`agent`/`creates` plus one section per moment the playbook serves:
 
 ```yaml
 name: code-entry            # required; must equal the file name
-phase: entry                # required: cap | entry | work | exit
 applies_when: code          # optional, default empty = matches every dispatch.
                             # comma-separated terms, ALL must hold. term = `k` (present) or `k=v`
-order: 10                   # optional, default 500; ascending; ties by name
+order: 10                   # optional, default 500; ascending within each moment; ties by name
 engine: herdr               # optional: the dispatcher this protocol's steps are written for
 agent: pi                   # optional: the kind of agent that runs this work
-steps:                      # required, non-empty
+entry:                      # the moment is a section — one per moment, any combination, any order
   - check: test -f AGENTS.md
   - ask: a locked PRD is present, and it names this one deliverable
 ```
@@ -127,21 +126,21 @@ A step is `kind: body`. The closed kind vocabulary is `say | use | check | ask |
 | `use` | A skill hint for the worker, as `<skill> — <when>`. A hint, not a requirement. |
 | `check` | A shell command the gate runs; pass/fail plus the command's output. |
 | `ask` | A question only the cap can confirm; refused until `--confirm` says it has been. |
-| `do` | A shell command that acts — the declared teardown. `exit` phase only. |
+| `do` | A shell command that acts — the declared teardown. `exit` section only. |
 | `include` | Splices another playbook's steps at this position. |
 
-Which kinds a phase allows is a closed table — anything else is refused at write time:
+Which kinds a moment allows is a closed table — checked per section, so a `do` under `entry:` is refused at write time exactly as a `do` in an entry file was:
 
-| phase | runs | allowed kinds |
+| moment | runs | allowed kinds |
 |---|---|---|
 | `cap` | the cap's standing rules, in the session prompt | `say` |
 | `entry` | before the worker starts | `check`, `ask`, `say` |
 | `work` | the worker's brief | `say`, `use` |
 | `exit` | at close | `check`, `ask`, `do`, `say` |
 
-`include` is allowed in every phase (it is spliced away before validation, and what it splices must itself be legal for the including playbook's phase).
+`include` is allowed in every moment (it is spliced away before validation, and what it splices must itself be legal for the including section).
 
-The old fields `type:`, `trigger:`, and `engine_scope:` are **refused at parse** with a message naming the replacement — `trigger: cap` → `phase: cap`; `engine_scope: herdr` → `engine: herdr` (the declaration that now exists), or the term `applies_when: engine=herdr` when the intent is to *match* an engine rather than declare one; `type: prerequisite|cleanup` → the `phase` of the moment plus a matching `applies_when`. They never half-work.
+The old fields and forms are **refused at parse** with a message naming the replacement — `trigger: cap` → the `cap:` section; `engine_scope: herdr` → `engine: herdr` (the declaration that now exists), or the term `applies_when: engine=herdr` when the intent is to *match* an engine rather than declare one; `type: prerequisite|cleanup` → the section of that moment plus a matching `applies_when`; and — since the moment became a section — `phase:` together with `steps:` → the `<moment>:` section holding the same list. They never half-work.
 
 ### Selection
 
@@ -155,13 +154,13 @@ The old fields `type:`, `trigger:`, and `engine_scope:` are **refused at parse**
 
 A declared `--tag` may not restate `type` or `engine` (those are set by the dispatch itself). `applies_when` matches presence and equality only — no ranges, no negation. An empty `applies_when` matches every dispatch; that is how the `worker` playbook loads for every dispatch.
 
-So `fs dispatch --project P --type dev-task --tag code` loads the `code`-situated playbooks; `--type batch` loads `batch-entry` (matching the derived `type=batch`) and — because `batch-entry` declares `creates: batch` — the `batch` situation tag that selects `batch-exit`; a dispatch that names `--batch NODE` derives the `member` tag and loads `member`/`member-exit`; `--type research` alone loads nothing but `worker` — the `research` playbook matches the declared tag `research`, so `--tag research` is what selects it.
+So `fs dispatch --project P --type dev-task --tag code` loads the `code`-situated playbooks; `--type batch` loads `batch` (matching the derived `type=batch`), whose `creates: batch` declaration stamps the `batch` situation tag — and `batch`'s `exit:` section joins the same plan, since one file is one participant; a dispatch that names `--batch NODE` derives the `member` tag and loads `member` (both its `work:` and `exit:` sections); `--type research` alone loads nothing but `worker` — the `research` playbook matches the declared tag `research`, so `--tag research` is what selects it.
 
-`--also NAME` forces a playbook into the plan that the tags did not select (a name that does not resolve is refused, and so is a `cap`-phase name — those load into the session, not a plan). `--without NAME` drops one the tags did select, and it has the last word over `--also`. An empty plan is legal and reported `plan: empty` — never hidden; with the shipped set it cannot happen, because `worker` always matches.
+`--also NAME` forces a playbook into the plan that the tags did not select (a name that does not resolve is refused, and so is a `cap:`-only name — those load into the session, not a plan). `--without NAME` drops one the tags did select, and it has the last word over `--also`. An empty plan is legal and reported `plan: empty` — never hidden; with the shipped set it cannot happen, because `worker` always matches.
 
 ### The plan and the trace
 
-The plan is produced once: printed in the brief, recorded on the cap's dispatch node as a `plan-recorded` event, and written as the trace's first line. The trace is one JSONL file per dispatch at `~/.fs/traces/<project>.<node>.jsonl`, filed flat and append-only, never deleted at close: the project leads the name so a person browsing the directory recognises the file, and a dot separates the halves because both contain hyphens. `fs trace NODE [--project P] [--json]` renders it: the plan, then one line per step outcome, ending with `deviation: …` or `deviation: none` (the same comparison `fs close` refuses on). `--project` is an assertion, not a selector — the file is located by NODE alone (globbing `*.<node>.jsonl`), and a line whose project field disagrees is refused.
+The plan is produced once: printed in the brief, recorded on the cap's dispatch node as a `plan-recorded` event, and written as the trace's first line. A plan entry is `{name, moments, order}` — `moments` names the sections the playbook serves, so one entry can be both an `entry` and an `exit` participant. The trace is one JSONL file per dispatch at `~/.fs/traces/<project>.<node>.jsonl`, filed flat and append-only, never deleted at close: the project leads the name so a person browsing the directory recognises the file, and a dot separates the halves because both contain hyphens. `fs trace NODE [--project P] [--json]` renders it: the plan, then one line per step outcome, ending with `deviation: …` or `deviation: none` (the same comparison `fs close` refuses on). `--project` is an assertion, not a selector — the file is located by NODE alone (globbing `*.<node>.jsonl`), and a line whose project field disagrees is refused.
 
 Each step line carries `ts`, `id` (`<dispatch>/<playbook>/<step>`), `dispatch`, `project`, `playbook`, `phase`, `step` (1-based), `kind`, `status`, `duration_ms`, and `detail` (the step body, truncated — **never** the command's output, so a check that prints a secret cannot write it into the trace). The `worker` field is present only on lines written once a worker node exists — the `loaded` lines and the exit lines. Statuses are `pass | fail | confirmed | loaded | skipped | refused`. There is deliberately no `followed`: the trace records that a playbook was loaded and a step ran, never that a worker obeyed.
 
@@ -171,11 +170,11 @@ A node with no trace prints `no trace was written for <node>` and exits 1 — ne
 
 Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/`. A project playbook with the same `name` as a global one **replaces** it for a dispatch into that project; `fs kb list` prints each playbook's `scope` (`global` or the project name) beside its state. `include: <name>` splices that playbook's steps at that position, resolved in the same scope order (project first, then global); a cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
 
-### The 16 shipped playbooks
+### The 13 shipped playbooks
 
 `fs bootstrap` seeds these into `~/.fs/kb/` (see Knowledge center below):
 
-| name | phase | applies_when | order | job |
+| name | sections | applies_when | order | job |
 |---|---|---|---|---|
 | `cap` | cap | — | 10 | the cap's standing rules: hold the plan, elicit decisions, `fs pending` first, close what's ready, file a gap when dispatch refuses for want of a playbook. |
 | `herdr` | cap | `engine=herdr` | 20 | herdr-operative rules: never wait, never poll — `fs pending` is the read. |
@@ -187,12 +186,9 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 | `tdd` | work | `code` | 40 | red → green → broader check; record why a test was skipped. |
 | `review` | work | `code` | 50 | re-read your own diff against the bar before claiming done; record what it flags. |
 | `research` | work | `research` | 20 | sources named on the node; say what would falsify the answer. |
-| `batch-entry` | entry | `type=batch` | 10 | the fan-out's one entry gate: `test -d .git`, `herdr worktree list --cwd .`, `bin/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review. Declares `creates: batch` — the node kind is the playbook's declaration, not a type-to-kind map. |
-| `batch-exit` | exit | `batch` | 10 | the one place the fan-out's teardown is declared: `fs batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions, scoped to the members. |
-| `member` | work | `member` | 10 | what a member's worker is told: your worktree is the batch's, never touch main, your branch is merged by a dispatched integration. |
-| `member-exit` | exit | `member` | 10 | `fs integrated $FS_NODE`; ask: was the result read. No teardown — the member's tree is the batch's. |
-| `integration-entry` | entry | `type=integrate` | 10 | `fs task get $FS_INTEGRATES --project cap --kind dispatch`; ask: next merge in order, main free of foreign staged changes. |
-| `integration-exit` | exit | `type=integrate` | 10 | `bash tests/run.sh` green; ask: was the verdict recorded and read. |
+| `batch` | entry, exit | `type=batch` | 10 | the fan-out's own protocol, one file: its `entry:` is the one gate over the cards (`test -d .git`, `herdr worktree list --cwd .`, `bin/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review), and its `exit:` is the one teardown (`fs batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions). Declares `creates: batch` and `engine: herdr`. |
+| `member` | work, exit | `member` | 10 | one file for the whole member: its `work:` is what a member's worker is told (your worktree is the batch's, never touch main, your branch is merged by a dispatched integration), and its `exit:` is `fs integrated $FS_NODE` plus the read ask. No teardown — the member's tree is the batch's. |
+| `integration` | entry, exit | `type=integrate` | 10 | one file for the merge: its `entry:` is `fs task get $FS_INTEGRATES --project cap --kind dispatch` plus the order and staged-changes asks, and its `exit:` is `bash tests/run.sh` green plus the verdict-recorded ask. No teardown. |
 
 ### Knowledge center
 
@@ -207,7 +203,7 @@ fs kb diff NAME [--project P]                      # shipped default vs the play
 fs kb reset NAME --yes [--project P]               # restore the shipped default
 ```
 
-`fs kb prompt` is how a playbook reaches the agent that has to follow it: it concatenates every `phase: cap` playbook whose `applies_when` the session's tags satisfy, in name order, each under a header naming the playbook, its phase and its state and stamp. Plain text on stdout and nothing else, so it pipes straight into a prompt:
+`fs kb prompt` is how a playbook reaches the agent that has to follow it: it concatenates every playbook with a `cap:` section whose `applies_when` the session's tags satisfy, in name order, each under a header naming the playbook, its moments and its state and stamp. Plain text on stdout and nothing else, so it pipes straight into a prompt:
 
 ```bash
 pi --append-system-prompt "$(fs kb prompt)"
@@ -215,7 +211,7 @@ pi --append-system-prompt "$(fs kb prompt)"
 
 No blank lines, deliberately: line breaks would split it into separate blocks. The headers are what make a stale prompt detectable — they say which playbooks went in and where each came from.
 
-Sixteen playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
+Thirteen playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
 
 ```bash
 fs bootstrap                           # seed ~/.fs/kb from the binary's playbooks
@@ -232,7 +228,7 @@ fs kb reset NAME --yes                 # restore the shipped default
 | `stale` | the shipped default has moved on since it was seeded |
 | `local` | no shipped default with that name — hand-written |
 
-A new binary never rewrites a playbook the cap is reading: a moved default shows as `stale` and is applied only by `kb reset`. Playbooks the binary does not ship are written by hand or with `kb add`. `fs kb list` also reports `used_by` — which tags load a playbook (`prompt: …` for a `cap` playbook, `dispatch: …` otherwise, `none` when nothing selects it) — and the `scope` it came from.
+A new binary never rewrites a playbook the cap is reading: a moved default shows as `stale` and is applied only by `kb reset`. Playbooks the binary does not ship are written by hand or with `kb add`. `fs kb list` also reports `used_by` — which tags load a playbook and, for a dispatch playbook, which moments (`prompt: …` for a playbook with a `cap:` section, `dispatch: … (entry, exit)` otherwise, `none` when nothing selects it) — and the `scope` it came from.
 
 ## Dispatch and close-out
 
@@ -304,13 +300,13 @@ Every entry check runs with the dispatch's own inputs in its environment, so a g
 
 `fs dispatch --deliver` delivers the brief itself: it splits the pane, creates the worker's node in the target project **before** the agent starts (the brief has to name it — *note your work on `<project>:<node>`; do not create another*), starts an agent of the plan's resolved kind (the shipped `worker` declares `agent: pi`) named `dispatch-<type>-<node>`, sends the brief, appends a `loaded` line per `work` playbook, records the binding as a `delivery-recorded` event, and marks the cap node `active`. A failure after the node exists rolls it back — a delivery that did not happen leaves no `loaded` lines, so close refuses it.
 
-The brief carries: the goal, the plan, the `work`-phase playbooks' `say` steps as **Obligations** and `use` steps as **Skills** (in plan order, under a heading stating they are hints and that no skill is required), the entry gate's checklist with each check's output, and the locked docs. No worker obligation is a Go string literal — every one comes from a playbook.
+The brief carries: the goal, the plan, the `work:`-section playbooks' `say` steps as **Obligations** and `use` steps as **Skills** (in plan order, under a heading stating they are hints and that no skill is required), the entry gate's checklist with each check's output, and the locked docs. No worker obligation is a Go string literal — every one comes from a playbook.
 
 ### Closing out
 
 `fs close` is the gate that makes an omission fail. In order it refuses when: the node is not a dispatch; no `delivery-recorded` event exists (or `--abandoned` is missing `--reason`); the worker's node is missing or not `done`; `--decision` is missing; or the trace does not account for every step of the plan — every entry step, every work playbook's `loaded` line, every exit step — naming the playbook, the step and the kind. A missing trace file is a refusal, never a pass.
 
-It then runs the plan's **exit phase** in declared order, then closes the recorded pane, then marks the cap node done with the verdict. The worker's node comes from the delivery record — `--worker <project>:<node>` is optional and, when given, must match it.
+It then runs the plan's **exit section** in declared order, then closes the recorded pane, then marks the cap node done with the verdict. The worker's node comes from the delivery record — `--worker <project>:<node>` is optional and, when given, must match it.
 
 Exit steps get the closing dispatch's own inputs in their environment:
 
@@ -333,13 +329,13 @@ The teardown is **declared, not machinery**: `fs close` closes the pane (every d
 
 The gate can check that the worker's node exists and is `done`, and that the trace accounts for the plan. It **cannot** check that the cap actually read that node; reading it is still the cap's job.
 
-**Batches.** A batch is a dispatched `kind: batch` node that holds a fan-out: `fs dispatch --project P --type batch --cards a,b,c` runs `batch-entry` (git, the worktree listing, the cards' disjointness, the reviewability ask) and leaves the batch node as the parent. Each member is an ordinary dispatch whose cap node is the batch's child:
+**Batches.** A batch is a dispatched `kind: batch` node that holds a fan-out: `fs dispatch --project P --type batch --cards a,b,c` runs `batch`'s `entry:` section (git, the worktree listing, the cards' disjointness, the reviewability ask) and leaves the batch node as the parent. Each member is an ordinary dispatch whose cap node is the batch's child:
 
 ```bash
 fs dispatch --project P --type dev-task --tag code --batch <batch-node> --worktree-new --deliver
 ```
 
-The member works in its own worktree; its own close runs `member-exit` (`fs integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code-exit`'s teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch-exit` tears each member's branch, worktree and workspace down, declared once.
+The member works in its own worktree; its own close runs `member`'s `exit:` section (`fs integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code-exit`'s teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch`'s `exit:` section tears each member's branch, worktree and workspace down, declared once.
 
 A batch's cards declare their files so the fan-out can be checked mechanically:
 
@@ -349,7 +345,7 @@ src/flagship/cmd/main.go
 internal/registry/registry.go
 ```
 
-`bin/check-parallel.sh <card…>` intersects the cards' declared sets and refuses an overlap — or a card with no file list. `batch-entry` puts it in the entry gate, and that gate reads the cards from the dispatch itself: `fs dispatch --cards` exports them as `$FS_CARDS`.
+`bin/check-parallel.sh <card…>` intersects the cards' declared sets and refuses an overlap — or a card with no file list. `batch`'s `entry:` section puts it in the entry gate, and that gate reads the cards from the dispatch itself: `fs dispatch --cards` exports them as `$FS_CARDS`.
 
 ## Task status
 
@@ -479,7 +475,7 @@ fs task update t-abc12345 --status done \
 **Read [references/fs-advanced.md](references/fs-advanced.md) when you need:**
 - Full event payload schemas
 - FTS5 query syntax and ranking
-- Playbook YAML format details and the per-phase kind table
+- Playbook YAML format details and the per-moment kind table
 - Project registry schema and behavior
 - Multi-project workflows and KB scopes
 - Store integrity and WAL behavior

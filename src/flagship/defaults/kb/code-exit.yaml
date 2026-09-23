@@ -1,5 +1,4 @@
 name: code-exit
-phase: exit
 applies_when: code
 order: 10
 # The do steps below call `herdr workspace close`, so this playbook declares the
@@ -7,7 +6,7 @@ order: 10
 # resolved to a different engine refuses rather than running a herdr command into
 # the void.
 engine: herdr
-steps:
+exit:
   # Ordinary code work's exit gate. Until this playbook existed every dev-task
   # close printed "no cleanup gate": entry was guarded, exit was not.
   #

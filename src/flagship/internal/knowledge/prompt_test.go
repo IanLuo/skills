@@ -12,14 +12,14 @@ import (
 )
 
 const (
-	herdrYAML = "name: herdr\nphase: cap\napplies_when: engine=herdr\n" +
-		"steps:\n  - say: a worker runs in its own tab\n"
-	otherCapYAML = "name: aaa-other\nphase: cap\n" +
-		"steps:\n  - say: first by name\n"
-	workerYAML = "name: dev-task\nphase: work\napplies_when: dev-task\n" +
-		"steps:\n  - say: worker context, not a standing rule\n"
-	entryYAML = "name: code-entry\nphase: entry\napplies_when: code\n" +
-		"steps:\n  - check: true\n"
+	herdrYAML = "name: herdr\napplies_when: engine=herdr\n" +
+		"cap:\n  - say: a worker runs in its own tab\n"
+	otherCapYAML = "name: aaa-other\n" +
+		"cap:\n  - say: first by name\n"
+	workerYAML = "name: dev-task\napplies_when: dev-task\n" +
+		"work:\n  - say: worker context, not a standing rule\n"
+	entryYAML = "name: code-entry\napplies_when: code\n" +
+		"entry:\n  - check: true\n"
 )
 
 // promptFS is a shipped-defaults tree holding one playbook per seeded name.
@@ -119,7 +119,7 @@ func TestPromptStatesTheRulesAndEachPlaybooksStamp(t *testing.T) {
 	for _, want := range []string{
 		"Standing rules for this session",
 		"not suggestions",
-		"# herdr — phase cap; default, stamp sha256:",
+		"# herdr — moments cap; default, stamp sha256:",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt must contain %q:\n%s", want, prompt)
@@ -131,14 +131,14 @@ func TestPromptStatesTheRulesAndEachPlaybooksStamp(t *testing.T) {
 // the cap can tell its rules came from a binary that is no longer current.
 func TestPromptMarksAStalePlaybook(t *testing.T) {
 	kc, fsRoot, shipped := seedPrompt(t, "herdr")
-	older := "name: herdr\nphase: cap\napplies_when: engine=herdr\nsteps:\n  - say: older\n"
+	older := "name: herdr\napplies_when: engine=herdr\ncap:\n  - say: older\n"
 	writeFile(t, kbPath(fsRoot, "herdr"), stampOf(older)+older)
 
 	prompt, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if !strings.Contains(prompt, "# herdr — phase cap; stale, stamp sha256:") {
+	if !strings.Contains(prompt, "# herdr — moments cap; stale, stamp sha256:") {
 		t.Errorf("a stale playbook must be marked stale in the prompt:\n%s", prompt)
 	}
 }

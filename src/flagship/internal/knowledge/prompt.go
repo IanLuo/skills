@@ -16,10 +16,10 @@ import (
 	"strings"
 )
 
-// Prompt renders the cap's standing rules: every `phase: cap` playbook whose
-// applies_when the session's tags satisfy, in name order, each preceded by a
-// header naming it, its phase, its state against the shipped defaults and the
-// stamp it was seeded with.
+// Prompt renders the cap's standing rules: every playbook with a `cap:` section
+// whose applies_when the session's tags satisfy, in name order, each preceded by
+// a header naming it, its moments, its state against the shipped defaults and
+// the stamp it was seeded with.
 //
 // The tags are the caller's, because they describe the session and not the
 // schema: the engine the cap dispatches through is a fact about the running
@@ -45,7 +45,7 @@ func (c *Center) Prompt(defaults fs.FS, tags map[string]any) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if pb.Phase != PhaseCap || !pb.Matches(tags) {
+		if !pb.Serves(MomentCap) || !pb.Matches(tags) {
 			continue
 		}
 
@@ -59,8 +59,8 @@ func (c *Center) Prompt(defaults fs.FS, tags map[string]any) (string, error) {
 		}
 
 		included++
-		fmt.Fprintf(&b, "# %s — phase %s; %s\n", book.name, pb.Phase, provenance(st, content))
-		for _, step := range pb.Steps {
+		fmt.Fprintf(&b, "# %s — moments %s; %s\n", book.name, strings.Join(pb.Moments(), "+"), provenance(st, content))
+		for _, step := range pb.StepsFor(MomentCap) {
 			if step.Kind == KindSay {
 				fmt.Fprintf(&b, "- %s\n", step.Body)
 				continue
@@ -70,7 +70,7 @@ func (c *Center) Prompt(defaults fs.FS, tags map[string]any) (string, error) {
 	}
 
 	if included == 0 {
-		fmt.Fprintf(&b, "# No `phase: cap` playbook is installed; run fs bootstrap.\n")
+		fmt.Fprintf(&b, "# No playbook with a `cap:` section is installed; run fs bootstrap.\n")
 	}
 	return b.String(), nil
 }

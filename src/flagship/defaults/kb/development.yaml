@@ -1,8 +1,7 @@
 name: development
-phase: work
 applies_when: code
 order: 30
-steps:
+work:
   # The code bar. These are the rules a reviewer would apply to your diff, put
   # where the person writing the diff reads them.
   - say: write the smallest structure that solves the problem — no abstraction for a single caller, no configuration nobody asked for

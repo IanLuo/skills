@@ -146,11 +146,10 @@ func writeGates(t *testing.T, f *fixture) {
 }
 
 const codeExit = `name: code-exit
-phase: exit
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+exit:
   - check: true
 `
 
@@ -158,13 +157,13 @@ steps:
 // `steps:`, so a test states the protocol it is about and nothing else.
 func exitGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
-	f.writePlaybook(t, "code-exit", "name: code-exit\nphase: exit\napplies_when: code\nengine: herdr\nagent: pi\nsteps:\n"+steps)
+	f.writePlaybook(t, "code-exit", "name: code-exit\napplies_when: code\nengine: herdr\nagent: pi\nexit:\n"+steps)
 }
 
 // entryGate does the same for the entry phase.
 func entryGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
-	f.writePlaybook(t, "code-entry", "name: code-entry\nphase: entry\napplies_when: code\nengine: herdr\nagent: pi\nsteps:\n"+steps)
+	f.writePlaybook(t, "code-entry", "name: code-entry\napplies_when: code\nengine: herdr\nagent: pi\nentry:\n"+steps)
 }
 
 // parallelExitGate writes the exit playbook a parallel dispatch selects: its
@@ -173,14 +172,14 @@ func entryGate(t *testing.T, f *fixture, steps string) {
 func parallelExitGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
 	f.writePlaybook(t, "parallel-exit",
-		"name: parallel-exit\nphase: exit\napplies_when: type=parallel\nengine: herdr\nagent: pi\nsteps:\n"+steps)
+		"name: parallel-exit\napplies_when: type=parallel\nengine: herdr\nagent: pi\nexit:\n"+steps)
 }
 
 // integrationExitGate writes the exit playbook an integration selects.
 func integrationExitGate(t *testing.T, f *fixture, steps string) {
 	t.Helper()
 	f.writePlaybook(t, "integration-exit",
-		"name: integration-exit\nphase: exit\napplies_when: type=integrate\nengine: herdr\nagent: pi\nsteps:\n"+steps)
+		"name: integration-exit\napplies_when: type=integrate\nengine: herdr\nagent: pi\nexit:\n"+steps)
 }
 
 // parallelReq is a worktree batch's dispatch, so the fixtures tagged for it load.
@@ -502,11 +501,10 @@ func TestDeliverCreatesTheWorkerNodeAndNamesItInTheBrief(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
 	f.writePlaybook(t, "worker", `name: worker
-phase: work
 applies_when: code
 engine: herdr
 agent: pi
-steps:
+work:
   - say: a final message is not read; record what is durable on your node
 `)
 	brief := prepareOnly(t, f, devReq("sample"))

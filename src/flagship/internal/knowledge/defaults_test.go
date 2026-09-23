@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	capYAML   = "name: cap\nphase: cap\nsteps:\n  - say: hold the plan\n"
-	movedYAML = "name: moved\nphase: work\nsteps:\n  - say: v1\n"
+	capYAML   = "name: cap\ncap:\n  - say: hold the plan\n"
+	movedYAML = "name: moved\nwork:\n  - say: v1\n"
 )
 
 // shippedFS is the embedded defaults a test seeds from.
@@ -119,7 +119,7 @@ func TestSeedNeverOverwritesAnExistingPlaybook(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mine := "# mine: do not touch\nname: cap\nphase: cap\nsteps:\n  - say: my own rule\n"
+	mine := "# mine: do not touch\nname: cap\ncap:\n  - say: my own rule\n"
 	writeFile(t, kbPath(fsRoot, "cap"), mine)
 
 	outcomes, err := kc.Seed(shippedFS(map[string]string{"cap.yaml": capYAML, "other.yaml": movedYAML}))
@@ -203,18 +203,18 @@ func TestStatesReportsDrift(t *testing.T) {
 	writeFile(t, kbPath(fsRoot, "cap"), stampOf(capYAML)+capYAML+"  - say: an added rule\n")
 	// A playbook whose stamp matches its own body but not today's default was
 	// seeded from a default that has since moved on: stale, not edited.
-	older := "name: moved\nphase: work\nsteps:\n  - say: v0\n"
+	older := "name: moved\nwork:\n  - say: v0\n"
 	writeFile(t, kbPath(fsRoot, "moved"), stampOf(older)+older)
 	// Both at once: the user edited it and the default moved on.
 	writeFile(t, kbPath(fsRoot, "both"), stampOf(movedYAML)+movedYAML+"  - say: an added rule\n")
 	// A hand-written playbook with no shipped default is local.
-	local := "name: hand\nphase: work\nsteps:\n  - say: mine\n"
+	local := "name: hand\nwork:\n  - say: mine\n"
 	writeFile(t, kbPath(fsRoot, "hand"), local)
 
 	states, err = kc.States(shippedFS(map[string]string{
 		"cap.yaml":   capYAML,
-		"moved.yaml": "name: moved\nphase: work\nsteps:\n  - say: v2\n",
-		"both.yaml":  "name: both\nphase: work\nsteps:\n  - say: v2\n",
+		"moved.yaml": "name: moved\nwork:\n  - say: v2\n",
+		"both.yaml":  "name: both\nwork:\n  - say: v2\n",
 	}))
 	if err != nil {
 		t.Fatalf("States: %v", err)
@@ -251,7 +251,7 @@ func TestStatesReportsTheScopeOfEachPlaybook(t *testing.T) {
 	}
 
 	project := global.InProject("skills")
-	if err := project.Add("house", []byte("name: house\nphase: work\nsteps:\n  - say: this project's way\n")); err != nil {
+	if err := project.Add("house", []byte("name: house\nwork:\n  - say: this project's way\n")); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -325,7 +325,7 @@ func TestResetRestoresTheShippedDefault(t *testing.T) {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	writeFile(t, kbPath(fsRoot, "cap"), stampOf(capYAML)+"name: cap\nphase: cap\nsteps:\n  - say: something else\n")
+	writeFile(t, kbPath(fsRoot, "cap"), stampOf(capYAML)+"name: cap\ncap:\n  - say: something else\n")
 
 	path, err := kc.Reset(shipped, "cap")
 	if err != nil {
@@ -359,15 +359,15 @@ func TestStatesReportsWhoUsesEachPlaybook(t *testing.T) {
 	}
 
 	for name, body := range map[string]string{
-		"code-entry":    "name: code-entry\nphase: entry\napplies_when: code\nsteps:\n  - check: true\n",
-		"parallel-exit": "name: parallel-exit\nphase: exit\napplies_when: type=parallel\nsteps:\n  - check: true\n",
-		"cap":           "name: cap\nphase: cap\nsteps:\n  - say: hold the plan\n",
-		"herdr":         "name: herdr\nphase: cap\napplies_when: engine=herdr\nsteps:\n  - say: the herdr rules\n",
+		"code-entry":    "name: code-entry\napplies_when: code\nentry:\n  - check: true\n",
+		"parallel-exit": "name: parallel-exit\napplies_when: type=parallel\nexit:\n  - check: true\n",
+		"cap":           "name: cap\ncap:\n  - say: hold the plan\n",
+		"herdr":         "name: herdr\napplies_when: engine=herdr\ncap:\n  - say: the herdr rules\n",
 		// No terms at all: it loads for every dispatch, and says so rather than
 		// reading as something nothing selects.
-		"worker": "name: worker\nphase: work\nsteps:\n  - say: note your node\n",
+		"worker": "name: worker\nwork:\n  - say: note your node\n",
 		// Every term must hold, so this one wants both tags at once.
-		"code-research": "name: code-research\nphase: work\napplies_when: code, type=dev-task\nsteps:\n  - say: x\n",
+		"code-research": "name: code-research\napplies_when: code, type=dev-task\nwork:\n  - say: x\n",
 		// A phase that is not one of the four: no dispatch runs it.
 		"procedure": "name: procedure\nphase: procedure\nsteps:\n  - say: x\n",
 		// A playbook from the removed schema: refused at parse, so inert. This
@@ -386,12 +386,12 @@ func TestStatesReportsWhoUsesEachPlaybook(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ name, usedBy string }{
-		{"code-entry", "dispatch: code"},
-		{"parallel-exit", "dispatch: type=parallel"},
+		{"code-entry", "dispatch: code (entry)"},
+		{"parallel-exit", "dispatch: type=parallel (exit)"},
 		{"cap", "prompt: always"},
 		{"herdr", "prompt: engine=herdr"},
-		{"worker", "dispatch: always"},
-		{"code-research", "dispatch: code,type=dev-task"},
+		{"worker", "dispatch: always (work)"},
+		{"code-research", "dispatch: code,type=dev-task (work)"},
 		{"procedure", knowledge.UsedByNone},
 		{"superseded", knowledge.UsedByNone},
 		{"broken", knowledge.UsedByNone},
@@ -427,22 +427,19 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 	}
 
 	for name, usedBy := range map[string]string{
-		"cap":               "prompt: always",
-		"herdr":             "prompt: engine=herdr",
-		"worker":            "dispatch: always",
-		"code-entry":        "dispatch: code",
-		"code-exit":         "dispatch: code",
-		"plan":              "dispatch: code",
-		"development":       "dispatch: code",
-		"tdd":               "dispatch: code",
-		"review":            "dispatch: code",
-		"research":          "dispatch: research",
-		"batch-entry":       "dispatch: type=batch",
-		"batch-exit":        "dispatch: batch",
-		"member":            "dispatch: member",
-		"member-exit":       "dispatch: member",
-		"integration-entry": "dispatch: type=integrate",
-		"integration-exit":  "dispatch: type=integrate",
+		"cap":         "prompt: always",
+		"herdr":       "prompt: engine=herdr",
+		"worker":      "dispatch: always (work)",
+		"code-entry":  "dispatch: code (entry)",
+		"code-exit":   "dispatch: code (exit)",
+		"plan":        "dispatch: code (work)",
+		"development": "dispatch: code (work)",
+		"tdd":         "dispatch: code (work)",
+		"review":      "dispatch: code (work)",
+		"research":    "dispatch: research (work)",
+		"batch":       "dispatch: type=batch (entry, exit)",
+		"member":      "dispatch: member (work, exit)",
+		"integration": "dispatch: type=integrate (entry, exit)",
 	} {
 		if got := stateOf(t, states, name).UsedBy; got != usedBy {
 			t.Errorf("shipped %s used_by = %q, want %q", name, got, usedBy)

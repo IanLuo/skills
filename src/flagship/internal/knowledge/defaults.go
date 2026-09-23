@@ -206,9 +206,11 @@ func (c *Center) state(defaults fs.FS, book scopedPlaybook) (PlaybookState, erro
 }
 
 // usedByFor says which tags load a playbook, derived from the playbook itself:
-// a cap playbook is loaded by the session prompt, every other phase by a
-// dispatch whose tags satisfy its applies_when. `always` is a playbook with no
-// terms — one that loads for every dispatch.
+// a playbook with a cap section is loaded by the session prompt, every other
+// moment by a dispatch whose tags satisfy its applies_when. `always` is a
+// playbook with no terms — one that loads for every dispatch. The moments are
+// named because a playbook serving two of them (a `batch`'s entry and exit) is
+// the reason one file is one participant.
 //
 // A file that does not parse is reported as loaded by nothing rather than
 // failing the whole list: a malformed playbook declares nothing, so nothing can
@@ -223,13 +225,28 @@ func usedByFor(name string, content []byte) string {
 	if len(pb.AppliesWhen) > 0 {
 		tags = strings.Join(pb.AppliesWhen, ",")
 	}
-	if pb.Phase == PhaseCap {
-		return "prompt: " + tags
+
+	var dispatchMoments []string
+	for _, moment := range canonicalMoments {
+		if moment == MomentCap {
+			continue
+		}
+		if pb.Serves(moment) {
+			dispatchMoments = append(dispatchMoments, moment)
+		}
 	}
-	if _, known := allowedKinds[pb.Phase]; !known {
+
+	var parts []string
+	if pb.Serves(MomentCap) {
+		parts = append(parts, "prompt: "+tags)
+	}
+	if len(dispatchMoments) > 0 {
+		parts = append(parts, "dispatch: "+tags+" ("+strings.Join(dispatchMoments, ", ")+")")
+	}
+	if len(parts) == 0 {
 		return UsedByNone
 	}
-	return "dispatch: " + tags
+	return strings.Join(parts, "; ")
 }
 
 // defaultPlaybook is one shipped default read out of the embedded tree.
