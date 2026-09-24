@@ -210,7 +210,7 @@ pi --append-system-prompt "$(fs kb prompt)"
 
 No blank lines, deliberately: line breaks would split it into separate blocks. The headers are what make a stale prompt detectable — they say which playbooks went in and where each came from.
 
-Thirteen playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
+Twelve playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
 
 ```bash
 fs bootstrap                           # seed ~/.fs/kb from the binary's playbooks
