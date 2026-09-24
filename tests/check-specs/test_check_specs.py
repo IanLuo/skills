@@ -3,9 +3,10 @@
 test_check_specs.py — behaviour tests for the shipped check-specs.sh.
 
 The script turns "is every locked doc still true?" into "which commits have
-landed on the code this doc covers since the commit it names?". It ships inside
-the fs binary and fs writes it to ~/.fs/scripts, so it may not know any one
-project's layout: what a doc covers comes from the doc's own `covers=`.
+landed since the commit this doc names?". It ships inside the fs binary and fs
+writes it to ~/.fs/scripts, so it may not know any one project's layout: with no
+argument it measures the whole project, and --covered is how a caller that does
+know the repo asks a narrower question.
 
 Every case below runs against a throwaway git repo of three commits — src/,
 then docs/, then src/ again — so the answers are real commits rather than a
@@ -14,15 +15,14 @@ stubbed history. The refusal cases are the point:
   1. a project with no docs directory exits 0 — absence is not staleness
   2. a docs directory holding no files exits 0
   3. a doc locked at HEAD passes
-  4. a doc locked behind a commit on its covered paths fails, naming it
-  5. commits that touch nothing the doc covers leave it passing
-  6. --covered overrides the doc's own covers=
+  4. a doc locked behind a commit fails, naming the commits that moved past it
+  5. --covered narrows that to the paths named, in both directions
+  6. --covered naming a path that is not here fails rather than passing
+     vacuously on a pathspec that matches nothing
   7. a doc with no specs:locked marker fails
   8. a doc locked at a sha that is no commit in the repo fails
   9. a doc locked at a commit that is not an ancestor of HEAD fails
- 10. a doc declaring covers= for a path that is not here fails rather than
-     passing vacuously on a pathspec that matches nothing
- 11. one stale doc among several fails the run, and names the stale one only
+ 10. one stale doc among several fails the run, and names the stale one only
 
 Usage: python3 tests/check-specs/test_check_specs.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -74,10 +74,9 @@ def commit(repo, message):
     return git(repo, "rev-parse", "HEAD")
 
 
-def lock(repo, doc, sha, covers="", body=""):
-    """Write a doc whose marker names sha, optionally declaring what it covers."""
-    covering = f" covers={covers}" if covers else ""
-    write(repo, doc, f"<!-- specs:locked:{sha} 2026-01-01 type=spec{covering} -->\n\n{body}")
+def lock(repo, doc, sha, body=""):
+    """Write a doc whose marker names sha — the shape lock.sh writes."""
+    write(repo, doc, f"<!-- specs:locked:{sha} 2026-01-01 type=spec -->\n\n{body}")
 
 
 def run(repo, *args):
@@ -120,36 +119,30 @@ def main():
 
     # 3 — locked at HEAD.
     repo, a, b, c = new_repo()
-    lock(repo, ".agents/specs/a.md", c, covers="src")
+    lock(repo, ".agents/specs/a.md", c)
     code, out = run(repo)
     check("a doc locked at HEAD passes", code == 0, f"exit {code}: {out}")
     shutil.rmtree(repo)
 
-    # 4 — locked behind a commit on a covered path.
+    # 4 — locked behind commits, and with no --covered the whole project counts.
     repo, a, b, c = new_repo()
-    lock(repo, ".agents/specs/a.md", a, covers="src")
+    lock(repo, ".agents/specs/a.md", a)
     code, out = run(repo)
-    check("a doc behind its covered code fails", code == 1, f"exit {code}: {out}")
-    check("the failure names the doc and the commit that moved past it",
-          "a.md" in out and "add src again" in out and "add docs" not in out, out)
+    check("a doc behind HEAD fails", code == 1, f"exit {code}: {out}")
+    check("the failure names the doc and every commit that moved past it",
+          "a.md" in out and "add docs" in out and "add src again" in out, out)
+    check("and says what it measured", "the project has moved since" in out, out)
     shutil.rmtree(repo)
 
-    # 5 — commits that touch nothing the doc covers.
+    # 5 — --covered is the only way to narrow it, and it cuts both ways.
     repo, a, b, c = new_repo()
-    lock(repo, ".agents/specs/a.md", b, covers="docs")
-    code, out = run(repo)
-    check("a doc whose covered paths did not move passes", code == 0, f"exit {code}: {out}")
-    shutil.rmtree(repo)
-
-    # 6 — --covered overrides the doc's own covers=.
-    repo, a, b, c = new_repo()
-    lock(repo, ".agents/specs/a.md", b, covers="docs")
-    code, out = run(repo, "--covered", "src")
-    check("--covered overrides a doc that declared something else",
-          code == 1, f"exit {code}: {out}")
+    lock(repo, ".agents/specs/a.md", b)
     code, out = run(repo, "--covered", "docs")
-    check("--covered can also clear a doc the declaration would flag",
-          code == 0, f"exit {code}: {out}")
+    check("--covered to a path that did not move passes", code == 0, f"exit {code}: {out}")
+    code, out = run(repo, "--covered", "src")
+    check("--covered to a path that did move fails", code == 1, f"exit {code}: {out}")
+    check("and the failure names only the covered path's commit",
+          "add src again" in out and "add docs" not in out, out)
     shutil.rmtree(repo)
 
     # 7 — no marker.
@@ -180,18 +173,10 @@ def main():
     check("the failure says the sha is not an ancestor", "not an ancestor" in out, out)
     shutil.rmtree(repo)
 
-    # 10 — covers= naming a path that is not here must not pass vacuously.
+    # 10 — one stale doc among several.
     repo, a, b, c = new_repo()
-    lock(repo, ".agents/specs/a.md", a, covers="gone")
-    code, out = run(repo)
-    check("a doc covering an absent path fails", code == 1, f"exit {code}: {out}")
-    check("the failure names the absent path", "gone" in out, out)
-    shutil.rmtree(repo)
-
-    # 11 — one stale doc among several.
-    repo, a, b, c = new_repo()
-    lock(repo, ".agents/specs/stale.md", a, covers="src")
-    lock(repo, ".agents/specs/current.md", c, covers="src")
+    lock(repo, ".agents/specs/stale.md", a)
+    lock(repo, ".agents/specs/current.md", c)
     code, out = run(repo)
     check("one stale doc fails the run", code == 1, f"exit {code}: {out}")
     check("the stale doc is named and the current one is not",

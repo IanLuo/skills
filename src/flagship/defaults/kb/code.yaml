@@ -18,9 +18,10 @@ entry:
   # the delta as a recorded decision rather than an oversight.
   #
   # The script is named through $FS_SCRIPTS, where fs writes the scripts it
-  # ships. It takes no argument naming this repo's layout: what each doc covers
-  # is declared in the doc's own `covers=`, so the check travels with the docs
-  # rather than with the playbook that runs it.
+  # ships. It takes no argument naming this repo's layout, so it asks the widest
+  # question instead: has anything moved since each doc was locked. A project
+  # whose docs describe one part of it narrows that with --covered, which is the
+  # caller's call because the caller is what knows the repo.
   - check: bash "$FS_SCRIPTS/check-specs.sh"
   - ask: a locked PRD is present, and it names this one deliverable
   - ask: is the acceptance check for this deliverable stated

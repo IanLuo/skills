@@ -9,11 +9,13 @@
 # reader who diffs it against HEAD can tell. This script makes the question
 # mechanical: for each spec, list the commits that have landed since its lock.
 #
-# What "the covered code" means is the document's own answer. A marker may carry
-# `covers=path[,path]`, and only commits touching those paths are movement; a
-# document that names none is measured against the whole project. This is
-# declared in the doc because the doc is what knows it — fs ships this script to
-# every project, so it cannot carry one project's layout.
+# What "the covered code" means is the caller's answer: the whole project, or
+# whatever --covered names. It is deliberately not the document's. The marker is
+# written by the specs skill's lock.sh and carries a sha, a date and a type; a
+# field fs invented for it would be one the writer does not know about and its
+# --force rotation would delete. fs ships this script to every project, so it
+# cannot carry one project's layout either. A narrower question is therefore
+# asked by the caller, which is the only party that can ask it knowing the repo.
 #
 # It ships inside the fs binary and fs writes it to ~/.fs/scripts/, so it is
 # addressed as "$FS_SCRIPTS/check-specs.sh" — an absolute path that exists in
@@ -23,9 +25,9 @@
 #   "$FS_SCRIPTS/check-specs.sh" [--dir DIR] [--covered PATH]...
 #
 #   --dir DIR       where the locked docs live (default: .agents/specs)
-#   --covered PATH  measure every doc against PATH instead of its own covers=,
-#                   repeatable or comma-separated. For a project whose docs do
-#                   not declare coverage, or to ask a narrower question once.
+#   --covered PATH  measure every doc against PATH instead of the whole project,
+#                   repeatable or comma-separated. For a repo whose docs describe
+#                   one part of it, or to ask a narrower question once.
 #
 # It runs as a gate step in a playbook, so its exit code is the answer:
 #   0 — every spec is current
@@ -95,16 +97,17 @@ for doc in "$dir"/*.md; do
         continue
     fi
 
-    # The doc's own coverage, or the override, or the whole project. Never
-    # empty: an empty pathspec would make git log report nothing and pass a
-    # gate it never evaluated.
-    declaration="${covered:-$(printf '%s\n' "$marker" | sed -n 's/.*covers=\([^ ]*\).*/\1/p')}"
-    declaration="${declaration:-.}"
+    # The caller's coverage, or the whole project. Never empty: an empty
+    # pathspec would make git log report nothing and pass a gate it never
+    # evaluated.
+    declaration="${covered:-.}"
     IFS=',' read -r -a paths <<< "$declaration"
+    shown="$declaration"
+    [ "$shown" = "." ] && shown="the project"
 
-    # A declared path that is not here means the doc names code this repo does
-    # not have — a path that moved, or a doc carried into the wrong project.
-    # Either way "no commits touched it" would be true and meaningless.
+    # A measured path that is not here means the caller names code this repo
+    # does not have — a path that moved, or a question asked of the wrong
+    # project. Either way "no commits touched it" would be true and meaningless.
     missing=""
     for p in "${paths[@]}"; do
         [ -e "$p" ] || missing="${missing:+$missing, }$p"
@@ -117,7 +120,7 @@ for doc in "$dir"/*.md; do
 
     moved=$(git log --oneline "$sha"..HEAD -- "${paths[@]}" 2>/dev/null)
     if [ -n "$moved" ]; then
-        echo "$doc is locked at $sha but ${declaration} has moved since:" >&2
+        echo "$doc is locked at $sha but $shown has moved since:" >&2
         printf '%s\n' "$moved" | sed 's/^/  /' >&2
         status=1
     fi
