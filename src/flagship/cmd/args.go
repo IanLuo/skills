@@ -125,6 +125,9 @@ so a gate can ask about this dispatch and not only about the world:
   FS_CARDS        the --cards value, comma-separated; empty when none was given
   FS_INTEGRATES   the --integrates value — the member cap node this integration
                   merges; empty when none was given
+  FS_SCRIPTS      where the scripts the binary ships were written; a step names
+                  one as "$FS_SCRIPTS/<name>". Empty if they could not be
+                  written, which a step must treat as missing, not as a path
 
 --cards names the batch's cards. It is repeatable, and each value may be a
 comma-separated list.
@@ -180,6 +183,8 @@ what the delivery opened:
   FS_PANE           the pane the delivery opened
   FS_WORKTREE       the worktree workspace the dispatch ran in; empty without one
   FS_WORKTREE_PATH  that worktree's checkout path; empty without one
+  FS_SCRIPTS        where the scripts the binary ships were written, the same
+                    directory the entry gate got; empty if they could not be
 
 Checks run in the tree the dispatch worked in; declared do steps run in the
 project root, so an action that removes the worktree does not stand inside it.`,

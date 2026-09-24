@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-test_check_parallel.py — behaviour tests for bin/check-parallel.sh.
+test_check_parallel.py — behaviour tests for the shipped check-parallel.sh.
+
+The script lives in src/flagship/defaults/scripts/ because it ships inside the
+fs binary: fs writes it to ~/.fs/scripts, and a playbook addresses it as
+$FS_SCRIPTS/check-parallel.sh. It used to live in the repo's bin/, which is the
+bug this test's path is a reminder of — a shipped playbook naming bin/ resolves
+in exactly one project.
 
 The script turns "is this batch safe to run in parallel?" into a set
 intersection over the cards' declared file sets. Its refusal cases are the point,
@@ -26,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "bin/check-parallel.sh"
+SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "src/flagship/defaults/scripts/check-parallel.sh"
 
 PASS, FAILS = 0, []
 

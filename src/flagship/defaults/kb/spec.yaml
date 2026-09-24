@@ -1,0 +1,24 @@
+name: spec
+applies_when: spec
+order: 10
+# The participant that keeps the design record true. `code`'s entry gate refuses
+# when a locked spec has fallen behind the code it covers; this is the protocol
+# that resolves the refusal, and it is a dispatch of its own rather than a step
+# in a code playbook because revising a spec is a conversation — the grill
+# establishes what actually moved — and a gate step can neither ask nor wait.
+#
+# Selected by the declared tag `spec`: `fs dispatch --type spec --tag spec`.
+# It declares no engine and no agent, so the standing realization in worker.yaml
+# applies — the one playbook with no applies_when owns that decision.
+work:
+  - say: revise the doc in place. A second document restating the first is a spec that has already forked, and the fork is invisible until someone reads the wrong one
+  - say: the lock marker is a claim — it says the code at that commit is what this document describes. Move it to the commit you revised against and change the date, or the doc is now asserting something new while claiming to still be verified
+  - say: state which acceptance criterion moved. A count, a file path or an example is not an acceptance criterion — if that is all that drifted, the fix is to stop writing that fact down and point at whatever measures it, so it cannot drift again
+  - say: a revision is not a redesign. If a non-goal has to move, that is the cap's decision and not yours — ask, and let the answer be recorded
+  - use: specs — the grill that turns a delta into a locked revision
+exit:
+  # The revision's own postcondition, and the same probe that refused the code
+  # dispatch: it passes only once every locked spec is current again. An `ask`
+  # alone would record that someone believed it; this one checks.
+  - check: bash "$FS_SCRIPTS/check-specs.sh"
+  - ask: the revision is committed, and the decision names the acceptance criterion that moved

@@ -24,7 +24,11 @@ entry:
   #
   # This gate runs once for the fan-out — here — instead of once per member,
   # which is the whole reason the batch is a dispatched node.
-  - check: bin/check-parallel.sh $FS_CARDS
+  #
+  # The script is named through $FS_SCRIPTS, where fs writes the scripts it
+  # ships, not through a path in this repo — a playbook in the binary runs in
+  # every project, and `bin/check-parallel.sh` resolved in exactly one.
+  - check: bash "$FS_SCRIPTS/check-parallel.sh" $FS_CARDS
   - ask: is the batch small enough that the merges are reviewable one at a time
 exit:
   # The batch's gate: complete means every member integrated, read from the

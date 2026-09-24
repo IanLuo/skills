@@ -957,6 +957,12 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // FS_PANE, FS_WORKTREE, and FS_WORKTREE_PATH name what the delivery opened. They
 // are what lets a declared action be about this dispatch's own tree — removing
 // it, deleting its branch — without the mechanism knowing how.
+//
+// FS_SCRIPTS is ~/.fs/scripts, the same directory the entry gate got, so an exit
+// step names a shipped script the same way an entry step does. It is written
+// here too because close is the other half of a plan: a `--tag spec` dispatch
+// can run its whole exit gate without a dispatch having been prepared in this
+// process.
 func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch string) []string {
 	worker := ""
 	if delivery.Project != "" && delivery.Node != "" {
@@ -973,6 +979,7 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch strin
 		"FS_WORKTREE=" + delivery.Worktree,
 		"FS_WORKTREE_PATH=" + delivery.WorktreePath,
 		"FS_BATCH=" + batch,
+		"FS_SCRIPTS=" + scriptsDir(),
 	}
 }
 

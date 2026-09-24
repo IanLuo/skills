@@ -1542,18 +1542,20 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 	}
 }
 
-// The parallel gate is what --cards exists for. The shipped
-// parallel-entry playbook runs the repo's real check-parallel.sh with
-// $FS_CARDS, so the batch's disjointness is checked mechanically against *this*
-// dispatch's cards — the one thing a static shell string could not do.
+// The parallel gate is what --cards exists for. The shipped batch playbook runs
+// check-parallel.sh with $FS_CARDS, so the batch's disjointness is checked
+// mechanically against *this* dispatch's cards — the one thing a static shell
+// string could not do.
 //
 // The shipped playbook is used as shipped, so a gate that stopped reading
-// $FS_CARDS would fail here rather than pass on a test-local stand-in.
+// $FS_CARDS would fail here rather than pass on a test-local stand-in. Nothing
+// installs the script into the fixture repo: it is the binary's own, written to
+// $FS_SCRIPTS. This test used to copy bin/check-parallel.sh in by hand, which is
+// the defect it now covers — the playbook named a path only this repo had.
 func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	goGit(t, root, "init", "-q")
-	installRepoFile(t, root, filepath.Join("..", "..", "..", "bin", "check-parallel.sh"), "bin/check-parallel.sh", 0o755)
 	writeFileIn(t, root, "a.md", "# A\n\n## Files\nsrc/a.go\n")
 	writeFileIn(t, root, "b.md", "# B\n\n## Files\nsrc/b.go\n")
 	writeFileIn(t, root, "c.md", "# C\n\n## Files\nsrc/a.go\n")
@@ -1634,29 +1636,6 @@ func resolveCapScope(t *testing.T, bin, root string) {
 		if _, code := runFS(t, bin, root, "task", "update", task["node_id"].(string), "--status", "done", "--decision", "test cleanup", "--project", "cap"); code != 0 {
 			t.Fatalf("resolving cap node %v failed", task["node_id"])
 		}
-	}
-}
-
-// installRepoFile copies a file out of the repo into root at rel, so a check
-// that runs from root runs the artifact the repo ships rather than a stand-in.
-//
-// The repo's bin/ is outside this module, so it is absent when the module is
-// built on its own — the nix check phase runs the tests from a copy of
-// src/flagship. There the test skips rather than failing on the sandbox's shape;
-// TestShippedParallelGateReadsTheDispatchedCards covers the wiring wherever the
-// module is built, and tests/check-parallel covers the script itself.
-func installRepoFile(t *testing.T, root, src, rel string, mode os.FileMode) {
-	t.Helper()
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Skipf("the repo's %s is not reachable from this module copy (%v)", rel, err)
-	}
-	dst := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, data, mode); err != nil {
-		t.Fatal(err)
 	}
 }
 

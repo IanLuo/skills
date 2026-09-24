@@ -22,15 +22,22 @@ entry:
   - ask: is this the next merge in order
   - ask: is main free of foreign staged changes
 exit:
-  # The integration's own exit gate. The suite must be green on the merged tree.
-  # `tests/run.sh` is this repo's declared suite, so it runs here rather than
-  # being taken on the worker's word.
+  # The integration's own exit gate. The suite must be green on the merged tree,
+  # and the command that runs it is the project's to supply: this playbook is in
+  # the binary and runs in every project, so it cannot name a path that exists in
+  # one. It used to — `bash tests/run.sh` — which made this gate exit 127 and
+  # refuse every integration in a repo that keeps its suite anywhere else.
+  #
+  # A project that has a suite checks it here by adding a playbook of its own to
+  # its project scope, matching the same tags. This repo keeps one at
+  # ~/.fs/projects/skills/kb/verify.yaml carrying `bash tests/run.sh`, so the gate
+  # is unchanged here and unanswered elsewhere rather than wrong elsewhere.
   #
   # An integration dispatch usually names no worktree — the worker merges into
-  # main — so the check runs at the project root, the merged main checkout, and
-  # that is the tree it is about. It deliberately does not ask herdr: git is what
-  # owns a branch and a worktree.
-  - check: bash tests/run.sh
+  # main — so such a check runs at the project root, the merged main checkout,
+  # and that is the tree it is about. It deliberately does not ask herdr: git is
+  # what owns a branch and a worktree.
+  - ask: is the project's own suite green on the merged tree
 
   # "exactly one worktree remains" and "no unmerged local branches" are deleted:
   # both are batch-global, so they belong to no single member — a per-member

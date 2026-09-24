@@ -3,7 +3,8 @@
 test_playbooks.py — the shipped playbooks are a contract, so they are checked
 like one.
 
-fs ships 12 playbooks in src/flagship/defaults/kb. They are the protocols a
+fs ships the playbooks listed in SHIPPED, in src/flagship/defaults/kb. They are
+the protocols a
 dispatch is measured against, and they are data: a typo in a section or a step
 kind is a protocol that refuses at the worst moment, and a `use:` naming a skill
 this repo does not ship is a hint that sends a worker looking for nothing. Both
@@ -15,7 +16,7 @@ One file is one participant: the moment is a section (`cap:`, `entry:`, `work:`,
 `exit:`), not a field, so a playbook that takes part in two moments declares two
 sections in the same file. What it checks, per playbook:
 
-  1. The set is exactly the 12 the schema ships — no file added or dropped
+  1. The set is exactly the names SHIPPED lists — no file added or dropped
      without this list moving with it.
   2. Each file parses, its `name` is its file name, it declares at least one
      section, and its `order`, when given, is an integer.
@@ -37,6 +38,23 @@ sections in the same file. What it checks, per playbook:
      every dispatch, and every worker must be told to write to the node it was
      given — and carries that rule.
 
+ 10. No executed step (`check`/`do`) in a shipped playbook names a repo-relative
+     path. A playbook lives in the binary and runs in every project, so
+     `bin/...` or `tests/...` resolves in exactly one of them and exits 127 in
+     the rest. Three gates were written that way — `batch.yaml` ran
+     `bin/check-parallel.sh`, `code.yaml` ran `bin/check-specs.sh`, and
+     `integration.yaml` ran `tests/run.sh` — and each could only ever pass here.
+
+ 11. Every `$FS_SCRIPTS/<name>` an executed step names is a script the binary
+     ships, in src/flagship/defaults/scripts. fs writes that directory to
+     ~/.fs/scripts when it builds a plan's environment, so a name that is not in
+     it is a path that will not exist when the step runs.
+
+Rules 8, 10 and 11 are the same question from three sides — can this step run at
+all in a project that is not this one? — and rule 10 is the one the other two
+could not have caught: a script check that resolves against a repo path is a
+name fs has no way to know is wrong.
+
 A `use:` body is prose: the skill name is the first word, up to the em-dash or
 the end of the line. Skill names are read from the skills tree rather than a
 list in this file, so adding a skill needs no edit here.
@@ -56,8 +74,16 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 KB = REPO / "src/flagship/defaults/kb"
+SCRIPTS = REPO / "src/flagship/defaults/scripts"
 SKILLS = REPO / "skills"
 ARGS_GO = REPO / "src/flagship/cmd/args.go"
+
+# Directories that exist inside this repo and nowhere else. A shipped playbook
+# naming one of them is a gate that can only ever pass where it was written.
+REPO_LOCAL = re.compile(
+    r"(?<![\w.$/-])(?:" + "|".join(["bin", "tests", "scripts", "src", "internal", "cmd"]) + r")/[\w./-]+"
+    r"|(?<![\w.$-])\./[\w./-]+"
+)
 
 # The shipped set. Kept here as well as in the KB so a playbook that disappears
 # is a failure and not a quietly smaller loop.
@@ -74,6 +100,7 @@ SHIPPED = [
     "batch",
     "member",
     "integration",
+    "spec",
 ]
 
 # allowedKinds in src/flagship/internal/knowledge/knowledge.go. `include` is
@@ -148,6 +175,25 @@ def skill_names():
     return {p.name for p in SKILLS.iterdir() if (p / "SKILL.md").is_file()}
 
 
+def shipped_scripts():
+    """The scripts the binary embeds, which fs writes to ~/.fs/scripts."""
+    return {p.name for p in SCRIPTS.glob("*.sh")}
+
+
+def repo_local(body):
+    """Path-shaped tokens in a step body that resolve inside this repo only.
+
+    `$FS_SCRIPTS/...` is deliberately not one: the lookbehind rejects a path
+    glued to `$`, and that is the portable form this rule pushes a step toward.
+    """
+    return sorted({m.group(0) for m in REPO_LOCAL.finditer(body)})
+
+
+def scripts_named(body):
+    """The script names a body addresses through $FS_SCRIPTS."""
+    return sorted(set(re.findall(r"\$FS_SCRIPTS/([\w.-]+)", body)))
+
+
 def all_steps(playbook):
     """Every step in a playbook, across its sections, in canonical moment order."""
     steps = []
@@ -169,12 +215,14 @@ def skill_of(body):
 def main():
     subs = fs_subcommands()
     skills = skill_names()
+    scripts = shipped_scripts()
 
     check("the command specs are readable", len(subs) > 10, f"found {sorted(subs)}")
     check("the skills tree is readable", len(skills) > 5, f"found {sorted(skills)}")
+    check("the shipped script set is readable", bool(scripts), f"found {sorted(scripts)}")
 
     found = sorted(p.stem for p in KB.glob("*.yaml"))
-    check("the shipped set is exactly the 12", found == sorted(SHIPPED),
+    check("the shipped set is exactly the names SHIPPED lists", found == sorted(SHIPPED),
           f"on disk: {found}; expected: {sorted(SHIPPED)}")
 
     for name in sorted(SHIPPED):
@@ -248,6 +296,15 @@ def main():
                           sub in subs,
                           f"fs {sub} is not a subcommand; the specs in args.go have "
                           f"{', '.join(sorted(subs))}")
+                for ref in repo_local(body):
+                    check(f"{name}: {kind} {i} names no repo-relative path ({ref})", False,
+                          f"{ref} resolves in this repo only, and this playbook runs in "
+                          f"every project; name a shipped script through $FS_SCRIPTS")
+                for script in scripts_named(body):
+                    check(f"{name}: {kind} {i} names a script the binary ships ({script})",
+                          script in scripts,
+                          f"{SCRIPTS / script} does not exist, so ~/.fs/scripts will not "
+                          f"have it when this step runs")
 
     # The worker's rules are the one playbook every dispatch carries: an empty
     # applies_when is what makes that true, and the node rule is the reason it

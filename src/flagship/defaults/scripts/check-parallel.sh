@@ -12,11 +12,16 @@
 # that refusal is the whole point, because without it disjointness goes back to
 # being a judgement call the cap gets wrong.
 #
-# Usage:
-#   bin/check-parallel.sh <card.md> [card.md ...]
-#   bin/check-parallel.sh a.md,b.md
+# This ships inside the fs binary and fs writes it to ~/.fs/scripts/, so it is
+# addressed as "$FS_SCRIPTS/check-parallel.sh" — an absolute path that exists in
+# every project. It used to live in the repo's bin/, which made the entry gate
+# of a shipped playbook a path that resolved in exactly one project.
 #
-# The second form is the one fs dispatch uses: parallel-entry.yaml runs
+# Usage:
+#   "$FS_SCRIPTS/check-parallel.sh" <card.md> [card.md ...]
+#   "$FS_SCRIPTS/check-parallel.sh" a.md,b.md
+#
+# The second form is the one fs dispatch uses: batch.yaml's entry runs
 # this with $FS_CARDS, which fs dispatch sets from --cards, comma-separated.
 #
 # Exit: 0 disjoint · 1 overlap, or a card with no file list · 2 no cards named.

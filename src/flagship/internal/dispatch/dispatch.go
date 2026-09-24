@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flagship-dev/flagship"
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
@@ -1035,6 +1036,12 @@ func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan 
 // were not given, so a check can tell "this dispatch named no cards/member" from
 // "this step has no env" — and one that needs them must refuse on empty rather
 // than pass vacuously.
+//
+// FS_SCRIPTS is ~/.fs/scripts, where the binary's own scripts are written. A
+// shipped playbook is run in every project, so it may only name commands the
+// binary ships; an absolute "$FS_SCRIPTS/<name>" is how it names one. Empty when
+// the scripts could not be written, which a step must treat as missing rather
+// than as a path to run.
 func checkEnv(project, taskType, goal string, cards []string, integrates string) []string {
 	return []string{
 		"FS_PROJECT=" + project,
@@ -1042,7 +1049,20 @@ func checkEnv(project, taskType, goal string, cards []string, integrates string)
 		"FS_GOAL=" + goal,
 		"FS_CARDS=" + strings.Join(cards, ","),
 		"FS_INTEGRATES=" + integrates,
+		"FS_SCRIPTS=" + scriptsDir(),
 	}
+}
+
+// scriptsDir is where the binary's shipped scripts are written, or "" when they
+// could not be. The empty case is deliberate: a step that needs a script has to
+// be able to see it is missing, and a gate that cannot evaluate what it was
+// asked must refuse rather than pass.
+func scriptsDir() string {
+	dir, err := flagship.MaterializeScripts()
+	if err != nil {
+		return ""
+	}
+	return dir
 }
 
 // runCheck runs a check's body through the shared shell runner and reports

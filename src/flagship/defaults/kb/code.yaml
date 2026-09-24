@@ -9,6 +9,19 @@ engine: herdr
 entry:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
+  # A locked doc is only a claim about the code at the commit it names. The step
+  # above proves one exists; this one proves it is still true. Without it a spec
+  # rots silently — the doc keeps reading as authoritative while the code moves
+  # past it, and only a reader who diffs the two can tell. That is not a reader's
+  # job, so the gate asks instead, and the cap answers one of two ways: revise
+  # and re-lock (`fs dispatch --tag spec`), or proceed with --confirm, accepting
+  # the delta as a recorded decision rather than an oversight.
+  #
+  # The script is named through $FS_SCRIPTS, where fs writes the scripts it
+  # ships. It takes no argument naming this repo's layout: what each doc covers
+  # is declared in the doc's own `covers=`, so the check travels with the docs
+  # rather than with the playbook that runs it.
+  - check: bash "$FS_SCRIPTS/check-specs.sh"
   - ask: a locked PRD is present, and it names this one deliverable
   - ask: is the acceptance check for this deliverable stated
 exit:

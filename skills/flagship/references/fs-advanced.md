@@ -127,12 +127,20 @@ parse** with a message naming the replacement: `trigger: cap` → `phase: cap`;
 A dispatch's `check` steps see the dispatch's own inputs in the environment, so
 a gate can be about *this* dispatch — which cards, which member — and not only
 the world: `FS_PROJECT`, `FS_TYPE`, `FS_GOAL`, `FS_CARDS` (the `--cards` value,
-comma-separated, empty when none was given, and never unset), and `FS_INTEGRATES`
-(the `--integrates` value). That is what `parallel-entry.yaml` uses:
-`check: bin/check-parallel.sh $FS_CARDS`. `fs close`'s exit steps get a
-different, narrower set: `FS_PROJECT`, `FS_TYPE`, `FS_NODE`, `FS_WORKER`,
+comma-separated, empty when none was given, and never unset), `FS_INTEGRATES`
+(the `--integrates` value), and `FS_SCRIPTS` (where the binary's own scripts were
+written). That is what `batch.yaml` uses:
+`check: bash "$FS_SCRIPTS/check-parallel.sh" $FS_CARDS`. `fs close`'s exit steps
+get a different, narrower set: `FS_PROJECT`, `FS_TYPE`, `FS_NODE`, `FS_WORKER`,
 `FS_CARDS` (empty), `FS_INTEGRATES`, `FS_PANE`, `FS_WORKTREE`,
-`FS_WORKTREE_PATH`.
+`FS_WORKTREE_PATH`, `FS_SCRIPTS`.
+
+A shipped playbook is run in every project, so a step it declares may name an
+`fs` subcommand, a generic POSIX tool, or `"$FS_SCRIPTS/<name>"` for a script the
+binary ships — never `bin/…` or `tests/…`, which resolve in one repo and exit 127
+in the rest. `FS_SCRIPTS` is empty when the scripts could not be written, so a
+step that needs one must treat empty as missing rather than run a path that is
+not there.
 
 ### Selection
 

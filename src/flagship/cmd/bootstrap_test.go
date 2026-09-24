@@ -44,6 +44,7 @@ const (
 var shippedPlaybooks = []string{
 	capPlaybook, herdrPlaybook, "worker", codePb, "plan",
 	"development", "tdd", "review", "research", batchPb, memberPb, integrationPb,
+	"spec",
 }
 
 // shippedDefault is a default the binary is expected to carry. The test process
@@ -331,10 +332,11 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 }
 
 // The parallel gate must read the batch's cards from the dispatch that runs it,
-// not from a list someone edits per batch: parallel-entry.yaml runs
-// bin/check-parallel.sh with $FS_CARDS, the variable fs dispatch --cards exports.
-// This pins that wiring wherever the module is built, including where the repo's
-// bin/ is out of reach; tests/check-parallel covers the script's own behaviour.
+// not from a list someone edits per batch: batch.yaml runs check-parallel.sh
+// with $FS_CARDS, the variable fs dispatch --cards exports. The script is the
+// binary's own, addressed as $FS_SCRIPTS/check-parallel.sh, so this pins the
+// wiring wherever the module is built; tests/check-parallel covers the script's
+// own behaviour.
 func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
 	bin := getFS(t)
 	writeKBPlaybook(t, testHome(t), batchPb, shippedDefault(t, batchPb))
@@ -540,20 +542,24 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 		t.Errorf("member-exit asks = %v, want the one question about this member's node", asks)
 	}
 
-	// The integration's exit gate keeps what the integration owns: the suite
-	// check on the tree it merged into. The six teardown steps it used to share
-	// with parallel-exit are gone — they are the batch's, not a per-member
-	// integration's.
+	// The integration's exit gate asks about the suite rather than checking it.
+	// The command that runs a project's tests is the project's to supply: this
+	// playbook ships in the binary and runs in every project, so the check it
+	// used to carry — `bash tests/run.sh` — exited 127 everywhere but here. A
+	// project with a suite adds it in that project's scope. The six teardown
+	// steps it used to share with parallel-exit stay deleted: they are the
+	// batch's, not a per-member integration's.
 	intSteps := stepsOf(t, bin, integrationPb, "exit")
-	if got := preconditionsOf(intSteps); len(got) != 1 || !strings.Contains(got[0], "tests/run.sh") {
-		t.Errorf("integration-exit's checks = %v, want the repo suite alone", got)
+	if got := preconditionsOf(intSteps); len(got) != 0 {
+		t.Errorf("integration-exit's checks = %v, want none: a shipped gate runs in every project, "+
+			"so the suite command is the project's to declare", got)
 	}
 	if len(bodiesOf(intSteps, "do")) != 0 {
 		t.Errorf("integration-exit declares teardown: a member's tree is the batch's to remove")
 	}
-	if asks := bodiesOf(intSteps, "ask"); len(asks) != 1 ||
-		!strings.Contains(asks[0], "integration verdict") {
-		t.Errorf("integration-exit asks = %v, want the one question this integration owns", asks)
+	if asks := bodiesOf(intSteps, "ask"); len(asks) != 2 ||
+		!strings.Contains(asks[0], "suite green") || !strings.Contains(asks[1], "integration verdict") {
+		t.Errorf("integration-exit asks = %v, want the suite question then the verdict", asks)
 	}
 
 	// The batch's exit gate is where the fan-out's teardown lives, declared once.

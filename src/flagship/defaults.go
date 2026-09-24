@@ -1,10 +1,10 @@
-// Package flagship ships the playbooks that live in ~/.fs/kb inside the fs
-// binary.
+// Package flagship ships the playbooks that live in ~/.fs/kb and the scripts
+// that live in ~/.fs/scripts inside the fs binary.
 //
-// The playbooks are embedded from defaults/, so the cap's operating contract is
+// Both are embedded from defaults/, so the cap's operating contract is
 // versioned with the code instead of being a hand-written file outside git:
-// `fs bootstrap` materialises it, and `fs kb` compares it against what is on
-// disk.
+// `fs bootstrap` materialises the playbooks, `fs kb` compares them against what
+// is on disk, and MaterializeScripts writes the scripts.
 package flagship
 
 import (
@@ -12,8 +12,9 @@ import (
 	"io/fs"
 )
 
-// embedded holds defaults/kb, one YAML playbook per file. Adding a playbook is
-// dropping a file in there — nothing in this package changes.
+// embedded holds defaults/kb, one YAML playbook per file, and
+// defaults/scripts, one shell script per file. Adding either is dropping a file
+// in there — nothing in this package changes.
 //
 //go:embed defaults
 var embedded embed.FS
