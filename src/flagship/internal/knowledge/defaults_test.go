@@ -435,7 +435,9 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 		"development": "dispatch: code (work)",
 		"tdd":         "dispatch: code (work)",
 		"review":      "dispatch: code (work)",
-		"research":    "dispatch: research (work)",
+
+		"independent-review": "dispatch: type=review-task (work, exit)",
+		"research":           "dispatch: research (work)",
 		"batch":       "dispatch: type=batch (entry, exit)",
 		"member":      "dispatch: member (work, exit)",
 		"integration": "dispatch: type=integrate (entry, exit)",

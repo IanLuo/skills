@@ -95,6 +95,7 @@ SHIPPED = [
     "development",
     "tdd",
     "review",
+    "independent-review",
     "research",
     "batch",
     "member",

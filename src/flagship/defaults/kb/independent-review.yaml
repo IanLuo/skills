@@ -1,0 +1,69 @@
+name: independent-review
+applies_when: type=review-task
+order: 10
+# The independent reviewer's protocol. A `--type review-task` dispatch reads the
+# worker's node and the change against the locked docs the change moved, and
+# reports drift. Every locked spec's verification section closes on this check,
+# and until this file existed nothing gave it shape or noticed when it was
+# skipped: a review dispatch got the standing worker obligations and no gate.
+#
+# The task type is `review-task` and not `review` because the vocabulary is
+# already in the docs: playbook-system.md's Break 1 records cap.yaml telling the
+# cap to dispatch `review-task`, and that dispatch was one of the ones fs refused
+# for want of a protocol. This file is the protocol for the name people already
+# try to dispatch.
+#
+# NOT review.yaml. That one is `applies_when: code` and is SELF-review: it hands
+# the worker that wrote the diff obligations about its own diff, and it loads
+# into every code plan. This one loads into a review dispatch, and its input is
+# somebody else's change. Two audiences, two moments — do not merge them.
+#
+# The tag cannot exclude the other file. `applies_when` matches presence and
+# equality only, with no negation, so a dispatch tagged both `--type review-task`
+# and `--tag code` loads both and tells the worker to be its own adversary. Tags
+# are the cap's to keep honest (playbook-system.md A3), and a wrong pair is
+# visible in the plan, the brief and the trace rather than silent.
+#
+# No `engine:` or `agent:`: this protocol runs no herdr command of its own, and
+# the standing realization in worker.yaml is the one place that decision lives.
+work:
+  # Read the change, not the worker's account of it. A claim the diff does not
+  # support is a finding, and the worker's own summary is exactly what the
+  # independent check exists to look past.
+  - say: read the worker's node and the change against the locked docs it moved, and report drift — not the worker's own summary. A claim you cannot reproduce in the diff is a finding
+  # The classification, and the test that makes two reviewers agree. It is the
+  # thing that makes a fix loop terminate: without the split, "fix everything the
+  # review found" pulls unrelated locked-doc defects into an unrelated dispatch,
+  # and the review that found them reports the same rewrite as fixes.
+  - say: classify every finding before you report it — against the change (the change's own acceptance criterion is false, or the change introduced the defect) or discovered by the change (a pre-existing defect the review happened to see). The test is the revert: a finding that survives reverting the change was not caused by it. Against-the-change findings block the dispatch under review; discovered ones never do
+  - say: file every discovered finding as a `kind: gap` node naming the scope it belongs to (`fs task add --project <the scope it belongs to> --kind gap --found-by <your node> --goal ...`) — the backlog is where a defect outside this change belongs, and fixing it here is the scope creep the split exists to stop
+  # The reviewer's contract, and the cap's. Neither is a mechanism, because the
+  # judgement is not mechanizable: "is this finding in scope for this change" is
+  # the same kind of call as fs deciding which agent kinds exist, and fs holds no
+  # such list.
+  - say: report, do not fix — you edit nothing under review, because a reviewer that edits produces a tree nobody has reviewed. For the same reason you do not decide whether a finding blocks: the cap triages, and "is this finding in scope for this change" is a judgement no mechanism holds
+  # The property that makes the loop converge.
+  - say: a fix round is one round. A blocking finding gets a fix dispatch of its own, its card naming the finding, and the review that follows reads that fix — not the whole diff again. A re-review that re-derives everything finds a new crop every round and the loop never ends
+  - say: say plainly what you verified by running it and what you verified only by reading, and what you did not check at all; a review that only lists problems cannot tell a reader what was checked
+  - use: review-task — the tool for an independent review, and how a finding is reported
+exit:
+  # The termination condition, and it is deliberately NOT "no findings": a
+  # reviewer re-reading a diff always finds something, so an exit demanding none
+  # is unreachable — a gate nobody can pass is a gate that gets bypassed, and the
+  # findings go stale behind it. It is that every finding ENDS somewhere, which
+  # is the shape fs close already uses for a plan: it refuses while the trace
+  # does not account for every step of that plan, naming the step. The
+  # dispositions are the vocabulary, and there are three of them.
+  #
+  # This is an ask, and its refusal is real — fs close refuses an unanswered ask,
+  # so the dispatch cannot close until the cap has answered. What it cannot do is
+  # check the answer: a finding that was fixed leaves no record of itself, an
+  # accepted one is a sentence, and an empty set is indistinguishable from no
+  # review at all. No `check:` can decide it from the store, and a check that
+  # could not fail would be worse than saying so — see playbook-system.md's
+  # honesty NFR.
+  #
+  # `accepted` is a disposition, not a loophole: it is how a real finding that is
+  # out of scope closes without a fix. It needs the reason on the record, because
+  # "accepted" with nothing behind it is a finding dropped.
+  - ask: every finding is dispositioned — fixed and verified in this round, filed as a named `kind: gap` node, or accepted with a reason on this node; any that is not is named here

@@ -43,9 +43,14 @@ const (
 // of them; the cap's standing rules are built from the cap-phase ones.
 var shippedPlaybooks = []string{
 	capPlaybook, herdrPlaybook, "worker", codePb, "plan",
-	"development", "tdd", "review", "research", batchPb, memberPb, integrationPb,
+	"development", "tdd", "review", independentReviewPb, "research", batchPb, memberPb, integrationPb,
 	"spec",
 }
+
+// independentReviewPb is the playbook a `--type review-task` dispatch selects:
+// the independent reviewer's protocol, the counterpart to the self-reviewing
+// `review`.
+const independentReviewPb = "independent-review"
 
 // shippedDefault is a default the binary is expected to carry. The test process
 // runs in this package's directory, so the module's defaults/ is one level up:

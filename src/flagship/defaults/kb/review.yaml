@@ -5,6 +5,10 @@ work:
   # Self-review before the claim. It is ordered last because it is the last thing
   # you do before saying the work is done, and it is the only step whose input is
   # your own diff rather than the card.
+  #
+  # NOT independent-review.yaml. That one is `applies_when: type=review-task`,
+  # loads into a review dispatch, and reads somebody else's change. Two
+  # audiences, two moments — do not merge them.
   - say: re-read your whole diff against the code bar before you claim done — not the files you remember changing, the diff
   - say: check the diff for what the card did not ask for; unrequested changes are the ones a reviewer cannot interpret
   - say: record what the review flagged and what you did about each item, on your node

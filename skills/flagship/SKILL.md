@@ -176,7 +176,7 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 
 `include: <name>` is a **separate** mechanism over the same scopes: it splices that playbook's steps at that position, resolved in the same scope order (project first, then global). Inheritance picks which fields and sections the playbook has; the splice then fills them — so a shadow whose `work:` says `- include: <its own name>` ends with the global steps exactly once, not twice. A cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
 
-### The 13 shipped playbooks
+### The shipped playbooks
 
 `fs bootstrap` seeds these into `~/.fs/kb/` (see Knowledge center below):
 
@@ -190,6 +190,7 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 | `development` | work | `code` | 30 | the code bar: smallest structure, surgical diffs, own your orphans, refactor as its own step. |
 | `tdd` | work | `code` | 40 | red → green → broader check; record why a test was skipped. |
 | `review` | work | `code` | 50 | re-read your own diff against the bar before claiming done; record what it flags. |
+| `independent-review` | work, exit | `type=review-task` | 10 | the *independent* reviewer's protocol — not `review`, which is self-review: this one loads into a `review-task` dispatch and reads somebody else's change, and the two keep out of each other's plans. Its `work:` has the reviewer read the change rather than the worker's summary, classify every finding *against the change* (blocks) or *discovered by the change* (a `kind: gap` node, never blocks — the test is the revert), and report without fixing and without deciding what blocks, because triage is the cap's. Its `exit:` is the termination condition: **every finding dispositioned** — `fixed`, `filed` or `accepted` with a reason. It is an `ask:`, not a `check:`; the comment says why no check can decide it. |
 | `research` | work | `research` | 20 | sources named on the node; say what would falsify the answer. |
 | `batch` | entry, exit | `type=batch` | 10 | the fan-out's own protocol, one file: its `entry:` is the one gate over the cards (`test -d .git`, `herdr worktree list --cwd .`, `$FS_SCRIPTS/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review), and its `exit:` is the one teardown (`fs batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions). Declares `creates: batch` and `engine: herdr`. |
 | `member` | work, exit | `member` | 10 | one file for the whole member: its `work:` is what a member's worker is told (your worktree is the batch's, never touch main, your branch is merged by a dispatched integration), and its `exit:` is `fs integrated $FS_NODE` plus the read ask. No teardown — the member's tree is the batch's. |
@@ -217,7 +218,7 @@ pi --append-system-prompt "$(fs kb prompt)"
 
 No blank lines, deliberately: line breaks would split it into separate blocks. The headers are what make a stale prompt detectable — they say which playbooks went in and where each came from.
 
-Thirteen playbooks ship **inside the binary** (the table above) and are seeded into `~/.fs/kb/`:
+The playbooks above ship **inside the binary** and are seeded into `~/.fs/kb/`:
 
 ```bash
 fs bootstrap                           # seed ~/.fs/kb from the binary's playbooks
