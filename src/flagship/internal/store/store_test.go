@@ -162,6 +162,40 @@ func TestProjectCreatedAcceptsNilNodeID(t *testing.T) {
 	}
 }
 
+func TestCapClaimedAcceptsNilNodeID(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	evt := store.Event{
+		Type:      store.CapClaimed,
+		ProjectID: "cap",
+		Payload:   json.RawMessage(`{"pane":"w1:p1"}`),
+	}
+	if _, err := s.Append(evt); err != nil {
+		t.Fatalf("cap-claimed should accept nil node_id: %v", err)
+	}
+}
+
+func TestReportRecordedRequiresNodeID(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	evt := store.Event{
+		Type:      store.ReportRecorded,
+		ProjectID: "proj-1",
+		Payload:   json.RawMessage(`{"line":"done"}`),
+	}
+	if _, err := s.Append(evt); err == nil {
+		t.Fatal("expected error for report-recorded without node_id")
+	}
+}
+
 func TestReplayFiltersProject(t *testing.T) {
 	s, err := store.Open(tempDB(t))
 	if err != nil {

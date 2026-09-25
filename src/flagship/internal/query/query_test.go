@@ -401,6 +401,33 @@ func TestDeriveTreeOrphanEvents(t *testing.T) {
 	}
 }
 
+func TestDeriveTreeIgnoresScopeLevelEvents(t *testing.T) {
+	// cap-claimed carries no node_id, so a reader that predates it — and every
+	// reader after it — must see nothing at all: no node, no root, no change.
+	s := openStore(t)
+	seedProject(t, s, "cap")
+	_, err := s.Append(store.Event{
+		Type:      store.CapClaimed,
+		ProjectID: "cap",
+		Payload:   json.RawMessage(`{"pane":"w1:p1","tab":"w1:t1"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := query.NewEngine(s)
+	tree, err := e.DeriveTree("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Nodes) != 0 {
+		t.Fatalf("expected no nodes, got %d", len(tree.Nodes))
+	}
+	if len(tree.Roots) != 0 {
+		t.Fatalf("expected no roots, got %d", len(tree.Roots))
+	}
+}
+
 func TestDeriveTreeOrphanedParent(t *testing.T) {
 	// A task-created whose parent id is not in the project is unreachable from
 	// any root. It must surface as an orphan root, not be dropped, so fs status

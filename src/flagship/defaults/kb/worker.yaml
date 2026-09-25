@@ -21,3 +21,5 @@ work:
   - say: a claim without the command that produced it is not evidence; paste the command and its output, or say you did not run it
   - say: when a card is wrong or under-specified, say so on your node and stop — do not guess at intent, and do not widen the card to cover the guess
   - say: skills named in a `use:` step are hints, not requirements. Load the one that fits, or say why none does
+  - say: report with `fs report <your project>:<your node> --line "<one line>"` when you are blocked, when you need a decision the cap has not made, or when a unit of work is finished; `--blocked`, `--question` and `--done` notify the live cap, and a report with none of them records silently for whoever reads
+  - say: report whether or not a cap is live — the event is written first and always, so "recorded, not notified" is not a failed report — and keep it a pointer, never the content: under 200 bytes, a status word and one line, because the node remains the record and the cap reads the node

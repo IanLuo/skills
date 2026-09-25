@@ -88,6 +88,12 @@ type HerdrCLI interface {
 	// from one that finished unseen or died; an error means herdr could not be
 	// asked, which is not the same as no agent being there.
 	Agents() (map[string]string, error)
+	// AgentForPane returns the name herdr reports for the agent it hosts in
+	// paneID, and "" when it names none there. It is how a claim records the
+	// agent beside the pane: herdr routes to the pane, and the name is what a
+	// person recognises. An error means herdr could not be asked, which is not
+	// the same as there being no agent.
+	AgentForPane(paneID string) (string, error)
 	// ClosePane closes paneID, returning ErrPaneGone if it no longer exists.
 	ClosePane(paneID string) error
 	// PaneExists reports whether herdr still knows paneID. It is how close-out
@@ -428,6 +434,46 @@ func (herdrCLI) Prompt(paneID, text string) error {
 }
 
 func (herdrCLI) Agents() (map[string]string, error) {
+	agents, err := listAgents()
+	if err != nil {
+		return nil, err
+	}
+
+	states := make(map[string]string, len(agents))
+	for _, a := range agents {
+		if a.Name == "" {
+			continue // an unnamed agent cannot be addressed by a delivery record
+		}
+		states[a.Name] = a.State
+	}
+	return states, nil
+}
+
+func (herdrCLI) AgentForPane(paneID string) (string, error) {
+	agents, err := listAgents()
+	if err != nil {
+		return "", err
+	}
+	for _, a := range agents {
+		if a.PaneID == paneID && a.Name != "" {
+			return a.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// herdrAgent is one agent herdr reports: the name it is addressed by, the pane
+// hosting it, and the state it is in.
+type herdrAgent struct {
+	Name   string
+	PaneID string
+	State  string
+}
+
+// listAgents reads herdr's agents. It is the one parse both the state map and
+// the pane lookup are built from, so the two can never disagree about what
+// herdr said.
+func listAgents() ([]herdrAgent, error) {
 	out, err := runHerdr("agent", "list")
 	if err != nil {
 		return nil, err
@@ -436,8 +482,9 @@ func (herdrCLI) Agents() (map[string]string, error) {
 	var resp struct {
 		Result struct {
 			Agents []struct {
-				Name  string `json:"name"`
-				State string `json:"agent_status"`
+				Name   string `json:"name"`
+				PaneID string `json:"pane_id"`
+				State  string `json:"agent_status"`
 			} `json:"agents"`
 		} `json:"result"`
 	}
@@ -445,14 +492,11 @@ func (herdrCLI) Agents() (map[string]string, error) {
 		return nil, fmt.Errorf("herdr agent list: parse response: %w", err)
 	}
 
-	states := make(map[string]string, len(resp.Result.Agents))
+	agents := make([]herdrAgent, 0, len(resp.Result.Agents))
 	for _, a := range resp.Result.Agents {
-		if a.Name == "" {
-			continue // an unnamed agent cannot be addressed by a delivery record
-		}
-		states[a.Name] = a.State
+		agents = append(agents, herdrAgent{Name: a.Name, PaneID: a.PaneID, State: a.State})
 	}
-	return states, nil
+	return agents, nil
 }
 
 func (herdrCLI) ClosePane(paneID string) error {

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
@@ -545,6 +546,279 @@ func (h *Handler) PlanFor(projectID, nodeID string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	return events[len(events)-1].Payload, true, nil
+}
+
+// The report kinds. A kind is a status word the cap must not miss; the empty
+// kind is a progress note, which nobody is interrupted for.
+const (
+	ReportBlocked  = "blocked"
+	ReportQuestion = "question"
+	ReportDone     = "done"
+)
+
+var reportKinds = map[string]bool{
+	"":             true,
+	ReportBlocked:  true,
+	ReportQuestion: true,
+	ReportDone:     true,
+}
+
+// ReportNotifies says whether a report of this kind interrupts the cap. The
+// kind is the only switch, deliberately: a worker that can force a ping for a
+// kind that does not notify can spend the cap's context back up, which is the
+// resource the kind distinction exists to protect.
+func ReportNotifies(kind string) bool { return kind != "" }
+
+// CapClaim is the payload of a cap-claimed event: the pane that holds the cap
+// scope, the tab it sits in, the agent herdr reports there, and when the claim
+// was made. It is the cap's address — what routing and the guard read, and all
+// they read. It carries no capability and no session state.
+//
+// The take-over fields are set only by a claim over an address herdr no longer
+// has: TakenOverFrom and TakenOverAt name the address it replaced and when it
+// was last heard, Reconstructed is what the claimant read before taking the
+// scope. They ride on the claim so a take-over stays what a claim is — one
+// event — rather than a claim plus an event nothing could read.
+type CapClaim struct {
+	PaneID string `json:"pane_id"`
+	TabID  string `json:"tab_id,omitempty"`
+	Agent  string `json:"agent,omitempty"`
+	// ClaimedAt is when the claim was recorded, RFC3339 in UTC.
+	ClaimedAt     string `json:"claimed_at"`
+	TakenOverFrom string `json:"taken_over_from,omitempty"`
+	TakenOverAt   string `json:"taken_over_at,omitempty"`
+	Reconstructed string `json:"reconstructed,omitempty"`
+}
+
+// Report is one report a worker recorded on a node: a kind, one line, and when
+// it was said. It is not a decision — what the cap answered lands on the node
+// as a decision — and it carries no content of the work, which the node holds.
+type Report struct {
+	Kind string    `json:"kind,omitempty"`
+	Line string    `json:"line"`
+	At   time.Time `json:"at"`
+}
+
+// ClaimCap appends the event that makes a pane the cap scope's address. It
+// writes and nothing else: whether a claim may proceed at all — a live address
+// refuses it, a dead one makes it a take-over — is decided against herdr by the
+// caller, which is the only layer that can ask.
+//
+// The event carries no node_id. A claim addresses a scope, and a node_id would
+// materialise a card in the cap scope that nobody created, where every reader
+// would see it.
+func (h *Handler) ClaimCap(scope string, c CapClaim) Response {
+	if scope == "" {
+		return errResp("scope is required")
+	}
+	if c.PaneID == "" {
+		return errResp("a claim must name a pane: HERDR_PANE_ID is how a herdr-hosted session has one")
+	}
+	c.ClaimedAt = time.Now().UTC().Format(time.RFC3339)
+
+	payload, _ := json.Marshal(c)
+	id, err := h.store.Append(store.Event{
+		Type:      store.CapClaimed,
+		ProjectID: scope,
+		CommitSHA: h.commitSHA,
+		Payload:   payload,
+	})
+	if err != nil {
+		h.logger.Error("store append failed", "command", "cap-claim", "error", err)
+		return errResp(err.Error())
+	}
+
+	h.logger.Info("command executed", "command", "cap-claim", "project", scope, "pane_id", c.PaneID, "event_id", id)
+	return okResp(EventData{EventID: id, EventType: store.CapClaimed, CommitSHA: h.commitSHA})
+}
+
+// CapFor returns the scope's current address: the last claim recorded, and
+// ok=false when nothing has claimed. The two are not alike — no claim is an
+// empty record, a claim whose pane is gone is a dead cap — so the caller is
+// told which it has rather than handed a zero claim.
+func (h *Handler) CapFor(scope string) (CapClaim, bool, error) {
+	filter := &store.ReplayFilter{Types: []store.EventType{store.CapClaimed}}
+	events, err := h.store.Replay(scope, filter)
+	if err != nil {
+		return CapClaim{}, false, err
+	}
+	if len(events) == 0 {
+		return CapClaim{}, false, nil
+	}
+
+	var c CapClaim
+	if err := json.Unmarshal(events[len(events)-1].Payload, &c); err != nil {
+		return CapClaim{}, false, fmt.Errorf("cap-claimed payload: %w", err)
+	}
+	return c, true, nil
+}
+
+// ReportAdd appends a worker's report on a node and, when the report is a
+// block, the block beside it — one atomic batch, so a blocked report's two
+// facts can never land apart.
+//
+// It writes and nothing else, always: the report is durable whether or not a
+// cap exists, and the caller notifies afterwards. Nothing here can notify about
+// something unwritten, because nothing here notifies at all.
+func (h *Handler) ReportAdd(projectID, nodeID, kind, line string) Response {
+	if projectID == "" {
+		return errResp("project_id is required")
+	}
+	if nodeID == "" {
+		return errResp("node_id is required")
+	}
+	if line == "" {
+		return errResp("--line is required: a report is a status word and one line")
+	}
+	if !reportKinds[kind] {
+		return errResp(fmt.Sprintf(
+			"unknown report kind %q: use --blocked, --question or --done, or none of them for a note", kind))
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
+	}
+
+	payload, _ := json.Marshal(struct {
+		Kind string `json:"kind,omitempty"`
+		Line string `json:"line"`
+	}{Kind: kind, Line: line})
+
+	batch := []store.Event{{
+		Type:      store.ReportRecorded,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		CommitSHA: h.commitSHA,
+		Payload:   payload,
+	}}
+
+	// A block is a block: the status every reader already handles, and the
+	// recorded check beside it, unchanged. The report joins them rather than
+	// replacing them, and its line is the reason.
+	if kind == ReportBlocked {
+		from := h.deriveStatus(projectID, nodeID)
+		blockedPayload, _ := json.Marshal(map[string]string{"reason": line, "check": ""})
+		statusPayload, _ := json.Marshal(map[string]string{"from": from, "to": "blocked"})
+		batch = append(batch,
+			store.Event{Type: store.TaskBlocked, ProjectID: projectID, NodeID: &nodeID, CommitSHA: h.commitSHA, Payload: blockedPayload},
+			store.Event{Type: store.StatusChanged, ProjectID: projectID, NodeID: &nodeID, CommitSHA: h.commitSHA, Payload: statusPayload},
+		)
+	}
+
+	ids, err := h.store.AppendBatch(batch)
+	if err != nil {
+		h.logger.Error("store append failed", "command", "report", "error", err)
+		return errResp(err.Error())
+	}
+
+	h.logger.Info("command executed", "command", "report", "project", projectID, "node_id", nodeID, "kind", kind, "event_id", ids[0])
+	events := make([]EventData, len(batch))
+	for i, evt := range batch {
+		events[i] = EventData{EventID: ids[i], EventType: evt.Type, NodeID: nodeID, CommitSHA: h.commitSHA}
+	}
+	return okResp(UpdateResult{Events: events})
+}
+
+// ReportsFor returns the reports recorded on a node, oldest first. It reads the
+// report events alone: a decision recorded beside them is the cap's answer, not
+// another report.
+func (h *Handler) ReportsFor(projectID, nodeID string) ([]Report, error) {
+	filter := &store.ReplayFilter{
+		Types:  []store.EventType{store.ReportRecorded},
+		NodeID: &nodeID,
+	}
+	events, err := h.store.Replay(projectID, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	reports := make([]Report, 0, len(events))
+	for _, evt := range events {
+		var p struct {
+			Kind string `json:"kind"`
+			Line string `json:"line"`
+		}
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return nil, fmt.Errorf("report-recorded payload: %w", err)
+		}
+		reports = append(reports, Report{Kind: p.Kind, Line: p.Line, At: evt.Timestamp})
+	}
+	return reports, nil
+}
+
+// DeliveryForPane returns the delivery record a scope holds for a pane, with the
+// dispatch node it was recorded on: the evidence that the pane carries a
+// dispatched worker. ok=false means fs holds no such record, which is not the
+// same as proving the pane is a cap — it is the guard degrading to unclaimed,
+// and it says so.
+//
+// The newest record wins, so a pane reused for a later dispatch answers for the
+// dispatch it holds now.
+func (h *Handler) DeliveryForPane(scope, paneID string) (DeliveryRecord, string, bool, error) {
+	if paneID == "" {
+		return DeliveryRecord{}, "", false, nil
+	}
+
+	filter := &store.ReplayFilter{Types: []store.EventType{store.DeliveryRecorded}}
+	events, err := h.store.Replay(scope, filter)
+	if err != nil {
+		return DeliveryRecord{}, "", false, err
+	}
+
+	for i := len(events) - 1; i >= 0; i-- {
+		var d DeliveryRecord
+		if err := json.Unmarshal(events[i].Payload, &d); err != nil {
+			return DeliveryRecord{}, "", false, fmt.Errorf("delivery-recorded payload: %w", err)
+		}
+		if d.PaneID != paneID {
+			continue
+		}
+		capNode := ""
+		if events[i].NodeID != nil {
+			capNode = *events[i].NodeID
+		}
+		return d, capNode, true, nil
+	}
+	return DeliveryRecord{}, "", false, nil
+}
+
+// DispatchFor returns the dispatch node in scope whose delivery record names
+// the worker in workerProject/workerNode, with that record — the reverse of
+// DeliveryFor, and how a reply is resolved to the pane it is sent through.
+// ok=false when no record names that worker, which includes a record written
+// before records carried the worker's node.
+//
+// The records live in the cap's scope and the worker's node lives in its own,
+// so both are named: scope is where to look, and the pair is what to match.
+// The newest record wins, so a worker dispatched twice is answered on the
+// dispatch it holds now.
+func (h *Handler) DispatchFor(scope, workerProject, workerNode string) (DeliveryRecord, string, bool, error) {
+	if workerNode == "" {
+		return DeliveryRecord{}, "", false, nil
+	}
+
+	filter := &store.ReplayFilter{Types: []store.EventType{store.DeliveryRecorded}}
+	events, err := h.store.Replay(scope, filter)
+	if err != nil {
+		return DeliveryRecord{}, "", false, err
+	}
+
+	for i := len(events) - 1; i >= 0; i-- {
+		var d DeliveryRecord
+		if err := json.Unmarshal(events[i].Payload, &d); err != nil {
+			return DeliveryRecord{}, "", false, fmt.Errorf("delivery-recorded payload: %w", err)
+		}
+		if d.Project != workerProject || d.Node != workerNode {
+			continue
+		}
+		capNode := ""
+		if events[i].NodeID != nil {
+			capNode = *events[i].NodeID
+		}
+		return d, capNode, true, nil
+	}
+	return DeliveryRecord{}, "", false, nil
 }
 
 // TaskEdit appends a metadata-changed event for each field it is given: the

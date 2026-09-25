@@ -8,6 +8,9 @@ cap:
   # prompt is a list nobody checks: it had already gone stale, naming a skill
   # this repo does not ship. What the cap does is the contract; which skill a
   # step needs is a `use:` inside the work playbook that needs it.
+  - say: claim the scope before you dispatch — `fs cap claim` records this pane as the cap's address; a claim over a live cap is refused naming the pane, and a take-over of a dead one requires `--reconstructed "what you read"`
+  - say: `fs cap who` says whether the address is still there, and `fs pending` reads the cap's liveness beside every open report — read them rather than assuming coordination is available
+  - say: a worker's report is an accelerant, never the record — read the node it names, decide on the node, and answer with `fs tell <project>:<node> "<one line>"`; the reply is a message and the decision is what outlives it
   - say: work with the user — hold the plan, elicit decisions, never decide what is the user's
   - say: run the user-facing skills yourself; the skills that do the artifact work are loaded by the work playbook that declares them, not by you
   - say: answer with the smallest view that makes the point — a diagram, tree or pseudocode before prose

@@ -113,6 +113,14 @@ func main() {
 	case "pending":
 		checkArgs("pending", os.Args[2:])
 		pendingCmd()
+	case "cap":
+		capCmd(os.Args[2:])
+	case "report":
+		checkArgs("report", os.Args[2:])
+		reportCmd(os.Args[2:])
+	case "tell":
+		checkArgs("tell", os.Args[2:])
+		tellCmd(os.Args[2:])
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -155,8 +163,28 @@ Commands:
   pending                                      Every dispatch not closed out, with
                                                 what the cap should do about each:
                                                 ready, running, unseen, gone,
-                                                unlinked — and the undispatched
-                                                gap count
+                                                unlinked — the undispatched gap
+                                                count, and the cap's own address
+                                                and liveness beside every open
+                                                report
+  cap claim [--reconstructed "WHAT YOU READ"]  Become the cap: register this pane
+                                                as the scope's address. Refused
+                                                while a live cap holds it, naming
+                                                it; a take-over of a dead one
+                                                requires --reconstructed
+  cap who                                       Print the cap's address and whether
+                                                herdr still has it; exit 0 with a
+                                                live cap, 1 without
+  report PROJECT:NODE --line "ONE LINE"         A worker's report to the cap:
+     [--blocked|--question|--done]              written to the store first and
+                                                always, then sent to the live cap
+                                                best-effort. --blocked, --question
+                                                and --done notify; no kind is
+                                                silent. A failure to notify is not
+                                                a failed report: exit 0 says
+                                                "recorded, not notified"
+  tell PROJECT:NODE "TEXT"                      The cap's reply, routed through
+                                                that dispatch's delivery record
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   bootstrap                                     Seed ~/.fs/kb from the playbooks
@@ -495,6 +523,7 @@ func taskAdd(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+	guardCoordinating(h, projectID)
 
 	if goal == "" {
 		fatal("--goal is required")
@@ -582,6 +611,7 @@ func taskUpdate(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+	guardCoordinating(h, projectID)
 
 	resp := h.TaskUpdate(projectID, nodeID, status, decision, nil)
 	if resp.OK {
@@ -603,6 +633,7 @@ func taskEdit(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+	guardCoordinating(h, projectID)
 
 	resp := h.TaskEdit(projectID, nodeID, goal, query.Kind(flagVal(rest, "--kind", "")), nil)
 	if resp.OK {
@@ -625,6 +656,7 @@ func taskBlock(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+	guardCoordinating(h, projectID)
 
 	resp := h.TaskBlockWithCheck(projectID, nodeID, reason, check)
 	if resp.OK {
@@ -645,6 +677,7 @@ func taskUnblock(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+	guardCoordinating(h, projectID)
 
 	resp := h.TaskUnblock(projectID, nodeID)
 	if resp.OK {
@@ -666,6 +699,7 @@ func taskKnowledge(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+	guardCoordinating(h, projectID)
 
 	resp := h.KnowledgeAdd(projectID, nodeID, summary)
 	if resp.OK {
@@ -1088,6 +1122,148 @@ func pendingCmd() {
 	output(dispatch.Pending(h, dispatch.NewHerdrCLI()))
 }
 
+// capCmd is fs cap: the claim that gives the scope an address, and the read
+// that says whether it is still there. Like fs task and fs kb, the bare word
+// only dispatches.
+func capCmd(args []string) {
+	if len(args) < 1 || isHelp(args[0]) {
+		fmt.Fprintln(os.Stderr, `Usage: fs cap <subcommand>
+
+Subcommands:
+  claim [--reconstructed "WHAT YOU READ"]   Register this pane as the cap's
+                                            address: refused while a live cap
+                                            holds the scope, naming it, and a
+                                            take-over when herdr no longer has
+                                            the registered pane
+  who                                       Print the address and whether herdr
+                                            still has it; exit 0 with a live
+                                            cap, 1 without`)
+		if len(args) < 1 {
+			os.Exit(2)
+		}
+		return
+	}
+
+	switch args[0] {
+	case "claim":
+		checkArgs("cap claim", args[1:])
+		capClaimCmd(args[1:])
+	case "who":
+		checkArgs("cap who", args[1:])
+		capWhoCmd()
+	default:
+		fmt.Fprintf(os.Stderr, "fs cap: unknown subcommand %q\n", args[0])
+		os.Exit(2)
+	}
+}
+
+// capClaimCmd makes this session the cap. The pane and tab are read from the
+// environment herdr gives the session; --reconstructed is what a take-over
+// requires, and what it read before taking the scope.
+func capClaimCmd(args []string) {
+	h := openHandler("")
+	defer h.Close()
+	guardCoordinating(h, "")
+
+	output(dispatch.Claim(h, dispatch.NewHerdrCLI(), dispatch.ClaimRequest{
+		PaneID:        os.Getenv("HERDR_PANE_ID"),
+		TabID:         os.Getenv("HERDR_TAB_ID"),
+		Reconstructed: flagVal(args, "--reconstructed", ""),
+	}))
+}
+
+// capWhoCmd prints the address and its liveness. Exit 0 iff a live cap exists:
+// no claim and a dead one both exit 1, and say which they are.
+func capWhoCmd() {
+	h := openHandler("")
+	defer h.Close()
+
+	status, err := dispatch.CapStatusOf(h, dispatch.NewHerdrCLI())
+	if err != nil {
+		fatal("fs cap who: " + err.Error())
+	}
+	output(command.Response{OK: true, Data: status})
+	if status.State != dispatch.CapLive {
+		os.Exit(1)
+	}
+}
+
+// reportCmd is the worker's report: fs writes the event and then, best-effort,
+// notifies the live cap — in that order, in one command. The kind is the only
+// switch, and a boolean flag is how a kind is named.
+func reportCmd(args []string) {
+	if len(args) < 1 {
+		fatal("fs report: PROJECT:NODE required")
+	}
+	nodeID := args[0]
+	rest := args[1:]
+	projectID := flagVal(rest, "--project", "")
+
+	projectID, nodeID = nodeArg(projectID, nodeID)
+
+	h, projectID := handler(projectID)
+	defer h.Close()
+
+	output(dispatch.Report(h, dispatch.NewHerdrCLI(), dispatch.ReportRequest{
+		Project: projectID,
+		Node:    nodeID,
+		Kind:    reportKind(rest),
+		Line:    flagVal(rest, "--line", ""),
+	}))
+}
+
+// reportKind is the kind the flags name: --blocked, --question or --done, and
+// none at all for a plain note. There is deliberately no flag that forces a
+// notification for a kind that does not notify — a worker who could interrupt at
+// will could spend the cap's context back up.
+func reportKind(args []string) string {
+	for _, kind := range []struct{ flag, name string }{
+		{"--blocked", command.ReportBlocked},
+		{"--question", command.ReportQuestion},
+		{"--done", command.ReportDone},
+	} {
+		if hasFlag(args, kind.flag) {
+			return kind.name
+		}
+	}
+	return ""
+}
+
+// tellCmd is the cap's reply, resolved through the worker's delivery record.
+func tellCmd(args []string) {
+	if len(args) < 2 {
+		fatal("fs tell: PROJECT:NODE and TEXT required")
+	}
+	projectID, nodeID := nodeArg("", args[0])
+
+	h, projectID := handler(projectID)
+	defer h.Close()
+	guardCoordinating(h, "")
+
+	output(dispatch.Tell(h, dispatch.NewHerdrCLI(), dispatch.TellRequest{
+		Project: projectID,
+		Node:    nodeID,
+		Text:    args[1],
+	}))
+}
+
+// guardCoordinating refuses a coordinating act from the pane this process runs
+// in, when fs holds a delivery record for it. scope is the project the act
+// writes to, and "" for an act that coordinates whatever its scope — a
+// dispatch, a close, a claim, a reply.
+//
+// The guard is fs's and not a playbook's: a worker cannot reach a coordinating
+// act by not knowing a rule. It reads HERDR_PANE_ID and nothing else, and a
+// pane it holds no record for is unclaimed rather than a worker.
+func guardCoordinating(h *command.Handler, scope string) {
+	if scope != "" && !dispatch.IsCapScope(scope) {
+		return
+	}
+	if err := dispatch.Guard(h, os.Getenv("HERDR_PANE_ID")); err != nil {
+		fatal(err.Error())
+	}
+}
+
 // dispatchCmd prepares the cap's dispatch brief and records the cap's node.
 // Without --deliver it stops there, and the brief carries the herdr command for
 // the cap to run. With --deliver it also splits the pane, starts the worker,
@@ -1129,6 +1305,7 @@ func dispatchCmd(args []string) {
 	// The cap's scope is implicit — a project_id, never a registry row.
 	h := openHandler(registryRoot(reg, project))
 	defer h.Close()
+	guardCoordinating(h, "")
 
 	resp := dispatch.Prepare(h, reg, kc, traceLog(), dispatch.PrepareRequest{
 		Project:         project,
@@ -1197,6 +1374,7 @@ func closeCmd(args []string) {
 	}
 	h := openHandler(root)
 	defer h.Close()
+	guardCoordinating(h, "")
 
 	output(dispatch.Close(h, dispatch.NewHerdrCLI(), reg, openKB(""), traceLog(), req))
 }

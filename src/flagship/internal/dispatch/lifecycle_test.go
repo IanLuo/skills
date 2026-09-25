@@ -32,6 +32,11 @@ type fakeHerdr struct {
 	agents    map[string]string
 	agentsErr error
 
+	// agentForPane stands in for the pane→name read a claim makes: herdr names
+	// the agent it hosts in a pane, and names none for a pane hosting none.
+	agentForPane    map[string]string
+	agentForPaneErr error
+
 	// rootPaneID/rootPaneTab/rootPaneErr stand in for the root pane a worktree
 	// workspace already has — the pane a worktree dispatch must start in.
 	rootPaneID  string
@@ -119,6 +124,13 @@ func (f *fakeHerdr) Agents() (map[string]string, error) {
 		return nil, f.agentsErr
 	}
 	return f.agents, nil
+}
+
+func (f *fakeHerdr) AgentForPane(paneID string) (string, error) {
+	if f.agentForPaneErr != nil {
+		return "", f.agentForPaneErr
+	}
+	return f.agentForPane[paneID], nil
 }
 
 func (f *fakeHerdr) ClosePane(paneID string) error {

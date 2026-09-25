@@ -196,6 +196,64 @@ project root, so an action that removes the worktree does not stand inside it.`,
 	"unfinished": {usage: "Usage: fs unfinished"},
 	"gaps":       {usage: "Usage: fs gaps"},
 	"pending":    {usage: "Usage: fs pending"},
+
+	"cap claim": {
+		usage: `Usage: fs cap claim [--reconstructed "WHAT YOU READ"]
+
+Make this session the cap: the pane in $HERDR_PANE_ID becomes the scope's
+address, recorded with its tab, the agent herdr reports there, and the time.
+
+A claim is refused while the registered pane is still live, naming it and when
+it was seen. When herdr no longer has it the claim is a take-over: it records
+the address it replaced and its last-seen time, and requires --reconstructed,
+what the claimant read before taking the scope.`,
+		flags: map[string]bool{"--reconstructed": true},
+	},
+	"cap who": {
+		usage: `Usage: fs cap who
+
+Print the cap scope's address — pane, tab, agent, when it was claimed — and
+whether herdr still has that pane. Exit 0 when a live cap exists, 1 when none
+does, so a script or a playbook step can use it.
+
+"none" and "dead" do not read alike: an unclaimed scope is free to take, and a
+claim whose pane is gone is a cap nobody holds.`,
+	},
+
+	"report": {
+		usage: `Usage: fs report PROJECT:NODE --line "ONE LINE" [--blocked|--question|--done]
+
+A worker's report to whoever holds the cap. The event is written first and
+always — durable, addressed to a node and never to a cap, readable by whoever
+claims the scope now or later — and only then, best-effort, is the live cap
+notified through herdr. One command holds that order, and no flag does either
+half alone.
+
+The kind decides whether the cap is interrupted. --blocked, --question and
+--done notify; a kindless report records silently for whoever reads. There is no
+flag to force a ping for a kind that does not notify.
+
+A failed notification is not a failed report: with no live cap, or with a herdr
+that refuses, the event is still written and the command exits 0 saying
+"recorded, not notified". A --blocked report also blocks the node, with the line
+as its reason, so every reader that already handles a block is untouched.
+
+The line is a pointer, never the content: the node remains the record.`,
+		flags: map[string]bool{
+			"--line": true, "--project": true,
+			"--blocked": false, "--question": false, "--done": false,
+		},
+		positionals: 1,
+	},
+	"tell": {
+		usage: `Usage: fs tell PROJECT:NODE "TEXT"
+
+The cap's reply to a worker, resolved through that dispatch's delivery record
+and sent through herdr. It is a message and not a record: what the cap decided
+lands on the node as a decision, where it outlives the delivery. An unknown
+node, or one with no delivery record, is refused naming which.`,
+		positionals: 2,
+	},
 	"integrated": {
 		usage:       "Usage: fs integrated MEMBER_NODE",
 		positionals: 1,

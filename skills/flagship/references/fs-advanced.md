@@ -41,6 +41,8 @@ Every event is a JSON object with fixed envelope + type-specific payload:
 | `metadata-changed` | `field` (string), `old_value` (string), `new_value` (string) |
 | `delivery-recorded` | `pane_id` (string), `tab_id` (string), `agent` (string), `engine` (string), `project` (string), `node` (string), `type` (string), `worktree` (string), `worktree_path` (string) |
 | `plan-recorded` | `plan` (ordered `{name, phase, order}` entries), `tags` (the tag set that selected them) — the dispatch's plan |
+| `report-recorded` | `kind` (string — `blocked`, `question`, `done`, or absent for a note), `line` (string). Addressed to the worker's own node |
+| `cap-claimed` | `pane_id`, `tab_id`, `agent`, `claimed_at` (RFC3339 UTC), and on a take-over `taken_over_from`, `taken_over_at`, `reconstructed`. Scope-level: **no `node_id`** |
 
 ### Composite operations
 
@@ -50,6 +52,7 @@ Some commands produce multiple events atomically:
 - `fs task unblock NODE_ID` → `task-unblocked` + `status-changed {from: blocked, to: pending}`
 - `fs task update NODE_ID --status done --decision D` → `status-changed` + `decision-recorded`
 - `fs dispatch` → `task-created` (the cap node) + `plan-recorded` + the trace's plan line
+- `fs report NODE --blocked --line L` → `report-recorded` + `task-blocked {reason: L, check: ""}` + `status-changed {from: current, to: blocked}`; a report of any other kind is `report-recorded` alone
 
 ## FTS5 query syntax
 

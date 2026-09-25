@@ -260,8 +260,26 @@ fs close --node CAP_NODE [--worker P:NODE] --decision "verdict" [--confirm]
 # and worktree.
 fs close --node CAP_NODE --abandoned --reason "why"
 
-# What is waiting on you: every open dispatch, classified. Writes nothing
+# What is waiting on you: every open dispatch, classified, with the cap's own
+# address and liveness and every open report. Writes nothing
 fs pending
+
+# The cap's address: this pane becomes the one herdr routes a report to.
+# Refused while a live cap holds it; a take-over of a dead one requires
+# --reconstructed "what you read", recorded on the claim.
+fs cap claim [--reconstructed "WHAT YOU READ"]
+
+# The address and whether herdr still has it: exit 0 with a live cap, 1 without
+fs cap who
+
+# A worker's report: the event is written first and always, then the live cap
+# is notified through herdr. --blocked|--question|--done notify; no kind is
+# silent. A record with no cap to notify exits 0 saying "recorded, not notified"
+fs report PROJECT:NODE --line "ONE LINE" [--blocked|--question|--done]
+
+# The cap's reply, resolved through that dispatch's delivery record and sent
+# through herdr. A message, not a record: the decision lands on the node
+fs tell PROJECT:NODE "TEXT"
 ```
 
 `fs dispatch` refuses to prepare while an earlier dispatch node is still unresolved (`pending`/`active`/`blocked`); `--allow-unresolved` is that gate's only override. `--confirm` is a different gate's override — it proceeds past a failing entry `check` — and neither waves the other through.
@@ -279,6 +297,20 @@ Start every turn with `fs pending`; never wait on one and never poll with a slee
 | `unlinked` | no delivery record, or one written before it carried a node | close it with `--abandoned`, or `--worker` for an old record |
 
 herdr is a hint about *when to look*, never the truth about whether the work is done — `ready` is the state to act on.
+
+`fs pending` also answers the other half: it carries the cap's `pane_id`, `tab_id`, `agent`, `claimed_at` and `state` (`none`/`live`/`dead`/`unknown`), and each entry's `reports`. `none` and `dead` do not read alike — an unclaimed scope is free to take, and a claim whose pane is gone is a cap nobody holds. `unknown` means herdr could not be asked, which is never a take-over's proof.
+
+### The cap's address
+
+`cap` is a scope name, so the scope had no identity: any session reading the cap's rules was a cap, two could hold it with neither able to tell, and a dead cap read exactly like a quiet one. `fs cap claim` records the pane in `$HERDR_PANE_ID` — with its tab, the agent herdr reports there, and the time — as the cap's **address**. It is refused while the registered pane is still live, naming it and when it was seen. When herdr no longer has that pane the claim is a **take-over**: it records the address it replaced and its last-seen time, and requires `--reconstructed "<what you read>"`. A session with no `HERDR_PANE_ID` cannot claim, and is told why.
+
+### Reporting, and the guard
+
+A worker reports through the store: `fs report <project>:<node> --line "<one line>"` with `--blocked`, `--question` or `--done`. The event is written **first and always** — durable, addressed to a node and never to a cap, so it survives the cap's death — and only then is the live cap notified through herdr. One command holds that order; no flag does either half alone. The three kinds notify and a kindless report records silently for whoever reads, and there is deliberately no flag to force a ping for a kind that does not. **A failed notification is not a failed report:** with no cap, a dead one, or a herdr that refuses, the command exits 0 saying `recorded, not notified`, and the report is there for whoever claims next. A `--blocked` report also blocks the node, with the line as its reason, so every reader that already handles a block is untouched.
+
+The report is a pointer, never the content: the node remains the record and the cap reads the node.
+
+`fs` holds the guard, not a playbook, so a worker cannot reach a coordinating act by not knowing a rule: a pane fs holds a delivery record for is refused **coordinating acts** — any cap-scope write, `dispatch`, `close`, `tell` — naming the node that pane worked, while `fs report` from that same pane succeeds. A pane fs holds no record for is unclaimed rather than a worker, and reads are never refused. It is a **discipline guard and not a security boundary**, and says so: `HERDR_PANE_ID` is an environment variable any process can unset.
 
 ### Entry gate
 
@@ -417,8 +449,10 @@ These are non-negotiable:
 | `metadata-changed` | `task edit` | `{field, old_value, new_value}` |
 | `delivery-recorded` | `dispatch --deliver` | `{pane_id, tab_id, agent, engine, project, node, type, worktree, worktree_path}` |
 | `plan-recorded` | `dispatch` | `{plan, tags, engine, agent}` — the ordered playbooks, the tag set that selected them, and the resolved realization |
+| `report-recorded` | `report` | `{kind, line}` — the worker spoke; what the work is stays on the node |
+| `cap-claimed` | `cap claim` | `{pane_id, tab_id, agent, claimed_at, taken_over_from, taken_over_at, reconstructed}` — the cap scope's address. **Scope-level: no `node_id`** |
 
-Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`. `commit_sha` is the git HEAD of the project the event is about — the resolved project's registered `root_path` (`status`/`query`/`log`/`task *`), the dispatched-to project (`dispatch`), the worker's project (`close`), or the root being created (`project create`); the cwd's HEAD only when no project is referenced (`unfinished`), and null when that is not a git repo.
+Every event carries: `id` (ULID), `timestamp` (UTC), `project_id`, `node_id`, `parent_node_id`, `commit_sha`. `node_id` is null only for `project-created` and `cap-claimed`, which address a scope and not a node — a scope-level event is skipped by replay before it can materialise a node nobody created. `commit_sha` is the git HEAD of the project the event is about — the resolved project's registered `root_path` (`status`/`query`/`log`/`task *`), the dispatched-to project (`dispatch`), the worker's project (`close`), or the root being created (`project create`); the cwd's HEAD only when no project is referenced (`unfinished`), and null when that is not a git repo.
 
 ## Data locations
 
@@ -475,6 +509,8 @@ fs task update t-abc12345 --status done \
 ```
 
 ## References
+
+**The locked contract this skill implements:** [`.agents/specs/cap-role.md`](../../.agents/specs/cap-role.md) — the claim, the report and the guard: `fs cap claim|who`, `fs report`, `fs tell`, and why the guard sits in `fs` rather than in a playbook. Read it before changing any of them.
 
 **Read [references/fs-advanced.md](references/fs-advanced.md) when you need:**
 - Full event payload schemas

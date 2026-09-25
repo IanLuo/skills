@@ -2100,7 +2100,10 @@ case "$cmd $sub" in
     printf ']}}\n'
     ;;
   "agent prompt")
-    # Keep the brief, so a probe can read what the worker was handed.
+    # Keep the brief and the pane it went to, so a probe can assert the exact
+    # argv — which pane, and what text — the delivery, a report or a reply was
+    # handed.
+    printf '%s' "${1:-}" > "$state/prompt_pane"
     printf '%s' "${2:-}" > "$state/prompt"
     printf '{"result":{}}\n'
     ;;

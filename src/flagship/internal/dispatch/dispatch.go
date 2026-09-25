@@ -47,6 +47,12 @@ import (
 // scope is just a string, so it is never registered and never created.
 const capScope = "cap"
 
+// IsCapScope reports whether a project_id names the cap's own scope. The CLI
+// needs it to tell a write into the cap scope — which acts as cap, and is
+// refused from a pane fs holds a delivery record for — from an ordinary write
+// in a worker's own project, which is not.
+func IsCapScope(scope string) bool { return scope == capScope }
+
 // SessionTags is the tag set the cap's own session runs under. The engine tag
 // is the standing declaration the playbooks resolve — not a constant — so a
 // `phase: cap` playbook tagged `engine=herdr` loads only because a standing

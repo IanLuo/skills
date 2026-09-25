@@ -36,6 +36,16 @@ const (
 	// and structural, so close-out reads the plan from the log rather than
 	// re-deriving it from flags it no longer has.
 	PlanRecorded EventType = "plan-recorded"
+	// ReportRecorded is a worker's report to whoever holds the cap: a status
+	// word and one line, addressed to the worker's own node and never to a cap.
+	// Additive — derived state ignores it — so the node stays the record and the
+	// report says only that the worker spoke.
+	ReportRecorded EventType = "report-recorded"
+	// CapClaimed binds the cap scope to the pane that claimed it. Scope-level:
+	// it carries no node_id, so replay skips it (query.BuildTree returns before
+	// the type switch) and it materialises no node — reverting the code leaves
+	// an inert event nothing reads.
+	CapClaimed EventType = "cap-claimed"
 )
 
 var validTypes = map[EventType]bool{
@@ -49,6 +59,8 @@ var validTypes = map[EventType]bool{
 	MetadataChanged:  true,
 	DeliveryRecorded: true,
 	PlanRecorded:     true,
+	ReportRecorded:   true,
+	CapClaimed:       true,
 }
 
 // Event is the core persistent entity (SYSTEM-DESIGN R2).
@@ -434,8 +446,11 @@ func validate(evt Event) error {
 	if evt.ProjectID == "" {
 		return fmt.Errorf("store: project_id is required")
 	}
-	// project-created is the only type that accepts nil node_id (SYSTEM-DESIGN R2).
-	if evt.Type != ProjectCreated && evt.NodeID == nil {
+	// project-created and cap-claimed are the only types that accept nil
+	// node_id (SYSTEM-DESIGN R2). cap-claimed addresses a scope, not a node:
+	// giving it a node_id would materialise a phantom node in the cap scope,
+	// where every reader would see it.
+	if evt.Type != ProjectCreated && evt.Type != CapClaimed && evt.NodeID == nil {
 		return fmt.Errorf("store: node_id is required for event type %s", evt.Type)
 	}
 	return nil

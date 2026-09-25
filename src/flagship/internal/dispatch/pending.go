@@ -46,6 +46,11 @@ type PendingEntry struct {
 	// now exits 0. It is empty for a node that is not blocked, where State is the
 	// whole answer.
 	Status string `json:"status,omitempty"`
+	// Reports is every report the worker recorded on its node, oldest first. A
+	// worker waiting on a decision reads as running, whose documented meaning is
+	// "let it work" — these are what make the wait visible from the read the cap
+	// already makes.
+	Reports []command.Report `json:"reports,omitempty"`
 }
 
 // PendingResult is the data payload of fs pending: one entry per dispatch, a
@@ -53,7 +58,11 @@ type PendingEntry struct {
 // the backlog — the kind=gap nodes nobody has picked up, so it is never only
 // remembered.
 type PendingResult struct {
-	Pending          []PendingEntry `json:"pending"`
+	Pending []PendingEntry `json:"pending"`
+	// Cap names the claimed address and whether herdr still has it, so the read
+	// the cap already makes is also the read that tells it it has been
+	// superseded — and the read that tells a fresh session the scope is free.
+	Cap              CapStatus      `json:"cap"`
 	Counts           map[string]int `json:"counts"`
 	UndispatchedGaps int            `json:"undispatched_gaps"`
 	Warning          string         `json:"warning,omitempty"`
@@ -95,6 +104,11 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 	}
 
 	result := PendingResult{Pending: entries, Counts: counts}
+	capState, err := CapStatusOf(h, hc)
+	if err != nil {
+		return errResp(fmt.Sprintf("pending: %v", err))
+	}
+	result.Cap = capState
 	gaps, err := h.OpenGaps()
 	if err != nil {
 		return errResp(fmt.Sprintf("pending: %v", err))
@@ -125,6 +139,17 @@ func pendingEntry(h *command.Handler, capNodeID string, agents map[string]string
 	}
 
 	entry.State = pendingState(h, delivery, recorded, agents, herdrErr)
+
+	// A report lives on the worker's own node, so a record that names no worker
+	// node names no reports either: there is nothing to read and the entry is
+	// already unlinked.
+	if recorded && delivery.Project != "" && delivery.Node != "" {
+		reports, err := h.ReportsFor(delivery.Project, delivery.Node)
+		if err != nil {
+			return entry, fmt.Errorf("read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
+		}
+		entry.Reports = reports
+	}
 	return entry, nil
 }
 
