@@ -19,6 +19,11 @@ python3 skills/skill-man/scripts/audit.py
 # Run test suite (10 fixtures + upstream-conformance + audit)
 bash tests/run.sh
 
+# The same suite is this repo's integration gate: the shipped `integration`
+# playbook asks the suite question (it cannot name this repo's command), and
+# ~/.fs/projects/skills/kb/verify.yaml answers it from project scope — outside
+# the repo, so that check is not versioned with the code it checks.
+
 # Deploy
 ./bin/deploy-skills.sh
 ./bin/deploy-skills.sh --skill <name>   # one skill

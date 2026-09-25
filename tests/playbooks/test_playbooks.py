@@ -41,9 +41,8 @@ sections in the same file. What it checks, per playbook:
  10. No executed step (`check`/`do`) in a shipped playbook names a repo-relative
      path. A playbook lives in the binary and runs in every project, so
      `bin/...` or `tests/...` resolves in exactly one of them and exits 127 in
-     the rest. Three gates were written that way — `batch.yaml` ran
-     `bin/check-parallel.sh`, `code.yaml` ran `bin/check-specs.sh`, and
-     `integration.yaml` ran `tests/run.sh` — and each could only ever pass here.
+     the rest. `batch.yaml` ran `bin/check-parallel.sh` and `integration.yaml`
+     ran `tests/run.sh`, and each could only ever pass here.
 
  11. Every `$FS_SCRIPTS/<name>` an executed step names is a script the binary
      ships, in src/flagship/defaults/scripts. fs writes that directory to

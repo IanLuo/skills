@@ -71,9 +71,13 @@ Two modes, both invoked by you in the main checkout:
    ```bash
    fs close --node <cap-node> --decision "<verdict from the worker's node>"
    ```
-   `fs close` runs the `integration-exit` exit gate — `bash tests/run.sh` green,
-   then the ask "was the integration verdict recorded and read" — and marks the
-   dispatch done. It no longer tears the member's tree down: that teardown
+   `fs close` runs the `integration-exit` exit gate — the ask "is the project's
+   own suite green on the merged tree", then "was the integration verdict
+   recorded and read" — and marks the dispatch done. The shipped `integration`
+   playbook asks the suite question rather than naming a command, because it
+   lives in the binary and runs in every project; this repo answers it from
+   project scope, where `~/.fs/projects/skills/kb/verify.yaml` carries
+   `bash tests/run.sh`. It no longer tears the member's tree down: that teardown
    (branch, worktree, workspace) lives once in `batch-exit`, scoped to a batch's
    members, so a single integration never removes a tree the batch still owns.
 5. **Confirm the teardown.** For a single hand-created worktree the coordinator
