@@ -78,9 +78,10 @@ type HerdrCLI interface {
 	// --worktree-new: the workspace's root pane sits at the checkout, which is
 	// what the delivery record must keep for the teardown to remove it.
 	CreateWorktree(cwd string) (workspaceID, checkout string, err error)
-	// StartAgent starts an interactive agent named name in an existing pane,
-	// of the kind the plan's `agent:` field resolved to.
-	StartAgent(paneID, name, kind string) error
+	// StartAgent starts an interactive agent named name in an existing pane, of
+	// the kind the plan's `agent:` field resolved to and with the arguments its
+	// `agent_args:` field named — one argv element per entry, in order.
+	StartAgent(paneID, name, kind string, args []string) error
 	// Prompt submits text to the agent hosted by paneID.
 	Prompt(paneID, text string) error
 	// Agents reports every agent herdr knows, by name, with the state herdr
@@ -145,7 +146,7 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 	}
 
 	agent := workerAgent(brief.TaskType, workerID)
-	if err := hc.StartAgent(paneID, agent, brief.Agent); err != nil {
+	if err := hc.StartAgent(paneID, agent, brief.Agent, brief.AgentArgs); err != nil {
 		abandonWorker(hc, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("start agent %s: %v", agent, err))
 		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
@@ -321,9 +322,29 @@ func (herdrCLI) SplitPane(cwd string) (string, string, error) {
 	return resp.Result.Pane.PaneID, resp.Result.Pane.TabID, nil
 }
 
-func (herdrCLI) StartAgent(paneID, name, kind string) error {
-	_, err := runHerdr("agent", "start", name, "--kind", kind, "--pane", paneID)
+func (herdrCLI) StartAgent(paneID, name, kind string, args []string) error {
+	_, err := runHerdr(agentStartArgs(name, kind, paneID, args)...)
 	return err
+}
+
+// agentStartArgs is the argv herdr is given to start one agent. It is the
+// executed half of the command nextCommand prints, and the two must not
+// disagree: a worker started correctly by `fs dispatch --deliver` and a
+// copy-pasted line that still stalls is a failure nothing reports, because both
+// are valid on their own.
+//
+// The `--` separator goes last, after every option, because herdr's grammar is
+// `<NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]` — an
+// argument placed before `--pane` would be read as an agent argument and leave
+// the pane unset. It is emitted only when there are arguments, because that is
+// what nextCommand prints and a bare `--` is a different command.
+func agentStartArgs(name, kind, paneID string, args []string) []string {
+	argv := []string{"agent", "start", name, "--kind", kind, "--pane", paneID}
+	if len(args) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, args...)
+	}
+	return argv
 }
 
 // WorktreeRootPane finds the pane a worktree dispatch starts its worker in.

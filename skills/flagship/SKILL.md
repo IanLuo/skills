@@ -102,7 +102,7 @@ A **playbook** is a protocol for one participant. It declares the moments it tak
 
 ### Schema
 
-Playbooks are YAML files. Global ones live at `~/.fs/kb/<name>.yaml`; a project's own live at `~/.fs/projects/<project>/kb/<name>.yaml`. The schema is `name`/`applies_when`/`order`/`engine`/`agent`/`creates` plus one section per moment the playbook serves:
+Playbooks are YAML files. Global ones live at `~/.fs/kb/<name>.yaml`; a project's own live at `~/.fs/projects/<project>/kb/<name>.yaml`. The schema is `name`/`applies_when`/`order`/`engine`/`agent`/`agent_args`/`creates` plus one section per moment the playbook serves:
 
 ```yaml
 name: code                  # required; must equal the file name
@@ -111,12 +111,16 @@ applies_when: code          # optional, default empty = matches every dispatch.
 order: 10                   # optional, default 500; ascending within each moment; ties by name
 engine: herdr               # optional: the dispatcher this protocol's steps are written for
 agent: pi                   # optional: the kind of agent that runs this work
+agent_args: --permission-mode, auto   # optional: the argv that agent is started with, one
+                            # element per comma-separated term
 entry:                      # the moment is a section — one per moment, any combination, any order
   - check: test -f AGENTS.md
   - ask: a locked PRD is present, and it names this one deliverable
 ```
 
 `engine:` and `agent:` are how the work is **realized** — both are playbook fields, never Go constants. They resolve from the plan in two passes: the *standing* declaration is a playbook with no `applies_when` (the shipped `worker` declares `engine: herdr` and `agent: pi`), and a *situation-specific* declaration in a selected playbook overrides it. Two situation-specific declarations that disagree refuse, naming both playbooks and both values; a plan declaring neither refuses, naming `worker.yaml` as where to declare them; and a declared engine other than the one fs dispatches with refuses. Both values are recorded on the dispatch and in its trace. Each must be a single non-empty token when present.
+
+`agent_args:` sits beside `agent:` and resolves by the same two passes and the same strength-of-claim rule, with one difference forced by what the terms are. Each comma-separated term is **one argv element, never a shell string** — a comma separates rather than a space precisely so a space can sit inside a term — and the list is comma-separated *on the field's own line* because this parser is line-oriented and a YAML block list would be dropped in silence. A situation-specific playbook that overrides the kind and declares no arguments **inherits** the standing ones: coupling the two would require fs to know that arguments are kind-specific, which is the knowledge these fields exist to remove. Two declarations that disagree refuse, naming both playbooks and both lists — never concatenated, because fs cannot read the arguments and merging would let the agent's own last-wins rule decide, with the winner set by two `order:` integers in two files. Unlike `engine:` and `agent:`, the terms are **not** validated: an agent's own command line is not a name, so `--add-dir /tmp/x` and `--settings=a=1` are legal here. herdr refuses what it cannot encode, and the printed line quotes every term. The terms reach the agent through both emitters of the one start command — the argv `fs dispatch --deliver` execs, and the `next_command` line a human copy-pastes — placed after a `--` that comes last, after every option.
 
 A step is `kind: body`. The closed kind vocabulary is `say | use | check | ask | do | include`:
 
@@ -331,7 +335,7 @@ Every entry check runs with the dispatch's own inputs in its environment, so a g
 
 ### Delivering
 
-`fs dispatch --deliver` delivers the brief itself: it splits the pane, creates the worker's node in the target project **before** the agent starts (the brief has to name it — *note your work on `<project>:<node>`; do not create another*), starts an agent of the plan's resolved kind (the shipped `worker` declares `agent: pi`) named `dispatch-<type>-<node>`, sends the brief, appends a `loaded` line per `work` playbook, records the binding as a `delivery-recorded` event, and marks the cap node `active`. A failure after the node exists rolls it back — a delivery that did not happen leaves no `loaded` lines, so close refuses it.
+`fs dispatch --deliver` delivers the brief itself: it splits the pane, creates the worker's node in the target project **before** the agent starts (the brief has to name it — *note your work on `<project>:<node>`; do not create another*), starts an agent of the plan's resolved kind and with the plan's resolved arguments (the shipped `worker` declares `agent: pi` and no arguments, which is why a project that wants `--permission-mode auto` declares it there) named `dispatch-<type>-<node>`, sends the brief, appends a `loaded` line per `work` playbook, records the binding as a `delivery-recorded` event, and marks the cap node `active`. A failure after the node exists rolls it back — a delivery that did not happen leaves no `loaded` lines, so close refuses it.
 
 The brief carries: the goal, the plan, the `work:`-section playbooks' `say` steps as **Obligations** and `use` steps as **Skills** (in plan order, under a heading stating they are hints and that no skill is required), the entry gate's checklist with each check's output, and the locked docs. No worker obligation is a Go string literal — every one comes from a playbook.
 
@@ -448,7 +452,7 @@ These are non-negotiable:
 | `task-unblocked` | `task unblock` | `{}` |
 | `metadata-changed` | `task edit` | `{field, old_value, new_value}` |
 | `delivery-recorded` | `dispatch --deliver` | `{pane_id, tab_id, agent, engine, project, node, type, worktree, worktree_path}` |
-| `plan-recorded` | `dispatch` | `{plan, tags, engine, agent}` — the ordered playbooks, the tag set that selected them, and the resolved realization |
+| `plan-recorded` | `dispatch` | `{plan, tags, engine, agent, agent_args}` — the ordered playbooks, the tag set that selected them, and the resolved realization |
 | `report-recorded` | `report` | `{kind, line}` — the worker spoke; what the work is stays on the node |
 | `cap-claimed` | `cap claim` | `{pane_id, tab_id, agent, claimed_at, taken_over_from, taken_over_at, reconstructed}` — the cap scope's address. **Scope-level: no `node_id`** |
 

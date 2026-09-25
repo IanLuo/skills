@@ -1336,6 +1336,7 @@ func dispatchCmd(args []string) {
 			"plan", strings.Join(names, ","),
 			"engine", brief.Engine,
 			"agent", brief.Agent,
+			"agent_args", strings.Join(brief.AgentArgs, ","),
 			"kb_paths", strings.Join([]string{kbDir(), projectKBDir(project)}, ","))
 		brief.Worktree = worktree
 		brief.WorktreeNew = worktreeNew

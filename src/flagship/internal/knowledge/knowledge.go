@@ -90,14 +90,25 @@ type Section struct {
 
 // Playbook is the structured config entity: a named protocol for one
 // participant, the moments it takes part in, the situations it is for, where it
-// sits in the order, how the work is realized (engine and agent), and its
-// sections.
+// sits in the order, how the work is realized (engine, agent and the agent's own
+// arguments), and its sections.
 type Playbook struct {
 	Name        string   `json:"name" yaml:"name"`
 	AppliesWhen []string `json:"-" yaml:"-"`
 	Order       int      `json:"order" yaml:"order"`
 	Engine      string   `json:"engine,omitempty" yaml:"engine"`
 	Agent       string   `json:"agent,omitempty" yaml:"agent"`
+	// AgentArgs are the arguments the agent is started with, one argv element
+	// per term, written comma-separated on the field's own line:
+	//
+	//	agent_args: --permission-mode, auto
+	//
+	// They are the agent's own command line rather than a name, so nothing here
+	// validates their content — `--add-dir /tmp/x` and a term holding a space are
+	// both legal, the second being why the separator is a comma. See
+	// parsePlaybook's agent_args case for why this is deliberately not
+	// validRealizationToken.
+	AgentArgs []string `json:"-" yaml:"-"`
 	// Creates names the node kind a dispatch of this playbook's situation
 	// leaves behind. It is the playbook's declaration of what the node is, so
 	// no Go map from task type to kind exists. Empty means the standing
@@ -547,6 +558,12 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 	lines := strings.Split(string(data), "\n")
 	moment := ""
 	hasOrder := false
+	// lastKey is the field the previous line declared, so a `- ` item that lands
+	// outside a section can name what it was written under. emptyArgs records an
+	// `agent_args:` that named nothing, refused after the loop rather than here:
+	// the block-list form that usually follows it deserves the better message.
+	lastKey := ""
+	emptyArgs := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -557,8 +574,9 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 		if strings.HasPrefix(trimmed, "- ") {
 			if moment != "" {
 				pb.addStep(moment, parseStep(strings.TrimPrefix(trimmed, "- ")))
+				continue
 			}
-			continue
+			return nil, blockListError(name, lastKey)
 		}
 		moment = ""
 
@@ -568,6 +586,7 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 		}
 		key := strings.TrimSpace(parts[0])
 		val := strings.TrimSpace(parts[1])
+		lastKey = key
 
 		switch key {
 		case "name":
@@ -591,6 +610,23 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `agent:`; agent must be a single non-empty token", name)
 			}
 			pb.Agent = val
+		case "agent_args":
+			// Comma-separated on the field's own line, parsed by the same
+			// splitTerms `applies_when` uses. Comma rather than whitespace
+			// because it keeps a space inside a term: each term is one argv
+			// element, never a shell string.
+			//
+			// Deliberately not validRealizationToken. That validator permits
+			// only [A-Za-z0-9_.-] and would reject `--add-dir /tmp/x`,
+			// `--settings=a=1` and every token holding a space — most of what
+			// an agent's command line is made of. It is also the wrong
+			// protection: exec.Command passes an argv slice with no shell, so a
+			// term's content is inert, and the only place it matters is the
+			// printed line, where shellQuote is the guard. herdr is the encoder
+			// and refuses what it cannot encode. The two validators are
+			// different on purpose; unifying them would break arguments.
+			pb.AgentArgs = splitTerms(val)
+			emptyArgs = len(pb.AgentArgs) == 0
 		case "creates":
 			if val == "" {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `creates:`; creates names the node kind and must be a single non-empty token", name)
@@ -600,9 +636,21 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			moment = key
 		case "phase", "steps", "type", "trigger", "engine_scope":
 			return nil, removedFieldError(name, key, val)
+		default:
+			// A key the schema does not know used to be ignored, which is how
+			// `agent_arg:` became a playbook that read as configured and started
+			// an agent with none of the arguments it named.
+			return nil, fmt.Errorf(
+				"knowledge: playbook %q declares the unknown field `%s`; the schema is: name, applies_when, order, engine, agent, agent_args, creates, and the moment sections cap, entry, work and exit",
+				name, key)
 		}
 	}
 
+	if emptyArgs {
+		return nil, fmt.Errorf(
+			"knowledge: playbook %q declares an empty `agent_args:`; agent_args names the arguments the agent is started with, so a declaration with no terms claims arguments it does not name",
+			name)
+	}
 	if !hasOrder {
 		pb.Order = defaultOrder
 	}
@@ -614,6 +662,23 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			"knowledge: playbook %s declares name %q; a playbook's name must equal its file's", name, pb.Name)
 	}
 	return pb, nil
+}
+
+// blockListError refuses a `- ` item written outside a moment section. The
+// parser is line-oriented with `moment` as its only state, so before this
+// refusal such an item went nowhere at all: `agent_args:` written as a YAML
+// block list parsed as no arguments, and the playbook read as configured while
+// starting an agent with none of them. Lists in this schema are comma-separated
+// on the field's own line. key is the field the item was written under, empty
+// when the file opened with the list.
+func blockListError(name, key string) error {
+	under := "before any field"
+	if key != "" {
+		under = fmt.Sprintf("under `%s`", key)
+	}
+	return fmt.Errorf(
+		"knowledge: playbook %q has a `- ` list item %s; a list is written comma-separated on one line — `agent_args: --permission-mode, auto` — because this parser is line-oriented and drops a block list in silence",
+		name, under)
 }
 
 // removedFieldError refuses a field this schema replaced, naming the replacement
@@ -785,6 +850,7 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Order       int    `json:"order"`
 		Engine      string `json:"engine,omitempty"`
 		Agent       string `json:"agent,omitempty"`
+		AgentArgs   string `json:"agent_args,omitempty"`
 		Creates     string `json:"creates,omitempty"`
 		Cap         []Step `json:"cap,omitempty"`
 		Entry       []Step `json:"entry,omitempty"`
@@ -797,6 +863,7 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Order:       pb.Order,
 		Engine:      pb.Engine,
 		Agent:       pb.Agent,
+		AgentArgs:   strings.Join(pb.AgentArgs, ", "),
 		Creates:     pb.Creates,
 		Cap:         pb.StepsFor(MomentCap),
 		Entry:       pb.StepsFor(MomentEntry),

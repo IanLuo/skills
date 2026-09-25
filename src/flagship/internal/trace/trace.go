@@ -66,14 +66,16 @@ type PlanEntry struct {
 
 // Plan is the payload recorded on the dispatch node as a plan-recorded event,
 // and the trace's first line: the ordered playbooks, the tags that selected
-// them, and the realization the plan resolved — which engine dispatches it and
-// which agent runs it, so which harness ran is reconstructible from the record
-// alone. Recording the tags is what makes a mis-tag visible afterwards.
+// them, and the realization the plan resolved — which engine dispatches it,
+// which agent runs it and the arguments that agent was started with, so which
+// harness ran is reconstructible from the record alone. Recording the tags is
+// what makes a mis-tag visible afterwards.
 type Plan struct {
-	Plan   []PlanEntry    `json:"plan"`
-	Tags   map[string]any `json:"tags"`
-	Engine string         `json:"engine,omitempty"`
-	Agent  string         `json:"agent,omitempty"`
+	Plan      []PlanEntry    `json:"plan"`
+	Tags      map[string]any `json:"tags"`
+	Engine    string         `json:"engine,omitempty"`
+	Agent     string         `json:"agent,omitempty"`
+	AgentArgs []string       `json:"agent_args,omitempty"`
 }
 
 // Line is one JSONL record. A plan line carries Tags and Plan; a step line
@@ -96,6 +98,7 @@ type Line struct {
 	Plan       []PlanEntry    `json:"plan,omitempty"`
 	Engine     string         `json:"engine,omitempty"`
 	Agent      string         `json:"agent,omitempty"`
+	AgentArgs  []string       `json:"agent_args,omitempty"`
 }
 
 // UnmarshalJSON reads a record, taking `phase` as the moment on a line written
@@ -300,13 +303,18 @@ func duration(ms int64) string {
 	return fmt.Sprintf("  (%dms)", ms)
 }
 
-// realization renders the resolved engine and agent for a plan line, or nothing
-// when a record predates the fields.
+// realization renders the resolved engine and agent for a plan line, and the
+// arguments the agent was started with when the plan named any, or nothing when
+// a record predates the fields.
 func realization(ln Line) string {
-	if ln.Engine == "" && ln.Agent == "" {
+	if ln.Engine == "" && ln.Agent == "" && len(ln.AgentArgs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("engine=%s agent=%s", ln.Engine, ln.Agent)
+	out := fmt.Sprintf("engine=%s agent=%s", ln.Engine, ln.Agent)
+	if len(ln.AgentArgs) > 0 {
+		out += " args=" + strings.Join(ln.AgentArgs, ", ")
+	}
+	return out
 }
 
 // PlanOf returns the plan a dispatch's trace recorded, and whether the trace
@@ -314,7 +322,10 @@ func realization(ln Line) string {
 func PlanOf(lines []Line) (Plan, bool) {
 	for _, ln := range lines {
 		if ln.Kind == KindPlan {
-			return Plan{Plan: ln.Plan, Tags: ln.Tags, Engine: ln.Engine, Agent: ln.Agent}, true
+			return Plan{
+				Plan: ln.Plan, Tags: ln.Tags,
+				Engine: ln.Engine, Agent: ln.Agent, AgentArgs: ln.AgentArgs,
+			}, true
 		}
 	}
 	return Plan{}, false

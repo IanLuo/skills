@@ -31,6 +31,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -124,6 +125,12 @@ type Brief struct {
 	// declarations, never constants — Deliver starts the agent the plan named.
 	Engine string `json:"engine,omitempty"`
 	Agent  string `json:"agent,omitempty"`
+
+	// AgentArgs are the arguments that agent is started with, one argv element
+	// per entry. They resolve beside the kind and inherit independently of it,
+	// and they reach the worker through both emitters of the one start command:
+	// Deliver's argv slice and NextCommand's printed line.
+	AgentArgs []string `json:"agent_args,omitempty"`
 
 	// WorkerNode is the node created for the worker in the target project, as
 	// "<project>:<node>". Deliver sets it before the brief is sent, because the
@@ -302,7 +309,10 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 
-	recorded := trace.Plan{Plan: planEntries(plan), Tags: tags, Engine: real.engine, Agent: real.agent}
+	recorded := trace.Plan{
+		Plan: planEntries(plan), Tags: tags,
+		Engine: real.engine, Agent: real.agent, AgentArgs: real.args,
+	}
 	if err := recordPlan(h, lg, nodeID, req.Project, recorded); err != nil {
 		return errResp("dispatch: " + refuseEntry(h, nodeID, err.Error()))
 	}
@@ -383,6 +393,7 @@ type planned struct {
 	AppliesWhen []string
 	Engine      string
 	Agent       string
+	AgentArgs   []string
 	Creates     string
 }
 
@@ -473,15 +484,18 @@ func plannedOf(pb *knowledge.Playbook) planned {
 		AppliesWhen: pb.AppliesWhen,
 		Engine:      pb.Engine,
 		Agent:       pb.Agent,
+		AgentArgs:   pb.AgentArgs,
 		Creates:     pb.Creates,
 	}
 }
 
-// realization is the resolved pair: which engine dispatches the work and which
-// kind of agent runs it. Both are playbook declarations, never Go constants.
+// realization is the resolved triple: which engine dispatches the work, which
+// kind of agent runs it, and the arguments that agent is started with. All three
+// are playbook declarations, never Go constants.
 type realization struct {
 	engine string
 	agent  string
+	args   []string
 }
 
 // standingRealization is pass 1 of the resolution: the declarations on playbooks
@@ -490,7 +504,9 @@ type realization struct {
 // needs as a tag.
 //
 // Two standing declarations that disagree are refused rather than averaged —
-// there is one default, and two claims to it are a broken configuration.
+// there is one default, and two claims to it are a broken configuration. The
+// agent's arguments are held to the same rule: they are a list, and two lists
+// cannot be merged into the one the agent receives.
 func standingRealization(kc *knowledge.Center) (realization, error) {
 	names, err := kc.List()
 	if err != nil {
@@ -498,7 +514,7 @@ func standingRealization(kc *knowledge.Center) (realization, error) {
 	}
 
 	var real realization
-	var engineFrom, agentFrom string
+	var engineFrom, agentFrom, argsFrom string
 	for _, name := range names {
 		pb, err := kc.Get(name)
 		if err != nil {
@@ -523,6 +539,14 @@ func standingRealization(kc *knowledge.Center) (realization, error) {
 			}
 			real.agent, agentFrom = pb.Agent, pb.Name
 		}
+		if len(pb.AgentArgs) > 0 {
+			if len(real.args) > 0 && !slices.Equal(real.args, pb.AgentArgs) {
+				return realization{}, fmt.Errorf(
+					"dispatch: playbooks %s and %s both declare the standing agent_args and disagree (%s and %s)",
+					argsFrom, pb.Name, strings.Join(real.args, ", "), strings.Join(pb.AgentArgs, ", "))
+			}
+			real.args, argsFrom = pb.AgentArgs, pb.Name
+		}
 	}
 	return real, nil
 }
@@ -533,10 +557,19 @@ func standingRealization(kc *knowledge.Center) (realization, error) {
 // standing and no situation-specific declaration — refuses naming worker.yaml
 // as the place to declare them, and a resolved engine that is not the one fs
 // dispatches with refuses rather than routing into the void.
+//
+// The agent's arguments resolve by the same rule and inherit independently of
+// the kind: a situation-specific playbook that declares `agent:` and no
+// `agent_args:` keeps the standing arguments, because coupling the two would
+// require fs to know that arguments are kind-specific — the knowledge the
+// realization fields exist to remove. There is deliberately no way to declare
+// "no arguments": a playbook overriding the kind decides what its args are, and
+// one that says nothing is not a claim that there should be none.
 func resolveRealization(plan []planned, standing realization) (realization, error) {
 	real := standing
 
-	var engine, engineFrom, agent, agentFrom string
+	var engine, engineFrom, agent, agentFrom, argsFrom string
+	var args []string
 	for _, pb := range plan {
 		if len(pb.AppliesWhen) == 0 {
 			continue // standing; already resolved in pass 1
@@ -557,12 +590,27 @@ func resolveRealization(plan []planned, standing realization) (realization, erro
 			}
 			agent, agentFrom = pb.Agent, pb.Name
 		}
+		if len(pb.AgentArgs) > 0 {
+			// Refused rather than concatenated: fs cannot read the arguments,
+			// so merging would hand the agent both and let its own last-wins
+			// rule decide, with the winner set by two `order:` integers in two
+			// files. That is invisible arbitration.
+			if args != nil && !slices.Equal(args, pb.AgentArgs) {
+				return realization{}, fmt.Errorf(
+					"dispatch: playbooks %s and %s declare conflicting agent_args (%s and %s); fs cannot know which the agent should receive",
+					argsFrom, pb.Name, strings.Join(args, ", "), strings.Join(pb.AgentArgs, ", "))
+			}
+			args, argsFrom = pb.AgentArgs, pb.Name
+		}
 	}
 	if engine != "" {
 		real.engine = engine
 	}
 	if agent != "" {
 		real.agent = agent
+	}
+	if args != nil {
+		real.args = args
 	}
 
 	if real.engine == "" || real.agent == "" {
@@ -986,6 +1034,7 @@ func buildBrief(run entryRun, plan []planned, proj registry.Project, req Prepare
 		CapNodeID:  nodeID,
 		Engine:     real.engine,
 		Agent:      real.agent,
+		AgentArgs:  real.args,
 		Notes: []string{
 			"the locked-doc grep matches the marker text anywhere, so it has a known false positive when a repo documents the marker syntax itself",
 		},
@@ -1021,12 +1070,13 @@ func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan 
 		return fmt.Errorf("record plan: %s", resp.Error)
 	}
 	return lg.Append(project, trace.Line{
-		Kind:     trace.KindPlan,
-		Dispatch: nodeID,
-		Tags:     plan.Tags,
-		Plan:     plan.Plan,
-		Engine:   plan.Engine,
-		Agent:    plan.Agent,
+		Kind:      trace.KindPlan,
+		Dispatch:  nodeID,
+		Tags:      plan.Tags,
+		Plan:      plan.Plan,
+		Engine:    plan.Engine,
+		Agent:     plan.Agent,
+		AgentArgs: plan.AgentArgs,
 	})
 }
 
@@ -1221,11 +1271,32 @@ func recordStatus(h *command.Handler, nodeID, status, summary string) error {
 // there is no workspace to get wrong. It is the same line Deliver runs.
 func nextCommand(b *Brief) string {
 	name := "dispatch-" + b.TaskType
+
+	// The `--` goes last, after every option: herdr's grammar is
+	// `<NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]`, so an
+	// argument placed before `--pane` would be consumed as an agent argument and
+	// leave the pane unset. It is emitted only when there are arguments — a bare
+	// `--` is not the same command it was.
+	//
+	// Every argument token is shellQuote'd, unlike --kind, which is emitted raw
+	// because validRealizationToken guarantees its shape. An agent argument has
+	// no such guarantee — it may hold a space, a quote or a `$` — and this line
+	// is copied into a shell. Deliver passes the same tokens as an argv slice
+	// with no shell at all, which is why nothing else has to quote them.
+	start := fmt.Sprintf("herdr agent start %s --kind %s --pane \"$P\"", name, b.Agent)
+	if len(b.AgentArgs) > 0 {
+		quoted := make([]string, 0, len(b.AgentArgs))
+		for _, arg := range b.AgentArgs {
+			quoted = append(quoted, shellQuote(arg))
+		}
+		start += " -- " + strings.Join(quoted, " ")
+	}
+
 	return fmt.Sprintf(
 		`P=$(herdr pane split --current --direction right --no-focus --cwd %s | jq -r '.result.pane.pane_id') && `+
-			`herdr agent start %s --kind %s --pane "$P" && `+
+			`%s && `+
 			`herdr agent prompt %s %s --wait --timeout 120000`,
-		shellQuote(b.RootPath), name, b.Agent, name, shellQuote(renderBrief(b)))
+		shellQuote(b.RootPath), start, name, shellQuote(renderBrief(b)))
 }
 
 // renderBrief is the text the cap hands the worker: goal, project root, the

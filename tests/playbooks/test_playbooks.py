@@ -251,6 +251,19 @@ def main():
                       re.fullmatch(r"[A-Za-z0-9_.-]+", one_line(pb[field])) is not None,
                       f"{field}: {pb[field]!r}")
 
+        # agent_args: is optional; when present it is a comma-separated list of
+        # non-empty terms on the field's own line. Deliberately not held to the
+        # single-token shape above — an agent's own command line is not a name,
+        # so `--add-dir /tmp/x` is legal. A block list lands here as an empty
+        # value and fails, which is the point: fs's parser is line-oriented and
+        # drops one in silence.
+        if "agent_args" in pb:
+            terms = [t for t in (s.strip() for s in one_line(pb["agent_args"]).split(",")) if t]
+            check(f"{name}: agent_args names at least one comma-separated term",
+                  bool(terms),
+                  f"agent_args: {pb['agent_args']!r} — write `agent_args: one, two` on the "
+                  f"field's own line; a YAML block list is dropped in silence")
+
         steps = all_steps(pb)
         check(f"{name}: declares at least one step", bool(steps), "no steps")
 

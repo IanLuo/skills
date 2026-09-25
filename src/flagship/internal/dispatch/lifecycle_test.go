@@ -65,6 +65,7 @@ type fakeHerdr struct {
 	worktreesCreated []string
 	started          []string
 	startKinds       []string
+	startArgs        [][]string
 	prompts          []promptCall
 	closed           []string
 	rooted           []string
@@ -108,9 +109,10 @@ func (f *fakeHerdr) CreateWorktree(cwd string) (string, string, error) {
 	return f.worktreeNewID, f.worktreeNewPath, nil
 }
 
-func (f *fakeHerdr) StartAgent(paneID, name, kind string) error {
+func (f *fakeHerdr) StartAgent(paneID, name, kind string, args []string) error {
 	f.started = append(f.started, paneID+"/"+name)
 	f.startKinds = append(f.startKinds, kind)
+	f.startArgs = append(f.startArgs, args)
 	return f.startErr
 }
 
@@ -557,6 +559,33 @@ work:
 	}
 	if !strings.Contains(briefText, "- worker (work, order 500)") {
 		t.Errorf("the brief must name the playbook the obligation came from; got:\n%s", briefText)
+	}
+}
+
+// The executed half of the start command: the arguments the plan resolved reach
+// herdr's argv, not only the line nextCommand renders for a human to copy.
+func TestDeliverStartsTheAgentWithTheResolvedArgs(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	f.writePlaybook(t, "worker", `name: worker
+applies_when: code
+engine: herdr
+agent: claude
+agent_args: --permission-mode, auto
+work:
+  - say: note your node
+`)
+	brief := prepareOnly(t, f, devReq("sample"))
+
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
+	if resp := dispatch.Deliver(f.h, herdr, f.lg, brief); !resp.OK {
+		t.Fatalf("Deliver: %s", resp.Error)
+	}
+	if len(herdr.startArgs) != 1 {
+		t.Fatalf("start calls = %d, want 1", len(herdr.startArgs))
+	}
+	if want := []string{"--permission-mode", "auto"}; !slices.Equal(herdr.startArgs[0], want) {
+		t.Errorf("StartAgent args = %q, want %q", herdr.startArgs[0], want)
 	}
 }
 

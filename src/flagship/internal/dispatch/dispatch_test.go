@@ -885,6 +885,159 @@ entry:
 	}
 }
 
+// Standing agent_args survive a situation-specific playbook that overrides the
+// kind and says nothing about arguments. Inheritance is independent of the kind
+// on purpose: a rule coupling them would require fs to know that arguments are
+// kind-specific, which is the knowledge the realization fields exist to remove.
+func TestPrepareInheritsTheStandingAgentArgsWhenOnlyTheKindIsOverridden(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+engine: herdr
+agent: pi
+agent_args: --permission-mode, auto
+work:
+  - say: note your node
+`)
+	f.writePlaybook(t, "code-entry", `name: code-entry
+applies_when: code
+agent: claude
+entry:
+  - check: true
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if !resp.OK {
+		t.Fatalf("Prepare: %s", resp.Error)
+	}
+	brief := resp.Data.(*dispatch.Brief)
+	if brief.Agent != "claude" {
+		t.Errorf("agent = %q, want the situation-specific kind", brief.Agent)
+	}
+	want := []string{"--permission-mode", "auto"}
+	if !slices.Equal(brief.AgentArgs, want) {
+		t.Errorf("agent_args = %q, want the standing arguments inherited", brief.AgentArgs)
+	}
+
+	lines := traceOf(t, f, brief.CapNodeID)
+	recorded, ok := trace.PlanOf(lines)
+	if !ok {
+		t.Fatal("the plan line is missing")
+	}
+	if !slices.Equal(recorded.AgentArgs, want) {
+		t.Errorf("recorded agent_args = %q, want the standing arguments", recorded.AgentArgs)
+	}
+}
+
+// Two situation-specific declarations of agent_args that disagree refuse,
+// naming both playbooks and both lists. They are not concatenated: fs cannot
+// read the arguments, so merging would hand the agent both and let its own
+// last-wins rule decide, with the winner set by two `order:` integers.
+func TestPrepareRefusesWhenSituationSpecificAgentArgsDisagree(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+engine: herdr
+agent: claude
+work:
+  - say: note your node
+`)
+	f.writePlaybook(t, "one", `name: one
+applies_when: code
+agent_args: --permission-mode, auto
+work:
+  - say: one
+`)
+	f.writePlaybook(t, "two", `name: two
+applies_when: code
+agent_args: --permission-mode, plan
+work:
+  - say: two
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("two situation-specific agent_args that disagree must refuse")
+	}
+	for _, want := range []string{"one", "two", "conflicting agent_args", "--permission-mode, auto", "--permission-mode, plan"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+
+	// Like every other realization refusal, it fires before the cap node exists:
+	// a broken configuration leaves nothing behind to gate the next dispatch.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("cap scope has %d nodes after a realization refusal, want 0", len(nodes))
+	}
+}
+
+// The standing declarations are held to the same rule in pass 1, where there is
+// no plan to name: two of them disagreeing is a broken default, not a tie to
+// break.
+func TestPrepareRefusesWhenStandingAgentArgsDisagree(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+engine: herdr
+agent: claude
+agent_args: --permission-mode, auto
+work:
+  - say: note your node
+`)
+	f.writePlaybook(t, "worker-other", `name: worker-other
+agent_args: --permission-mode, plan
+work:
+  - say: another standing rule
+`)
+
+	resp := f.prepare(devReq("sample"))
+	if resp.OK {
+		t.Fatal("two standing agent_args that disagree must refuse")
+	}
+	for _, want := range []string{"worker", "worker-other", "standing agent_args", "--permission-mode, auto", "--permission-mode, plan"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// The printed line is the executed line, and only one of the two is a code path.
+// The separator goes last, after every option, and only when there are
+// arguments: herdr's grammar reads an argument before `--pane` as an agent
+// argument and leaves the pane unset. Every argument is shell-quoted because it
+// has none of the shape guarantees `--kind` has.
+func TestNextCommandRendersTheSeparatorOnlyWhenThereAreArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		agentArg string
+		want     string
+	}{
+		{
+			name:     "with arguments",
+			agentArg: "agent_args: --permission-mode, auto, --settings=a b\n",
+			want:     `herdr agent start dispatch-dev-task --kind claude --pane "$P" -- '--permission-mode' 'auto' '--settings=a b' && `,
+		},
+		{
+			name: "without arguments",
+			want: `herdr agent start dispatch-dev-task --kind claude --pane "$P" && `,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, t.TempDir())
+			f.writePlaybook(t, "worker", "name: worker\nengine: herdr\nagent: claude\n"+
+				tc.agentArg+"work:\n  - say: note your node\n")
+			brief := prepareOnly(t, f, devReq("sample"))
+
+			if !strings.Contains(brief.NextCommand, tc.want) {
+				t.Errorf("next_command must contain %q, got %q", tc.want, brief.NextCommand)
+			}
+		})
+	}
+}
+
 // A playbook is held to the schema its phase declares before it can run half its
 // steps. This is a configuration error, not a gate: --confirm must not override
 // it, and nothing is left behind.

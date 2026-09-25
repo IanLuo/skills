@@ -910,6 +910,135 @@ func TestMarshalJSONShowsTheFileSchema(t *testing.T) {
 	}
 }
 
+// The two silent drops the schema's parser used to have, characterised before
+// they were closed. A key the switch did not know was ignored, so `agent_arg:`
+// produced a playbook that read as configured; and a `- ` item outside a moment
+// section was discarded, so `agent_args:` written as a block list parsed as no
+// arguments at all — which is the exact symptom the field exists to fix.
+func TestAFieldTheSchemaDoesNotKnowIsRefused(t *testing.T) {
+	cases := []struct{ name, pb, key string }{
+		{"a near-miss spelling", "name: p\nagent_arg: --permission-mode\nwork:\n  - say: x\n", "`agent_arg`"},
+		{"a case the parser does not fold", "name: p\nAgentArgs: --permission-mode\nwork:\n  - say: x\n", "`AgentArgs`"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kc, err := knowledge.Open(tempFS(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = kc.Add("p", []byte(tc.pb))
+			if err == nil {
+				t.Fatal("a field the schema does not know must be refused, not ignored")
+			}
+			for _, want := range []string{tc.key, "the schema is:", "agent_args"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q must contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// The block-list form is the mistake the field must not reproduce: the parser is
+// line-oriented with `moment` as its only state, so a `- ` item under a
+// non-moment field went nowhere. It is refused, naming the comma-separated form
+// to write instead.
+func TestABlockListOutsideAMomentSectionIsRefused(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kc.Add("p", []byte("name: p\nagent_args:\n  - --permission-mode\n  - auto\nwork:\n  - say: x\n"))
+	if err == nil {
+		t.Fatal("a block list outside a moment section must be refused, not dropped")
+	}
+	for _, want := range []string{"agent_args", "comma-separated", "--permission-mode, auto"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must contain %q", err, want)
+		}
+	}
+}
+
+// agent_args is parsed the way applies_when is — comma-separated terms on the
+// field's own line, empties dropped, so a trailing comma is not a term. Its
+// terms are deliberately not held to the shape engine and agent are: `--add-dir
+// /tmp/x` holds a slash and a space, and both are legal argv. This is the proof
+// the two validators are different on purpose.
+func TestAgentArgsAreParsedAsCommaSeparatedArgvElements(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "name: worker\nengine: herdr\nagent: claude\n" +
+		"agent_args: --permission-mode, auto, --add-dir /tmp/x,\nwork:\n  - say: x\n"
+	if err := kc.Add("worker", []byte(body)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	pb, err := kc.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := []string{"--permission-mode", "auto", "--add-dir /tmp/x"}
+	if !reflect.DeepEqual(pb.AgentArgs, want) {
+		t.Errorf("agent_args = %q, want %q", pb.AgentArgs, want)
+	}
+}
+
+// `fs kb get` renders the playbook the way its file spells it, so the
+// realization has a parallel field list in MarshalJSON — a field missing from it
+// is one a reader of kb get never sees.
+func TestMarshalJSONCarriesAgentArgs(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "name: worker\nengine: herdr\nagent: claude\nagent_args: --permission-mode, auto\nwork:\n  - say: x\n"
+	if err := kc.Add("worker", []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	pb, _ := kc.Get("worker")
+	encoded, err := pb.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	for _, want := range []string{`"agent":"claude"`, `"agent_args":"--permission-mode, auto"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("json %s must carry %s", encoded, want)
+		}
+	}
+}
+
+// A present-but-empty field is refused, as `engine:`, `agent:` and `creates:`
+// are — and a value that is nothing but separators is the same field saying the
+// same nothing.
+func TestAnEmptyAgentArgsIsRefused(t *testing.T) {
+	for _, pb := range []string{
+		"name: p\nagent_args:\nwork:\n  - say: x\n",
+		"name: p\nagent_args: , ,\nwork:\n  - say: x\n",
+	} {
+		kc, err := knowledge.Open(tempFS(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := kc.Add("p", []byte(pb)); err == nil {
+			t.Errorf("an empty agent_args must be refused:\n%s", pb)
+		}
+	}
+}
+
+// The tolerated shapes stay tolerated. A `---` document start and a line with no
+// colon are not fields, so refusing an unknown field must not refuse them.
+func TestLinesThatAreNotFieldsStayTolerated(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: p\nthis line has no colon\nwork:\n  - say: x\n"
+	if err := kc.Add("p", []byte(body)); err != nil {
+		t.Fatalf("a document start and a colonless line must stay tolerated: %v", err)
+	}
+}
+
 // The moment vocabulary is closed, and Validate is the backstop for a playbook
 // constructed with a moment that is not one of the four: a parser never
 // produces one, but a resolved playbook is held to the same table the write
