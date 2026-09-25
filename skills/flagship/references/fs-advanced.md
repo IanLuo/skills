@@ -79,8 +79,8 @@ Results are ranked by BM25 relevance. The LLM uses FTS5 as a candidate retriever
 
 A playbook is a protocol for a kind of work. Global playbooks are stored at
 `~/.fs/kb/<name>.yaml`; a project's own at `~/.fs/projects/<project>/kb/<name>.yaml`,
-and a project playbook with the same name replaces the global one for a dispatch
-into that project.
+and a project playbook with the same name **overrides the fields it declares and
+inherits the rest** from the global one for a dispatch into that project.
 
 ```yaml
 name: code-entry            # required; must equal the file name
@@ -283,9 +283,10 @@ owns the working directory; if the directory is unregistered, its directory name
 used. Registration happens on `fs project create`.
 
 The knowledge center is two-scoped: the global `~/.fs/kb/` and each project's
-`~/.fs/projects/<project>/kb/`. A project playbook with the same `name` replaces
-the global one for a dispatch into that project; `fs kb add|edit --project P`
-writes to the project's own KB, and `fs kb list` reports each playbook's `scope`.
+`~/.fs/projects/<project>/kb/`. A project playbook with the same `name` overrides
+the fields it declares and inherits the rest from the global one for a dispatch
+into that project; `fs kb add|edit --project P` writes to the project's own KB,
+and `fs kb list` reports each playbook's `scope`.
 A project with no KB directory behaves exactly as global-only.
 
 ## Store integrity and WAL

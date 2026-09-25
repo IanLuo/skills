@@ -599,8 +599,8 @@ func TestIncludeMutualCycleIsRefused(t *testing.T) {
 	}
 }
 
-// A project playbook with the same name replaces the global one, and an include
-// resolves under the same rule — so a project `code-exit` that includes
+// A project playbook with the same name is the one a lookup resolves to, and an
+// include resolves under the same rule — so a project `code-exit` that includes
 // `code-exit` gets the global one rather than itself.
 func TestProjectScopeShadowsTheGlobalOne(t *testing.T) {
 	fsRoot := tempFS(t)

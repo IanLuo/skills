@@ -336,7 +336,8 @@ func (pb *Playbook) AppliesWhenString() string {
 
 // Center manages playbook files on disk, in two scopes: the global playbooks
 // under <fs>/kb, and a project's under <fs>/projects/<project>/kb. A project
-// playbook with the same name replaces the global one.
+// playbook with the same name overrides the names its file declares and inherits
+// the rest from the global one.
 type Center struct {
 	fsRoot  string // ~/.fs
 	project string // "" when no project scope is in play
@@ -463,9 +464,10 @@ type scopedPlaybook struct {
 }
 
 // scopedNames lists every playbook file in both scopes, sorted by name. A name
-// that exists in the project scope is listed once, as the project's: the
-// project playbook replaces the global one, so there is one playbook by that
-// name and the global file is not consulted.
+// that exists in the project scope is listed once, as the project's: the project
+// playbook is the one that resolves by that name, so there is one playbook to
+// list — what its file does not declare it inherits from the global file rather
+// than the global file appearing beside it.
 func (c *Center) scopedNames() ([]scopedPlaybook, error) {
 	seen := map[string]bool{}
 	var books []scopedPlaybook
