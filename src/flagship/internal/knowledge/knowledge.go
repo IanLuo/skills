@@ -37,6 +37,46 @@ const (
 // in both, and the step indexes never mix them because this order never changes.
 var canonicalMoments = []string{MomentCap, MomentEntry, MomentWork, MomentExit}
 
+// The field names a playbook file may declare, as the file spells them. They
+// are constants because the parser records which of them a file named, and the
+// inheritance merge reads that record by these names.
+const (
+	fieldAppliesWhen = "applies_when"
+	fieldOrder       = "order"
+	fieldEngine      = "engine"
+	fieldAgent       = "agent"
+	fieldAgentArgs   = "agent_args"
+	fieldCreates     = "creates"
+)
+
+// playbookFields is the field half of the schema, in the order a file spells it.
+// A file declaring a field wins even when the value is empty, so the merge walks
+// names rather than reading values; the moment sections are the other half and
+// are recognised by their presence in Sections.
+var playbookFields = []string{
+	fieldAppliesWhen, fieldOrder, fieldEngine, fieldAgent, fieldAgentArgs, fieldCreates,
+}
+
+// SchemaNames is the whole vocabulary a playbook file may declare — the fields
+// first, then the moment sections. It is exported because `fs kb get` marks
+// inherited names against it and the test that holds MarshalJSON's output to it
+// lives outside this package: a field in the schema and not in the output would
+// inherit silently and show as neither declared nor inherited, which nothing
+// reading `fs kb get` could see.
+func SchemaNames() []string {
+	return append(slices.Clone(playbookFields), canonicalMoments...)
+}
+
+// The two ways a lookup comes up empty, which callers read differently. Not
+// found is a playbook that is nowhere. A stack-exhausted lookup is one whose
+// every candidate is already on the stack: `include:` reads that as a cycle and
+// names the chain, while the inheritance walk reads it as there being no
+// playbook in the scope beneath — the bottom of the chain, never an error.
+var (
+	errPlaybookNotFound = errors.New("not found")
+	errStackExhausted   = errors.New("is already on the include stack")
+)
+
 // Step kinds. A step declares what it is, so nothing has to guess from its
 // wording: check runs a shell command and reports pass/fail, do runs a shell
 // command as an action, ask is for the cap to confirm, say is guidance for the
@@ -117,6 +157,94 @@ type Playbook struct {
 	Creates string `json:"creates,omitempty" yaml:"creates"`
 	// Sections holds one entry per declared moment, in file order.
 	Sections []Section `json:"-"`
+
+	// declared records which fields and moments the file itself named, and
+	// inherited which of them came from the same-named playbook in the scope
+	// beneath it. Presence is recorded rather than inferred from zero values:
+	// `order: 0` and an absent `order` both read as 0, and the two mean
+	// different things — the first is a declaration that wins, the second
+	// inherits. `applies_when:` is where the difference bites hardest: an empty
+	// value is a deliberate standing declaration, while an absent key takes the
+	// terms from below. A moment is declared by its section existing, so
+	// Sections already answers for that half and only fields are in `declared`.
+	declared  map[string]bool
+	inherited map[string]bool
+}
+
+// InheritedFields names the fields and sections this playbook did not declare
+// and took from the same-named playbook in the scope beneath it, in schema
+// order. It is empty for a playbook read from one file with no counterpart
+// below — the case where the file is its own complete description.
+func (pb *Playbook) InheritedFields() []string {
+	var names []string
+	for _, name := range SchemaNames() {
+		if pb.inherited[name] {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// declaresNothing reports whether the file spells nothing but its name — no
+// field and no section. Such a playbook inherits everything and changes
+// nothing, while reading as a deliberate override.
+func (pb *Playbook) declaresNothing() bool {
+	if len(pb.Sections) > 0 {
+		return false
+	}
+	for _, field := range playbookFields {
+		if pb.declared[field] {
+			return false
+		}
+	}
+	return true
+}
+
+// complete fills every field and section this playbook does not declare from the
+// same-named playbook in the next scope down. A declared field wins whatever its
+// value, and a declared section is kept whole — this fills gaps, it does not
+// merge on top of what the file already says. A field the lower playbook does
+// not declare either stays absent on both, so nothing is marked inherited that
+// came from nowhere.
+func (pb *Playbook) complete(lower *Playbook) {
+	if pb.inherited == nil {
+		pb.inherited = map[string]bool{}
+	}
+	for _, field := range playbookFields {
+		if pb.declared[field] || !lower.declared[field] {
+			continue
+		}
+		switch field {
+		case fieldAppliesWhen:
+			pb.AppliesWhen = lower.AppliesWhen
+		case fieldOrder:
+			pb.Order = lower.Order
+		case fieldEngine:
+			pb.Engine = lower.Engine
+		case fieldAgent:
+			pb.Agent = lower.Agent
+		case fieldAgentArgs:
+			pb.AgentArgs = slices.Clone(lower.AgentArgs)
+		case fieldCreates:
+			pb.Creates = lower.Creates
+		}
+		pb.inherited[field] = true
+	}
+
+	for _, moment := range canonicalMoments {
+		if pb.Serves(moment) || !lower.Serves(moment) {
+			continue
+		}
+		for _, section := range lower.Sections {
+			if section.Moment == moment {
+				pb.Sections = append(pb.Sections, Section{
+					Moment: moment,
+					Steps:  slices.Clone(section.Steps),
+				})
+			}
+		}
+		pb.inherited[moment] = true
+	}
 }
 
 // StepsFor returns the steps of one moment's section — every occurrence of that
@@ -286,6 +414,9 @@ func (c *Center) Add(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := c.completeForWrite(name, pb); err != nil {
+		return err
+	}
 	if err := Validate(pb); err != nil {
 		return err
 	}
@@ -410,6 +541,9 @@ func (c *Center) Edit(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := c.completeForWrite(name, pb); err != nil {
+		return err
+	}
 	if err := Validate(pb); err != nil {
 		return err
 	}
@@ -420,6 +554,17 @@ func (c *Center) Edit(name string, data []byte) error {
 	}
 
 	return os.WriteFile(path, data, 0o644)
+}
+
+// completeForWrite merges a playbook about to be written with the same-named
+// playbook in the scope below the one it is going to, so a shadow is validated
+// as what it will resolve to rather than as what its own file spells. Without
+// it a shadow naming one field would be refused for having no steps of its own
+// — the exact shape this exists to allow. The path the file will occupy is on
+// the stack because it is not on disk yet, and the lookup below must see the
+// playbook beneath it rather than the one being written.
+func (c *Center) completeForWrite(name string, pb *Playbook) error {
+	return c.inherit(name, pb, []string{filepath.Join(c.writeDir(), name+".yaml")})
 }
 
 // Remove deletes a playbook file from the scope this center is bound to.
@@ -448,31 +593,80 @@ func (c *Center) read(name string) ([]byte, error) {
 // any candidate already on the include stack so an include sees the playbook
 // beneath it rather than itself.
 func (c *Center) readFor(name string, stack []string) (string, []byte, error) {
+	path, err := c.lookup(name, stack)
+	if err != nil {
+		return "", nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("knowledge: read %s: %w", path, err)
+	}
+	return path, data, nil
+}
+
+// lookup returns the path of the file a lookup resolves to: the first candidate
+// not already on the stack. It is the one definition of the scope-and-stack
+// rule — readFor adds the read, inherit asks it what is in the scope beneath,
+// and the include walk asks it what a step names. A candidate already on the
+// stack is invisible, which is what makes `include: <own name>` reach the
+// playbook beneath and what stops a shadow that names its own playbook from
+// recursing into itself.
+func (c *Center) lookup(name string, stack []string) (string, error) {
 	var seen []string
 	for _, path := range c.candidates(name) {
 		if _, err := os.Stat(path); err == nil {
 			seen = append(seen, path)
-			continue
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return "", nil, fmt.Errorf("knowledge: stat %s: %w", path, err)
+			return "", fmt.Errorf("knowledge: stat %s: %w", path, err)
 		}
 	}
 	if len(seen) == 0 {
-		return "", nil, fmt.Errorf("knowledge: playbook %q not found", name)
+		return "", fmt.Errorf("knowledge: playbook %q %w", name, errPlaybookNotFound)
 	}
 
 	for _, path := range seen {
-		if slices.Contains(stack, path) {
-			continue
+		if !slices.Contains(stack, path) {
+			return path, nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", nil, fmt.Errorf("knowledge: read %s: %w", path, err)
+	}
+	return "", fmt.Errorf("knowledge: playbook %q %w", name, errStackExhausted)
+}
+
+// inherit completes pb with the same-named playbook in the next scope down:
+// every field and section the file does not declare is taken from it, and a
+// file that would take everything is refused. stack is the chain being resolved
+// with pb's own file already on it, so the lookup below — readFor, the very
+// lookup `include:` uses — sees the playbook beneath this one rather than this
+// one again. That shared stack is what makes a shadow naming its own playbook
+// terminate here instead of recursing, and it is why there is no second
+// mechanism for finding the scope below.
+func (c *Center) inherit(name string, pb *Playbook, stack []string) error {
+	lowerPath, err := c.lookup(name, stack)
+	if err != nil {
+		// Nothing below, either because no scope declares the name or because
+		// every scope that does is already on the stack — which, with this
+		// playbook's own file on it, is the bottom of the chain. Every
+		// undeclared field is then simply absent, and absence is never an
+		// error. Anything else — an unreadable file — is refused, because a
+		// broken playbook must not be read as a missing one.
+		if errors.Is(err, errPlaybookNotFound) || errors.Is(err, errStackExhausted) {
+			return nil
 		}
-		return path, data, nil
+		return err
 	}
 
-	return "", nil, fmt.Errorf("knowledge: include cycle: %s", c.chain(stack, name))
+	if pb.declaresNothing() {
+		return fmt.Errorf(
+			"knowledge: playbook %q declares nothing but its name; it would inherit every field and section of %s and so changes nothing — declare the field it is for, or remove it",
+			name, lowerPath)
+	}
+
+	lower, err := c.resolve(name, stack)
+	if err != nil {
+		return err
+	}
+	pb.complete(lower)
+	return nil
 }
 
 // chain renders an include stack, plus the name that closed the loop, as the
@@ -486,9 +680,10 @@ func (c *Center) chain(stack []string, closing string) string {
 	return strings.Join(names, " -> ")
 }
 
-// resolve reads a playbook and splices its includes, in the scope order the
-// lookup uses. The stack is the chain of files being resolved, so a playbook
-// that reaches itself is refused by name rather than recursed into.
+// resolve reads a playbook, inherits what its file does not declare from the
+// same-named playbook in the next scope down, and splices its includes. The
+// stack is the chain of files being resolved, so a playbook that reaches itself
+// is refused by name rather than recursed into.
 func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 	if name == "" {
 		return nil, fmt.Errorf("knowledge: name is required")
@@ -508,6 +703,19 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 		return nil, err
 	}
 
+	// This file is on the stack from here on, so neither the walk below nor an
+	// include reaches it a second time.
+	inner := append(slices.Clone(stack), path)
+
+	// Inheritance first, splicing second. An inherited section arrives already
+	// resolved, so the two mechanisms stay distinct and stay ordered: the merge
+	// chooses which fields and sections the playbook has, then the splice fills
+	// them. Splicing first would run the includes of a section the playbook may
+	// not even keep.
+	if err := c.inherit(name, pb, inner); err != nil {
+		return nil, err
+	}
+
 	for si := range pb.Sections {
 		section := &pb.Sections[si]
 		steps := make([]Step, 0, len(section.Steps))
@@ -516,7 +724,13 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 				steps = append(steps, step)
 				continue
 			}
-			included, err := c.resolve(step.Body, append(stack, path))
+			included, err := c.resolve(step.Body, inner)
+			// A lookup whose every candidate is on the stack is a cycle here —
+			// this is the one caller for which a name already being resolved is
+			// the name it asked for, so it is the one that names the loop.
+			if errors.Is(err, errStackExhausted) {
+				return nil, fmt.Errorf("knowledge: include cycle: %s", c.chain(inner, step.Body))
+			}
 			if err != nil {
 				return nil, fmt.Errorf("knowledge: %s %s step %d (include: %s): %w", name, section.Moment, i+1, step.Body, err)
 			}
@@ -554,10 +768,9 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 // name is the name the file is expected to carry, and is used only to say so in
 // a refusal; "" leaves the mismatch to be reported by the caller.
 func parsePlaybook(name string, data []byte) (*Playbook, error) {
-	pb := &Playbook{Order: defaultOrder}
+	pb := &Playbook{Order: defaultOrder, declared: map[string]bool{}}
 	lines := strings.Split(string(data), "\n")
 	moment := ""
-	hasOrder := false
 	// lastKey is the field the previous line declared, so a `- ` item that lands
 	// outside a section can name what it was written under. emptyArgs records an
 	// `agent_args:` that named nothing, refused after the loop rather than here:
@@ -592,25 +805,31 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 		case "name":
 			pb.Name = val
 		case "applies_when":
+			// Declared even when val is empty: `applies_when:` with no terms is
+			// a standing declaration, not an omitted field, so it must win over
+			// whatever the scope below says rather than inherit it.
+			pb.declared[fieldAppliesWhen] = true
 			pb.AppliesWhen = splitTerms(val)
-		case "order":
+		case fieldOrder:
 			if n, err := parseOrder(val); err == nil {
 				pb.Order = n
-				hasOrder = true
+				pb.declared[fieldOrder] = true
 			} else {
 				return nil, fmt.Errorf("knowledge: playbook %q has order %q, which is not a number", name, val)
 			}
-		case "engine":
+		case fieldEngine:
 			if val == "" {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `engine:`; engine must be a single non-empty token", name)
 			}
+			pb.declared[fieldEngine] = true
 			pb.Engine = val
-		case "agent":
+		case fieldAgent:
 			if val == "" {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `agent:`; agent must be a single non-empty token", name)
 			}
+			pb.declared[fieldAgent] = true
 			pb.Agent = val
-		case "agent_args":
+		case fieldAgentArgs:
 			// Comma-separated on the field's own line, parsed by the same
 			// splitTerms `applies_when` uses. Comma rather than whitespace
 			// because it keeps a space inside a term: each term is one argv
@@ -626,11 +845,13 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			// and refuses what it cannot encode. The two validators are
 			// different on purpose; unifying them would break arguments.
 			pb.AgentArgs = splitTerms(val)
+			pb.declared[fieldAgentArgs] = true
 			emptyArgs = len(pb.AgentArgs) == 0
-		case "creates":
+		case fieldCreates:
 			if val == "" {
 				return nil, fmt.Errorf("knowledge: playbook %q declares an empty `creates:`; creates names the node kind and must be a single non-empty token", name)
 			}
+			pb.declared[fieldCreates] = true
 			pb.Creates = val
 		case MomentCap, MomentEntry, MomentWork, MomentExit:
 			moment = key
@@ -650,9 +871,6 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 		return nil, fmt.Errorf(
 			"knowledge: playbook %q declares an empty `agent_args:`; agent_args names the arguments the agent is started with, so a declaration with no terms claims arguments it does not name",
 			name)
-	}
-	if !hasOrder {
-		pb.Order = defaultOrder
 	}
 	if pb.Name == "" && len(pb.Sections) == 0 {
 		return nil, fmt.Errorf("knowledge: playbook %q declares nothing — no name, no sections", name)
@@ -842,20 +1060,27 @@ func Validate(pb *Playbook) error {
 }
 
 // MarshalJSON renders a playbook the way its file spells it, so `fs kb get`
-// shows the schema a reader edits and not the resolver's internals.
+// shows the schema a reader edits and not the resolver's internals. `inherited`
+// is the one key the file does not spell: it names the fields and sections the
+// file did not declare and took from the scope below, and it is what makes a
+// resolved shadow readable — the cost of inheritance is that a shadow stops
+// being self-describing, and this buys it back. The struct below is the second,
+// parallel field list SchemaNames is held to; TestTheOutputSchemaAndTheInheritableVocabularyAgree
+// is what proves the two agree.
 func (pb *Playbook) MarshalJSON() ([]byte, error) {
 	type file struct {
-		Name        string `json:"name"`
-		AppliesWhen string `json:"applies_when,omitempty"`
-		Order       int    `json:"order"`
-		Engine      string `json:"engine,omitempty"`
-		Agent       string `json:"agent,omitempty"`
-		AgentArgs   string `json:"agent_args,omitempty"`
-		Creates     string `json:"creates,omitempty"`
-		Cap         []Step `json:"cap,omitempty"`
-		Entry       []Step `json:"entry,omitempty"`
-		Work        []Step `json:"work,omitempty"`
-		Exit        []Step `json:"exit,omitempty"`
+		Name        string   `json:"name"`
+		AppliesWhen string   `json:"applies_when,omitempty"`
+		Order       int      `json:"order"`
+		Engine      string   `json:"engine,omitempty"`
+		Agent       string   `json:"agent,omitempty"`
+		AgentArgs   string   `json:"agent_args,omitempty"`
+		Creates     string   `json:"creates,omitempty"`
+		Inherited   []string `json:"inherited,omitempty"`
+		Cap         []Step   `json:"cap,omitempty"`
+		Entry       []Step   `json:"entry,omitempty"`
+		Work        []Step   `json:"work,omitempty"`
+		Exit        []Step   `json:"exit,omitempty"`
 	}
 	return json.Marshal(file{
 		Name:        pb.Name,
@@ -865,6 +1090,7 @@ func (pb *Playbook) MarshalJSON() ([]byte, error) {
 		Agent:       pb.Agent,
 		AgentArgs:   strings.Join(pb.AgentArgs, ", "),
 		Creates:     pb.Creates,
+		Inherited:   pb.InheritedFields(),
 		Cap:         pb.StepsFor(MomentCap),
 		Entry:       pb.StepsFor(MomentEntry),
 		Work:        pb.StepsFor(MomentWork),

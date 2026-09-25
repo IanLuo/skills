@@ -1,9 +1,11 @@
 package knowledge_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1059,5 +1061,417 @@ func TestValidateRefusesAnUnknownMoment(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q must contain %q", err, want)
 		}
+	}
+}
+
+// stepBodies lists one moment's step bodies, the shape a reader of a resolved
+// playbook cares about.
+func stepBodies(pb *knowledge.Playbook, moment string) []string {
+	var bodies []string
+	for _, step := range pb.StepsFor(moment) {
+		bodies = append(bodies, step.Body)
+	}
+	return bodies
+}
+
+// writePlaybookFile places a playbook by hand, the way the operator writes a
+// project shadow — Add refuses a file with no steps of its own, which is the
+// other half of the same stance the read path has to hold.
+func writePlaybookFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A project playbook inherits every field it does not declare from the
+// same-named playbook in the scope beneath it, and keeps the ones it does.
+// This is the one-edit case: the shadow names the field it is for and nothing
+// else, so changing the dispatch engine is a single line in one file.
+func TestShadowInheritsTheFieldsItDoesNotDeclare(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte(`name: worker
+applies_when: code
+order: 10
+engine: herdr
+agent: pi
+creates: batch
+work:
+  - say: the global brief
+`)); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("worker", []byte("name: worker\nagent: claude\n")); err != nil {
+		t.Fatalf("a shadow declaring only the field it changes must be writable: %v", err)
+	}
+
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if pb.Agent != "claude" {
+		t.Errorf("agent = %q, want the declared one", pb.Agent)
+	}
+	for _, tc := range []struct{ field, got, want string }{
+		{"engine", pb.Engine, "herdr"},
+		{"creates", pb.Creates, "batch"},
+		{"applies_when", pb.AppliesWhenString(), "code"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want it inherited as %q", tc.field, tc.got, tc.want)
+		}
+	}
+	if pb.Order != 10 {
+		t.Errorf("order = %d, want it inherited as 10", pb.Order)
+	}
+	if got := stepBodies(pb, knowledge.MomentWork); !reflect.DeepEqual(got, []string{"the global brief"}) {
+		t.Errorf("work steps = %v, want the inherited section", got)
+	}
+
+	// The global center is unaffected: inheritance reads downwards, nothing
+	// travels up.
+	globalPB, err := global.Get("worker")
+	if err != nil {
+		t.Fatalf("global Get: %v", err)
+	}
+	if globalPB.Agent != "pi" || globalPB.Engine != "herdr" {
+		t.Errorf("the global playbook changed in its own scope: agent=%q engine=%q",
+			globalPB.Agent, globalPB.Engine)
+	}
+}
+
+// A shadow that declares a section keeps it — inheritance fills gaps, it does
+// not merge on top of what the file already says.
+func TestShadowKeepingASectionDoesNotInheritIt(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte("name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: the global brief\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("worker", []byte("name: worker\nagent: claude\nwork:\n  - say: this project's brief\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := stepBodies(pb, knowledge.MomentWork); !reflect.DeepEqual(got, []string{"this project's brief"}) {
+		t.Errorf("work steps = %v, want the declared section alone", got)
+	}
+	if pb.Engine != "herdr" {
+		t.Errorf("engine = %q, want it still inherited", pb.Engine)
+	}
+}
+
+// include: and inheritance are two mechanisms over the same scope chain, and
+// conflating them double-splices. This is the shape every shadow on the machine
+// already has, so getting it wrong duplicates every worker's standing
+// obligations — and the duplicate is silent, which is why the count is asserted
+// and not just the presence.
+func TestShadowIncludingItsOwnNameSplicesTheGlobalStepsOnce(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte("name: worker\norder: 10\nengine: herdr\nagent: pi\nwork:\n  - say: one\n  - say: two\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("worker", []byte("name: worker\nagent: claude\nwork:\n  - include: worker\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got := stepBodies(pb, knowledge.MomentWork)
+	if !reflect.DeepEqual(got, []string{"one", "two"}) {
+		t.Errorf("work steps = %v (%d), want the global steps exactly once (2)", got, len(got))
+	}
+	if pb.Engine != "herdr" {
+		t.Errorf("engine = %q, want it inherited", pb.Engine)
+	}
+	if pb.Agent != "claude" {
+		t.Errorf("agent = %q, want the declared one", pb.Agent)
+	}
+}
+
+// A two-level chain resolves: the shadow takes its fields from the global
+// playbook, whose work section is itself a splice of a third file. An inherited
+// section arrives resolved, so its include is not spliced a second time.
+func TestTwoLevelChainResolves(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("brief", []byte("name: brief\nwork:\n  - say: from brief\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte(`name: worker
+order: 10
+engine: herdr
+agent_args: --permission-mode, auto
+work:
+  - include: brief
+`)); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("worker", []byte("name: worker\nagent: claude\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if pb.Agent != "claude" {
+		t.Errorf("agent = %q, want the declared one", pb.Agent)
+	}
+	if pb.Engine != "herdr" {
+		t.Errorf("engine = %q, want it inherited through the chain", pb.Engine)
+	}
+	if !reflect.DeepEqual(pb.AgentArgs, []string{"--permission-mode", "auto"}) {
+		t.Errorf("agent_args = %v, want them inherited through the chain", pb.AgentArgs)
+	}
+	if got := stepBodies(pb, knowledge.MomentWork); !reflect.DeepEqual(got, []string{"from brief"}) {
+		t.Errorf("work steps = %v, want the spliced steps once", got)
+	}
+}
+
+// Absent and declared-empty are different. `applies_when:` with no terms is a
+// deliberate standing declaration, so it wins over the scope below; the key
+// being absent inherits. Nothing here is inferable from zero values, which is
+// why parse records presence instead.
+func TestDeclaredEmptyAppliesWhenIsStandingNotAbsent(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte("name: worker\napplies_when: type=batch\nengine: herdr\nwork:\n  - say: x\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("standing", []byte("name: standing\napplies_when: type=batch\nengine: herdr\nwork:\n  - say: x\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	writePlaybookFile(t, projectKBPath(fsRoot, "skills", "standing"), "name: standing\napplies_when:\nwork:\n  - say: y\n")
+	writePlaybookFile(t, projectKBPath(fsRoot, "skills", "worker"), "name: worker\nwork:\n  - say: y\n")
+
+	// The declared-empty one is standing, and does not take type=batch.
+	standing, err := project.Get("standing")
+	if err != nil {
+		t.Fatalf("Get standing: %v", err)
+	}
+	if got := standing.AppliesWhenString(); got != "" {
+		t.Errorf("applies_when = %q, want the declared empty value to win as standing", got)
+	}
+	if standing.Engine != "herdr" {
+		t.Errorf("engine = %q, want it inherited", standing.Engine)
+	}
+
+	// The absent one inherits the terms.
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get worker: %v", err)
+	}
+	if got := pb.AppliesWhenString(); got != "type=batch" {
+		t.Errorf("applies_when = %q, want it inherited as type=batch", got)
+	}
+}
+
+// An undeclared field with no counterpart below is simply absent — absence is
+// the global-only case, never an error and never a refusal.
+func TestAnAbsentFieldWithNoCounterpartIsSimplyAbsent(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte("name: worker\nwork:\n  - say: x\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("worker", []byte("name: worker\norder: 3\nwork:\n  - say: y\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if pb.Engine != "" || pb.Agent != "" || pb.Creates != "" {
+		t.Errorf("undeclared fields with no counterpart must stay absent: engine=%q agent=%q creates=%q",
+			pb.Engine, pb.Agent, pb.Creates)
+	}
+	if pb.Order != 3 {
+		t.Errorf("order = %d, want the declared 3", pb.Order)
+	}
+}
+
+// A shadow that declares nothing but its name would inherit every field and
+// section and change nothing, while reading as a deliberate override. Refused,
+// naming that it changes nothing — the same stance as the unknown-key refusal.
+func TestShadowThatChangesNothingIsRefused(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte("name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: x\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	writePlaybookFile(t, projectKBPath(fsRoot, "skills", "worker"), "name: worker\n")
+
+	_, err = project.Get("worker")
+	if err == nil {
+		t.Fatal("a shadow that declares nothing must be refused")
+	}
+	if !strings.Contains(err.Error(), "changes nothing") {
+		t.Errorf("error %q must say the shadow changes nothing", err)
+	}
+
+	// The write path refuses it too, rather than installing a file that cannot
+	// be read back.
+	if err := project.Add("worker", []byte("name: worker\n")); err == nil {
+		t.Error("Add must refuse a shadow that declares nothing")
+	}
+}
+
+// `fs kb get` shows the resolved playbook, so a reader must be able to tell
+// what the file declared from what it inherited; without that, a shadow stops
+// being self-describing.
+func TestKbGetMarksTheInheritedFields(t *testing.T) {
+	fsRoot := tempFS(t)
+	global, err := knowledge.Open(fsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := global.Add("worker", []byte(`name: worker
+applies_when: code
+order: 10
+engine: herdr
+creates: batch
+work:
+  - say: the global brief
+`)); err != nil {
+		t.Fatal(err)
+	}
+
+	project := global.InProject("skills")
+	if err := project.Add("worker", []byte("name: worker\nagent: claude\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	pb, err := project.Get("worker")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	out, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	var inherited []string
+	for _, name := range got["inherited"].([]any) {
+		inherited = append(inherited, name.(string))
+	}
+	want := []string{"applies_when", "order", "engine", "creates", "work"}
+	if !reflect.DeepEqual(inherited, want) {
+		t.Errorf("inherited = %v, want %v", inherited, want)
+	}
+
+	// A playbook read from one file with nothing below it marks nothing.
+	globalPB, err := global.Get("worker")
+	if err != nil {
+		t.Fatalf("global Get: %v", err)
+	}
+	out, err = json.Marshal(globalPB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = map[string]any{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := got["inherited"]; present {
+		t.Errorf("a playbook with nothing below it marked %v as inherited", got["inherited"])
+	}
+}
+
+// MarshalJSON keeps a second, parallel field list — the struct it renders. This
+// proves the two agree: a schema field missing from the output would inherit
+// silently and be marked as neither declared nor inherited, which is invisible
+// in `fs kb get`, and an output key outside the schema is a name nothing can
+// inherit.
+func TestTheOutputSchemaAndTheInheritableVocabularyAgree(t *testing.T) {
+	// Every field and every moment declared, so nothing is omitted from the
+	// output and the key set is the whole schema.
+	full := &knowledge.Playbook{
+		Name:        "p",
+		AppliesWhen: []string{"code"},
+		Order:       10,
+		Engine:      "herdr",
+		Agent:       "pi",
+		AgentArgs:   []string{"--permission-mode", "auto"},
+		Creates:     "batch",
+		Sections: []knowledge.Section{
+			{Moment: knowledge.MomentCap, Steps: []knowledge.Step{{Kind: knowledge.KindSay, Body: "a"}}},
+			{Moment: knowledge.MomentEntry, Steps: []knowledge.Step{{Kind: knowledge.KindCheck, Body: "b"}}},
+			{Moment: knowledge.MomentWork, Steps: []knowledge.Step{{Kind: knowledge.KindSay, Body: "c"}}},
+			{Moment: knowledge.MomentExit, Steps: []knowledge.Step{{Kind: knowledge.KindSay, Body: "d"}}},
+		},
+	}
+	bare, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(bare, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	// `inherited` is the one key the output adds to the schema; `name` is the
+	// playbook's identity and is never inherited.
+	want := append([]string{"name"}, knowledge.SchemaNames()...)
+	var keys []string
+	for key := range got {
+		if key == "inherited" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	sort.Strings(want)
+	if !reflect.DeepEqual(keys, want) {
+		t.Errorf("the output schema is %v, want exactly the inheritable vocabulary %v", keys, want)
 	}
 }

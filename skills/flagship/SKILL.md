@@ -172,7 +172,9 @@ A node with no trace prints `no trace was written for <node>` and exits 1 — ne
 
 ### Scopes and `include`
 
-Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/`. A project playbook with the same `name` as a global one **replaces** it for a dispatch into that project; `fs kb list` prints each playbook's `scope` (`global` or the project name) beside its state. `include: <name>` splices that playbook's steps at that position, resolved in the same scope order (project first, then global); a cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
+Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/`. A project playbook with the same `name` as a global one **overrides the fields and sections it declares and inherits the rest** from the global playbook — so a shadow that changes only the agent names only `agent:`, and the engine it runs under stays declared in one file. Declared and absent are not the same as empty: `applies_when:` with no terms is a standing declaration and does not inherit the terms below, while an absent `applies_when` does. A shadow that declares nothing but its name changes nothing and is **refused**. `fs kb get` marks which names a resolved playbook inherited. `fs kb list` prints each playbook's `scope` (`global` or the project name) beside its state.
+
+`include: <name>` is a **separate** mechanism over the same scopes: it splices that playbook's steps at that position, resolved in the same scope order (project first, then global). Inheritance picks which fields and sections the playbook has; the splice then fills them — so a shadow whose `work:` says `- include: <its own name>` ends with the global steps exactly once, not twice. A cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
 
 ### The 13 shipped playbooks
 
