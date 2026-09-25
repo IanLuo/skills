@@ -14,5 +14,21 @@
       "Acceptance is described vaguely, with no pass/fail condition",
       "A concrete acceptance check is stated that the work can be judged against"
     ]
+  },
+  "rung_outcome": {
+    "instructions": "The proposed non-negotiable outcome is a sound milestone bar for the bet it is meant to test.",
+    "criteria": [
+      "The outcome is not falsifiable: two people could not agree on whether it passed, or it names no observable result.",
+      "The outcome is falsifiable, but what it tests is the mechanics of the build rather than whether the project's load-bearing assumption holds.",
+      "The outcome is falsifiable by a person who was not told the intent, and its failure would mean the load-bearing assumption is wrong."
+    ]
+  },
+  "rung_assumptions": {
+    "instructions": "The proposed assumptions are each actioned, and the set covers what the milestone's decisions rest on.",
+    "criteria": [
+      "At least one named assumption has no invalidation trigger, or no consequence if it fails.",
+      "Every named assumption has both, but the set omits something the milestone's decisions actually rest on.",
+      "Every named assumption names what invalidates it and what follows, the load-bearing ones are identified, and the set covers what the milestone rests on."
+    ]
   }
 }

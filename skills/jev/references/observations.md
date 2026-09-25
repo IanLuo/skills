@@ -17,3 +17,5 @@ gate used is the shape it should take.
 Not logged here: the eight-point spread experiment that established the model is not
 degenerate. Those were synthetic states labelled by the same person grading the answers, so
 they cannot show that it *helps*. They are in `evidence.md`.
+| 2026-09-24 | rung_outcome | the proposed bar is sound: an unprimed observer, failure ⇒ the load-bearing assumption is wrong | 1.92 | 0.88 | no — agreed, but surfaced because confidence < 0.9 |
+| 2026-09-24 | rung_assumptions | the four proposed assumptions are the set the milestone rests on | 1.24 | 0.60 | **yes** — the set omitted two things I had parked: whether anything persists between sessions, and who hosts the build the observer opens |
