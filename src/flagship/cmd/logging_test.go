@@ -139,6 +139,74 @@ func TestCLIUnparseableLogLevelRefused(t *testing.T) {
 	}
 }
 
+// refusalLine returns the WARN line a refused command wrote to stderr, as the
+// JSON object the running log is made of.
+func refusalLine(t *testing.T, stderr string) map[string]any {
+	t.Helper()
+	for _, raw := range strings.Split(stderr, "\n") {
+		if !strings.Contains(raw, `"msg":"command refused"`) {
+			continue
+		}
+		var line map[string]any
+		if err := json.Unmarshal([]byte(raw), &line); err != nil {
+			t.Fatalf("refusal line is not one JSON object: %v\n%s", err, raw)
+		}
+		return line
+	}
+	t.Fatalf("no refusal line on stderr:\n%s", stderr)
+	return nil
+}
+
+// AC4: a refusal line carries `project` when — and only when — the invocation
+// named one, which is what makes filtering by project a jq predicate over the
+// whole file rather than over the part of it that happened to succeed. The
+// project is read from the caller's own arguments: `--project P`, or the project
+// half of a `PROJECT:NODE` address (`close --worker P:N`, `report`'s positional).
+// An invocation that names none carries no key at all, rather than a guessed one.
+func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
+	bin := getFS(t)
+
+	cases := []struct {
+		name string
+		args []string
+		want string // the project key's value; "" means the key must be absent
+	}{
+		{"--project",
+			[]string{"dispatch", "--project", "nosuchproject", "--type", "dev-task", "--goal", "x"},
+			"nosuchproject"},
+		{"a --worker address",
+			[]string{"close", "--node", "t-nope", "--worker", "nosuchproject:t-nope", "--decision", "d", "--confirm"},
+			"nosuchproject"},
+		{"report's positional address",
+			[]string{"report", "nosuchproject:t-nope", "--line", "x"},
+			"nosuchproject"},
+		{"named none",
+			[]string{"task", "get", "t-nope"},
+			""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runFSCapture(t, bin, t.TempDir(), testHome(t), nil, tc.args...)
+			if code != 1 {
+				t.Fatalf("exit %d, want 1 (refusal):\n%s%s", code, stdout, stderr)
+			}
+			line := refusalLine(t, stderr)
+			project, present := line["project"]
+			if tc.want == "" {
+				if present {
+					t.Errorf("refusal line carries project %v, want no project key: %v", project, line)
+				}
+				return
+			}
+			if !present || project != tc.want {
+				t.Errorf("refusal line project = %v (present %v), want %q: %v",
+					project, present, tc.want, line)
+			}
+		})
+	}
+}
+
 // AC6: a log write failure must never fail a command. Pointing the sink at an
 // unwritable path leaves the command's exit code and stdout unchanged; the
 // worst that reaches stderr is a WARN.

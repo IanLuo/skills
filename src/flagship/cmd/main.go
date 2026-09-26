@@ -1556,15 +1556,67 @@ func commandName() string {
 	return name
 }
 
-// logRefusal records a refused command: a WARN line naming the command and the
-// reason, so a refusal is visible in the running log even when its envelope is
-// the only thing on stdout. It is best-effort and never fails anything; it is a
-// no-op before the logger is built (an unparseable FS_LOG_LEVEL refuses first).
+// projectOfAddress reads the project half of a `PROJECT:NODE` address, the form
+// `close --worker P:N` and `report`'s positional take. A colon never appears in
+// a node id, so reading one as a qualifier is safe — the rule nodeArg applies.
+// A value with no colon names no project.
+func projectOfAddress(address string) string {
+	project, _, ok := strings.Cut(address, ":")
+	if !ok {
+		return ""
+	}
+	return project
+}
+
+// invocationProject is the project the invocation named, for a refusal line:
+// `--project P`, or the project half of a `PROJECT:NODE` address — `close
+// --worker P:N`, `report`'s positional. It is what the *caller* named and never
+// a derived one, because a refusal fires before anything is resolved and cannot
+// know more than its caller did; empty means the line carries no project key at
+// all rather than a guessed one.
+func invocationProject() string {
+	args := os.Args[1:]
+	for i, arg := range args {
+		value, isProject := "", false
+		switch {
+		case arg == "--project", arg == "--worker":
+			if i+1 >= len(args) {
+				continue
+			}
+			value, isProject = args[i+1], arg == "--project"
+		case strings.HasPrefix(arg, "--project="):
+			value, isProject = strings.TrimPrefix(arg, "--project="), true
+		case strings.HasPrefix(arg, "--worker="):
+			value, isProject = strings.TrimPrefix(arg, "--worker="), false
+		default:
+			continue
+		}
+		if isProject {
+			return value
+		}
+		return projectOfAddress(value)
+	}
+	// report's address is a positional: `fs report PROJECT:NODE --line …`.
+	if len(args) > 1 && args[0] == "report" && !strings.HasPrefix(args[1], "-") {
+		return projectOfAddress(args[1])
+	}
+	return ""
+}
+
+// logRefusal records a refused command: a WARN line naming the command, the
+// project the invocation named and the reason, so a refusal is visible in the
+// running log even when its envelope is the only thing on stdout. It is
+// best-effort and never fails anything; it is a no-op before the logger is built
+// (an unparseable FS_LOG_LEVEL refuses first).
 func logRefusal(reason string) {
 	if logger == nil {
 		return
 	}
-	logger.Warn("command refused", "command", commandName(), "reason", reason)
+	attrs := []any{"command", commandName()}
+	if project := invocationProject(); project != "" {
+		attrs = append(attrs, "project", project)
+	}
+	logger.Warn("command refused", append(attrs, "reason", reason)...)
 }
 
 // output prints a Response as JSON to stdout and exits with appropriate code.
