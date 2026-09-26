@@ -33,6 +33,12 @@ refusals are the point:
      the failure it is guarding against looks exactly like a test that stopped.
  11. a chain longer than the bound exits 1 too, and a short one still resolves,
      so the bound is a bound and not a refusal of everything.
+ 12. the last component can be a REFERENCE to a directory rather than its name:
+     `/x/.` and `/x/y/..` both name `/x`, and `cd //x && pwd -P` answers `//x`.
+     None of the three is a spelling git prints, and each one goes in and comes
+     back out unchanged — a match against git's listing that finds nothing, which
+     a caller reads as "already gone" rather than as the miss it is. That is the
+     leak this closes: a branch left behind, exit 0, nothing said.
 
 Usage: python3 tests/resolve-path/test_resolve_path.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -181,6 +187,32 @@ def main():
         prev = nxt
     code, out, err = run(str(prev), timeout=10)
     check("a chain past the bound exits 1", code == 1, f"exit {code}: {out!r} {err!r}")
+
+    # 12 — references to a directory rather than a name for one. Every one of
+    # these names the same directory as `plain`, and every one has to come back
+    # as `plain`: a caller matches the result against `git worktree list
+    # --porcelain`, so a spelling that comes back unchanged is a worktree the
+    # caller is told is not registered — and a branch it leaves behind, silently.
+    (root / "refs" / "inner").mkdir(parents=True)
+    for label, spelled, want in [
+        ("a trailing /.",               str(plain) + "/.",                          str(real / "plain")),
+        ("two trailing /.",             str(plain) + "/./.",                        str(real / "plain")),
+        ("a trailing /..",              str(root / "refs" / "inner") + "/..",       str(real / "refs")),
+        ("a /.. after a . in the middle", str(root / "refs") + "/./inner/..",       str(real / "refs")),
+        ("a doubled leading slash",     "/" + str(real / "plain"),                  str(real / "plain")),
+        ("a doubled leading slash on a link", "/" + str(link),                      str(real / "target")),
+    ]:
+        code, out, err = run(spelled)
+        check(f"{label} resolves to the directory it names",
+              code == 0 and out == want, f"exit {code}: {out!r} want {str(want)!r} {err!r}")
+
+    # The root is the one path with no last component to append, so the format
+    # that builds every other answer would print it as `//`.
+    for label, spelled in [("the root", "/"), ("a doubled root", "//"),
+                           ("a tripled root", "///")]:
+        code, out, err = run(spelled)
+        check(f"{label} resolves to one slash",
+              code == 0 and out == "/", f"exit {code}: {out!r} {err!r}")
 
     print()
     if FAILS:

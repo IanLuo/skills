@@ -42,6 +42,18 @@
 # and this gives up in the same place, at the same exit code as any other path it
 # cannot resolve, so the caller refuses instead of waiting.
 #
+# A last component can also be a reference to a directory rather than a name for
+# one — `/x/.`, `/x/y/..` — and a leading run of slashes can be doubled, which
+# POSIX leaves to the implementation and the shell does not fold for us: `cd //x
+# && pwd -P` answers `//x`. None of those is a spelling git prints, and every one
+# of them used to come back out exactly as it went in, so a caller that matched
+# the result against `git worktree list --porcelain` matched nothing and read
+# that as "already gone". In the teardown's branch step that was a branch left
+# behind — exit 0, nothing said — which is the same failure mode as the deletion
+# these callers were just fixed for, pointed the other way. So the spelling is
+# made canonical HERE, once, where the symlink is folded too; no caller has to
+# know which spellings git would have printed.
+#
 # Usage:
 #   resolve-path.sh PATH
 #
@@ -64,11 +76,51 @@ fi
 
 path="$1"
 
+# A run of leading slashes is one slash. `/x` and `//x` name the same directory
+# but are not the same string, and the shell keeps the doubled one all the way
+# through `cd ... && pwd -P`, so it would reach the caller unchanged.
+case "$path" in
+    //*)
+        rest="${path#/}"
+        while [ "${rest#/}" != "$rest" ]; do rest="${rest#/}"; done
+        path="/$rest"
+        ;;
+esac
+
 # A trailing slash names the same directory and hides a symlink at the end of
 # the path from -L, so it goes first. "/" itself keeps its one slash.
 while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
     path="${path%/}"
 done
+
+# A trailing `.` or `..` is a reference to a directory, not a name for one, and
+# it has to go before the last component is read: `dirname /x/.` is `/x` and
+# `basename /x/.` is `.`, so the two put the spelling back together exactly as
+# it came in. Anywhere earlier in the path the kernel folds these for us, which
+# is why this looks only at the end — and why it repeats, since folding one can
+# expose another.
+while :; do
+    case "$path" in
+        */.)  path="${path%/.}" ;;
+        */..) rest="${path%/..}"
+              case "$rest" in
+                  /*)  parent="${rest%/*}"; [ -n "$parent" ] || parent="/" ;;
+                  */*) parent="${rest%/*}" ;;
+                  *)   parent="." ;;
+              esac
+              path="$parent"
+              ;;
+        *) break ;;
+    esac
+done
+
+# A path that was nothing but `.` or `..` folds to one of them, and neither can
+# be split into a directory and a last component at all. It is a directory that
+# exists — a path that did not could not have been asked about — so `cd` answers
+# it, which is the same resolution the directory below gets.
+case "$path" in
+    .|..) path="$(cd "$path" 2>/dev/null && pwd -P)" || exit 1 ;;
+esac
 
 # Follow a final symlink, however many of them there are — up to the kernel's
 # own limit, past which the chain is a cycle or a path nothing would resolve.
@@ -87,6 +139,15 @@ while [ -L "$path" ]; do
             ;;
     esac
 done
+
+# The root has no last component to append, and building one from the format
+# below would print it as `//` — a spelling nothing prints. A path can fold to
+# the root too, now that a trailing `..` is folded: `/x/..` for any top-level x
+# is the root and not `x`'s parent as a spelling.
+if [ "$path" = "/" ]; then
+    printf '/\n'
+    exit 0
+fi
 
 # Resolve the directory that holds it. This is the part that folds /tmp to
 # /private/tmp, and the part that fails when the path is beyond asking about.

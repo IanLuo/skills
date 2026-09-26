@@ -166,6 +166,67 @@ func TestCodeTeardownBranchStepAcrossSpellingsAndStates(t *testing.T) {
 	}
 }
 
+// The spelling of the recorded path, which need not be the spelling git prints.
+//
+// The steps resolve the recorded path before they compare it to git's listing,
+// so that both sides are spelled the same way — but the resolution fold a
+// trailing `.` or `..` only in the directory above the path, so a recorded path
+// spelled `/x/.`, `/x/y/..` or `//x` came back out exactly as it went in and
+// matched nothing. A match that finds nothing reads as "git registers no
+// worktree there", so the branch step SKIPPED in silence — exit 0, no message —
+// and left the branch behind. That is the deletion defect pointed the other way:
+// invisible, and it accumulates. The postcondition missed the same way, and
+// there the miss is worse, because the gate then reported success over the very
+// worktree it exists to catch.
+//
+// Nothing but the spelling varies here: each of these names the directory git
+// registered, so each has to behave exactly like the canonical spelling does.
+// The `..` spelling is walked out of a subdirectory that a worktree whose
+// checkout is gone no longer has, which is the case the fold is textual for.
+func TestCodeTeardownResolvesTheSpellingOfTheRecordedPath(t *testing.T) {
+	spellings := []struct {
+		name string
+		of   func(p string) string
+	}{
+		{"a trailing /.", func(p string) string { return p + "/." }},
+		{"a /.. past a subdirectory", func(p string) string { return p + "/sub/.." }},
+		{"a doubled leading slash", func(p string) string { return "/" + p }},
+	}
+
+	for _, live := range []bool{true, false} {
+		for _, sp := range spellings {
+			t.Run(fmt.Sprintf("branch %s live=%v", sp.name, live), func(t *testing.T) {
+				repo, branch, p := worktreeInState(t, live, false, true)
+
+				out, err := runTeardownStep(t, branchStep(t), repo, map[string]string{
+					"FS_WORKTREE_PATH": sp.of(p), "FS_WORKTREE": "wX",
+				})
+				if err != nil {
+					t.Fatalf("the branch step refused a path that differs only in spelling: %v\n%s", err, out)
+				}
+				if gitHasBranch(t, repo, branch) {
+					t.Errorf("branch %s survived: %s names the directory git registered, so the "+
+						"step matched nothing and skipped in silence:\n%s", branch, sp.of(p), out)
+				}
+			})
+		}
+	}
+
+	for _, sp := range spellings {
+		t.Run("postcondition "+sp.name, func(t *testing.T) {
+			repo, _, p := worktreeInState(t, true, false, true)
+
+			out, err := runTeardownStep(t, registrationCheck(t), repo, map[string]string{
+				"FS_WORKTREE_PATH": sp.of(p), "FS_WORKTREE": "wX",
+			})
+			if err == nil {
+				t.Errorf("the postcondition passed while git still registers the worktree, reached "+
+					"as %s:\n%s", sp.of(p), out)
+			}
+		})
+	}
+}
+
 // The postcondition that asserts git no longer registers the worktree, after the
 // steps that claim to have removed it. It matched the recorded path the same
 // parent-only way the branch step did, so a symlinked path matched nothing and
