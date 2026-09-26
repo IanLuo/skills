@@ -36,7 +36,7 @@ work:
   # review found" pulls unrelated locked-doc defects into an unrelated dispatch,
   # and the review that found them reports the same rewrite as fixes.
   - say: classify every finding before you report it — against the change (the change's own acceptance criterion is false, or the change introduced the defect) or discovered by the change (a pre-existing defect the review happened to see). The test is the revert: a finding that survives reverting the change was not caused by it. Against-the-change findings block the dispatch under review; discovered ones never do
-  - say: file every discovered finding as a `kind: gap` node naming the scope it belongs to (`fs task add --project <the scope it belongs to> --kind gap --found-by <your node> --goal ...`) — the backlog is where a defect outside this change belongs, and fixing it here is the scope creep the split exists to stop
+  - say: report every discovered finding to the cap with `fs report <your project>:<your node> --question --line "<the finding, and where>"` and let the cap file it as the `kind: gap` node in the scope it belongs to — the backlog is where a defect outside this change belongs, and fixing it here is the scope creep the split exists to stop; the report is the obligation and the filing is not, because a gap node names the scope it belongs to, choosing that scope is a coordinating act, and a write into the cap's own scope is refused from your pane, which holds a delivery record
   # The reviewer's contract, and the cap's. Neither is a mechanism, because the
   # judgement is not mechanizable: "is this finding in scope for this change" is
   # the same kind of call as fs deciding which agent kinds exist, and fs holds no

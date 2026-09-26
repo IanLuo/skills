@@ -23,10 +23,16 @@ const (
 	// progress: the harness stopped and only a person can move it, so it is
 	// reported beside ready rather than left to look like thinking.
 	StateBlocked = "blocked"
-	// StateRunning: the worker's node is not done and herdr still has the agent,
-	// working or idle. Idle is included deliberately: an agent between two tool
-	// calls is not blocked, and a state that fires on both is a state the cap
-	// learns to ignore.
+	// StateRunning: the worker's node is not done, herdr has the agent, and the
+	// state it reports is neither `blocked` nor `done` — working and idle among
+	// them, and also `unknown`, an unrecognised value and an empty one, because
+	// the switch below has `running` as its default arm. (No agent at all is
+	// StateGone, not this.) Idle is included deliberately: an agent between two
+	// tool calls is not blocked, and a state that fires on both is a state the
+	// cap learns to ignore. The default errs the same way and for the same
+	// reason: a state that could not be read is not a worker parked on a prompt,
+	// and reporting it as one would spend the cap's attention on a claim herdr
+	// never made.
 	StateRunning = "running"
 	// StateUnseen: the worker's node is not done but herdr reports the agent
 	// done — work that finished and nobody looked at.
