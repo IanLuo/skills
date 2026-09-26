@@ -46,6 +46,16 @@ type CloseRequest struct {
 	Confirm   bool   // the cap has answered the plan's ask steps
 	Abandoned bool   // close without the delivery, worker, and trace gates
 	Reason    string // why it is being abandoned; required with Abandoned
+
+	// WithoutReview is why this close proceeds with no review of the change
+	// (--without-review). The exit gate asks the question as a `check:`, which
+	// --confirm cannot answer, so a dispatch that legitimately needs no review
+	// would otherwise be unclosable. It is the question's own override, the way
+	// --allow-unresolved is the unresolved-dispatch gate's: it skips nothing but
+	// the one gate, it is exported to the exit steps as FS_WITHOUT_REVIEW, and a
+	// close that used it records the reason as a decision on the node — so a
+	// skipped review is visible rather than impossible.
+	WithoutReview string
 }
 
 // CloseResult is the close-out's data payload. Worker names the node this
@@ -227,7 +237,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		}
 	}
 
-	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, plan, req.Confirm, req.Abandoned)
+	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, req.WithoutReview, plan, req.Confirm, req.Abandoned)
 	if err != nil {
 		return errResp(err.Error())
 	}
@@ -235,6 +245,14 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	result.Actions = run.Actions
 	for _, confirmation := range run.Confirmations {
 		if err := recordDecision(h, req.NodeID, confirmation); err != nil {
+			return errResp(err.Error())
+		}
+	}
+	// The escape is recorded where every other override is: on the node it was
+	// granted for, after the gate it skipped has run, so it names a skip that
+	// actually happened rather than one that was about to.
+	if req.WithoutReview != "" {
+		if err := recordDecision(h, req.NodeID, withoutReviewDecision(req.WithoutReview)); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -321,7 +339,7 @@ func closeBatch(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *kno
 		}
 	}
 
-	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, "", "", plan, req.Confirm, req.Abandoned)
+	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, "", "", "", plan, req.Confirm, req.Abandoned)
 	if err != nil {
 		return errResp(err.Error())
 	}
@@ -709,7 +727,7 @@ type exitRun struct {
 // is a decision about the work, not a licence to leak the tree it ran in — and
 // one that fails is a warning, never a refusal, for the same reason: a stuck
 // teardown must not keep a node open.
-func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
+func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
 	steps, err := flatten(kc, plan, knowledge.MomentExit)
 	if err != nil {
 		return exitRun{}, fmt.Errorf("close: %v", err)
@@ -757,8 +775,11 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 	// tell "this dispatch named no cards" from "this step has no env". FS_BATCH
 	// is the batch node when this dispatch is a member of one, empty otherwise:
 	// it is the marker code's teardown defers on, so a member's tree is owned by
-	// the batch, not the member.
-	env := exitEnv(delivery, capNodeID, integrates, batch)
+	// the batch, not the member. FS_WITHOUT_REVIEW is the same shape of marker
+	// for the review gate: code's exit check reads it and stands down when the
+	// cap has given a reason, so the one skip that gate has is a visible line in
+	// a playbook rather than a name fs matches on in Go.
+	env := exitEnv(delivery, capNodeID, integrates, batch, withoutReview)
 
 	var run exitRun
 	checks, asks, says := 0, 0, 0
@@ -963,7 +984,14 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // here too because close is the other half of a plan: a `--tag spec` dispatch
 // can run its whole exit gate without a dispatch having been prepared in this
 // process.
-func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch string) []string {
+//
+// FS_WITHOUT_REVIEW is the cap's --without-review reason, empty when the flag
+// was not given. It is exported rather than kept in Go because the gate it
+// answers is a playbook step: a check cannot be answered with --confirm, so the
+// step itself has to be able to see that the cap took responsibility for
+// closing without a review. Empty means "no reason was given", and the step
+// must treat it as unset — the same rule FS_CARDS and FS_BATCH are held to.
+func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview string) []string {
 	worker := ""
 	if delivery.Project != "" && delivery.Node != "" {
 		worker = delivery.Project + ":" + delivery.Node
@@ -979,8 +1007,17 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch strin
 		"FS_WORKTREE=" + delivery.Worktree,
 		"FS_WORKTREE_PATH=" + delivery.WorktreePath,
 		"FS_BATCH=" + batch,
+		"FS_WITHOUT_REVIEW=" + withoutReview,
 		"FS_SCRIPTS=" + scriptsDir(),
 	}
+}
+
+// withoutReviewDecision is the durable record of a close that skipped the review
+// gate: the flag that waived it, and the reason the cap gave. It is one line so
+// a reader of the node sees a skipped review rather than inferring one from a
+// check that passed without an explanation.
+func withoutReviewDecision(reason string) string {
+	return "--without-review waived the review gate: " + reason
 }
 
 // checkDir returns the directory the exit checks run in: the worktree the

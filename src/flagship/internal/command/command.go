@@ -92,6 +92,10 @@ type TaskInfo struct {
 	// Integrates names the cap-scope dispatch node an integration dispatch
 	// merges. It is the structural link, read from the task-created payload.
 	Integrates string `json:"integrates,omitempty"`
+	// Reviews names the cap-scope dispatch node a review dispatch reads. Same
+	// kind of link, opposite direction, and never the same value: a dispatch may
+	// carry either, both, or neither.
+	Reviews string `json:"reviews,omitempty"`
 }
 
 // StatusResult is the data payload for fs status.
@@ -191,14 +195,15 @@ func (h *Handler) ProjectCreate(name, rootPath string) Response {
 
 // TaskAdd appends a task-created event of the default kind, work. AC2.
 func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response {
-	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", parentNodeID)
+	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", "", parentNodeID)
 }
 
 // TaskAddKind appends a task-created event carrying its structural kind — and,
 // for a gap, the node that noticed it; for an integration, the member it
-// integrates. It is the write side of the kind the dispatch gates and fs gaps
-// read, and of the integrates link the member's exit gate reads.
-func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates string, parentNodeID *string) Response {
+// integrates; for a review, the dispatch whose change it reads. It is the write
+// side of the kind the dispatch gates and fs gaps read, and of the two links
+// the member's exit gate and a dispatch's close each read.
+func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates, reviews string, parentNodeID *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -215,6 +220,11 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	}
 	if integrates != "" {
 		if err := validIntegrates(integrates); err != nil {
+			return errResp(err.Error())
+		}
+	}
+	if reviews != "" {
+		if err := validReviews(reviews); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -243,6 +253,9 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	}
 	if integrates != "" {
 		payload["integrates"] = integrates
+	}
+	if reviews != "" {
+		payload["reviews"] = reviews
 	}
 	data, _ := json.Marshal(payload)
 
@@ -285,6 +298,17 @@ func validNodeRef(ref string) error {
 func validIntegrates(ref string) error {
 	if strings.ContainsAny(ref, ": \t") {
 		return fmt.Errorf("integrates must be a bare node id (e.g. t-1a2b3c4d), got %q", ref)
+	}
+	return nil
+}
+
+// validReviews refuses a reviews link that is not a bare node id, for the same
+// reason and with the same shape as validIntegrates: it names a node in the
+// review's own scope, so a qualified or malformed value must fail at write time,
+// where it can still be corrected.
+func validReviews(ref string) error {
+	if strings.ContainsAny(ref, ": \t") {
+		return fmt.Errorf("reviews must be a bare node id (e.g. t-1a2b3c4d), got %q", ref)
 	}
 	return nil
 }
@@ -948,6 +972,7 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 		Knowledge:    node.Knowledge,
 		BlockCheck:   node.BlockCheck,
 		Integrates:   node.Integrates,
+		Reviews:      node.Reviews,
 	})
 	for _, child := range node.Children {
 		collectTasks(child, out)

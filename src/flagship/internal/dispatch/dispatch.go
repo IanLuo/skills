@@ -164,6 +164,11 @@ type PrepareRequest struct {
 	Cards      []string
 	Integrates string
 
+	// Reviews names the cap-scope dispatch node whose change this dispatch
+	// reads (--reviews). Empty for a dispatch that reviews nothing; it is a
+	// different question from Integrates, which names what this dispatch merges.
+	Reviews string
+
 	// Tags are declared situation terms (`k` or `k=v`), on top of the derived
 	// `type=<taskType>` and `engine=herdr`.
 	Tags []string
@@ -222,6 +227,11 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	}
 
 	member, err := integrateMember(h, req.Integrates)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+
+	reviewed, err := reviewedDispatch(h, req.Reviews)
 	if err != nil {
 		return errResp("dispatch: " + err.Error())
 	}
@@ -304,7 +314,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	// entry step's outcome on the record. It is not left behind by a refusal: a
 	// refused entry gate rolls it back below, marked done with the refusal as
 	// its decision, so the attempt is legible and no open dispatch is invented.
-	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member, creates, batch)
+	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member, reviewed, creates, batch)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
@@ -664,10 +674,43 @@ func integrateMember(h *command.Handler, integrates string) (string, error) {
 	return member, nil
 }
 
+// reviewedDispatch resolves a --reviews value to the bare id of the cap-scope
+// dispatch node it names, or to "" when the flag was not given.
+//
+// It refuses a node that does not exist, and one that is not a dispatch node,
+// naming it — the same two questions integrateMember asks, asked the same way,
+// and for the same reason: the link is written into the review's task-created
+// payload and events are immutable, so a wrong link could never be corrected.
+//
+// The two flags are not each other's synonyms. --integrates names what this
+// dispatch merges (an integration looks forward, at the member it lands);
+// --reviews names whose change this dispatch reads (a review looks backward, at
+// the dispatch it follows). Either, both, or neither — they are separate fields.
+func reviewedDispatch(h *command.Handler, reviews string) (string, error) {
+	if reviews == "" {
+		return "", nil
+	}
+
+	reviewed, err := bareNodeID(reviews)
+	if err != nil {
+		return "", err
+	}
+	node, err := capNode(h, reviewed)
+	if err != nil {
+		return "", fmt.Errorf("--reviews %s: %v", reviews, err)
+	}
+	if node.Kind != query.KindDispatch {
+		return "", fmt.Errorf(
+			"--reviews %s names a %q node, not a %s node — a review reads a dispatch node's change",
+			reviews, node.Kind, query.KindDispatch)
+	}
+	return reviewed, nil
+}
+
 // bareNodeID strips an optional "<scope>:" qualifier from a node reference. A
 // node id is "t-<hex>" — a colon never appears in one — so a qualified id is
-// unambiguously qualified. Only capScope is accepted: an integration's member
-// lives in the cap's own scope.
+// unambiguously qualified. Only capScope is accepted: a member, and the
+// dispatch a review reads, both live in the cap's own scope.
 func bareNodeID(ref string) (string, error) {
 	if ref == "" {
 		return "", errors.New("a member cap node is required")
@@ -726,6 +769,68 @@ func Integrated(h *command.Handler, member string) command.Response {
 type IntegratedResult struct {
 	Member       string `json:"member"`
 	IntegratedBy string `json:"integrated_by"`
+}
+
+// Reviews answers a close's question: was this dispatch's change reviewed? It
+// returns the done review dispatch that names this node, or refuses.
+//
+// It is the exit gate's half of the sequencing the review's own protocol cannot
+// enforce. `independent-review` already decides *whether every finding is
+// dispositioned*; what nothing noticed was whether a review happened at all, or
+// whether it happened before the close it was about. A done review dispatch
+// carrying `reviews: <this node>` is the record that it did — done, and not
+// merely dispatched, because a review is not finished until its own exit gate
+// has refused or accepted every finding.
+//
+// It deliberately does not read the findings. A fixed one leaves no record of
+// itself and an accepted one is a sentence, so no check could decide that from
+// the store; asking a second question here would be a gate reporting compliance
+// it never tested. This asks the one thing the record can answer.
+func Reviews(h *command.Handler, node string) command.Response {
+	ref, err := bareNodeID(node)
+	if err != nil {
+		return errResp("reviews: " + err.Error())
+	}
+
+	// cap has no registered root, and nothing here needs one: the read is of the
+	// cap's own scope.
+	resp := h.StatusIn(capScope, "")
+	if !resp.OK {
+		return errResp("reviews: " + resp.Error)
+	}
+	result, ok := resp.Data.(command.StatusResult)
+	if !ok {
+		return errResp("reviews: read scope " + capScope + ": no status payload")
+	}
+
+	// A review that exists but has not finished is named as such: "not reviewed"
+	// and "reviewed, still open" are different facts, and a close that read the
+	// second as the first would send the cap to dispatch a review it already has.
+	open := ""
+	for _, task := range result.Tasks {
+		if task.Reviews != ref || task.Kind != query.KindDispatch {
+			continue
+		}
+		if task.Status == "done" {
+			return command.Response{OK: true, Data: ReviewsResult{Node: ref, ReviewedBy: task.NodeID}}
+		}
+		open = task.NodeID
+	}
+	if open != "" {
+		return errResp(fmt.Sprintf(
+			"reviews: %s is not reviewed — the review dispatch %s names it but is not done; finish it (its own exit gate refuses until every finding is dispositioned), then close again",
+			ref, open))
+	}
+	return errResp(fmt.Sprintf(
+		"reviews: %s is not reviewed — no dispatch names it; review it with `fs dispatch --project <project> --type review-task --goal \"...\" --reviews %s`, and close only once that dispatch is done",
+		ref, ref))
+}
+
+// ReviewsResult is the data payload of fs reviews: which dispatch was asked
+// about, and the done review dispatch that reads it.
+type ReviewsResult struct {
+	Node       string `json:"node"`
+	ReviewedBy string `json:"reviewed_by"`
 }
 
 // resolveCreates reads the node kind a dispatch leaves behind from its plan:
@@ -1193,16 +1298,17 @@ func findLockedDocs(root string) []string {
 }
 
 // recordCapNode writes the cap's two events for this dispatch: the node itself —
-// carrying the member it integrates (when it integrates one), the node kind the
-// plan declared (creates), and the batch it is a member of (as its parent) — and
-// the decision naming the project the work went to. It returns the node id so
-// the cap can read its own dispatch back.
-func recordCapNode(h *command.Handler, taskType, goal, project, integrates string, kind query.Kind, parent string) (string, error) {
+// carrying the member it integrates (when it integrates one), the dispatch it
+// reads (when it reviews one), the node kind the plan declared (creates), and
+// the batch it is a member of (as its parent) — and the decision naming the
+// project the work went to. It returns the node id so the cap can read its own
+// dispatch back.
+func recordCapNode(h *command.Handler, taskType, goal, project, integrates, reviews string, kind query.Kind, parent string) (string, error) {
 	var parentPtr *string
 	if parent != "" {
 		parentPtr = &parent
 	}
-	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, parentPtr)
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, reviews, parentPtr)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}

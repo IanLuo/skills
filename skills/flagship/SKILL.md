@@ -182,15 +182,15 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 
 | name | sections | applies_when | order | job |
 |---|---|---|---|---|
-| `cap` | cap | — | 10 | the cap's standing rules: hold the plan, elicit decisions, `fs pending` first, close what's ready, file a gap when dispatch refuses for want of a playbook. |
+| `cap` | cap | — | 10 | the cap's standing rules: hold the plan, elicit decisions, `fs pending` first, close what's ready, file a gap when dispatch refuses for want of a playbook. Carries the **order** rule as a step: after a worker reports and before you close, dispatch the review with `--reviews <the work's cap node>`, read it when it closes, disposition what it found — the gate that enforces the order fires too late to be the reminder. |
 | `herdr` | cap | `engine=herdr` | 20 | herdr-operative rules: never wait, never poll — `fs pending` is the read. |
 | `worker` | work | — | 10 | every worker's standing obligations: note your node, never invent one, file gaps as `kind: gap`, a claim without its command is not evidence. |
-| `code` | entry, exit | `code` | 10 | one file for the code participant: its `entry:` is `test -f AGENTS.md`, the locked-doc grep, `$FS_SCRIPTS/check-specs.sh` (the locked specs still describe the code they name), and the asks a locked PRD names this deliverable and the acceptance check is stated; its `exit:` is the ask that the worker's node is complete, then the declared teardown (branch, worktree, herdr workspace) and its postconditions. Declares `engine: herdr` because those `do` steps call it. |
+| `code` | entry, exit | `code` | 10 | one file for the code participant: its `entry:` is `test -f AGENTS.md`, the locked-doc grep, `$FS_SCRIPTS/check-specs.sh` (the locked specs still describe the code they name), and the asks a locked PRD names this deliverable and the acceptance check is stated; its `exit:` is the ask that the worker's node is complete, then the **review gate** — `[ -n "$FS_WITHOUT_REVIEW" ] || fs reviews "$FS_NODE"`, a `check:` rather than an `ask:` because a record stands behind it and `--confirm` must not wave it through, placed before the teardown because the teardown removes the tree a review reads — then the declared teardown (branch, worktree, herdr workspace) and its postconditions. Declares `engine: herdr` because those `do` steps call it. |
 | `plan` | work | `code` | 20 | the locked spec governs; state the plan; ask the cap when the spec is silent, never improvise. |
 | `development` | work | `code` | 30 | the code bar: smallest structure, surgical diffs, own your orphans, refactor as its own step. |
 | `tdd` | work | `code` | 40 | red → green → broader check; record why a test was skipped. |
 | `review` | work | `code` | 50 | re-read your own diff against the bar before claiming done; record what it flags. |
-| `independent-review` | work, exit | `type=review-task` | 10 | the *independent* reviewer's protocol — not `review`, which is self-review: this one loads into a `review-task` dispatch and reads somebody else's change, and the two keep out of each other's plans. Its `work:` has the reviewer read the change rather than the worker's summary, classify every finding *against the change* (blocks) or *discovered by the change* (a `kind: gap` node, never blocks — the test is the revert), and report without fixing and without deciding what blocks, because triage is the cap's. Its `exit:` is the termination condition: **every finding dispositioned** — `fixed`, `filed` or `accepted` with a reason. It is an `ask:`, not a `check:`; the comment says why no check can decide it. |
+| `independent-review` | work, exit | `type=review-task` | 10 | the *independent* reviewer's protocol — not `review`, which is self-review: this one loads into a `review-task` dispatch and reads somebody else's change, and the two keep out of each other's plans. Its `work:` has the reviewer read the change rather than the worker's summary, classify every finding *against the change* (blocks) or *discovered by the change* (a `kind: gap` node, never blocks — the test is the revert), and report without fixing and without deciding what blocks, because triage is the cap's. Its `exit:` is the termination condition: **every finding dispositioned** — `fixed`, `filed` or `accepted` with a reason. It is an `ask:`, not a `check:`; the comment says why no check can decide it. A review is **not itself reviewed**, structurally: `code`'s gate is selected by the declared `code` tag, which a `--type review-task` dispatch does not carry, so it cannot enter a review's plan. |
 | `research` | work | `research` | 20 | sources named on the node; say what would falsify the answer. |
 | `batch` | entry, exit | `type=batch` | 10 | the fan-out's own protocol, one file: its `entry:` is the one gate over the cards (`test -d .git`, `herdr worktree list --cwd .`, `$FS_SCRIPTS/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review), and its `exit:` is the one teardown (`fs batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions). Declares `creates: batch` and `engine: herdr`. |
 | `member` | work, exit | `member` | 10 | one file for the whole member: its `work:` is what a member's worker is told (your worktree is the batch's, never touch main, your branch is merged by a dispatched integration), and its `exit:` is `fs integrated $FS_NODE` plus the read ask. No teardown — the member's tree is the batch's. |
@@ -235,7 +235,7 @@ fs kb reset NAME --yes                 # restore the shipped default
 | `stale` | the shipped default has moved on since it was seeded |
 | `local` | no shipped default with that name — hand-written |
 
-A new binary never rewrites a playbook the cap is reading: a moved default shows as `stale` and is applied only by `kb reset`. Playbooks the binary does not ship are written by hand or with `kb add`. `fs kb list` also reports `used_by` — which tags load a playbook and, for a dispatch playbook, which moments (`prompt: …` for a playbook with a `cap:` section, `dispatch: … (entry, exit)` otherwise, `none` when nothing selects it) — and the `scope` it came from.
+A new binary never rewrites a playbook the cap is reading: a moved default shows as `stale` and is applied only by `kb reset` — **`fs bootstrap` reports `kept` and changes nothing**, so an edited shipped playbook is inert in the install until someone runs `fs kb reset <name>` for it. `fs kb list` is where that shows, and nothing refuses on it: a stale `code` closes dispatches under the old protocol and says nothing. Playbooks the binary does not ship are written by hand or with `kb add`. `fs kb list` also reports `used_by` — which tags load a playbook and, for a dispatch playbook, which moments (`prompt: …` for a playbook with a `cap:` section, `dispatch: … (entry, exit)` otherwise, `none` when nothing selects it) — and the `scope` it came from.
 
 ## Dispatch and close-out
 
@@ -251,17 +251,28 @@ fs dispatch --project P --type T --goal "Implement auth" [--tag K[=V]] [--also N
 # dispatch runs in, so close can remove it; --worktree-new creates one instead.
 # --cards names the batch's cards (comma-separated, repeatable); every check
 # step sees them as $FS_CARDS. --integrates names the member cap node an
-# integration merges. --batch names the batch node this dispatch is a member of.
-fs dispatch --deliver --project P --type T --goal "Implement auth" [--cards CARD[,CARD…]] [--integrates MEMBER_NODE] [--batch BATCH_NODE] [--worktree WS] [--worktree-new]
+# integration merges; --reviews names the cap node whose change this dispatch
+# reads. They are not the same link: an integration names what it merges and
+# lands after it, a review names what it reads and runs before the dispatch it
+# is about closes. A dispatch may carry either, both, or neither.
+fs dispatch --deliver --project P --type T --goal "Implement auth" [--cards CARD[,CARD…]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--batch BATCH_NODE] [--worktree WS] [--worktree-new]
 
 # Is a batch complete? Exit 0 iff every member has a done integration naming it;
 # exit 1 naming the unintegrated ones. A batch with no members is refused.
 fs batch BATCH_NODE
 
+# Was this dispatch's change reviewed? Exit 0 iff a done dispatch carries
+# reviews: <this node>; exit 1 saying which it found — nothing names it, or one
+# does and is not done yet. This is what code's exit gate runs.
+fs reviews CAP_NODE
+
 # Close out a dispatch: run the exit phase of the plan it recorded, then close
 # its pane, then mark the node done. Refuses while the trace does not account
 # for every step of that plan, naming the step. --confirm answers the ask steps.
-fs close --node CAP_NODE [--worker P:NODE] --decision "verdict" [--confirm]
+# --without-review is the review gate's own override, and it requires a reason:
+# the gate is a check, which --confirm cannot answer, and the reason is recorded
+# as a decision on the node so a skipped review is visible rather than silent.
+fs close --node CAP_NODE [--worker P:NODE] --decision "verdict" [--confirm] [--without-review "why"]
 
 # Close a dispatch without a verdict. A delivered one still tears down its pane
 # and worktree.
@@ -358,6 +369,7 @@ Exit steps get the closing dispatch's own inputs in their environment:
 | `FS_WORKER` | the worker's node as `<project>:<node>`; empty without one |
 | `FS_CARDS` | empty — a close has no batch — but present, not missing |
 | `FS_INTEGRATES` | the member this integration merges; empty when it merges none |
+| `FS_WITHOUT_REVIEW` | the `--without-review` reason; empty when the flag was not given. A step that gates on a review stands down on a non-empty value, and on empty must run its check |
 | `FS_PANE` | the pane the delivery opened |
 | `FS_WORKTREE` | the worktree workspace the dispatch ran in; empty without one |
 | `FS_WORKTREE_PATH` | that worktree's checkout path; empty without one |

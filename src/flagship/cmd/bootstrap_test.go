@@ -626,7 +626,26 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 			t.Errorf("code's exit postcondition %q is not about this dispatch's own worktree", body)
 		}
 	}
-	if pre := preconditionsOf(dev); len(pre) != 0 {
-		t.Errorf("code's exit pre-teardown checks = %v, want none: neither a clean tree nor a merged branch can be made true here", pre)
+	// One pre-teardown check, and it is about this dispatch's own record rather
+	// than about the state of the repo: a clean tree and a merged branch are
+	// checks a close cannot make true, because the repo is routinely dirty with
+	// another agent's work. The review gate is the one question of that shape
+	// that CAN be answered — the cap dispatches a review, and the refusal names
+	// the command that does it — so it is admitted here, and the rule the old
+	// assertion was protecting is kept by asserting the shape rather than the
+	// count.
+	pre := preconditionsOf(dev)
+	if len(pre) != 1 || !strings.Contains(pre[0], `fs reviews "$FS_NODE"`) {
+		t.Errorf("code's exit pre-teardown checks = %v, want the review gate on $FS_NODE alone", pre)
+	}
+	for _, body := range pre {
+		if !strings.Contains(body, "FS_WITHOUT_REVIEW") {
+			t.Errorf("code's exit check %q has no --without-review guard: a dispatch that needs no review would be unclosable", body)
+		}
+		for _, world := range []string{"git status", "merge-base"} {
+			if strings.Contains(body, world) {
+				t.Errorf("code's exit check %q asserts the state of the repo, which this close cannot make true", body)
+			}
+		}
 	}
 }

@@ -96,7 +96,7 @@ var cmdSpecs = map[string]cmdSpec{
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
 
 The plan is the playbooks whose applies_when the dispatch's tags satisfy,
 ordered by the order they declare and then by name. The tags are
@@ -137,6 +137,14 @@ the cap scope and be a dispatch node; the link is recorded on this dispatch's ow
 task-created payload, so fs integrated can answer the member's question from the
 record rather than from a goal string.
 
+--reviews names the cap node whose change this dispatch reviews. It must exist
+in the cap scope and be a dispatch node, and the link is recorded on this
+dispatch's own task-created payload. It is not --integrates: an integration names
+what it merges and lands after it, a review names what it reads and runs before
+the dispatch it is about closes. A dispatch may carry either, both, or neither.
+fs reviews <CAP_NODE> is the read side — the check a close runs to ask whether
+its change was reviewed.
+
 --batch names the batch node this dispatch is a member of. It must be a
 kind: batch node; the member's cap node is recorded as the batch's child
 (parent_node_id), and the tag member is derived so the member playbooks load.
@@ -147,14 +155,15 @@ recorded on the delivery exactly as --worktree records them, so the existing
 teardown removes them with no new flags.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--cards": true, "--integrates": true, "--batch": true,
+			"--cards": true, "--integrates": true, "--reviews": true,
+			"--batch": true,
 			"--tag": true, "--also": true, "--without": true,
 			"--confirm": false, "--allow-unresolved": false,
 			"--deliver": false, "--worktree": true, "--worktree-new": false,
 		},
 	},
 	"close": {
-		usage: `Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT [--confirm]
+		usage: `Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT [--confirm] [--without-review REASON]
        fs close --node CAP_NODE --abandoned --reason TEXT
 
 --abandoned closes a dispatch without a verdict, delivered or not. One that was
@@ -162,6 +171,13 @@ never delivered records "abandoned, never delivered: <reason>"; one that was
 delivered records "abandoned after delivery to <project>:<node>: <reason>". It
 skips the exit phase's checks and asks, but not its declared actions: what the
 delivery opened is still torn down, and an action that fails is a warning.
+
+--without-review is the review gate's own override, and it is required, not
+optional: the exit phase asks whether this change was reviewed as a check, and
+--confirm answers an ask, never a check. So a dispatch that legitimately needs no
+review is closed with --without-review "<why>", which proceeds and records the
+reason as a decision on the node. An unrecorded skip does not exist: the point is
+that a skipped review is visible, not that it is impossible.
 
 The exit phase is the plan's phase: exit playbooks, in the order the plan
 recorded. close refuses while the dispatch's trace does not account for every
@@ -180,6 +196,9 @@ what the delivery opened:
   FS_WORKER         the worker's node as "<project>:<node>"; empty without one
   FS_CARDS          empty — a close has no batch — but present, not missing
   FS_INTEGRATES     the member this integration merges; empty when it merges none
+  FS_WITHOUT_REVIEW the --without-review reason, empty when the flag was not
+                    given; a step that gates on a review stands down on a
+                    non-empty value, and on empty must run its check
   FS_PANE           the pane the delivery opened
   FS_WORKTREE       the worktree workspace the dispatch ran in; empty without one
   FS_WORKTREE_PATH  that worktree's checkout path; empty without one
@@ -191,6 +210,7 @@ project root, so an action that removes the worktree does not stand inside it.`,
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
 			"--confirm": false, "--abandoned": false, "--reason": true,
+			"--without-review": true,
 		},
 	},
 	"unfinished": {usage: "Usage: fs unfinished"},
@@ -256,6 +276,24 @@ node, or one with no delivery record, is refused naming which.`,
 	},
 	"integrated": {
 		usage:       "Usage: fs integrated MEMBER_NODE",
+		positionals: 1,
+	},
+	"reviews": {
+		usage: `Usage: fs reviews CAP_NODE
+
+Answer a close's question: was this dispatch's change reviewed? Exit 0 and print
+the done review dispatch that names this cap node as the one it reads; exit 1
+naming what is there instead — that no dispatch names it, or that one does and
+is not done yet, which are different facts.
+
+Done is the whole condition, and it is not a formality: a review is a
+--type review-task dispatch, and its own exit gate refuses to close it until
+every finding is dispositioned. So a done review is a review that finished
+dispositioning, and this command asks whether that gate was passed rather than
+opening a second one.
+
+It reads only, and the cap scope needs no registered project, so it works from
+anywhere — including the worktree the exit check runs it in.`,
 		positionals: 1,
 	},
 	"batch": {

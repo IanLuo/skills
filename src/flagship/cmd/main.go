@@ -95,6 +95,9 @@ func main() {
 	case "integrated":
 		checkArgs("integrated", os.Args[2:])
 		integratedCmd(os.Args[2:])
+	case "reviews":
+		checkArgs("reviews", os.Args[2:])
+		reviewsCmd(os.Args[2:])
 	case "batch":
 		checkArgs("batch", os.Args[2:])
 		batchCmd(os.Args[2:])
@@ -208,6 +211,7 @@ Commands:
   kb remove NAME [--project P]                  Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
                                                [--integrates MEMBER_NODE]
+                                               [--reviews CAP_NODE]
                                                [--batch BATCH_NODE]
                                                [--tag K[=V]] [--also NAME]
                                                [--without NAME]
@@ -223,6 +227,11 @@ Commands:
                                                merges, recorded on the dispatch's
                                                own task-created payload and seen
                                                by every check as $FS_INTEGRATES;
+                                               --reviews names the cap node whose
+                                               change this dispatch reads — a
+                                               different link from --integrates,
+                                               recorded the same way, and what fs
+                                               reviews answers from;
                                                --batch names the batch node this
                                                dispatch is a member of (its cap
                                                node is the batch's child);
@@ -243,12 +252,18 @@ Commands:
                                                integration dispatch that names
                                                this member cap node; exit 1 when
                                                none does
+  reviews CAP_NODE                             Exit 0 and print the done review
+                                               dispatch that names this cap node
+                                               as the one it reads; exit 1 when
+                                               none does, or when one does and is
+                                               not done yet
   batch BATCH_NODE                            Exit 0 iff every member of the
                                                batch has a done integration
                                                naming it; exit 1 naming the
                                                unintegrated ones. A batch with
                                                no members is refused
   close --node NODE [--worker P:NODE] --decision TEXT [--confirm]
+         [--without-review REASON]
                                                Close out a dispatch: run the exit
                                                phase of the plan it recorded, then
                                                close its pane, then mark the node
@@ -258,7 +273,10 @@ Commands:
                                                worker node comes from the delivery
                                                record; --worker is only a check
                                                against it. --confirm answers the
-                                               plan's ask steps
+                                               plan's ask steps; --without-review
+                                               is the review check's own override,
+                                               required to proceed past it and
+                                               recorded as a decision on the node
   close --node NODE --abandoned --reason TEXT  Close a dispatch without a verdict,
                                                delivered or not: a never-delivered
                                                one records "abandoned, never
@@ -540,7 +558,7 @@ func taskAdd(args []string) {
 		parentPtr = &parent
 	}
 
-	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", parentPtr)
+	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", "", parentPtr)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -1275,6 +1293,7 @@ func dispatchCmd(args []string) {
 	worktree := flagVal(args, "--worktree", "")
 	worktreeNew := hasFlag(args, "--worktree-new")
 	integrates := flagVal(args, "--integrates", "")
+	reviews := flagVal(args, "--reviews", "")
 	batch := flagVal(args, "--batch", "")
 	cards := cardsFlag(args)
 	confirm := hasFlag(args, "--confirm")
@@ -1313,6 +1332,7 @@ func dispatchCmd(args []string) {
 		Goal:            goal,
 		Cards:           cards,
 		Integrates:      integrates,
+		Reviews:         reviews,
 		Batch:           batch,
 		Tags:            multiFlag(args, "--tag"),
 		Also:            multiFlag(args, "--also"),
@@ -1352,13 +1372,19 @@ func dispatchCmd(args []string) {
 // declared actions that tear the member's worktree and branch down — then closes
 // the recorded pane and marks the cap's node done.
 func closeCmd(args []string) {
+	withoutReview := flagVal(args, "--without-review", "")
+	if hasFlag(args, "--without-review") && withoutReview == "" {
+		fatal("--without-review requires a reason: an unrecorded skip is the thing this flag exists to prevent")
+	}
+
 	req := dispatch.CloseRequest{
-		NodeID:    flagVal(args, "--node", ""),
-		Worker:    flagVal(args, "--worker", ""),
-		Decision:  flagVal(args, "--decision", ""),
-		Confirm:   hasFlag(args, "--confirm"),
-		Abandoned: hasFlag(args, "--abandoned"),
-		Reason:    flagVal(args, "--reason", ""),
+		NodeID:        flagVal(args, "--node", ""),
+		Worker:        flagVal(args, "--worker", ""),
+		Decision:      flagVal(args, "--decision", ""),
+		Confirm:       hasFlag(args, "--confirm"),
+		Abandoned:     hasFlag(args, "--abandoned"),
+		Reason:        flagVal(args, "--reason", ""),
+		WithoutReview: withoutReview,
 	}
 
 	// The cleanup gate runs in the worker project's root, so the registry is
@@ -1474,6 +1500,22 @@ func integratedCmd(args []string) {
 	defer h.Close()
 
 	output(dispatch.Integrated(h, args[0]))
+}
+
+// reviewsCmd answers a close's question: was this dispatch's change reviewed? It
+// exits 0 printing the done review dispatch that names this node, or 1 naming
+// what it found instead. It is the read side of the exit gate `code` runs, and
+// like fs integrated it needs no registered project — the cap's scope is where
+// the answer lives, and the check that runs it stands in a worktree.
+func reviewsCmd(args []string) {
+	if len(args) < 1 {
+		fatal("fs reviews: CAP_NODE required")
+	}
+
+	h := openHandler("")
+	defer h.Close()
+
+	output(dispatch.Reviews(h, args[0]))
 }
 
 // batchCmd answers a batch's question: is every member integrated? It is the

@@ -295,7 +295,7 @@ func addCapNode(t *testing.T, f *fixture, goal string) string {
 // dispatch gates pass over ordinary cap work.
 func addCapKindNode(t *testing.T, f *fixture, goal string, kind query.Kind) string {
 	t.Helper()
-	added := f.h.TaskAddKind("cap", goal, kind, "", "", nil)
+	added := f.h.TaskAddKind("cap", goal, kind, "", "", "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -306,7 +306,7 @@ func addCapKindNode(t *testing.T, f *fixture, goal string, kind query.Kind) stri
 // way fs dispatch --integrates does: one task-created event carrying the link.
 func addIntegrationNode(t *testing.T, f *fixture, member string) string {
 	t.Helper()
-	added := f.h.TaskAddKind("cap", "dispatch integrate: merge the member", query.KindDispatch, "", member, nil)
+	added := f.h.TaskAddKind("cap", "dispatch integrate: merge the member", query.KindDispatch, "", member, "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -382,7 +382,7 @@ func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID,
 // does — a dispatch node — with the given status.
 func addWorkerNode(t *testing.T, f *fixture, status string) string {
 	t.Helper()
-	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", "", nil)
+	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", "", "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}

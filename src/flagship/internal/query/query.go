@@ -67,6 +67,13 @@ type Node struct {
 	// integration and the member it merges: recorded on the integration's own
 	// task-created payload, never parsed out of a goal string.
 	Integrates string `json:"integrates,omitempty"`
+
+	// Reviews names the cap-scope dispatch node whose change this node reads,
+	// when it is a review dispatch. It is the link the other way round from
+	// Integrates — a review reads the dispatch it follows, an integration merges
+	// the member it precedes — and it is what lets a close ask whether its own
+	// change was reviewed before it closes.
+	Reviews string `json:"reviews,omitempty"`
 }
 
 // Tree is the derived project state.
@@ -120,6 +127,7 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				Kind       string `json:"kind"`
 				FoundBy    string `json:"found_by"`
 				Integrates string `json:"integrates"`
+				Reviews    string `json:"reviews"`
 			}
 			_ = json.Unmarshal(evt.Payload, &p)
 			parentID := ""
@@ -132,6 +140,7 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				Kind:       nodeKind(p.Kind, p.Goal),
 				FoundBy:    p.FoundBy,
 				Integrates: p.Integrates,
+				Reviews:    p.Reviews,
 				Status:     "pending",
 				ParentID:   parentID,
 			}

@@ -41,6 +41,35 @@ exit:
   # checkout nobody can look at any more.
   - ask: is the worker's node complete enough that nothing important died with its transcript
 
+  # The review gate, and it sits here — after the ask, before the teardown —
+  # because of what a refusal has to leave standing.
+  #
+  # The defect this closes is a sequencing one, and no close-time check could
+  # have caught it before: `independent-review` already refuses to close until
+  # every finding is dispositioned, but nothing dispatched it and nothing noticed
+  # when it was skipped, so both changes in the session that found this closed
+  # BEFORE any review of them was run. The review that finally ran found a severe
+  # defect in one of them. A review cannot precede the close unless the close
+  # asks, so the close asks — and what it asks is not "were the findings
+  # dispositioned" (that gate already exists, on the review's own node) but "did
+  # a review of THIS dispatch finish at all". `fs reviews` answers the second
+  # question by finding a done dispatch carrying `reviews: $FS_NODE`, and its
+  # refusal names the fix rather than the absence.
+  #
+  # A `check:`, deliberately, and not an `ask:`. An ask is a judgement the
+  # mechanism cannot audit, which is the right shape for the review's own exit —
+  # but this one has a record behind it, so it is decided rather than asked, and
+  # --confirm cannot wave it through. The one way past it is --without-review
+  # "<why>", which exports the reason as $FS_WITHOUT_REVIEW and records it on the
+  # node: a skip must be visible, not impossible. The guard is read here, in one
+  # visible line, the same way the teardown below reads $FS_BATCH.
+  #
+  # Before the teardown rather than after it, because the teardown removes the
+  # very thing a review reads. A close that refused here with the worktree
+  # already gone would send the cap to dispatch a review of a change that is no
+  # longer on disk.
+  - check: [ -n "$FS_WITHOUT_REVIEW" ] || fs reviews "$FS_NODE"
+
   # The declared teardown. It is DECLARED, not machinery in fs close: removing a
   # tree, closing a workspace and deleting a branch differ by task type and
   # belong here — reviewable, diffable, per-type — instead of one hardcoded path

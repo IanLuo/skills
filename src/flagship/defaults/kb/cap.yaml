@@ -22,5 +22,17 @@ cap:
   - say: every card names the resources its worker may open — pane, tab, workspace, worktree, branch — and says to remove and verify each; the workspace is the one that gets forgotten
   - say: a finished worker points at its node — read the node, never the message and never the transcript
   - say: close only with fs close; it refuses while the dispatch's trace does not account for the plan, so read fs trace rather than arguing with the gate
+  # The order is the whole rule, and it is stated as a step because the gate that
+  # enforces it fires too late to be a reminder: code's exit check refuses a
+  # close with no done review of it, and by then the work is finished and the
+  # round is already spent. A review dispatched after the close reviews a change
+  # nobody can act on. So: the worker reports, you dispatch the review with
+  # --reviews <the work's cap node>, you wait for the review to close (its own
+  # gate refuses until every finding is dispositioned), you read it, and only
+  # then do you close the work — fixing what it found first, or accepting it with
+  # the reason on the node. If a review genuinely does not apply, close with
+  # --without-review "<why>" so the skip is on the record; never invent a review
+  # you did not run
+  - say: after a worker reports and before you close, dispatch the review with `fs dispatch --type review-task --reviews <the work's cap node>`, read it when it closes, and disposition what it found — the review comes first, because code's exit gate refuses a close whose change has no done review, and a review dispatched afterwards has nothing left to protect
   - say: notes carry goal, status, the exact commands run and the commit, so a fresh agent or a verifier can act on the node alone
   - say: when you notice something you do not dispatch — a gap, a stale fact, a broken gate — add it as a `kind: gap` node in the cap scope (`fs task add --project cap --kind gap --found-by <your node> --goal ...`); `fs gaps` reads every scope, so a fresh cap finds it
