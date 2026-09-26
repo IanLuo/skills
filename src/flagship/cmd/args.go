@@ -22,6 +22,11 @@ type cmdSpec struct {
 	usage       string
 	flags       map[string]bool // flag name → takes a value
 	positionals int             // how many positionals the subcommand accepts
+	// address marks a subcommand whose first positional may be a `PROJECT:NODE`
+	// address rather than a bare node — the form nodeArg splits, and the only
+	// place a refusal can learn a project from a positional. It is declared here,
+	// beside the flags and the count, because it is part of the argument shape.
+	address bool
 }
 
 var cmdSpecs = map[string]cmdSpec{
@@ -40,31 +45,37 @@ var cmdSpecs = map[string]cmdSpec{
 		usage:       "Usage: fs task update NODE_ID --status STATUS [--decision TEXT] [--project PROJECT_ID]",
 		flags:       map[string]bool{"--status": true, "--decision": true, "--project": true},
 		positionals: 1,
+		address:     true,
 	},
 	"task get": {
 		usage:       "Usage: fs task get NODE_ID [--project PROJECT_ID] [--kind work|dispatch|gap]",
 		flags:       map[string]bool{"--project": true, "--kind": true},
 		positionals: 1,
+		address:     true,
 	},
 	"task edit": {
 		usage:       "Usage: fs task edit NODE_ID [--goal GOAL] [--kind work|dispatch|gap] [--project PROJECT_ID]",
 		flags:       map[string]bool{"--goal": true, "--kind": true, "--project": true},
 		positionals: 1,
+		address:     true,
 	},
 	"task block": {
 		usage:       "Usage: fs task block NODE_ID --reason REASON [--check \"SHELL COMMAND\"] [--project PROJECT_ID]",
 		flags:       map[string]bool{"--reason": true, "--check": true, "--project": true},
 		positionals: 1,
+		address:     true,
 	},
 	"task unblock": {
 		usage:       "Usage: fs task unblock NODE_ID [--project PROJECT_ID]",
 		flags:       map[string]bool{"--project": true},
 		positionals: 1,
+		address:     true,
 	},
 	"task knowledge": {
 		usage:       "Usage: fs task knowledge NODE_ID --summary TEXT [--project PROJECT_ID]",
 		flags:       map[string]bool{"--summary": true, "--project": true},
 		positionals: 1,
+		address:     true,
 	},
 
 	"status": {
@@ -292,6 +303,7 @@ The line is a pointer, never the content: the node remains the record.`,
 			"--blocked": false, "--question": false, "--done": false,
 		},
 		positionals: 1,
+		address:     true,
 	},
 	"tell": {
 		usage: `Usage: fs tell PROJECT:NODE "TEXT"
@@ -301,6 +313,7 @@ and sent through herdr. It is a message and not a record: what the cap decided
 lands on the node as a decision, where it outlives the delivery. An unknown
 node, or one with no delivery record, is refused naming which.`,
 		positionals: 2,
+		address:     true,
 	},
 	"integrated": {
 		usage:       "Usage: fs integrated MEMBER_NODE",

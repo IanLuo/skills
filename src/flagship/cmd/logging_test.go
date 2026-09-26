@@ -160,9 +160,10 @@ func refusalLine(t *testing.T, stderr string) map[string]any {
 // AC4: a refusal line carries `project` when — and only when — the invocation
 // named one, which is what makes filtering by project a jq predicate over the
 // whole file rather than over the part of it that happened to succeed. The
-// project is read from the caller's own arguments: `--project P`, or the project
-// half of a `PROJECT:NODE` address (`close --worker P:N`, `report`'s positional).
-// An invocation that names none carries no key at all, rather than a guessed one.
+// project is read from the caller's own arguments: `--project P`, the project
+// half of a `PROJECT:NODE` address (`close --worker P:N`, or the first positional
+// of a command whose positional is one — `task get P:N`, `report P:N`). An
+// invocation that names none carries no key at all, rather than a guessed one.
 func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 	bin := getFS(t)
 
@@ -170,26 +171,37 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		name string
 		args []string
 		want string // the project key's value; "" means the key must be absent
+		code int    // the refusal's exit code: 1 for what the command refused, 2 for
+		// a usage error — refused before the command runs, and a refusal all the same
 	}{
 		{"--project",
 			[]string{"dispatch", "--project", "nosuchproject", "--type", "dev-task", "--goal", "x"},
-			"nosuchproject"},
+			"nosuchproject", 1},
 		{"a --worker address",
 			[]string{"close", "--node", "t-nope", "--worker", "nosuchproject:t-nope", "--decision", "d", "--confirm"},
-			"nosuchproject"},
+			"nosuchproject", 1},
 		{"report's positional address",
 			[]string{"report", "nosuchproject:t-nope", "--line", "x"},
-			"nosuchproject"},
+			"nosuchproject", 1},
+		{"a task address",
+			[]string{"task", "get", "nosuchproject:t-nope"},
+			"nosuchproject", 1},
+		{"a task update address",
+			[]string{"task", "update", "nosuchproject:t-nope", "--status", "done"},
+			"nosuchproject", 1},
+		{"a flag value that reads like a flag",
+			[]string{"report", "nosuchproject:t-nope", "--line", "--project", "skills"},
+			"nosuchproject", 2},
 		{"named none",
 			[]string{"task", "get", "t-nope"},
-			""},
+			"", 1},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, stderr, code := runFSCapture(t, bin, t.TempDir(), testHome(t), nil, tc.args...)
-			if code != 1 {
-				t.Fatalf("exit %d, want 1 (refusal):\n%s%s", code, stdout, stderr)
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d (refusal):\n%s%s", code, tc.code, stdout, stderr)
 			}
 			line := refusalLine(t, stderr)
 			project, present := line["project"]

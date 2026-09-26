@@ -1557,9 +1557,9 @@ func commandName() string {
 }
 
 // projectOfAddress reads the project half of a `PROJECT:NODE` address, the form
-// `close --worker P:N` and `report`'s positional take. A colon never appears in
-// a node id, so reading one as a qualifier is safe — the rule nodeArg applies.
-// A value with no colon names no project.
+// `close --worker P:N`, `report`'s positional and every other address take. A
+// colon never appears in a node id, so reading one as a qualifier is safe — the
+// rule nodeArg applies. A value with no colon names no project.
 func projectOfAddress(address string) string {
 	project, _, ok := strings.Cut(address, ":")
 	if !ok {
@@ -1568,37 +1568,53 @@ func projectOfAddress(address string) string {
 	return project
 }
 
-// invocationProject is the project the invocation named, for a refusal line:
-// `--project P`, or the project half of a `PROJECT:NODE` address — `close
-// --worker P:N`, `report`'s positional. It is what the *caller* named and never
-// a derived one, because a refusal fires before anything is resolved and cannot
-// know more than its caller did; empty means the line carries no project key at
-// all rather than a guessed one.
+// invocationProject is the project the invocation named, for a refusal line: the
+// value of `--project`, the address `close --worker P:N` carries, or the first
+// positional of a command whose positional *is* an address — the one nodeArg
+// splits, declared as `address` in that command's own spec (`task get P:N`,
+// `report P:N`, `tell P:N`).
+//
+// The arguments are walked the way checkArgs walks them, from the same spec: a
+// flag's value is consumed as a value, so one that merely reads like a flag names
+// nothing — `fs report P:N --line --project skills` names P, not `skills`. What
+// it returns is what the *caller* named and never a derived one, because a
+// refusal fires before anything is resolved and cannot know more than its caller
+// did; empty means the line carries no project key at all rather than a guessed
+// one.
 func invocationProject() string {
-	args := os.Args[1:]
-	for i, arg := range args {
-		value, isProject := "", false
-		switch {
-		case arg == "--project", arg == "--worker":
-			if i+1 >= len(args) {
-				continue
+	name := strings.Replace(commandName(), "-", " ", 1)
+	spec, known := cmdSpecs[name]
+	if !known {
+		return ""
+	}
+	args := os.Args[1+len(strings.Fields(name)):]
+	positionals := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			positionals++
+			if positionals == 1 && spec.address {
+				return projectOfAddress(arg)
 			}
-			value, isProject = args[i+1], arg == "--project"
-		case strings.HasPrefix(arg, "--project="):
-			value, isProject = strings.TrimPrefix(arg, "--project="), true
-		case strings.HasPrefix(arg, "--worker="):
-			value, isProject = strings.TrimPrefix(arg, "--worker="), false
-		default:
 			continue
 		}
-		if isProject {
-			return value
+
+		flag, value, inline := strings.Cut(arg, "=")
+		namesProject := flag == "--project" || flag == "--worker"
+		if !inline {
+			// A flag's value is not a flag: consume it the way checkArgs does,
+			// whether or not it is this one that names a project.
+			if takesValue := spec.flags[flag] || namesProject; !takesValue || i+1 >= len(args) {
+				continue
+			}
+			value, i = args[i+1], i+1
 		}
-		return projectOfAddress(value)
-	}
-	// report's address is a positional: `fs report PROJECT:NODE --line …`.
-	if len(args) > 1 && args[0] == "report" && !strings.HasPrefix(args[1], "-") {
-		return projectOfAddress(args[1])
+		switch flag {
+		case "--project":
+			return value
+		case "--worker":
+			return projectOfAddress(value)
+		}
 	}
 	return ""
 }
