@@ -49,7 +49,16 @@ sections in the same file. What it checks, per playbook:
      ~/.fs/scripts when it builds a plan's environment, so a name that is not in
      it is a path that will not exist when the step runs.
 
-Rules 8, 10 and 11 are the same question from three sides — can this step run at
+ 12. No executed step names a bare `fs`. The binary is installed into ~/.fs and
+     is not on PATH, so `fs reviews "$FS_NODE"` exits 127 — which is what the
+     review gate did on its one live firing, and what left a shipped gate
+     unrunnable while every test around it passed. `"$FS_BIN"` is the running
+     binary's own path, exported by both env builders, and it is how a step
+     addresses fs. Rule 8 reads the subcommand out of that form as well as out
+     of a bare `fs`, so moving a step onto the exported path does not quietly
+     stop checking the subcommand it names.
+
+Rules 8, 10, 11 and 12 are the same question from four sides — can this step run at
 all in a project that is not this one? — and rule 10 is the one the other two
 could not have caught: a script check that resolves against a repo path is a
 name fs has no way to know is wrong.
@@ -83,6 +92,14 @@ REPO_LOCAL = re.compile(
     r"(?<![\w.$/-])(?:" + "|".join(["bin", "tests", "scripts", "src", "internal", "cmd"]) + r")/[\w./-]+"
     r"|(?<![\w.$-])\./[\w./-]+"
 )
+
+# How a step names the binary: bare (which resolves nowhere, since fs is
+# installed into ~/.fs and not into PATH), or through $FS_BIN, the running
+# binary's own path that both env builders export. The lookbehind rejects a
+# token glued to a path or a variable name, so `$FS_BIN` is not read as a bare
+# `fs` and neither is `.../fs`.
+FS_INVOCATION = re.compile(r'(?:(?<![\w$./-])fs|"\$FS_BIN"|\$FS_BIN)\s+([a-z-]+)(?:\s+([a-z-]+))?')
+BARE_FS = re.compile(r"(?<![\w$./-])fs\s+([a-z-]+)")
 
 # The shipped set. Kept here as well as in the KB so a playbook that disappears
 # is a failure and not a quietly smaller loop.
@@ -309,6 +326,10 @@ def main():
                           sub in subs,
                           f"fs {sub} is not a subcommand; the specs in args.go have "
                           f"{', '.join(sorted(subs))}")
+                for call in bare_fs(body):
+                    check(f"{name}: {kind} {i} names fs by its own path ({call})", False,
+                          f"`{call}` resolves only where fs is installed, and it is not "
+                          f"installed into PATH; address the running binary as \"$FS_BIN\"")
                 for ref in repo_local(body):
                     check(f"{name}: {kind} {i} names no repo-relative path ({ref})", False,
                           f"{ref} resolves in this repo only, and this playbook runs in "
@@ -340,11 +361,21 @@ def main():
     return 0
 
 
+def bare_fs(body):
+    """The fs subcommands a body runs without a path — `fs reviews ...`, which
+    resolves only where fs happens to be installed. `"$FS_BIN" reviews ...` is
+    the portable form and is deliberately not one."""
+    return [f"fs {m.group(1)}" for m in BARE_FS.finditer(body)]
+
+
 def fs_invocations(body):
-    """The fs subcommands a shell body runs. Two words where the specs have a
-    two-word subcommand (`task get`, `kb prompt`), one otherwise."""
+    """The fs subcommands a shell body runs. The binary is named either bare
+    (`fs`) or through `"$FS_BIN"`, the running binary's own path; both are read,
+    so rule 8 keeps checking what a step asks fs to do whichever way it asks.
+    Two words where the specs have a two-word subcommand (`task get`,
+    `kb prompt`), one otherwise."""
     found = []
-    for m in re.finditer(r"\bfs ([a-z-]+)(?: ([a-z-]+))?", body):
+    for m in FS_INVOCATION.finditer(body):
         first, second = m.group(1), m.group(2)
         found.append(f"{first} {second}" if second and not second.startswith("-") else first)
     return found

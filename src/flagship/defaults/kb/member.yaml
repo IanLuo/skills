@@ -25,5 +25,5 @@ exit:
   # the worker project's root when the dispatch had none — and with the closing
   # dispatch's own inputs in the environment: $FS_NODE above all, the cap node
   # being closed.
-  - check: fs integrated $FS_NODE
+  - check: "$FS_BIN" integrated $FS_NODE
   - ask: has this member's result been read from its worker node

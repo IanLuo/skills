@@ -12,9 +12,14 @@ package main
 //
 // Every test below runs the playbooks the binary ships, seeded by fs bootstrap,
 // rather than restating them: a test that wrote its own copy of code's exit
-// gate would keep passing after the shipped one drifted. That is also why the
-// binary under test goes on PATH as `fs` — the gate shells out to
-// `fs reviews $FS_NODE` exactly as a live close does.
+// gate would keep passing after the shipped one drifted.
+//
+// The binary under test is deliberately kept OFF PATH. The gate shells out to
+// `fs reviews $FS_NODE`, and an earlier version of this file put the binary on
+// PATH as `fs` so it would resolve — which is exactly how the gate shipped
+// broken: it worked in the test and died on `command not found` in every live
+// close. A shipped step reaches fs through $FS_BIN, the running binary's own
+// path, and these tests fail if it goes back to needing PATH.
 
 import (
 	"slices"
@@ -23,12 +28,11 @@ import (
 )
 
 // reviewEnv prepares the environment a review-gate test runs in: the fake herdr
-// for the delivery, the built binary on PATH as `fs` for the gate that shells
-// out to it, and the shipped playbooks seeded into the isolated home.
+// for the delivery, and the shipped playbooks seeded into the isolated home.
+// Nothing puts the binary on PATH.
 func reviewEnv(t *testing.T, bin, dir string) []string {
 	t.Helper()
 	env, _, _ := fakeHerdrOnPath(t)
-	env = fsOnPath(t, bin, env)
 	if resp, code := runFSEnv(t, bin, dir, env, "bootstrap"); code != 0 {
 		t.Fatalf("bootstrap exit %d: %v", code, resp["error"])
 	}
@@ -123,9 +127,11 @@ func TestCLIDispatchRecordsTheReviewsLink(t *testing.T) {
 	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 
 	// The work is still open when its review is dispatched — that is the order
-	// the gate is about — so --allow-unresolved is what says so.
+	// the gate is about — and no override is needed to say so: the dispatch a
+	// review names is what the review is about, not other open work it would
+	// otherwise be piling on top of.
 	work := capNodeOf(t, bin, root, "dispatch dev-task: the change", "dispatch")
-	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "review-task", "--goal", "review the change", "--reviews", work, "--allow-unresolved")
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "review-task", "--goal", "review the change", "--reviews", work)
 	if code != 0 {
 		t.Fatalf("dispatch --reviews exit %d: %v", code, resp["error"])
 	}
@@ -150,18 +156,21 @@ func TestCLIDispatchRecordsTheReviewsLink(t *testing.T) {
 
 // The escape has to carry a reason. --without-review with nothing after it is
 // refused rather than read as an empty waiver, because an unrecorded skip is
-// the thing the flag exists to prevent.
+// the thing the flag exists to prevent — and whitespace is nothing, not a
+// reason: three spaces record a waiver that says nothing at all.
 func TestCLIWithoutReviewRequiresAReason(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
-	resp, code := runFS(t, bin, root, "close", "--node", "t-00000000", "--decision", "done", "--without-review", "")
-	if code == 0 {
-		t.Fatalf("--without-review with no reason was accepted: %v", resp)
-	}
-	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--without-review requires a reason") {
-		t.Errorf("refusal %q must name the flag and what it is missing", errMsg)
+	for _, reason := range []string{"", "   ", "\t\n"} {
+		resp, code := runFS(t, bin, root, "close", "--node", "t-00000000", "--decision", "done", "--without-review", reason)
+		if code == 0 {
+			t.Fatalf("--without-review %q was accepted: %v", reason, resp)
+		}
+		if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--without-review requires a reason") {
+			t.Errorf("refusal %q must name the flag and what it is missing", errMsg)
+		}
 	}
 }
 
@@ -216,6 +225,20 @@ func TestCLIReviewGateRefusesACloseWithNoReview(t *testing.T) {
 	if decisions := decisionsOf(t, bin, root, env, capNode); !slices.Contains(decisions, want) {
 		t.Errorf("decisions = %q, want the waiver recorded as %q", decisions, want)
 	}
+
+	// The waiver is a visible skip, not a review. It writes a decision and
+	// nothing else, so it cannot answer fs reviews — otherwise the one way past
+	// the gate would also be the one way to make the gate report it passed.
+	// Refusing for the ordinary reason, and not because the close left the node
+	// in some state fs reviews cannot read at all.
+	resp, code = runFSEnv(t, bin, root, env, "reviews", capNode)
+	if code == 0 {
+		t.Errorf("fs reviews passed on a change whose review was waived: %v", resp)
+	}
+	refusal, _ = resp["error"].(string)
+	if !strings.Contains(refusal, "--reviews "+capNode) {
+		t.Errorf("fs reviews refusal %q must be the no-review-names-it refusal, naming the fix", refusal)
+	}
 }
 
 // The honest cycle, end to end, under the gate: work is dispatched, the review
@@ -237,10 +260,11 @@ func TestCLIReviewGatePassesWhenADoneReviewNamesTheChange(t *testing.T) {
 	finishWorker(t, bin, root, workWorker)
 
 	// The review is dispatched while the work is still open, which is the whole
-	// point of the ordering, and --allow-unresolved is the flag that says so.
+	// point of the ordering — and it needs no override, because the dispatch it
+	// names is the subject of this one rather than open work in the way.
 	reviewResp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver",
 		"--project", "skills", "--type", "review-task",
-		"--goal", "review the change to the gate", "--reviews", work, "--allow-unresolved")
+		"--goal", "review the change to the gate", "--reviews", work)
 	if code != 0 {
 		t.Fatalf("dispatch review exit %d: %v", code, reviewResp["error"])
 	}
@@ -292,5 +316,119 @@ func TestCLIReviewGatePassesWhenADoneReviewNamesTheChange(t *testing.T) {
 		if strings.Contains(decision, "waived the review gate") {
 			t.Errorf("the close recorded a waiver it did not use: %q", decision)
 		}
+	}
+}
+
+// A waiver names a skip, and there is a skip only where there was a gate to
+// stand down. Two closes face none: an abandoned one, which runs no exit check
+// at all, and one whose plan carries no review gate. Recording the reason
+// anyway writes "waived the review gate" on a node whose close never met one —
+// the record asserting the very thing the flag exists to make visible — so both
+// refuse instead, and the refusal says which of the two it found.
+func TestCLIWithoutReviewRefusesWhenNoGateWouldStandDown(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	env := reviewEnv(t, bin, root)
+
+	// A review dispatch is the plan with no gate in it: `code` is selected by
+	// the declared `code` tag, which a --type review-task dispatch does not
+	// carry — the same structural fact that keeps a review from demanding a
+	// review of itself.
+	work, workWorker := deliverWork(t, bin, root, env)
+	finishWorker(t, bin, root, workWorker)
+	reviewResp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver",
+		"--project", "skills", "--type", "review-task",
+		"--goal", "review the change", "--reviews", work)
+	if code != 0 {
+		t.Fatalf("dispatch review exit %d: %v", code, reviewResp["error"])
+	}
+	reviewData := reviewResp["data"].(map[string]any)
+	review := reviewData["cap_node_id"].(string)
+	finishWorker(t, bin, root, reviewData["worker_node"].(string))
+
+	const waiver = "--without-review waived the review gate: docs-only"
+	ungated, code := closeWork(t, bin, root, env, review, "--confirm", "--without-review", "docs-only")
+	if code == 0 {
+		t.Fatalf("a close with no review gate to waive accepted a waiver: %v", ungated)
+	}
+	if errMsg, _ := ungated["error"].(string); !strings.Contains(errMsg, "no review gate") {
+		t.Errorf("refusal %q must say there is no gate to stand down", errMsg)
+	}
+	for _, decision := range decisionsOf(t, bin, root, env, review) {
+		if decision == waiver {
+			t.Errorf("the refused close recorded %q: nothing was skipped", decision)
+		}
+	}
+
+	// And an abandoned close runs no exit check, so it faced no gate either —
+	// this is the reproduction the review filed, which used to record a waiver
+	// on a dispatch whose cleanup was "no exit phase".
+	abandoned, code := closeWork(t, bin, root, env, work,
+		"--abandoned", "--reason", "never delivered", "--without-review", "docs-only")
+	if code == 0 {
+		t.Fatalf("an abandoned close accepted a waiver: %v", abandoned)
+	}
+	if errMsg, _ := abandoned["error"].(string); !strings.Contains(errMsg, "abandoned") {
+		t.Errorf("refusal %q must say the close was abandoned, so no check ran", errMsg)
+	}
+}
+
+// fs reviews tells a typo from a wrong kind. Neither node is reviewed, but "you
+// named no node" and "you named a node that is not a dispatch" send the cap to
+// different fixes — the same two questions --reviews answers at write time, so
+// the read side answers them the same way.
+func TestCLIReviewsDistinguishesAMissingNodeFromANonDispatchNode(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	missing, code := runFS(t, bin, root, "reviews", "t-00000000")
+	if code == 0 {
+		t.Fatalf("fs reviews passed on a node that is not there: %v", missing)
+	}
+	missingMsg, _ := missing["error"].(string)
+	for _, want := range []string{"t-00000000", "no node"} {
+		if !strings.Contains(missingMsg, want) {
+			t.Errorf("refusal %q must mention %q", missingMsg, want)
+		}
+	}
+
+	gap := capNodeOf(t, bin, root, "a gap, never dispatched", "gap")
+	wrongKind, code := runFS(t, bin, root, "reviews", gap)
+	if code == 0 {
+		t.Fatalf("fs reviews passed on a node that is not a dispatch: %v", wrongKind)
+	}
+	wrongKindMsg, _ := wrongKind["error"].(string)
+	for _, want := range []string{gap, "not a dispatch node"} {
+		if !strings.Contains(wrongKindMsg, want) {
+			t.Errorf("refusal %q must mention %q", wrongKindMsg, want)
+		}
+	}
+	if wrongKindMsg == missingMsg {
+		t.Errorf("a missing node and a wrong-kind node refuse identically: %q", missingMsg)
+	}
+}
+
+// A shipped step may only name what fs ships, and fs is one of those things —
+// but `fs` is not on PATH, so naming it bare is naming nothing. Both env
+// builders export FS_BIN, the running binary's own path, and this is the entry
+// half of that contract: a check that runs it passes.
+func TestCLIEntryGateReachesTheBinaryThroughFSBin(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	writeKBPlaybook(t, testHome(t), "fsbin-entry", `name: fsbin-entry
+applies_when: fsbin
+engine: herdr
+agent: pi
+entry:
+  - check: [ -x "$FS_BIN" ] && "$FS_BIN" project list >/dev/null
+`)
+
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "run fs through FS_BIN", "--tag", "fsbin")
+	if code != 0 {
+		t.Fatalf("a check running $FS_BIN failed, exit %d: %v", code, resp["error"])
 	}
 }

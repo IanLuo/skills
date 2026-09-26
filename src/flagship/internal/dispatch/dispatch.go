@@ -297,15 +297,26 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	// --allow-unresolved is this gate's only override: --confirm is about a
 	// failing check and must not pass this one.
 	//
-	// The member this integration names is expected to be unresolved: a member's
-	// dispatch is closed only after the integration it waits on is done, so it is
-	// not the other open work this gate protects — it is what this dispatch is
-	// about. Every other open dispatch still refuses.
+	// The dispatch this one names as its subject is expected to be unresolved,
+	// and is not the open work this gate protects — it is what this dispatch is
+	// about. That holds for both links, for the same reason. A member's dispatch
+	// is closed only after the integration it waits on is done; and a review is
+	// by construction about a dispatch that has not closed, because the order
+	// the review gate exists for is the review first — a review dispatched after
+	// the close reads a change nobody can act on any more. Every other open
+	// dispatch still refuses.
+	//
+	// So this is the rule, not a wider exemption: one named subject, the one
+	// this dispatch exists for. An exemption wider than that would let any
+	// dispatch past the gate by pointing at the work it is piling onto, which is
+	// exactly what the gate is for. --allow-unresolved stays what it was for
+	// everything else.
 	unresolved, err := unresolvedDispatches(h)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
 	unresolved = withoutNode(unresolved, member)
+	unresolved = withoutNode(unresolved, reviewed)
 	if len(unresolved) > 0 && !req.AllowUnresolved {
 		return errResp(unresolvedError(unresolved))
 	}
@@ -792,6 +803,22 @@ func Reviews(h *command.Handler, node string) command.Response {
 		return errResp("reviews: " + err.Error())
 	}
 
+	// The ref has to resolve to something before "is it reviewed" is a question
+	// with an answer, and which thing it resolved to is half the answer. An id
+	// that is not there is a typo, one that is there and is not a dispatch is
+	// the wrong kind of thing to review, and only a dispatch that exists can be
+	// unreviewed. All three used to come back as "no dispatch names it", which
+	// is true of one of them.
+	subject, err := capNode(h, ref)
+	if err != nil {
+		return errResp("reviews: " + err.Error())
+	}
+	if subject.Kind != query.KindDispatch {
+		return errResp(fmt.Sprintf(
+			"reviews: %s names a %q node, not a %s node — a review reads a dispatch node's change",
+			ref, subject.Kind, query.KindDispatch))
+	}
+
 	// cap has no registered root, and nothing here needs one: the read is of the
 	// cap's own scope.
 	resp := h.StatusIn(capScope, "")
@@ -976,9 +1003,10 @@ func Batch(h *command.Handler, batch string) command.Response {
 	}}
 }
 
-// withoutNode drops one node id from a list. It is how the member an
-// integration names is kept out of the unresolved-dispatch gate it would
-// otherwise fail: that gate is about other open work.
+// withoutNode drops one node id from a list. It is how the dispatch one names
+// as its subject — the member an integration merges, the change a review reads
+// — is kept out of the unresolved-dispatch gate it would otherwise fail: that
+// gate is about other open work.
 func withoutNode(nodes []command.UnfinishedNode, nodeID string) []command.UnfinishedNode {
 	if nodeID == "" {
 		return nodes
@@ -1203,6 +1231,14 @@ func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan 
 // binary ships; an absolute "$FS_SCRIPTS/<name>" is how it names one. Empty when
 // the scripts could not be written, which a step must treat as missing rather
 // than as a path to run.
+//
+// FS_BIN is the running binary's own path — the same rule applied to fs itself.
+// A step that wants to run fs cannot say `fs`: the binary is installed into
+// ~/.fs, not into PATH, so a bare `fs` is a name that resolves nowhere and the
+// gate exits 127 in every project. "$FS_BIN" is the way to name it, and it is
+// the path of the binary running the step rather than whatever `fs` PATH might
+// one day offer. Empty when the path cannot be read, which a step must treat as
+// missing rather than as a path to run.
 func checkEnv(project, taskType, goal string, cards []string, integrates string) []string {
 	return []string{
 		"FS_PROJECT=" + project,
@@ -1211,7 +1247,30 @@ func checkEnv(project, taskType, goal string, cards []string, integrates string)
 		"FS_CARDS=" + strings.Join(cards, ","),
 		"FS_INTEGRATES=" + integrates,
 		"FS_SCRIPTS=" + scriptsDir(),
+		"FS_BIN=" + binaryPath(),
 	}
+}
+
+// binaryPath is the path of the binary that is running, or "" when it cannot be
+// read. The empty case is deliberate and matches scriptsDir: a step that needs
+// fs has to be able to see it is missing, and a gate that cannot evaluate what
+// it was asked must refuse rather than pass.
+//
+// os.Executable is the running process's own path, which is the point: a step
+// runs the binary that dispatched it, not one a PATH lookup happens to find.
+// filepath.Abs because a step's cwd is the worktree or the project root, never
+// the directory fs was started from, so a relative path would resolve to
+// somewhere else — or nowhere.
+func binaryPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	abs, err := filepath.Abs(exe)
+	if err != nil {
+		return ""
+	}
+	return abs
 }
 
 // scriptsDir is where the binary's shipped scripts are written, or "" when they

@@ -96,7 +96,7 @@ var cmdSpecs = map[string]cmdSpec{
 	"bootstrap": {usage: "Usage: fs bootstrap"},
 
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--batch BATCH_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
 
 The plan is the playbooks whose applies_when the dispatch's tags satisfy,
 ordered by the order they declare and then by name. The tags are
@@ -128,6 +128,10 @@ so a gate can ask about this dispatch and not only about the world:
   FS_SCRIPTS      where the scripts the binary ships were written; a step names
                   one as "$FS_SCRIPTS/<name>". Empty if they could not be
                   written, which a step must treat as missing, not as a path
+  FS_BIN          the running binary's own path. A step that runs fs must say
+                  "$FS_BIN": the binary is installed into ~/.fs and is not on
+                  PATH, so a bare fs exits 127. Empty if the path could not be
+                  read, which a step must treat as missing, not as a path
 
 --cards names the batch's cards. It is repeatable, and each value may be a
 comma-separated list.
@@ -177,7 +181,13 @@ optional: the exit phase asks whether this change was reviewed as a check, and
 --confirm answers an ask, never a check. So a dispatch that legitimately needs no
 review is closed with --without-review "<why>", which proceeds and records the
 reason as a decision on the node. An unrecorded skip does not exist: the point is
-that a skipped review is visible, not that it is impossible.
+that a skipped review is visible, not that it is impossible. The reason is
+trimmed, so whitespace is refused with the empty case — and so is a waiver on a
+close that faced no gate at all, whether because it was abandoned (no exit check
+runs) or because its plan carries no review gate (there is none to stand down).
+Recording a waiver there would write "waived the review gate" on a node whose
+close never met one, which is the record asserting what the flag exists to make
+visible.
 
 The exit phase is the plan's phase: exit playbooks, in the order the plan
 recorded. close refuses while the dispatch's trace does not account for every
@@ -204,6 +214,9 @@ what the delivery opened:
   FS_WORKTREE_PATH  that worktree's checkout path; empty without one
   FS_SCRIPTS        where the scripts the binary ships were written, the same
                     directory the entry gate got; empty if they could not be
+  FS_BIN            the running binary's own path, the same contract the entry
+                    gate gets; it is what the review gate below runs, because
+                    fs is not on PATH and "$FS_BIN" is
 
 Checks run in the tree the dispatch worked in; declared do steps run in the
 project root, so an action that removes the worktree does not stand inside it.`,

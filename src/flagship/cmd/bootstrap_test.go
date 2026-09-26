@@ -536,7 +536,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// hand merge satisfies, so it is deleted rather than kept beside the
 	// stronger check.
 	memberSteps := stepsOf(t, bin, memberPb, "exit")
-	if pre := preconditionsOf(memberSteps); len(pre) != 1 || pre[0] != "fs integrated $FS_NODE" {
+	if pre := preconditionsOf(memberSteps); len(pre) != 1 || !strings.Contains(pre[0], "integrated $FS_NODE") {
 		t.Errorf("member-exit's checks = %v, want the integration link alone", pre)
 	}
 	if len(bodiesOf(memberSteps, "do")) != 0 {
@@ -573,14 +573,14 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// iterates the batch's members, so a member's tree is removed only after
 	// every member is integrated.
 	batchSteps := stepsOf(t, bin, batchPb, "exit")
-	if pre := preconditionsOf(batchSteps); len(pre) != 1 || !strings.Contains(pre[0], "fs batch $FS_NODE") {
+	if pre := preconditionsOf(batchSteps); len(pre) != 1 || !strings.Contains(pre[0], "batch $FS_NODE") {
 		t.Errorf("batch-exit's gate = %v, want the fs batch read alone", pre)
 	}
 	if actions := bodiesOf(batchSteps, "do"); len(actions) != 3 {
 		t.Errorf("batch-exit declares %d teardown actions, want 3 (branch, worktree, workspace)", len(actions))
 	}
 	for _, body := range postconditionsOf(t, batchPb, batchSteps) {
-		if !strings.Contains(body, "fs batch") {
+		if !strings.Contains(body, `batch "$FS_NODE"`) {
 			t.Errorf("batch-exit postcondition %q is not scoped to the batch's members", body)
 		}
 	}
@@ -588,7 +588,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// The entry gate is member-scoped, and its compound ask is split: a rubric
 	// cannot partition two questions asked as one.
 	entry := bodiesOf(stepsOf(t, bin, integrationPb, "entry"), "check")
-	if len(entry) != 1 || !strings.Contains(entry[0], "fs task get") || !strings.Contains(entry[0], "$FS_INTEGRATES") {
+	if len(entry) != 1 || !strings.Contains(entry[0], "task get") || !strings.Contains(entry[0], "$FS_INTEGRATES") {
 		t.Errorf("integration-entry checks = %v, want the member check on $FS_INTEGRATES", entry)
 	}
 	for _, body := range entry {
@@ -635,7 +635,7 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 	// assertion was protecting is kept by asserting the shape rather than the
 	// count.
 	pre := preconditionsOf(dev)
-	if len(pre) != 1 || !strings.Contains(pre[0], `fs reviews "$FS_NODE"`) {
+	if len(pre) != 1 || !strings.Contains(pre[0], `reviews "$FS_NODE"`) {
 		t.Errorf("code's exit pre-teardown checks = %v, want the review gate on $FS_NODE alone", pre)
 	}
 	for _, body := range pre {

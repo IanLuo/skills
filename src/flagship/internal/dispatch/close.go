@@ -481,6 +481,30 @@ func flatten(kc *knowledge.Center, plan []trace.PlanEntry, moment string) ([]pla
 	return steps, nil
 }
 
+// withoutReviewVar is the variable an exit check reads to stand down when the
+// cap waived the review: the value exitEnv exports. fs owns the name — it is the
+// close that exports it — so a step that defers on it is what makes a review
+// gate a review gate, and that is a fact this side of the boundary can know.
+//
+// Deliberately not the playbook's name. Which playbook carries the gate is the
+// playbook's business and the plan's; fs matching on `code` here would be the
+// constant this mechanism exists to delete, and it would go stale the day a
+// second playbook grew a gate.
+const withoutReviewVar = "$FS_WITHOUT_REVIEW"
+
+// reviewGate reports whether an exit phase carries the review gate: a check step
+// that stands down on $FS_WITHOUT_REVIEW. It is what lets a close tell a waiver
+// that names a skip from one that names nothing — either the gate is in this
+// phase or the reason has nothing to be about.
+func reviewGate(steps []planStep) bool {
+	for _, step := range steps {
+		if step.Kind == knowledge.KindCheck && strings.Contains(step.Body, withoutReviewVar) {
+			return true
+		}
+	}
+	return false
+}
+
 // lastLines indexes a trace by step id, keeping the last line written for each.
 // A step can carry more than one — an ask recorded `skipped` at dispatch time and
 // `confirmed` at close — and the last one is what the step stands as.
@@ -732,6 +756,33 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 	if err != nil {
 		return exitRun{}, fmt.Errorf("close: %v", err)
 	}
+
+	// A waiver names a skip, and a skip needs a gate that stood down. There is
+	// none in either of the two ways that can happen, and the reason is refused
+	// rather than recorded: the decision says "waived the review gate", and
+	// writing it on a close that never met one is the record asserting the very
+	// thing --without-review exists to make visible. An abandoned close runs no
+	// exit check at all; a plan that carries no review gate has none to face.
+	// Both leave the cap one move — drop the flag — and the refusal says so.
+	if withoutReview != "" {
+		if abandoned {
+			return exitRun{}, fmt.Errorf(
+				"close: --without-review was given, but an abandoned close runs no exit check, so this dispatch faced no review gate to waive — drop the flag")
+		}
+		if !reviewGate(steps) {
+			// Named by its playbooks, or named as the plan when there are none:
+			// a plan with no exit phase at all is a shape this refusal has to
+			// read as well as one whose exit phase simply has no gate in it.
+			phase := strings.Join(playbookNames(steps), ", ")
+			if phase == "" {
+				phase = "this plan"
+			}
+			return exitRun{}, fmt.Errorf(
+				"close: --without-review was given, but the exit phase of %s carries no review gate, so there is nothing to waive — drop the flag",
+				phase)
+		}
+	}
+
 	if len(steps) == 0 {
 		if abandoned {
 			return exitRun{Note: "no exit phase: the dispatch was abandoned"}, nil
@@ -985,6 +1036,12 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // can run its whole exit gate without a dispatch having been prepared in this
 // process.
 //
+// FS_BIN is the running binary's own path, the same contract the entry gate
+// gets. The review gate is the step that needs it: `fs reviews $FS_NODE` is a
+// shipped check, and `fs` is not on PATH — the binary lives in ~/.fs — so the
+// gate that says whether a change was reviewed could not run at all until a step
+// could name the binary it is a step of.
+//
 // FS_WITHOUT_REVIEW is the cap's --without-review reason, empty when the flag
 // was not given. It is exported rather than kept in Go because the gate it
 // answers is a playbook step: a check cannot be answered with --confirm, so the
@@ -1009,6 +1066,7 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, with
 		"FS_BATCH=" + batch,
 		"FS_WITHOUT_REVIEW=" + withoutReview,
 		"FS_SCRIPTS=" + scriptsDir(),
+		"FS_BIN=" + binaryPath(),
 	}
 }
 

@@ -3295,7 +3295,7 @@ entry:
 		t.Fatalf("a hand-merged member must be refused by member-exit, got %v", closed)
 	}
 	errMsg, _ := closed["error"].(string)
-	for _, want := range []string{"exit check failed", memberPb, "fs integrated", member} {
+	for _, want := range []string{"exit check failed", memberPb, "integrated $FS_NODE", member} {
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("refusal %q must mention %q", errMsg, want)
 		}

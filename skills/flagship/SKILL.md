@@ -185,16 +185,16 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 | `cap` | cap | — | 10 | the cap's standing rules: hold the plan, elicit decisions, `fs pending` first, close what's ready, file a gap when dispatch refuses for want of a playbook. Carries the **order** rule as a step: after a worker reports and before you close, dispatch the review with `--reviews <the work's cap node>`, read it when it closes, disposition what it found — the gate that enforces the order fires too late to be the reminder. |
 | `herdr` | cap | `engine=herdr` | 20 | herdr-operative rules: never wait, never poll — `fs pending` is the read. |
 | `worker` | work | — | 10 | every worker's standing obligations: note your node, never invent one, file gaps as `kind: gap`, a claim without its command is not evidence. |
-| `code` | entry, exit | `code` | 10 | one file for the code participant: its `entry:` is `test -f AGENTS.md`, the locked-doc grep, `$FS_SCRIPTS/check-specs.sh` (the locked specs still describe the code they name), and the asks a locked PRD names this deliverable and the acceptance check is stated; its `exit:` is the ask that the worker's node is complete, then the **review gate** — `[ -n "$FS_WITHOUT_REVIEW" ] || fs reviews "$FS_NODE"`, a `check:` rather than an `ask:` because a record stands behind it and `--confirm` must not wave it through, placed before the teardown because the teardown removes the tree a review reads — then the declared teardown (branch, worktree, herdr workspace) and its postconditions. Declares `engine: herdr` because those `do` steps call it. |
+| `code` | entry, exit | `code` | 10 | one file for the code participant: its `entry:` is `test -f AGENTS.md`, the locked-doc grep, `$FS_SCRIPTS/check-specs.sh` (the locked specs still describe the code they name), and the asks a locked PRD names this deliverable and the acceptance check is stated; its `exit:` is the ask that the worker's node is complete, then the **review gate** — `[ -n "$FS_WITHOUT_REVIEW" ] || "$FS_BIN" reviews "$FS_NODE"`, a `check:` rather than an `ask:` because a record stands behind it and `--confirm` must not wave it through, placed before the teardown because the teardown removes the tree a review reads — then the declared teardown (branch, worktree, herdr workspace) and its postconditions. Declares `engine: herdr` because those `do` steps call it. |
 | `plan` | work | `code` | 20 | the locked spec governs; state the plan; ask the cap when the spec is silent, never improvise. |
 | `development` | work | `code` | 30 | the code bar: smallest structure, surgical diffs, own your orphans, refactor as its own step. |
 | `tdd` | work | `code` | 40 | red → green → broader check; record why a test was skipped. |
 | `review` | work | `code` | 50 | re-read your own diff against the bar before claiming done; record what it flags. |
 | `independent-review` | work, exit | `type=review-task` | 10 | the *independent* reviewer's protocol — not `review`, which is self-review: this one loads into a `review-task` dispatch and reads somebody else's change, and the two keep out of each other's plans. Its `work:` has the reviewer read the change rather than the worker's summary, classify every finding *against the change* (blocks) or *discovered by the change* (a `kind: gap` node, never blocks — the test is the revert), and report without fixing and without deciding what blocks, because triage is the cap's. Its `exit:` is the termination condition: **every finding dispositioned** — `fixed`, `filed` or `accepted` with a reason. It is an `ask:`, not a `check:`; the comment says why no check can decide it. A review is **not itself reviewed**, structurally: `code`'s gate is selected by the declared `code` tag, which a `--type review-task` dispatch does not carry, so it cannot enter a review's plan. |
 | `research` | work | `research` | 20 | sources named on the node; say what would falsify the answer. |
-| `batch` | entry, exit | `type=batch` | 10 | the fan-out's own protocol, one file: its `entry:` is the one gate over the cards (`test -d .git`, `herdr worktree list --cwd .`, `$FS_SCRIPTS/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review), and its `exit:` is the one teardown (`fs batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions). Declares `creates: batch` and `engine: herdr`. |
-| `member` | work, exit | `member` | 10 | one file for the whole member: its `work:` is what a member's worker is told (your worktree is the batch's, never touch main, your branch is merged by a dispatched integration), and its `exit:` is `fs integrated $FS_NODE` plus the read ask. No teardown — the member's tree is the batch's. |
-| `integration` | entry, exit | `type=integrate` | 10 | one file for the merge: its `entry:` is `fs task get $FS_INTEGRATES --project cap --kind dispatch` plus the order and staged-changes asks, and its `exit:` is the suite question plus the verdict-recorded ask. No teardown, and no suite *check*: the command that runs a project's tests is the project's to declare, in a playbook of its own scope. |
+| `batch` | entry, exit | `type=batch` | 10 | the fan-out's own protocol, one file: its `entry:` is the one gate over the cards (`test -d .git`, `herdr worktree list --cwd .`, `$FS_SCRIPTS/check-parallel.sh $FS_CARDS`, ask: is the batch small enough to review), and its `exit:` is the one teardown (`"$FS_BIN" batch $FS_NODE` gate, then each member's branch, worktree and workspace removal and postconditions). Declares `creates: batch` and `engine: herdr`. |
+| `member` | work, exit | `member` | 10 | one file for the whole member: its `work:` is what a member's worker is told (your worktree is the batch's, never touch main, your branch is merged by a dispatched integration), and its `exit:` is `"$FS_BIN" integrated $FS_NODE` plus the read ask. No teardown — the member's tree is the batch's. |
+| `integration` | entry, exit | `type=integrate` | 10 | one file for the merge: its `entry:` is `"$FS_BIN" task get $FS_INTEGRATES --project cap --kind dispatch` plus the order and staged-changes asks, and its `exit:` is the suite question plus the verdict-recorded ask. No teardown, and no suite *check*: the command that runs a project's tests is the project's to declare, in a playbook of its own scope. |
 | `spec` | work, exit | `spec` | 10 | the participant that keeps the design record true — the protocol `code`'s entry gate defers to. Its `work:` is revise in place, move the lock marker, say which acceptance criterion moved, ask before moving a non-goal; its `exit:` is `$FS_SCRIPTS/check-specs.sh` current plus the committed-and-named ask. Selected by the declared tag `spec`. |
 
 ### Knowledge center
@@ -263,7 +263,9 @@ fs batch BATCH_NODE
 
 # Was this dispatch's change reviewed? Exit 0 iff a done dispatch carries
 # reviews: <this node>; exit 1 saying which it found — nothing names it, or one
-# does and is not done yet. This is what code's exit gate runs.
+# does and is not done yet. A node that does not exist, and one that is not a
+# dispatch, are refused as themselves rather than as the same absence. This is
+# what code's exit gate runs, as "$FS_BIN" reviews.
 fs reviews CAP_NODE
 
 # Close out a dispatch: run the exit phase of the plan it recorded, then close
@@ -272,6 +274,9 @@ fs reviews CAP_NODE
 # --without-review is the review gate's own override, and it requires a reason:
 # the gate is a check, which --confirm cannot answer, and the reason is recorded
 # as a decision on the node so a skipped review is visible rather than silent.
+# The reason is trimmed, so whitespace is refused with the empty case — and so
+# is a waiver on a close that faced no gate at all (abandoned, or a plan with no
+# review gate in it): recording one there would claim a skip that never happened.
 fs close --node CAP_NODE [--worker P:NODE] --decision "verdict" [--confirm] [--without-review "why"]
 
 # Close a dispatch without a verdict. A delivered one still tears down its pane
@@ -344,6 +349,7 @@ Every entry check runs with the dispatch's own inputs in its environment, so a g
 | `FS_CARDS` | the `--cards` value, comma-separated; empty when none was given |
 | `FS_INTEGRATES` | the `--integrates` value — the member cap node this integration merges; empty when none |
 | `FS_SCRIPTS` | where the scripts the binary ships were written; a step names one as `"$FS_SCRIPTS/<name>"`. Empty if they could not be written, which a step must treat as missing |
+| `FS_BIN` | the running binary's own path. A step that runs fs must say `"$FS_BIN"`: the binary is installed into `~/.fs` and is not on PATH, so a bare `fs` exits 127. Empty if the path could not be read, which a step must treat as missing |
 
 `FS_CARDS` and `FS_INTEGRATES` are exported empty rather than left absent, so a check can tell "none given" from "no environment".
 
@@ -375,6 +381,7 @@ Exit steps get the closing dispatch's own inputs in their environment:
 | `FS_WORKTREE_PATH` | that worktree's checkout path; empty without one |
 | `FS_BATCH` | the batch node this dispatch is a member of; empty outside a batch — the marker `code`'s teardown defers on |
 | `FS_SCRIPTS` | where the scripts the binary ships were written, the same directory the entry gate got |
+| `FS_BIN` | the running binary's own path, the same contract the entry gate gets. It is what the review gate runs, because fs is not on PATH and `"$FS_BIN"` is |
 
 Exit `check` steps run in the tree the dispatch worked in (the worktree, or the project root when there was none or the tree is gone); exit `do` steps run in the project root, so an action that removes the worktree does not stand inside it.
 
@@ -388,7 +395,7 @@ The gate can check that the worker's node exists and is `done`, and that the tra
 fs dispatch --project P --type dev-task --tag code --batch <batch-node> --worktree-new --deliver
 ```
 
-The member works in its own worktree; its own close runs `member`'s `exit:` section (`fs integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code`'s exit teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch`'s `exit:` section tears each member's branch, worktree and workspace down, declared once.
+The member works in its own worktree; its own close runs `member`'s `exit:` section (`"$FS_BIN" integrated $FS_NODE` plus the read ask) and defers its teardown — `FS_BATCH` is set, so `code`'s exit teardown steps no-op and the tree survives the member's close. Each member is merged by a dispatched integration, one at a time. When `fs batch <batch-node>` exits 0 — every member has a done integration naming it — the cap closes the batch, and `batch`'s `exit:` section tears each member's branch, worktree and workspace down, declared once.
 
 A batch's cards declare their files so the fan-out can be checked mechanically:
 
@@ -400,7 +407,7 @@ internal/registry/registry.go
 
 `$FS_SCRIPTS/check-parallel.sh <card…>` intersects the cards' declared sets and refuses an overlap — or a card with no file list. `batch`'s `entry:` section puts it in the entry gate, and that gate reads the cards from the dispatch itself: `fs dispatch --cards` exports them as `$FS_CARDS`.
 
-`FS_SCRIPTS` is where fs writes the scripts it ships — `~/.fs/scripts/`, materialised from the binary whenever it builds a plan's environment. It exists because a shipped playbook runs in **every** project: `check-parallel.sh` and `check-specs.sh` used to be addressed as `bin/…`, which resolves in one repo and exits 127 everywhere else. A step may name an `fs` subcommand, a generic POSIX tool, or `"$FS_SCRIPTS/<name>"` — never a path into a particular repo. `tests/playbooks` enforces that.
+`FS_SCRIPTS` is where fs writes the scripts it ships — `~/.fs/scripts/`, materialised from the binary whenever it builds a plan's environment. It exists because a shipped playbook runs in **every** project: `check-parallel.sh` and `check-specs.sh` used to be addressed as `bin/…`, which resolves in one repo and exits 127 everywhere else. A step may name an `fs` subcommand *through `"$FS_BIN"`*, a generic POSIX tool, or `"$FS_SCRIPTS/<name>"` — never a path into a particular repo, and never a bare `fs`, which resolves only where the binary happens to be installed. `FS_BIN` is the same shape of observation as `FS_SCRIPTS`: both are paths the running binary hands a step because the step cannot work them out for itself. `tests/playbooks` enforces both.
 
 ## Task status
 

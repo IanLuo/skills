@@ -1372,7 +1372,10 @@ func dispatchCmd(args []string) {
 // declared actions that tear the member's worktree and branch down — then closes
 // the recorded pane and marks the cap's node done.
 func closeCmd(args []string) {
-	withoutReview := flagVal(args, "--without-review", "")
+	// Trimmed, not merely non-empty: whitespace is not a reason, and a reason
+	// of three spaces records a waiver that says nothing — which is the
+	// unrecorded skip this flag exists to prevent, wearing a disguise.
+	withoutReview := strings.TrimSpace(flagVal(args, "--without-review", ""))
 	if hasFlag(args, "--without-review") && withoutReview == "" {
 		fatal("--without-review requires a reason: an unrecorded skip is the thing this flag exists to prevent")
 	}

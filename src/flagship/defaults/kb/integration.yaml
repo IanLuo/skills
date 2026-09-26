@@ -18,7 +18,7 @@ entry:
   # never herdr: herdr resolves a workspace from the invoking pane's HERDR_*
   # environment, so a check that called it would answer about the cap's pane
   # rather than about this project.
-  - check: fs task get $FS_INTEGRATES --project cap --kind dispatch
+  - check: "$FS_BIN" task get $FS_INTEGRATES --project cap --kind dispatch
   - ask: is this the next merge in order
   - ask: is main free of foreign staged changes
 exit:

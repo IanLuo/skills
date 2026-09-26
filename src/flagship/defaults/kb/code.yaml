@@ -68,7 +68,7 @@ exit:
   # very thing a review reads. A close that refused here with the worktree
   # already gone would send the cap to dispatch a review of a change that is no
   # longer on disk.
-  - check: [ -n "$FS_WITHOUT_REVIEW" ] || fs reviews "$FS_NODE"
+  - check: [ -n "$FS_WITHOUT_REVIEW" ] || "$FS_BIN" reviews "$FS_NODE"
 
   # The declared teardown. It is DECLARED, not machinery in fs close: removing a
   # tree, closing a workspace and deleting a branch differ by task type and
