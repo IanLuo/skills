@@ -83,18 +83,25 @@ exit:
   # integrated. The guard is one visible line per step, not a naming convention.
   #
   # The branch goes first, and that order is still required — though no longer
-  # for the reason it once was. The branch is named from git's own registration,
-  # `git worktree list --porcelain`, rather than from the checkout, because a
-  # worktree whose directory was deleted out of band still has a branch and
-  # still has it checked out: naming it with `rev-parse` inside the checkout
-  # needed the checkout to exist, so that case was skipped, and a branch nothing
-  # would ever collect was left behind. What forces the order now is the
-  # deletion: git refuses to delete a branch a worktree has checked out, so the
-  # branch is freed — detached where the tree is there, pruned where it is gone
-  # — before the tree-removal step below runs. And deleting the branch before
-  # the tree means an unmerged branch refuses the close while the tree is still
-  # on disk to look at, instead of after the tree is gone and the branch is
-  # unrecoverable.
+  # for the reason it once was. What forces it is the deletion: git refuses to
+  # delete a branch a worktree has checked out, so the branch is freed —
+  # detached where the tree is there, pruned where it is gone — before the
+  # tree-removal step below runs. And deleting the branch before the tree means
+  # an unmerged branch refuses the close while the tree is still on disk to look
+  # at, instead of after the tree is gone and the branch is unrecoverable.
+  #
+  # The branch is named one of two ways, by whether there is a checkout to ask.
+  # Where there is, git is asked about that directory directly — `rev-parse`
+  # inside it — and that is the only way that follows a symlinked path, because
+  # git resolves the directory it is pointed at rather than reading the string.
+  # Where the checkout is gone there is no directory to ask, so the recorded
+  # path is matched against git's own registration and the branch read from that
+  # entry. That match is textual, so both sides must be spelled the same way,
+  # and deriving the spelling here is precisely what went wrong: the parent was
+  # resolved and a symlinked final component was not, the match found nothing,
+  # and a branch nothing would collect read as a branch with nothing to do —
+  # exit 0, no output, a close reporting success over a leak. The spelling is
+  # resolve-path.sh's job now, in one place, for this step and the check below.
   #
   # Already done is not a failure: with no worktree every step is a no-op, and a
   # worktree whose branch is already detached, deleted or pruned is skipped.
@@ -102,11 +109,8 @@ exit:
   # than being deleted, and a worktree git will not remove refuses — because a
   # close that destroys work to succeed is not a close worth having.
   # $FS_WORKTREE is the herdr workspace; $FS_WORKTREE_PATH is the checkout git
-  # knows. The recorded path is resolved through its parent before it is matched
-  # against git's list, the way the registration check below does it, because
-  # git prints the path it resolved and the recorded one may be reached by a
-  # different spelling: on macOS /var and /private/var are one directory.
-  - do: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) && p="$d/$(basename "$p")"; b=$(git worktree list --porcelain | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi
+  # knows.
+  - do: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; if [ -e "$p" ]; then b=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null) || { echo "cannot read the branch the worktree at $p has checked out" >&2; exit 1; }; else p=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve the recorded path $p, so which worktree it names cannot be told" >&2; exit 1; }; b=$(git worktree list --porcelain | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); fi; [ -n "$b" ] || exit 0; [ "$b" = HEAD ] && exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi
 
   # git owns the worktree and its registration; `git worktree prune` is what
   # clears a registration whose checkout is already gone. A worktree git refuses
@@ -123,10 +127,14 @@ exit:
   # because a check about a removed path has no footing inside it.
   - check: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -z "$p" ] || [ ! -e "$p" ] || { echo "the checkout is still on disk at $p" >&2; exit 1; }
 
-  # git prints the path it resolved, so the recorded path is resolved through its
-  # parent first; comparing the raw recorded path would miss a registration git
-  # lists under /private/... on macOS.
-  - check: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || exit 0; d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) && p="$d/$(basename "$p")"; git worktree list --porcelain | grep -qxF "worktree $p" && { echo "git still registers worktree $p" >&2; exit 1; }; exit 0
+  # git prints the path it resolved, so the recorded path is resolved first —
+  # the same resolve-path.sh the branch step uses, which folds a symlinked final
+  # component as well as the directory above it. Comparing the raw recorded path
+  # missed both, and a miss here does not read as an error: it reads as "git no
+  # longer registers it", so this check passed while the worktree was still
+  # registered. A gate that reports success over the thing it exists to catch is
+  # worse than no gate, and that is the same defect the branch step had.
+  - check: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || exit 0; p=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve the recorded path $p, so whether git still registers a worktree there cannot be told" >&2; exit 1; }; git worktree list --porcelain | grep -qxF "worktree $p" && { echo "git still registers worktree $p" >&2; exit 1; }; exit 0
 
   # Passes only on workspace_not_found: a herdr that cannot be reached is not
   # evidence the workspace is gone, so an unreachable herdr refuses instead of
