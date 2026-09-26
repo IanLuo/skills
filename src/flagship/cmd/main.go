@@ -1581,6 +1581,15 @@ func projectOfAddress(address string) string {
 // refusal fires before anything is resolved and cannot know more than its caller
 // did; empty means the line carries no project key at all rather than a guessed
 // one.
+//
+// A bare node names no project, and the walk does not stop there: the positional
+// and `--worker` forms carry on looking, so `fs task get t-nope --project skills`
+// names skills — the flag is read wherever it sits. An empty `--project` does end
+// it, because the first `--project` is the one flagVal reads and the later ones
+// are already spoken for. The glued `--project=P` names P too, even though
+// checkArgs refuses the form outright: the token is flag-shaped and carries the
+// name, so it is the caller naming one, where a *value* that merely reads like a
+// flag is not.
 func invocationProject() string {
 	name := strings.Replace(commandName(), "-", " ", 1)
 	spec, known := cmdSpecs[name]
@@ -1594,7 +1603,9 @@ func invocationProject() string {
 		if !strings.HasPrefix(arg, "-") {
 			positionals++
 			if positionals == 1 && spec.address {
-				return projectOfAddress(arg)
+				if project := projectOfAddress(arg); project != "" {
+					return project
+				}
 			}
 			continue
 		}
@@ -1613,7 +1624,9 @@ func invocationProject() string {
 		case "--project":
 			return value
 		case "--worker":
-			return projectOfAddress(value)
+			if project := projectOfAddress(value); project != "" {
+				return project
+			}
 		}
 	}
 	return ""
