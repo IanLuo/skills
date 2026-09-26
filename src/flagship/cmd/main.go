@@ -199,9 +199,9 @@ Commands:
                                                 the shipped default — what is
                                                 actually running
   kb prompt [--project P]                       Print the cap's standing rules:
-                                                the phase: cap playbooks the
-                                                session's tags match. Plain text
-                                                on stdout, for
+                                                the playbooks carrying a cap:
+                                                section the session's tags
+                                                select. Plain text on stdout, for
                                                 pi --append-system-prompt
   kb diff NAME [--project P]                    Diff the shipped default against
                                                 the playbook on disk
@@ -754,10 +754,11 @@ Subcommands:
   get NAME                      Get a playbook
   list                          List playbooks and their state against the
                                 shipped defaults
-  prompt                        Print the cap's standing rules: the procedure
-                                playbooks with trigger cap, concatenated as
-                                plain text on stdout — pipe it into a single
-                                pi --append-system-prompt argument
+  prompt                        Print the cap's standing rules: the playbooks
+                                carrying a cap: section that the session's tags
+                                select, concatenated as plain text on stdout —
+                                pipe it into a single pi
+                                --append-system-prompt argument
   diff NAME                     Diff the shipped default against the playbook
                                 on disk
   reset NAME --yes              Restore the shipped default
@@ -852,11 +853,11 @@ func kbList(args []string) {
 	output(command.Response{OK: true, Data: map[string]any{"playbooks": states}})
 }
 
-// kbPrompt prints the cap's standing rules — the procedure playbooks with
-// trigger cap, concatenated. It is the delivery path for the playbooks: piping
-// it into `pi --append-system-prompt` is the entire integration, so stdout
-// carries the prompt and nothing else, and a failure goes to stderr rather than
-// the JSON envelope every other command uses.
+// kbPrompt prints the cap's standing rules — the playbooks with a `cap:`
+// section the session's tags select, concatenated. It is the delivery path for
+// the playbooks: piping it into `pi --append-system-prompt` is the entire
+// integration, so stdout carries the prompt and nothing else, and a failure
+// goes to stderr rather than the JSON envelope every other command uses.
 func kbPrompt(args []string) {
 	kc := openKB(flagVal(args, "--project", ""))
 

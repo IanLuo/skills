@@ -40,7 +40,7 @@ Every event is a JSON object with fixed envelope + type-specific payload:
 | `task-unblocked` | (empty object) |
 | `metadata-changed` | `field` (string), `old_value` (string), `new_value` (string) |
 | `delivery-recorded` | `pane_id` (string), `tab_id` (string), `agent` (string), `engine` (string), `project` (string), `node` (string), `type` (string), `worktree` (string), `worktree_path` (string) |
-| `plan-recorded` | `plan` (ordered `{name, phase, order}` entries), `tags` (the tag set that selected them) — the dispatch's plan |
+| `plan-recorded` | `plan` (ordered `{name, moments, order}` entries), `tags` (the tag set that selected them), and the resolved realization — `engine`, `agent`, `agent_args` — so which harness ran is reconstructible from the record alone |
 | `report-recorded` | `kind` (string — `blocked`, `question`, `done`, or absent for a note), `line` (string). Addressed to the worker's own node |
 | `cap-claimed` | `pane_id`, `tab_id`, `agent`, `claimed_at` (RFC3339 UTC), and on a take-over `taken_over_from`, `taken_over_at`, `reconstructed`. Scope-level: **no `node_id`** |
 
@@ -77,22 +77,32 @@ Results are ranked by BM25 relevance. The LLM uses FTS5 as a candidate retriever
 
 ## Playbook YAML format
 
-A playbook is a protocol for a kind of work. Global playbooks are stored at
-`~/.fs/kb/<name>.yaml`; a project's own at `~/.fs/projects/<project>/kb/<name>.yaml`,
-and a project playbook with the same name **overrides the fields it declares and
-inherits the rest** from the global one for a dispatch into that project.
+A playbook is a protocol for a kind of work, and it resolves from one of three
+scopes. The **shipped** set rides inside the binary and runs from there, so it is
+never installed; a global override lives at `~/.fs/kb/<name>.yaml` and a project's
+own at `~/.fs/projects/<project>/kb/<name>.yaml`. A playbook with the same name
+**overrides the fields it declares and inherits the rest** from the scope beneath
+it — project over global over shipped — for a dispatch into that project.
 
 ```yaml
-name: code-entry            # required; must equal the file name
-phase: entry                # required: cap | entry | work | exit
-applies_when: code          # optional, default empty = matches every dispatch.
-                            # comma-separated terms, ALL must hold. term = `k` (present) or `k=v`
-order: 10                   # optional, default 500; ascending; ties by name
-steps:                      # required, non-empty
+# name is required, and must equal the file's name.
+name: my-gate
+# applies_when is optional; empty matches every dispatch. Comma-separated terms,
+# ALL of which must hold. A term is `k` (present) or `k=v`.
+applies_when: code
+# order is optional, default 500; ascending, ties by name.
+order: 10
+# One section per moment: cap | entry | work | exit.
+entry:
   - check: test -f AGENTS.md
   - ask: a locked PRD is present, and it names this one deliverable
   - say: read AGENTS.md before editing
 ```
+
+A comment must own its line. The parser is line-oriented and does not strip a
+trailing one, so `name: my-gate  # mine` declares a name of `my-gate  # mine`
+and is refused for not matching the file — which is why every comment above sits
+on a line of its own.
 
 Each step is `kind: body`, and the closed kind vocabulary is `say | use | check | ask | do | include`:
 
@@ -100,7 +110,7 @@ Each step is `kind: body`, and the closed kind vocabulary is `say | use | check 
 |---|---|
 | `check` | A shell command the gate runs: `fs dispatch` with cwd = the project root, `fs close` with cwd = the tree the worker ran in (the `worktree_path` the delivery record kept, or the project root when the record names no worktree). Pass/fail plus the command's output. |
 | `ask` | Only the cap can confirm it; reported `?` at dispatch and refused at close until `--confirm`. |
-| `do` | A shell command that acts — the declared teardown. `exit` phase only; runs in the project root. |
+| `do` | A shell command that acts — the declared teardown. The `exit:` section only; runs in the project root. |
 | `say` | Worker context (or close prose), not part of the gate. Carried in the brief text. |
 | `use` | A skill hint for the worker, as `<skill> — <when>`. |
 | `include` | Splices another playbook's steps at this position. |
@@ -109,23 +119,27 @@ A step line with no recognized kind prefix defaults to `say` (split at the first
 so prose playbooks written before kinds existed still parse. `fs kb get` returns steps
 as `{kind, body}` objects.
 
-Which kinds a phase allows is a closed table — anything else is refused at write time:
+Which kinds a section allows is a closed table — anything else is refused at write time:
 
-| phase | runs | allowed kinds |
+| section | runs | allowed kinds |
 |---|---|---|
-| `cap` | the cap's standing rules, in the session prompt | `say` |
-| `entry` | before the worker starts | `check`, `ask`, `say` |
-| `work` | the worker's brief | `say`, `use` |
-| `exit` | at close | `check`, `ask`, `do`, `say` |
+| `cap:` | the cap's standing rules, in the session prompt | `say` |
+| `entry:` | before the worker starts | `check`, `ask`, `say` |
+| `work:` | the worker's brief | `say`, `use` |
+| `exit:` | at close | `check`, `ask`, `do`, `say` |
 
-`include` is allowed in every phase — it is spliced away before validation, and
-what it splices must itself be legal for the including playbook's phase. A cycle
+`include` is allowed in every section — it is spliced away before validation, and
+what it splices must itself be legal for the including playbook's moment. A cycle
 is refused with a message naming the chain; include depth over 8 is refused too.
 
-The removed fields `type:`, `trigger:` and `engine_scope:` are **refused at
-parse** with a message naming the replacement: `trigger: cap` → `phase: cap`;
-`engine_scope: herdr` → `applies_when: engine=herdr`; `type: prerequisite|cleanup`
-→ the `phase` of the moment plus a matching `applies_when`.
+The removed fields `phase:`, `steps:`, `type:`, `trigger:` and `engine_scope:` are
+**refused at parse**, each with a message naming its replacement: `phase: entry` →
+the `entry:` section holding the same list; `steps:` → one section per moment;
+`trigger: cap` → the `cap:` section; `engine_scope: herdr` → the declaration
+`engine: herdr` (the term `applies_when: engine=herdr` is only for matching an
+engine, not declaring one); `type: prerequisite|cleanup` → the section of that
+moment — `entry:` for a prerequisite, `exit:` for a cleanup — plus an
+`applies_when` term naming the work it matches.
 
 A dispatch's `check` steps see the dispatch's own inputs in the environment, so
 a gate can be about *this* dispatch — which cards, which member — and not only
@@ -134,9 +148,9 @@ comma-separated, empty when none was given, and never unset), `FS_INTEGRATES`
 (the `--integrates` value), and `FS_BIN` (the running binary's own path). That is
 what `batch.yaml` uses:
 `check: "$FS_BIN" script check-parallel.sh $FS_CARDS`. `fs close`'s exit steps
-get a different, narrower set: `FS_PROJECT`, `FS_TYPE`, `FS_NODE`, `FS_WORKER`,
+get a different set: `FS_PROJECT`, `FS_TYPE`, `FS_NODE`, `FS_WORKER`,
 `FS_CARDS` (empty), `FS_INTEGRATES`, `FS_PANE`, `FS_WORKTREE`,
-`FS_WORKTREE_PATH`, `FS_BIN`.
+`FS_WORKTREE_PATH`, `FS_BATCH`, `FS_WITHOUT_REVIEW`, `FS_BIN`.
 
 A shipped playbook is run in every project, so a step it declares may name an
 `fs` subcommand, a generic POSIX tool, or a script the binary ships — through
@@ -161,9 +175,8 @@ how the `worker` playbook loads for every dispatch.
 # Create
 cat > /tmp/playbook.yaml << 'EOF'
 name: my-gate
-phase: entry
 applies_when: code
-steps:
+entry:
   - check: test -f specs/prd.md
   - ask: is the acceptance check stated?
 EOF
@@ -188,11 +201,13 @@ fs kb add --name my-gate --file /tmp/playbook.yaml --project myapp
 
 ### Shipped defaults and drift
 
-Fourteen playbooks ship inside the binary and run from there — nothing is
-installed: `cap`, `herdr`, `worker`, `code`, `plan`, `development`, `tdd`,
-`review`, `independent-review`, `research`, `batch`, `member`, `integration`, and
-`spec`. They live in `src/flagship/defaults/kb/` and are embedded with
-`//go:embed`, so the contract is versioned with the code and survives a wipe.
+The shipped set rides inside the binary and runs from there — nothing is
+installed. The names are not restated here, because they are a fact the code owns
+and a list in prose is one nobody checks: `fs kb list` prints every playbook with
+the scope it resolves from, and `tests/playbooks/test_playbooks.py` is where the
+set is measured, so a name added to or dropped from it fails there. They are read
+out of `src/flagship/defaults/kb/` with `//go:embed`, so the contract is
+versioned with the code and survives a wipe.
 
 ```bash
 fs kb list                    # each playbook's scope and state against the shipped default
@@ -291,11 +306,12 @@ When `--project` is omitted the target is the registered project whose `root_pat
 owns the working directory; if the directory is unregistered, its directory name is
 used. Registration happens on `fs project create`.
 
-The knowledge center is two-scoped: the global `~/.fs/kb/` and each project's
-`~/.fs/projects/<project>/kb/`. A project playbook with the same `name` overrides
-the fields it declares and inherits the rest from the global one for a dispatch
-into that project; `fs kb add|edit --project P` writes to the project's own KB,
-and `fs kb list` reports each playbook's `scope`.
+The knowledge center is three-scoped: the shipped set in the binary, the global
+`~/.fs/kb/`, and each project's `~/.fs/projects/<project>/kb/`. A playbook with
+the same `name` overrides the fields it declares and inherits the rest from the
+scope beneath it — project over global over shipped — for a dispatch into that
+project; `fs kb add|edit --project P` writes to the project's own KB, and
+`fs kb list` reports each playbook's `scope`.
 A project with no KB directory behaves exactly as global-only.
 
 ## Store integrity and WAL
@@ -372,9 +388,9 @@ fs query "SQLite CGO" --project myapp
 
 ```bash
 # Before starting code work, prepare the dispatch — its entry gate runs the
-# code-entry checks (AGENTS.md present; a locked doc grep matches) and asks you
-# to confirm a locked PRD names the deliverable and the acceptance check is
-# stated. Fix what it refuses, or answer its asks.
+# `code` playbook's entry checks (AGENTS.md present; a locked doc grep matches)
+# and asks you to confirm a locked PRD names the deliverable and the acceptance
+# check is stated. Fix what it refuses, or answer its asks.
 fs dispatch --project myapp --type dev-task --goal "..." --tag code
 
 # If something is missing and you cannot fix it now, block the task and name

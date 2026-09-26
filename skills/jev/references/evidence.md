@@ -38,8 +38,9 @@ with a sibling primitive.
 
 ## It discriminates, and it does not collapse to one signal
 
-Four states × the two real gates from `~/.fs/kb/code-entry.yaml`, as `score`
-questions with three levels (0 unmet → 2 met):
+Four states × the two real gates the `code` playbook asks at entry
+(`code-entry.yaml` when these were run), as `score` questions with three levels
+(0 unmet → 2 met):
 
 | state | `prd_locked` | `acceptance_stated` |
 |---|---|---|

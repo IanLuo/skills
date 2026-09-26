@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -989,10 +990,27 @@ func TestCLIHelpTopLevel(t *testing.T) {
 
 // Every subcommand answers --help / -h / help with its usage on stderr, exit 0,
 // and no state touched at all — not even the ~/.fs directory.
+//
+// The list is derived from cmdSpecs rather than written out. The written one had
+// already drifted: it named nine of the nineteen heads fs has, so `script`,
+// `cap`, `report` and seven others went unchecked — and `script` is the one
+// whose help is a different code path from the rest, because scriptCmd reads
+// --help itself instead of reaching it through checkArgs. That is the case a
+// list nobody re-derives stops covering.
 func TestCLIHelpSubcommands(t *testing.T) {
 	bin := getFS(t)
 
-	for _, sub := range []string{"project", "task", "status", "query", "log", "kb", "dispatch", "close", "unfinished"} {
+	heads := map[string]struct{}{}
+	for name := range cmdSpecs {
+		heads[strings.Fields(name)[0]] = struct{}{}
+	}
+	subs := make([]string, 0, len(heads))
+	for head := range heads {
+		subs = append(subs, head)
+	}
+	sort.Strings(subs)
+
+	for _, sub := range subs {
 		t.Run(sub, func(t *testing.T) {
 			for _, form := range []string{"--help", "-h", "help"} {
 				home := t.TempDir()

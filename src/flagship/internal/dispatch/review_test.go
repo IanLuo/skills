@@ -97,9 +97,9 @@ func TestCodePlanStillCarriesTheSelfReview(t *testing.T) {
 	withShipped(t, f)
 
 	// HOME is a temp dir so the shipped entry checks — which run real commands,
-	// and build their environment out of ~/.fs/scripts — write nothing into the
-	// operator's. `code`'s checks cannot pass in a fresh temp project (there is
-	// no AGENTS.md), so the dispatch proceeds past them with --confirm, which is
+	// and fs logs every command under ~/.fs — write nothing into the operator's.
+	// `code`'s checks cannot pass in a fresh temp project (there is no
+	// AGENTS.md), so the dispatch proceeds past them with --confirm, which is
 	// what that flag is for.
 	t.Setenv("HOME", t.TempDir())
 

@@ -53,8 +53,9 @@ herdr agent read pi1 --source recent-unwrapped --lines 200 --format text
 herdr pane close "$P"
 ```
 
-`claude` is the one special kind: it defaults to `--permission-mode auto` at launch
-(`manual` when the user says to go carefully) — see **Claude** below.
+`claude` is the one kind this skill pins an argument for: herdr starts every agent
+with no arguments unless they follow `--`, so the permission mode is the agent's own
+default until it is passed explicitly — see **Claude** below.
 
 ## The canonical sequence
 
@@ -82,9 +83,10 @@ IDs from it, never guess.
 
    Returns once the agent is detected and ready. Blocks during startup → returns
    `agent_not_ready` but keeps the name usable — wait for `idle` before prompting.
-   Startup timeout is 30s by default. Add kind args after `--` (`claude` needs
-   `--permission-mode auto`; others may take `--model`/`--cwd` — run
-   `herdr agent start --help`).
+   Startup timeout is 30s by default. herdr passes **no** startup arguments of
+   its own, so a kind arg reaches the agent only after `--` — `--model` and
+   `--cwd` are examples, and run `herdr agent start --help` for the kind you are
+   starting. See **Claude** for the one argument this skill adds.
 
 3. **Prompt**:
 
@@ -109,11 +111,15 @@ IDs from it, never guess.
    herdr pane close <pane-id>
    ```
 
-## Claude — the auto-mode special case
+## Claude — the mode is passed, not defaulted
 
-`<kind>=claude` follows the same grammar, with launch defaults pinned. A bare
-`claude` can sit in manual mode and ask before every action, and in-session mode
-toggling is unreliable in a background pane — fix the mode at launch:
+`<kind>=claude` follows the same grammar; what is different is that this skill
+**passes** a permission mode rather than relying on one. herdr ships no per-kind
+startup arguments — its manifest for `claude` is state-detection regexes, and it
+launches the agent with whatever follows `--` and nothing otherwise — so a bare
+`claude` starts in Claude Code's own default of Manual and asks before every
+action, and in-session mode toggling is unreliable in a background pane. Fix the
+mode at launch, explicitly:
 
 ```bash
 herdr agent start <name> --kind claude --pane <pane-id> -- --permission-mode auto
@@ -121,10 +127,10 @@ herdr agent start <name> --kind claude --pane <pane-id> -- --permission-mode aut
 
 | You say | You get |
 |---|---|
-| `claude <task>` / `auto claude <task>` | sibling pane · claude **auto** · runs `<task>` · closes when done (temp) |
-| `claude tab <task>` | new tab · claude auto · runs `<task>` · closes when done (temp) |
+| `claude <task>` / `auto claude <task>` | sibling pane · claude **auto** (this skill passes the flag) · runs `<task>` · closes when done (temp) |
+| `claude tab <task>` | new tab · claude auto (the same flag, on the tab's root pane) · runs `<task>` · closes when done (temp) |
 | `… keep` / `… keep open` / `… interactive` | same, but keeps open for follow-ups |
-| `claude, careful` / `claude, ask me first` | claude manual (no auto) |
+| `claude, careful` / `claude, ask me first` | no flag passed — claude's own Manual default |
 | `open claude` (no task — work in it yourself) | auto, keep open, no prompt, no close |
 
 `auto` is Claude Code's classifier mode — it still stops on genuinely risky

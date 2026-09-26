@@ -55,9 +55,9 @@ func IsCapScope(scope string) bool { return scope == capScope }
 
 // SessionTags is the tag set the cap's own session runs under. The engine tag
 // is the standing declaration the playbooks resolve — not a constant — so a
-// `phase: cap` playbook tagged `engine=herdr` loads only because a standing
-// playbook declares that engine. It is the same resolution a dispatch uses, so
-// the prompt cannot drift from what a dispatch would run.
+// playbook with a `cap:` section tagged `engine=herdr` loads only because a
+// standing playbook declares that engine. It is the same resolution a dispatch
+// uses, so the prompt cannot drift from what a dispatch would run.
 func SessionTags(kc *knowledge.Center) (map[string]any, error) {
 	standing, err := standingRealization(kc)
 	if err != nil {

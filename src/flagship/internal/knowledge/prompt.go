@@ -1,9 +1,9 @@
 // The cap's standing rules, assembled from the playbooks that carry them.
 //
-// A playbook nobody loads is inert. A `phase: cap` playbook is the cap's
-// operating contract, and Prompt is the one path that puts it in front of the
-// agent — so the rule travels with the binary that ships it, instead of being
-// retyped into a prompt by hand every session.
+// A playbook nobody loads is inert. A playbook with a `cap:` section is the
+// cap's operating contract, and Prompt is the one path that puts it in front of
+// the agent — so the rule travels with the binary that ships it, instead of
+// being retyped into a prompt by hand every session.
 //
 // The output is plain text with no blank lines, because it is piped whole into
 // a single --append-system-prompt argument.
