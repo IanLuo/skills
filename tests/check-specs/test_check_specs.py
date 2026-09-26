@@ -3,8 +3,8 @@
 test_check_specs.py — behaviour tests for the shipped check-specs.sh.
 
 The script turns "is every locked doc still true?" into "which commits have
-landed since the commit this doc names?". It ships inside the fs binary and fs
-writes it to ~/.fs/scripts, so it may not know any one project's layout: with no
+landed since the commit this doc names?". It ships inside the fs binary and is
+read back out of it, so it may not know any one project's layout: with no
 argument it measures the whole project, and --covered is how a caller that does
 know the repo asks a narrower question.
 
