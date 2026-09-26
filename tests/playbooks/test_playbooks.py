@@ -61,13 +61,18 @@ sections in the same file. What it checks, per playbook:
      stop checking the subcommand it names.
 
  13. No field line carries an inline comment. `parsePlaybook` is line-oriented and
-     takes everything after the colon as the value, so `order: 20  # ascending`
-     declares the value `20  # ascending` — refused where the field is validated,
-     and silently swallowed where it is not: in `applies_when` it becomes a term
-     that can never match, and in `agent_args` a harmless-looking second argument.
-     A comment owns its line. The detector may not be laxer than the parser it
-     stands in for, so a file this test passes has to be one `fs kb add` reads as
-     written.
+     never separates a trailing comment from the value. Where the field is
+     validated as a single token — `name`, `engine`, `agent`, `creates` — the file
+     is refused for it: `name: p  # mine` declares the name `p  # mine`. Where the
+     value is prose the comment is swallowed in silence, which is worse than a
+     refusal: `applies_when: member  # mine` gains a term that can never match,
+     and `agent_args: --a, b  # mine` an argument nobody wrote. `order` is the one
+     field the parser tolerates — `fmt.Sscanf("%d")` stops at the space — so this
+     rule is deliberately stricter than the parser there, and says so: the shipped
+     set is written to one rule, and a comment that passes in one field is a trap
+     in the next. A comment owns its line. The detector may not be laxer than the
+     parser it stands in for, so a file this test passes has to be one `fs kb add`
+     reads as written.
 
 Rules 8, 10, 11 and 12 are the same question from four sides — can this step run at
 all in a project that is not this one? — and rule 10 is the one the other two
@@ -296,8 +301,8 @@ def main():
         for key, value in pb.items():
             if isinstance(value, str) and "#" in value:
                 check(f"{name}: {key} carries no inline comment", False,
-                      f"{key}: {value!r} — the parser takes everything after the colon as "
-                      f"the value, so a comment must own its line")
+                      f"{key}: {value!r} — a comment must own its line: the parser "
+                      f"never separates one from the value (rule 13)")
 
         order = pb.get("order")
         if order is not None:
