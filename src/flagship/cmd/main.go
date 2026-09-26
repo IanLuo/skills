@@ -104,6 +104,8 @@ func main() {
 	case "trace":
 		checkArgs("trace", os.Args[2:])
 		traceCmd(os.Args[2:])
+	case "script":
+		scriptCmd(os.Args[2:])
 	case "unfinished":
 		checkArgs("unfinished", os.Args[2:])
 		unfinishedCmd()
@@ -289,7 +291,10 @@ Commands:
                                                view ends with the deviation — what
                                                the plan asked for that the trace
                                                does not account for, or none.
-                                               Exit 1 when no trace was written`)
+                                               Exit 1 when no trace was written
+  script NAME [ARGS...]                       Run a script the binary ships —
+                                               read out of the binary, written
+                                               nowhere — and exit with its status`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives

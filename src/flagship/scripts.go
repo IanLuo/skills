@@ -1,64 +1,61 @@
 package flagship
 
 import (
-	"bytes"
+	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // scriptsSource is where the embedded scripts live inside the binary.
 const scriptsSource = "defaults/scripts"
 
-// MaterializeScripts writes the embedded scripts to ~/.fs/scripts and returns
-// that directory, so a playbook can address one as "$FS_SCRIPTS/<name>".
+// Script returns the shipped script named name, so `fs script` can run it with
+// none of it reaching the disk.
 //
-// It differs from how a playbook is materialised, deliberately. A playbook in
-// ~/.fs/kb is the user's once written — `fs kb reset` puts one there only when
-// asked, and a copy nobody changed is transparent to resolution — but a script
-// is fs's own code: shipped with the binary, never edited by hand. So it is
-// written whenever it differs, which means a fixed script takes effect on the
-// next dispatch with no `kb reset` equivalent to remember, and no way for ~/.fs
-// to drift from the binary running it.
+// This is the rule a shipped playbook already follows, applied to the one
+// artifact that could not simply be read the same way: a playbook is *parsed by
+// fs*, but a script is *executed by the shell*, and `bash "$FS_SCRIPTS/x.sh"`
+// needs a real path — which is the entire reason a materialized copy once
+// existed. It does not need to be a file: the body runs through `bash -c`
+// instead, and the directory goes away with the reason for it.
 //
-// This exists because a shipped playbook's check step was naming a repo-relative
-// path: `batch.yaml` ran `bin/check-parallel.sh`, which resolved in exactly one
-// project. A playbook the binary ships is run in every project, so a command it
-// names has to be one the binary ships too.
-//
-// It is called on the path that builds a plan's environment, so the directory is
-// there whenever a step runs. A failure is returned, not swallowed: the caller
-// reports it as an empty FS_SCRIPTS rather than a path that does not exist, so a
-// step that needs a script can tell it is missing.
-func MaterializeScripts() (string, error) {
-	home, err := os.UserHomeDir()
+// An unknown name is an error naming every script the binary does ship. The
+// caller is a playbook step that named a script which is gone, and a step that
+// silently runs nothing is a gate that silently passes.
+func Script(name string) ([]byte, error) {
+	scripts, err := fs.Sub(embedded, scriptsSource)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	dir := filepath.Join(home, ".fs", "scripts")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	body, err := fs.ReadFile(scripts, name)
+	if err == nil {
+		return body, nil
 	}
+	names, err := scriptNames(scripts)
+	if err != nil {
+		return nil, err
+	}
+	shipped := ""
+	if len(names) > 0 {
+		shipped = "; the binary ships " + strings.Join(names, ", ")
+	}
+	return nil, fmt.Errorf("no script named %q%s", name, shipped)
+}
 
-	entries, err := fs.ReadDir(embedded, scriptsSource)
+// scriptNames lists the shipped scripts, sorted so the refusal above reads the
+// same way twice.
+func scriptNames(scripts fs.FS) ([]string, error) {
+	entries, err := fs.ReadDir(scripts, ".")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	var names []string
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		want, err := fs.ReadFile(embedded, scriptsSource+"/"+entry.Name())
-		if err != nil {
-			return "", err
-		}
-		path := filepath.Join(dir, entry.Name())
-		if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, want) {
-			continue
-		}
-		if err := os.WriteFile(path, want, 0o755); err != nil {
-			return "", err
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
 		}
 	}
-	return dir, nil
+	sort.Strings(names)
+	return names, nil
 }

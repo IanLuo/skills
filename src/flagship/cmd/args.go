@@ -123,13 +123,15 @@ so a gate can ask about this dispatch and not only about the world:
   FS_CARDS        the --cards value, comma-separated; empty when none was given
   FS_INTEGRATES   the --integrates value — the member cap node this integration
                   merges; empty when none was given
-  FS_SCRIPTS      where the scripts the binary ships were written; a step names
-                  one as "$FS_SCRIPTS/<name>". Empty if they could not be
-                  written, which a step must treat as missing, not as a path
   FS_BIN          the running binary's own path. A step that runs fs must say
                   "$FS_BIN": the binary is installed into ~/.fs and is not on
                   PATH, so a bare fs exits 127. Empty if the path could not be
                   read, which a step must treat as missing, not as a path
+
+A step names a script the binary ships as "$FS_BIN" script <name> [args...]: the
+scripts are read out of the binary and written nowhere, so there is no
+directory to address and no FS_SCRIPTS. The script's exit status is fs's, so a
+gate run this way can fail.
 
 --cards names the batch's cards. It is repeatable, and each value may be a
 comma-separated list.
@@ -210,11 +212,12 @@ what the delivery opened:
   FS_PANE           the pane the delivery opened
   FS_WORKTREE       the worktree workspace the dispatch ran in; empty without one
   FS_WORKTREE_PATH  that worktree's checkout path; empty without one
-  FS_SCRIPTS        where the scripts the binary ships were written, the same
-                    directory the entry gate got; empty if they could not be
   FS_BIN            the running binary's own path, the same contract the entry
                     gate gets; it is what the review gate below runs, because
-                    fs is not on PATH and "$FS_BIN" is
+                    fs is not on PATH and "$FS_BIN" is. It is also how an exit
+                    step names a script the binary ships — "$FS_BIN" script
+                    <name> — since the scripts are read out of the binary and
+                    there is no FS_SCRIPTS to address
 
 Checks run in the tree the dispatch worked in; declared do steps run in the
 project root, so an action that removes the worktree does not stand inside it.`,
@@ -224,6 +227,20 @@ project root, so an action that removes the worktree does not stand inside it.`,
 			"--without-review": true,
 		},
 	},
+	"script": {
+		usage: `Usage: fs script NAME [ARGS...]
+
+Run a script the binary ships — one of the files under
+src/flagship/defaults/scripts — read out of the binary and written nowhere.
+ARGS reach it unchanged as $1.., its output is fs's output, and its exit status
+is fs's exit status, so a gate a playbook runs this way can fail.
+
+This is the spec fs enforces least: everything after the name belongs to the
+script, flags and positionals alike. The only argument shape fs has an opinion
+about is the name — a NAME the binary does not ship is refused, naming the ones
+it does.`,
+	},
+
 	"unfinished": {usage: "Usage: fs unfinished"},
 	"gaps":       {usage: "Usage: fs gaps"},
 	"pending":    {usage: "Usage: fs pending"},

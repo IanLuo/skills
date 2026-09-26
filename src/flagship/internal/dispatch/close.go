@@ -1030,17 +1030,15 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // are what lets a declared action be about this dispatch's own tree — removing
 // it, deleting its branch — without the mechanism knowing how.
 //
-// FS_SCRIPTS is ~/.fs/scripts, the same directory the entry gate got, so an exit
-// step names a shipped script the same way an entry step does. It is written
-// here too because close is the other half of a plan: a `--tag spec` dispatch
-// can run its whole exit gate without a dispatch having been prepared in this
-// process.
-//
 // FS_BIN is the running binary's own path, the same contract the entry gate
 // gets. The review gate is the step that needs it: `fs reviews $FS_NODE` is a
 // shipped check, and `fs` is not on PATH — the binary lives in ~/.fs — so the
 // gate that says whether a change was reviewed could not run at all until a step
-// could name the binary it is a step of.
+// could name the binary it is a step of. It is exported here as well as at the
+// entry gate because close is the other half of a plan: a `--tag spec` dispatch
+// can run its whole exit gate without a dispatch having been prepared in this
+// process. It carries the shipped scripts too — "$FS_BIN" script <name> — which
+// are read out of the binary and have no directory of their own.
 //
 // FS_WITHOUT_REVIEW is the cap's --without-review reason, empty when the flag
 // was not given. It is exported rather than kept in Go because the gate it
@@ -1065,7 +1063,6 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, with
 		"FS_WORKTREE_PATH=" + delivery.WorktreePath,
 		"FS_BATCH=" + batch,
 		"FS_WITHOUT_REVIEW=" + withoutReview,
-		"FS_SCRIPTS=" + scriptsDir(),
 		"FS_BIN=" + binaryPath(),
 	}
 }

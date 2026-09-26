@@ -44,10 +44,12 @@ sections in the same file. What it checks, per playbook:
      the rest. `batch.yaml` ran `bin/check-parallel.sh` and `integration.yaml`
      ran `tests/run.sh`, and each could only ever pass here.
 
- 11. Every `$FS_SCRIPTS/<name>` an executed step names is a script the binary
-     ships, in src/flagship/defaults/scripts. fs writes that directory to
-     ~/.fs/scripts when it builds a plan's environment, so a name that is not in
-     it is a path that will not exist when the step runs.
+ 11. Every script an executed step runs through `"$FS_BIN" script <name>` is one
+     the binary ships, in src/flagship/defaults/scripts. The scripts are read
+     out of the binary — nothing is written to disk — so a name that is not in
+     it is a step that runs nothing at all, and `$FS_SCRIPTS` is refused
+     outright: where the old directory survives, a step that named it would run
+     the stale copy and pass.
 
  12. No executed step names a bare `fs`. The binary is installed into ~/.fs and
      is not on PATH, so `fs reviews "$FS_NODE"` exits 127 — which is what the
@@ -100,6 +102,18 @@ REPO_LOCAL = re.compile(
 # `fs` and neither is `.../fs`.
 FS_INVOCATION = re.compile(r'(?:(?<![\w$./-])fs|"\$FS_BIN"|\$FS_BIN)\s+([a-z-]+)(?:\s+([a-z-]+))?')
 BARE_FS = re.compile(r"(?<![\w$./-])fs\s+([a-z-]+)")
+
+# How a step runs a script the binary ships: `"$FS_BIN" script <name>`, the name
+# being the next token. There is no directory to address — the script is read
+# out of the binary — so this is the only form, and the word after it is the
+# name rather than a subcommand's second word.
+SCRIPT_INVOCATION = re.compile(r'(?:(?<![\w$./-])fs|"\$FS_BIN"|\$FS_BIN)\s+script\s+([\w.-]+)')
+
+# The address that no longer exists. fs used to write the scripts to ~/.fs/scripts
+# and export $FS_SCRIPTS, so a step named one as a path; a step that reverted to
+# that form would find it on any machine the operator step has not reached yet,
+# run the stale copy, and pass — a gate quietly testing the wrong code.
+STALE_SCRIPTS = re.compile(r"\$FS_SCRIPTS")
 
 # The shipped set. Kept here as well as in the KB so a playbook that disappears
 # is a failure and not a quietly smaller loop.
@@ -193,22 +207,31 @@ def skill_names():
 
 
 def shipped_scripts():
-    """The scripts the binary embeds, which fs writes to ~/.fs/scripts."""
+    """The scripts the binary embeds, which fs runs out of the binary."""
     return {p.name for p in SCRIPTS.glob("*.sh")}
 
 
 def repo_local(body):
     """Path-shaped tokens in a step body that resolve inside this repo only.
 
-    `$FS_SCRIPTS/...` is deliberately not one: the lookbehind rejects a path
-    glued to `$`, and that is the portable form this rule pushes a step toward.
+    `"$FS_BIN" script <name>` is deliberately not one: the name is resolved
+    against the embedded set instead, and the binary's own path is what the
+    lookbehind rejects a bare `fs` for.
     """
     return sorted({m.group(0) for m in REPO_LOCAL.finditer(body)})
 
 
 def scripts_named(body):
-    """The script names a body addresses through $FS_SCRIPTS."""
-    return sorted(set(re.findall(r"\$FS_SCRIPTS/([\w.-]+)", body)))
+    """The script names a body runs out of the binary, through `script <name>`."""
+    return sorted(set(SCRIPT_INVOCATION.findall(body)))
+
+
+def two_word_subs(subs):
+    """The first words of the specs that have a two-word subcommand — `task`,
+    `kb`, `cap`, `project`. A spec with one word is one word whatever follows
+    it: `script check-specs.sh` names the subcommand `script` and then a script,
+    and reading it as `script check-specs` would invent a subcommand."""
+    return {s.split()[0] for s in subs if " " in s}
 
 
 def all_steps(playbook):
@@ -231,6 +254,7 @@ def skill_of(body):
 
 def main():
     subs = fs_subcommands()
+    two_word = two_word_subs(subs)
     skills = skill_names()
     scripts = shipped_scripts()
 
@@ -321,7 +345,7 @@ def main():
 
         for kind in ("check", "do"):
             for i, body in enumerate(steps_of(pb, kind), start=1):
-                for sub in fs_invocations(body):
+                for sub in fs_invocations(body, two_word):
                     check(f"{name}: {kind} {i} calls a subcommand fs has (fs {sub})",
                           sub in subs,
                           f"fs {sub} is not a subcommand; the specs in args.go have "
@@ -333,12 +357,17 @@ def main():
                 for ref in repo_local(body):
                     check(f"{name}: {kind} {i} names no repo-relative path ({ref})", False,
                           f"{ref} resolves in this repo only, and this playbook runs in "
-                          f"every project; name a shipped script through $FS_SCRIPTS")
+                          f"every project; run a shipped script as \"$FS_BIN\" script <name>")
+                if STALE_SCRIPTS.search(body):
+                    check(f"{name}: {kind} {i} names no $FS_SCRIPTS ({body})", False,
+                          "fs writes no scripts directory; run a shipped script as "
+                          "\"$FS_BIN\" script <name>. Where the old directory survives, this "
+                          "runs the stale copy and passes")
                 for script in scripts_named(body):
-                    check(f"{name}: {kind} {i} names a script the binary ships ({script})",
+                    check(f"{name}: {kind} {i} runs a script the binary ships ({script})",
                           script in scripts,
-                          f"{SCRIPTS / script} does not exist, so ~/.fs/scripts will not "
-                          f"have it when this step runs")
+                          f"{SCRIPTS / script} does not exist, so \"$FS_BIN\" script {script} "
+                          f"runs nothing at all")
 
     # The worker's rules are the one playbook every dispatch carries: an empty
     # applies_when is what makes that true, and the node rule is the reason it
@@ -368,16 +397,21 @@ def bare_fs(body):
     return [f"fs {m.group(1)}" for m in BARE_FS.finditer(body)]
 
 
-def fs_invocations(body):
+def fs_invocations(body, two_word):
     """The fs subcommands a shell body runs. The binary is named either bare
     (`fs`) or through `"$FS_BIN"`, the running binary's own path; both are read,
     so rule 8 keeps checking what a step asks fs to do whichever way it asks.
     Two words where the specs have a two-word subcommand (`task get`,
-    `kb prompt`), one otherwise."""
+    `kb prompt`), one otherwise — the second word of `script check-specs.sh` is
+    a script name, not a subcommand's second word."""
     found = []
     for m in FS_INVOCATION.finditer(body):
         first, second = m.group(1), m.group(2)
-        found.append(f"{first} {second}" if second and not second.startswith("-") else first)
+        found.append(
+            f"{first} {second}"
+            if second and first in two_word and not second.startswith("-")
+            else first
+        )
     return found
 
 

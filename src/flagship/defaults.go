@@ -1,11 +1,11 @@
-// Package flagship ships the playbooks that live in ~/.fs/kb and the scripts
-// that live in ~/.fs/scripts inside the fs binary.
+// Package flagship ships the playbooks that live in ~/.fs/kb and the scripts a
+// playbook runs, inside the fs binary.
 //
 // Both are embedded from defaults/, so the cap's operating contract is
-// versioned with the code instead of being a hand-written file outside git: the
-// playbooks are the last scope `fs kb` resolves against, so a shipped playbook
-// is live without being written to disk first, and MaterializeScripts writes the
-// scripts.
+// versioned with the code instead of being a hand-written file outside git —
+// and neither is written to disk: the playbooks are the last scope `fs kb`
+// resolves against, so a shipped playbook is live without being materialized
+// first, and Script hands a shipped script's body to `fs script` to run.
 package flagship
 
 import (

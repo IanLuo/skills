@@ -17,12 +17,12 @@
 # cannot carry one project's layout either. A narrower question is therefore
 # asked by the caller, which is the only party that can ask it knowing the repo.
 #
-# It ships inside the fs binary and fs writes it to ~/.fs/scripts/, so it is
-# addressed as "$FS_SCRIPTS/check-specs.sh" — an absolute path that exists in
+# It ships inside the fs binary and is read back out of it — nothing writes a
+# copy — so it is addressed as "$FS_BIN" script check-specs.sh, which exists in
 # every project.
 #
 # Usage:
-#   "$FS_SCRIPTS/check-specs.sh" [--dir DIR] [--covered PATH]...
+#   "$FS_BIN" script check-specs.sh [--dir DIR] [--covered PATH]...
 #
 #   --dir DIR       where the locked docs live (default: .agents/specs)
 #   --covered PATH  measure every doc against PATH instead of the whole project,

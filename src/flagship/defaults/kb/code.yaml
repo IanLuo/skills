@@ -17,12 +17,13 @@ entry:
   # and re-lock (`fs dispatch --tag spec`), or proceed with --confirm, accepting
   # the delta as a recorded decision rather than an oversight.
   #
-  # The script is named through $FS_SCRIPTS, where fs writes the scripts it
-  # ships. It takes no argument naming this repo's layout, so it asks the widest
-  # question instead: has anything moved since each doc was locked. A project
-  # whose docs describe one part of it narrows that with --covered, which is the
-  # caller's call because the caller is what knows the repo.
-  - check: bash "$FS_SCRIPTS/check-specs.sh"
+  # The script runs out of the binary — "$FS_BIN" script <name>, so there is no
+  # directory it was written to and nothing on disk to go stale. It takes no
+  # argument naming this repo's layout, so it asks the widest question instead:
+  # has anything moved since each doc was locked. A project whose docs describe
+  # one part of it narrows that with --covered, which is the caller's call
+  # because the caller is what knows the repo.
+  - check: "$FS_BIN" script check-specs.sh
   - ask: a locked PRD is present, and it names this one deliverable
   - ask: is the acceptance check for this deliverable stated
 exit:

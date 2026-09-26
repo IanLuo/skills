@@ -1553,9 +1553,10 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 //
 // The shipped playbook is used as shipped, so a gate that stopped reading
 // $FS_CARDS would fail here rather than pass on a test-local stand-in. Nothing
-// installs the script into the fixture repo: it is the binary's own, written to
-// $FS_SCRIPTS. This test used to copy bin/check-parallel.sh in by hand, which is
-// the defect it now covers — the playbook named a path only this repo had.
+// installs the script into the fixture repo or anywhere else: it is the
+// binary's own, run as "$FS_BIN" script. This test used to copy
+// bin/check-parallel.sh in by hand, which is the defect it now covers — the
+// playbook named a path only this repo had.
 func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()

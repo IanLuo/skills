@@ -20,5 +20,5 @@ exit:
   # The revision's own postcondition, and the same probe that refused the code
   # dispatch: it passes only once every locked spec is current again. An `ask`
   # alone would record that someone believed it; this one checks.
-  - check: bash "$FS_SCRIPTS/check-specs.sh"
+  - check: "$FS_BIN" script check-specs.sh
   - ask: the revision is committed, and the decision names the acceptance criterion that moved

@@ -36,7 +36,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flagship-dev/flagship"
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
@@ -1226,12 +1225,6 @@ func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan 
 // "this step has no env" — and one that needs them must refuse on empty rather
 // than pass vacuously.
 //
-// FS_SCRIPTS is ~/.fs/scripts, where the binary's own scripts are written. A
-// shipped playbook is run in every project, so it may only name commands the
-// binary ships; an absolute "$FS_SCRIPTS/<name>" is how it names one. Empty when
-// the scripts could not be written, which a step must treat as missing rather
-// than as a path to run.
-//
 // FS_BIN is the running binary's own path — the same rule applied to fs itself.
 // A step that wants to run fs cannot say `fs`: the binary is installed into
 // ~/.fs, not into PATH, so a bare `fs` is a name that resolves nowhere and the
@@ -1239,6 +1232,11 @@ func recordPlan(h *command.Handler, lg *trace.Log, nodeID, project string, plan 
 // the path of the binary running the step rather than whatever `fs` PATH might
 // one day offer. Empty when the path cannot be read, which a step must treat as
 // missing rather than as a path to run.
+//
+// It is also how a step names a script the binary ships: "$FS_BIN" script
+// <name> [args...]. The scripts are read out of the binary and written nowhere,
+// so there is no directory to export and nothing to go stale — the step runs
+// the same body from the same binary it dispatched under.
 func checkEnv(project, taskType, goal string, cards []string, integrates string) []string {
 	return []string{
 		"FS_PROJECT=" + project,
@@ -1246,15 +1244,14 @@ func checkEnv(project, taskType, goal string, cards []string, integrates string)
 		"FS_GOAL=" + goal,
 		"FS_CARDS=" + strings.Join(cards, ","),
 		"FS_INTEGRATES=" + integrates,
-		"FS_SCRIPTS=" + scriptsDir(),
 		"FS_BIN=" + binaryPath(),
 	}
 }
 
 // binaryPath is the path of the binary that is running, or "" when it cannot be
-// read. The empty case is deliberate and matches scriptsDir: a step that needs
-// fs has to be able to see it is missing, and a gate that cannot evaluate what
-// it was asked must refuse rather than pass.
+// read. The empty case is deliberate: a step that needs fs has to be able to
+// see it is missing, and a gate that cannot evaluate what it was asked must
+// refuse rather than pass.
 //
 // os.Executable is the running process's own path, which is the point: a step
 // runs the binary that dispatched it, not one a PATH lookup happens to find.
@@ -1271,18 +1268,6 @@ func binaryPath() string {
 		return ""
 	}
 	return abs
-}
-
-// scriptsDir is where the binary's shipped scripts are written, or "" when they
-// could not be. The empty case is deliberate: a step that needs a script has to
-// be able to see it is missing, and a gate that cannot evaluate what it was
-// asked must refuse rather than pass.
-func scriptsDir() string {
-	dir, err := flagship.MaterializeScripts()
-	if err != nil {
-		return ""
-	}
-	return dir
 }
 
 // runCheck runs a check's body through the shared shell runner and reports

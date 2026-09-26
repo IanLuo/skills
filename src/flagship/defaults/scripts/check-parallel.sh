@@ -12,14 +12,14 @@
 # that refusal is the whole point, because without it disjointness goes back to
 # being a judgement call the cap gets wrong.
 #
-# This ships inside the fs binary and fs writes it to ~/.fs/scripts/, so it is
-# addressed as "$FS_SCRIPTS/check-parallel.sh" — an absolute path that exists in
-# every project. It used to live in the repo's bin/, which made the entry gate
+# This ships inside the fs binary and is read back out of it — nothing writes a
+# copy — so it is addressed as "$FS_BIN" script check-parallel.sh, which exists
+# in every project. It used to live in the repo's bin/, which made the entry gate
 # of a shipped playbook a path that resolved in exactly one project.
 #
 # Usage:
-#   "$FS_SCRIPTS/check-parallel.sh" <card.md> [card.md ...]
-#   "$FS_SCRIPTS/check-parallel.sh" a.md,b.md
+#   "$FS_BIN" script check-parallel.sh <card.md> [card.md ...]
+#   "$FS_BIN" script check-parallel.sh a.md,b.md
 #
 # The second form is the one fs dispatch uses: batch.yaml's entry runs
 # this with $FS_CARDS, which fs dispatch sets from --cards, comma-separated.

@@ -243,7 +243,7 @@ func TestCLIKBResetWritesTheShippedDefaultOnRequest(t *testing.T) {
 func TestAKBCopyParticipatesOnlyWhenItIsAnOverride(t *testing.T) {
 	bin := getFS(t)
 	def := shippedDefault(t, codePb)
-	shippedGate := shippedStep(t, def, "check", "$FS_SCRIPTS/check-specs.sh")
+	shippedGate := shippedStep(t, def, "check", "script check-specs.sh")
 	myGate := "my own gate"
 
 	// The same one-line edit, in the three shapes a file can be in: a body the
@@ -447,7 +447,7 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 // The parallel gate must read the batch's cards from the dispatch that runs it,
 // not from a list someone edits per batch: batch.yaml runs check-parallel.sh
 // with $FS_CARDS, the variable fs dispatch --cards exports. The script is the
-// binary's own, addressed as $FS_SCRIPTS/check-parallel.sh, so this pins the
+// binary's own, run as "$FS_BIN" script check-parallel.sh, so this pins the
 // wiring wherever the module is built; tests/check-parallel covers the script's
 // own behaviour.
 func TestShippedParallelGateReadsTheDispatchedCards(t *testing.T) {
