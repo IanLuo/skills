@@ -10,9 +10,10 @@ package main
 // review of them ran. A gate that runs after the close cannot fix that; the
 // close has to ask, and it asks in the one place it can — an exit check.
 //
-// Every test below runs the playbooks the binary ships, seeded by fs bootstrap,
-// rather than restating them: a test that wrote its own copy of code's exit
-// gate would keep passing after the shipped one drifted.
+// Every test below runs the playbooks the binary ships, straight out of the
+// binary and with nothing written to ~/.fs/kb, rather than restating them: a
+// test that wrote its own copy of code's exit gate would keep passing after the
+// shipped one drifted.
 //
 // The binary under test is deliberately kept OFF PATH. The gate shells out to
 // `fs reviews $FS_NODE`, and an earlier version of this file put the binary on
@@ -28,14 +29,12 @@ import (
 )
 
 // reviewEnv prepares the environment a review-gate test runs in: the fake herdr
-// for the delivery, and the shipped playbooks seeded into the isolated home.
-// Nothing puts the binary on PATH.
-func reviewEnv(t *testing.T, bin, dir string) []string {
+// for the delivery, and nothing else — the shipped playbooks resolve out of the
+// binary, so the isolated home needs no KB at all. Nothing puts the binary on
+// PATH.
+func reviewEnv(t *testing.T) []string {
 	t.Helper()
 	env, _, _ := fakeHerdrOnPath(t)
-	if resp, code := runFSEnv(t, bin, dir, env, "bootstrap"); code != 0 {
-		t.Fatalf("bootstrap exit %d: %v", code, resp["error"])
-	}
 	return env
 }
 
@@ -181,7 +180,7 @@ func TestCLIReviewGateRefusesACloseWithNoReview(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	env := reviewEnv(t, bin, root)
+	env := reviewEnv(t)
 
 	capNode, workerRef := deliverWork(t, bin, root, env)
 
@@ -254,7 +253,7 @@ func TestCLIReviewGatePassesWhenADoneReviewNamesTheChange(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	env := reviewEnv(t, bin, root)
+	env := reviewEnv(t)
 
 	work, workWorker := deliverWork(t, bin, root, env)
 	finishWorker(t, bin, root, workWorker)
@@ -329,7 +328,7 @@ func TestCLIWithoutReviewRefusesWhenNoGateWouldStandDown(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	env := reviewEnv(t, bin, root)
+	env := reviewEnv(t)
 
 	// A review dispatch is the plan with no gate in it: `code` is selected by
 	// the declared `code` tag, which a --type review-task dispatch does not

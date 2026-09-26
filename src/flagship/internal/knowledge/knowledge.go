@@ -334,23 +334,36 @@ func (pb *Playbook) AppliesWhenString() string {
 	return strings.Join(pb.AppliesWhen, ", ")
 }
 
-// Center manages playbook files on disk, in two scopes: the global playbooks
-// under <fs>/kb, and a project's under <fs>/projects/<project>/kb. A project
-// playbook with the same name overrides the names its file declares and inherits
-// the rest from the global one.
+// Center manages playbooks in three scopes: a project's under
+// <fs>/projects/<project>/kb, the global playbooks under <fs>/kb, and the
+// defaults shipped inside the binary. A project playbook with the same name
+// overrides the names its file declares and inherits the rest from the global
+// one, which in turn inherits from the shipped default.
+//
+// The shipped defaults are the last scope and not a copy of one: they are what
+// the other two fall back to, so a playbook the binary ships is live without
+// anyone writing it to disk first.
 type Center struct {
-	fsRoot  string // ~/.fs
-	project string // "" when no project scope is in play
+	fsRoot   string // ~/.fs
+	project  string // "" when no project scope is in play
+	defaults fs.FS  // the shipped defaults, or nil when this center has none
 }
 
-// Open opens the knowledge center rooted at fsRoot (~/.fs). The global directory
-// is created; a project's KB is not, because a project with no KB behaves
-// exactly as global-only and absence is never an error.
-func Open(fsRoot string) (*Center, error) {
+// Open opens the knowledge center rooted at fsRoot (~/.fs), resolving against
+// the shipped defaults in defaults as its last scope. A nil defaults means this
+// binary ships none: every name then comes from a file on disk, which is what a
+// test that is about the on-disk scopes asks for.
+//
+// The defaults are handed in rather than imported: this package never reads the
+// embedded tree itself, so what is shipped stays the caller's business.
+//
+// The global directory is created; a project's KB is not, because a project with
+// no KB behaves exactly as global-only and absence is never an error.
+func Open(fsRoot string, defaults fs.FS) (*Center, error) {
 	if err := os.MkdirAll(filepath.Join(fsRoot, "kb"), 0o755); err != nil {
 		return nil, fmt.Errorf("knowledge: create dir %s: %w", filepath.Join(fsRoot, "kb"), err)
 	}
-	return &Center{fsRoot: fsRoot}, nil
+	return &Center{fsRoot: fsRoot, defaults: defaults}, nil
 }
 
 // InProject returns the same center with a project scope, which takes
@@ -358,7 +371,7 @@ func Open(fsRoot string) (*Center, error) {
 // project later — close, reading it off the delivery record — asks for the same
 // resolution the dispatch used.
 func (c *Center) InProject(project string) *Center {
-	return &Center{fsRoot: c.fsRoot, project: project}
+	return &Center{fsRoot: c.fsRoot, project: project, defaults: c.defaults}
 }
 
 // GlobalDir is the global playbooks' directory.
@@ -382,8 +395,40 @@ func (c *Center) Scope() string {
 	return c.project
 }
 
-// Scopes a playbook can live in, as `fs kb list` names them.
-const ScopeGlobal = "global"
+// Scopes a playbook can resolve from, as `fs kb list` names them.
+const (
+	ScopeGlobal  = "global"
+	ScopeShipped = "shipped"
+)
+
+// shippedDir is the scope segment of a shipped default's synthetic identity.
+// The embedded default has no path on disk, but the include stack is a list of
+// paths and the cycle check is a membership test on it, so the default needs an
+// identity that can sit on that stack. This is that identity, and there is no
+// second one: shippedID builds it, isShipped recognises it, and every step
+// downstream — lookup, the include walk, inherit, chain — still works on
+// strings.
+//
+// It cannot collide with a file: a candidate is an absolute path under the fs
+// root, so it never begins with a bare "<" segment. The angle brackets are there
+// to say which kind of identity a reader is looking at.
+const shippedDir = "<shipped>"
+
+// shippedID is the identity of the shipped default named name.
+func shippedID(name string) string { return shippedDir + "/" + name + ".yaml" }
+
+// isShipped reports whether an identity names a shipped default rather than a
+// file on disk.
+func isShipped(id string) bool { return strings.HasPrefix(id, shippedDir+"/") }
+
+// nameOf renders an identity the way a message should say it: the shipped
+// default rather than its synthetic identity, a file by its path.
+func nameOf(id string) string {
+	if isShipped(id) {
+		return "the shipped default"
+	}
+	return id
+}
 
 // writeDir is the directory a write goes to: the scope this center is bound to.
 func (c *Center) writeDir() string {
@@ -393,15 +438,120 @@ func (c *Center) writeDir() string {
 	return c.GlobalDir()
 }
 
-// candidates lists the files a lookup may read, in scope order: project first,
-// then global.
+// candidates lists where a lookup may read, in scope order: project first, then
+// global, then the shipped default. The last is an identity rather than a path —
+// see shippedID — and comes last because it has the weakest claim.
 func (c *Center) candidates(name string) []string {
 	var paths []string
 	if dir := c.ProjectDir(); dir != "" {
 		paths = append(paths, filepath.Join(dir, name+".yaml"))
 	}
 	paths = append(paths, filepath.Join(c.GlobalDir(), name+".yaml"))
-	return paths
+	return append(paths, shippedID(name))
+}
+
+// shippedBody returns the shipped default named name and whether there is one.
+func (c *Center) shippedBody(name string) ([]byte, bool, error) {
+	if c.defaults == nil {
+		return nil, false, nil
+	}
+	return defaultBody(c.defaults, name)
+}
+
+// overrides reports whether the bytes of a file on disk make it an override
+// rather than a copy of the shipped default. It is the one rule for whether a
+// file participates in resolution, and it is the Edited predicate the reporting
+// side uses too — the card's rule, reused rather than restated:
+//
+//   - a body equal to the stamp it carries is an unmodified copy, current or
+//     stale, and is transparent: the shipped default is used instead, so a copy
+//     can never shadow the binary it came from;
+//   - a body that differs from its stamp is an override, and is used as it is;
+//   - an unstamped body that differs from the shipped default is hand-written,
+//     and is an override;
+//   - an unstamped body equal to the shipped default is transparent.
+//
+// A name with no shipped default has nothing to be a copy of, so its file is
+// always its own. Reusing this predicate is what makes the change self-migrating:
+// the copies already on disk stop shadowing with no operator step and nothing to
+// delete.
+func (c *Center) overrides(name string, content []byte) (bool, error) {
+	def, shipped, err := c.shippedBody(name)
+	if err != nil {
+		return false, err
+	}
+	if !shipped {
+		return true, nil
+	}
+	return edited(def, content), nil
+}
+
+// resolves reports whether a candidate takes part in resolution: it is there,
+// and it is not a copy that merely restates the shipped default.
+func (c *Center) resolves(name, id string) (bool, error) {
+	if isShipped(id) {
+		_, ok, err := c.shippedBody(name)
+		return ok, err
+	}
+	content, err := os.ReadFile(id)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("knowledge: read %s: %w", id, err)
+	}
+	return c.overrides(name, content)
+}
+
+// readID returns the bytes of a resolved identity. It is the one place the two
+// kinds of identity are told apart on the read path: a shipped default comes out
+// of the embedded tree, a file off the disk.
+func (c *Center) readID(name, id string) ([]byte, error) {
+	if isShipped(id) {
+		body, ok, err := c.shippedBody(name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("knowledge: playbook %q %w", name, errPlaybookNotFound)
+		}
+		return body, nil
+	}
+	data, err := os.ReadFile(id)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: read %s: %w", id, err)
+	}
+	return data, nil
+}
+
+// copyPath is the file a name has on disk, or "" when it has none: the
+// project's if there is one, the global one otherwise. It is the file a write
+// lands on and the file fs kb diff compares, whatever resolution then makes of
+// it — a copy that does not participate still has a path, and a reader asking
+// "is my copy stale?" needs it.
+func (c *Center) copyPath(name string) string {
+	for _, id := range c.candidates(name) {
+		if isShipped(id) {
+			continue
+		}
+		if _, err := os.Stat(id); err == nil {
+			return id
+		}
+	}
+	return ""
+}
+
+// scopeOf names the scope an identity belongs to, which is the scope a name
+// resolves from. It is the reverse of candidates, and it is the field that makes
+// `fs kb list` answer "what is running" rather than "what is on disk".
+func (c *Center) scopeOf(id string) string {
+	if isShipped(id) {
+		return ScopeShipped
+	}
+	if dir := c.ProjectDir(); dir != "" && filepath.Dir(id) == dir {
+		return c.Scope()
+	}
+	return ScopeGlobal
 }
 
 // Add writes a new playbook file into the scope this center is bound to.
@@ -439,15 +589,22 @@ func (c *Center) Get(name string) (*Playbook, error) {
 	return c.resolve(name, nil)
 }
 
-// Has reports whether a playbook named name exists in either scope. It is how a
-// caller tells an absent playbook, which a gate treats as no gate, from one that
-// is present but unreadable, which a gate must refuse rather than skip.
+// Has reports whether a playbook named name exists in any scope — a file in
+// either on-disk one, or the shipped default. It is how a caller tells an absent
+// playbook, which a gate treats as no gate, from one that is present but
+// unreadable, which a gate must refuse rather than skip.
 func (c *Center) Has(name string) bool {
 	if name == "" {
 		return false
 	}
-	for _, path := range c.candidates(name) {
-		if _, err := os.Stat(path); err == nil {
+	for _, id := range c.candidates(name) {
+		if isShipped(id) {
+			if _, ok, _ := c.shippedBody(name); ok {
+				return true
+			}
+			continue
+		}
+		if _, err := os.Stat(id); err == nil {
 			return true
 		}
 	}
@@ -507,17 +664,44 @@ func (c *Center) scopedNames() ([]scopedPlaybook, error) {
 	return books, nil
 }
 
-// List returns the sorted name of every playbook in both scopes.
-func (c *Center) List() ([]string, error) {
+// names lists every playbook name this center can resolve, sorted: the files in
+// both on-disk scopes and every name the binary ships. A name has one row
+// wherever it lives, because a lookup resolves a name to one playbook.
+func (c *Center) names() ([]string, error) {
 	books, err := c.scopedNames()
 	if err != nil {
 		return nil, err
 	}
+
 	names := make([]string, 0, len(books))
+	seen := make(map[string]bool, len(books))
 	for _, book := range books {
+		seen[book.name] = true
 		names = append(names, book.name)
 	}
+
+	if c.defaults != nil {
+		shipped, err := defaultBodies(c.defaults)
+		if err != nil {
+			return nil, err
+		}
+		for _, book := range shipped {
+			if !seen[book.name] {
+				names = append(names, book.name)
+			}
+		}
+	}
+
+	sort.Strings(names)
 	return names, nil
+}
+
+// List returns the sorted name of every playbook this center can resolve. A
+// shipped playbook with no file on disk is listed: it is a playbook a dispatch
+// reads, so leaving it out would make `fs kb list` and a plan disagree about
+// what exists.
+func (c *Center) List() ([]string, error) {
+	return c.names()
 }
 
 // playbookName is a file name's playbook name, or "" when the file is not a
@@ -591,44 +775,52 @@ func (c *Center) read(name string) ([]byte, error) {
 	return data, err
 }
 
-// readFor returns the path and bytes of the file a lookup resolves to, skipping
-// any candidate already on the include stack so an include sees the playbook
-// beneath it rather than itself.
+// readFor returns the identity and bytes of the playbook a lookup resolves to,
+// skipping any candidate already on the include stack so an include sees the
+// playbook beneath it rather than itself. The identity is a file path or the
+// shipped default's synthetic one; either way it is what goes on the stack, so
+// the cycle check stays a membership test over one kind of value.
 func (c *Center) readFor(name string, stack []string) (string, []byte, error) {
-	path, err := c.lookup(name, stack)
+	id, err := c.lookup(name, stack)
 	if err != nil {
 		return "", nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := c.readID(name, id)
 	if err != nil {
-		return "", nil, fmt.Errorf("knowledge: read %s: %w", path, err)
+		return "", nil, err
 	}
-	return path, data, nil
+	return id, data, nil
 }
 
-// lookup returns the path of the file a lookup resolves to: the first candidate
-// not already on the stack. It is the one definition of the scope-and-stack
-// rule — readFor adds the read, inherit asks it what is in the scope beneath,
-// and the include walk asks it what a step names. A candidate already on the
-// stack is invisible, which is what makes `include: <own name>` reach the
-// playbook beneath and what stops a shadow that names its own playbook from
-// recursing into itself.
+// lookup returns the identity a lookup resolves to: the first candidate that is
+// present and participates and is not already on the stack. It is the one
+// definition of the scope-and-stack rule — readFor adds the read, inherit asks
+// it what is in the scope beneath, and the include walk asks it what a step
+// names. A candidate already on the stack is invisible, which is what makes
+// `include: <own name>` reach the playbook beneath and what stops a shadow that
+// names its own playbook from recursing into itself.
+//
+// Present and participating are two questions, and a candidate answers both in
+// resolves: a copy that merely restates the shipped default is present but does
+// not participate, so the default below it is what resolves.
 func (c *Center) lookup(name string, stack []string) (string, error) {
 	var seen []string
-	for _, path := range c.candidates(name) {
-		if _, err := os.Stat(path); err == nil {
-			seen = append(seen, path)
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("knowledge: stat %s: %w", path, err)
+	for _, id := range c.candidates(name) {
+		ok, err := c.resolves(name, id)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			seen = append(seen, id)
 		}
 	}
 	if len(seen) == 0 {
 		return "", fmt.Errorf("knowledge: playbook %q %w", name, errPlaybookNotFound)
 	}
 
-	for _, path := range seen {
-		if !slices.Contains(stack, path) {
-			return path, nil
+	for _, id := range seen {
+		if !slices.Contains(stack, id) {
+			return id, nil
 		}
 	}
 	return "", fmt.Errorf("knowledge: playbook %q %w", name, errStackExhausted)
@@ -643,7 +835,7 @@ func (c *Center) lookup(name string, stack []string) (string, error) {
 // terminate here instead of recursing, and it is why there is no second
 // mechanism for finding the scope below.
 func (c *Center) inherit(name string, pb *Playbook, stack []string) error {
-	lowerPath, err := c.lookup(name, stack)
+	lowerID, err := c.lookup(name, stack)
 	if err != nil {
 		// Nothing below, either because no scope declares the name or because
 		// every scope that does is already on the stack — which, with this
@@ -660,7 +852,7 @@ func (c *Center) inherit(name string, pb *Playbook, stack []string) error {
 	if pb.declaresNothing() {
 		return fmt.Errorf(
 			"knowledge: playbook %q declares nothing but its name; it would inherit every field and section of %s and so changes nothing — declare the field it is for, or remove it",
-			name, lowerPath)
+			name, nameOf(lowerID))
 	}
 
 	lower, err := c.resolve(name, stack)
@@ -684,8 +876,9 @@ func (c *Center) chain(stack []string, closing string) string {
 
 // resolve reads a playbook, inherits what its file does not declare from the
 // same-named playbook in the next scope down, and splices its includes. The
-// stack is the chain of files being resolved, so a playbook that reaches itself
-// is refused by name rather than recursed into.
+// stack is the chain of identities being resolved — files and shipped defaults
+// alike — so a playbook that reaches itself is refused by name rather than
+// recursed into.
 func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 	if name == "" {
 		return nil, fmt.Errorf("knowledge: name is required")
@@ -695,7 +888,7 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 			"knowledge: include depth exceeds %d: %s", maxIncludeDepth, c.chain(stack, name))
 	}
 
-	path, data, err := c.readFor(name, stack)
+	id, data, err := c.readFor(name, stack)
 	if err != nil {
 		return nil, err
 	}
@@ -705,9 +898,9 @@ func (c *Center) resolve(name string, stack []string) (*Playbook, error) {
 		return nil, err
 	}
 
-	// This file is on the stack from here on, so neither the walk below nor an
-	// include reaches it a second time.
-	inner := append(slices.Clone(stack), path)
+	// This playbook is on the stack from here on, so neither the walk below nor
+	// an include reaches it a second time.
+	inner := append(slices.Clone(stack), id)
 
 	// Inheritance first, splicing second. An inherited section arrives already
 	// resolved, so the two mechanisms stay distinct and stay ordered: the merge

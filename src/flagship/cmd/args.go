@@ -93,8 +93,6 @@ var cmdSpecs = map[string]cmdSpec{
 	"kb remove": {usage: "Usage: fs kb remove NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
 	"kb prompt": {usage: "Usage: fs kb prompt [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
 
-	"bootstrap": {usage: "Usage: fs bootstrap"},
-
 	"dispatch": {
 		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--batch BATCH_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
 

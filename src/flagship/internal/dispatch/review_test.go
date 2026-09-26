@@ -31,17 +31,21 @@ import (
 	"testing"
 
 	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/trace"
 )
 
-// seedShipped seeds the fixture's knowledge centre from the tree the binary
-// embeds — the same files `fs bootstrap` writes. It is how a test measures the
-// plan a real dispatch resolves rather than one a test assembled.
-func seedShipped(t *testing.T, f *fixture) {
+// withShipped gives the fixture's knowledge centre the tree the binary embeds as
+// its last scope. It is how a test measures the plan a real dispatch resolves
+// rather than one a test assembled — and it writes nothing to disk, which is the
+// point: a shipped playbook is live without being materialised first.
+func withShipped(t *testing.T, f *fixture) {
 	t.Helper()
-	if _, err := f.kc.Seed(os.DirFS(filepath.Join("..", "..", "defaults", "kb"))); err != nil {
-		t.Fatalf("Seed: %v", err)
+	kc, err := knowledge.Open(f.fsRoot, os.DirFS(filepath.Join("..", "..", "defaults", "kb")))
+	if err != nil {
+		t.Fatalf("knowledge.Open: %v", err)
 	}
+	f.kc = kc
 }
 
 // planNames lists a plan's playbook names in plan order.
@@ -57,7 +61,7 @@ func planNames(plan []trace.PlanEntry) []string {
 // change names: the two review playbooks must not both load into one plan.
 func TestReviewTaskPlanCarriesTheReviewerAndNotTheSelfReview(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	seedShipped(t, f)
+	withShipped(t, f)
 
 	brief := prepareOnly(t, f, dispatch.PrepareRequest{
 		Project: "skills", TaskType: "review-task", Goal: "review the landed change",
@@ -90,7 +94,7 @@ func TestReviewTaskPlanCarriesTheReviewerAndNotTheSelfReview(t *testing.T) {
 // it is in the middle of writing.
 func TestCodePlanStillCarriesTheSelfReview(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	seedShipped(t, f)
+	withShipped(t, f)
 
 	// HOME is a temp dir so the shipped entry checks — which run real commands,
 	// and build their environment out of ~/.fs/scripts — write nothing into the
@@ -120,7 +124,7 @@ func TestCodePlanStillCarriesTheSelfReview(t *testing.T) {
 // `accepted`, the disposition with no representation anywhere but a sentence.
 func TestReviewExitGateRefusesUntilEveryFindingIsDispositioned(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	seedShipped(t, f)
+	withShipped(t, f)
 	t.Setenv("HOME", t.TempDir())
 
 	brief := runDispatch(t, f, dispatch.PrepareRequest{

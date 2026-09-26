@@ -1,13 +1,15 @@
 package main
 
-// fs bootstrap seeds ~/.fs/kb from the playbooks embedded in the binary, and
-// fs kb reports how what is on disk relates to them.
+// The playbooks live in three scopes — a project's KB, the global KB, and the
+// defaults embedded in the binary — and fs kb is how a reader asks what
+// resolved, what is on disk, and what has drifted from what the binary ships.
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -39,8 +41,9 @@ const (
 	teardownExitPb  = "teardown-exit"
 )
 
-// shippedPlaybooks is every playbook the binary ships. fs bootstrap seeds all
-// of them; the cap's standing rules are built from the cap-phase ones.
+// shippedPlaybooks is every playbook the binary ships. fs kb list names all of
+// them, with or without a file on disk; the cap's standing rules are built from
+// the cap-phase ones.
 var shippedPlaybooks = []string{
 	capPlaybook, herdrPlaybook, "worker", codePb, "plan",
 	"development", "tdd", "review", independentReviewPb, "research", batchPb, memberPb, integrationPb,
@@ -121,7 +124,7 @@ func editFirstStep(t *testing.T, body string) (edited, oldStep, newStep string) 
 	return "", "", ""
 }
 
-// playbooksOf indexes a kb list or bootstrap response's playbooks by name.
+// playbooksOf indexes a kb list response's playbooks by name.
 func playbooksOf(t *testing.T, resp map[string]any) map[string]map[string]any {
 	t.Helper()
 	raw, ok := resp["data"].(map[string]any)["playbooks"].([]any)
@@ -162,97 +165,168 @@ func writeRaw(t *testing.T, path, content string) {
 	}
 }
 
-func TestCLIBootstrapSeedsThenKeeps(t *testing.T) {
+// fs kb list answers "what is actually running": every playbook the binary
+// ships is a playbook, and on a fresh home each one resolves out of the binary
+// with nothing written to disk. There is no install step between a new home and
+// a working set of playbooks.
+func TestCLIKBListNamesEveryShippedPlaybookWithItsScope(t *testing.T) {
 	bin := getFS(t)
-	dir := t.TempDir()
 	home := testHome(t)
-	kbDir := filepath.Join(home, ".fs", "kb")
 
-	resp := runFSOK(t, bin, dir, "bootstrap")
-	if got, want := resp["data"].(map[string]any)["kb_path"], kbDir; got != want {
-		t.Errorf("kb_path = %v, want %q", got, want)
+	listed := playbooksOf(t, runFSOK(t, bin, t.TempDir(), "kb", "list"))
+	if len(listed) != len(shippedPlaybooks) {
+		t.Fatalf("kb list names %d playbooks, want the %d shipped: %v",
+			len(listed), len(shippedPlaybooks), listed)
 	}
 
-	seeded := playbooksOf(t, resp)
-	if len(seeded) != len(shippedPlaybooks) {
-		t.Fatalf("bootstrap seeded %d playbooks, want the %d shipped: %v",
-			len(seeded), len(shippedPlaybooks), seeded)
-	}
 	for _, name := range shippedPlaybooks {
-		pb, shipped := seeded[name]
-		if !shipped {
-			t.Errorf("bootstrap did not seed %s: %v", name, seeded)
+		pb, ok := listed[name]
+		if !ok {
+			t.Errorf("kb list does not name the shipped %s: %v", name, listed)
 			continue
 		}
-		if pb["action"] != "created" {
-			t.Errorf("%s action = %v, want created", name, pb["action"])
+		if pb["scope"] != "shipped" || pb["state"] != "shipped" {
+			t.Errorf("%s = %v, want scope and state shipped: nothing is on disk", name, pb)
 		}
-		// The written file is the shipped default verbatim, plus one stamp line.
-		want := fileStamp(shippedDefault(t, name)) + shippedDefault(t, name)
-		if got := readRaw(t, filepath.Join(kbDir, name+".yaml")); got != want {
-			t.Errorf("%s is not the shipped default plus a stamp:\ngot  %q\nwant %q", name, got, want)
+		if pb["path"] != "" {
+			t.Errorf("%s path = %v, want empty", name, pb["path"])
+		}
+		if pb["edited"] != false || pb["stale"] != false {
+			t.Errorf("%s = %v, want no drift flags: there is no copy", name, pb)
 		}
 	}
 
-	before := readRaw(t, filepath.Join(kbDir, capPlaybook+".yaml"))
-	resp = runFSOK(t, bin, dir, "bootstrap")
-	for name, pb := range playbooksOf(t, resp) {
-		if pb["action"] != "kept" {
-			t.Errorf("second bootstrap %s action = %v, want kept", name, pb["action"])
-		}
+	// The list is a live reading, not a listing of a directory: it named all
+	// fourteen playbooks and wrote none of them.
+	entries, err := os.ReadDir(filepath.Join(home, ".fs", "kb"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read the global KB: %v", err)
 	}
-	if after := readRaw(t, filepath.Join(kbDir, capPlaybook+".yaml")); after != before {
-		t.Errorf("a second bootstrap rewrote %s:\nbefore %q\nafter  %q", capPlaybook, before, after)
+	if len(entries) != 0 {
+		t.Errorf("kb list left %d files in the global KB, want none", len(entries))
 	}
 }
 
-func TestCLIBootstrapNeverOverwritesAPlaybook(t *testing.T) {
+// A copy the user asks for is written by one command, and what it writes is the
+// shipped default verbatim plus its stamp — the format that makes the copy
+// recognisable as a copy rather than as an override.
+func TestCLIKBResetWritesTheShippedDefaultOnRequest(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 	home := testHome(t)
 
-	mine := "# mine: keep this line\nname: cap\ncap:\n  - say: mine\n"
-	writeKBPlaybook(t, home, capPlaybook, mine)
+	resp := runFSOK(t, bin, dir, "kb", "reset", capPlaybook, "--yes")
+	path := resp["data"].(map[string]any)["path"].(string)
+	if want := filepath.Join(home, ".fs", "kb", capPlaybook+".yaml"); path != want {
+		t.Errorf("reset path = %q, want %q", path, want)
+	}
+	if got, want := readRaw(t, path), fileStamp(shippedDefault(t, capPlaybook))+shippedDefault(t, capPlaybook); got != want {
+		t.Errorf("reset wrote\n%q\nwant %q", got, want)
+	}
 
-	seeded := playbooksOf(t, runFSOK(t, bin, dir, "bootstrap"))
-	if seeded[capPlaybook]["action"] != "kept" {
-		t.Errorf("%s action = %v, want kept", capPlaybook, seeded[capPlaybook]["action"])
-	}
-	if got := readRaw(t, filepath.Join(home, ".fs", "kb", capPlaybook+".yaml")); got != mine {
-		t.Errorf("bootstrap modified an existing playbook:\ngot  %q\nwant %q", got, mine)
-	}
-	if seeded[codePb]["action"] != "created" {
-		t.Errorf("an absent playbook must still be created: %v", seeded)
+	// The copy is transparent: the playbook still resolves out of the binary, so
+	// what was written is a copy to edit and not a second source of truth.
+	if pb := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[capPlaybook]; pb["scope"] != "shipped" || pb["state"] != "default" {
+		t.Errorf("a fresh copy = %v, want the default to keep running", pb)
 	}
 }
 
-func TestCLIKBListReportsDrift(t *testing.T) {
+// A copy of a shipped default the user never changed is not a playbook of its
+// own: it restates what the binary already ships. The shipped default is what a
+// dispatch reads instead — including when the copy has fallen behind it, which
+// is the defect this pins. A stale ~/.fs/kb copy used to win, so a change to
+// defaults/kb/*.yaml could land, pass its tests, and be inert.
+//
+// The cases that must NOT change are here too: an override keeps winning. That
+// is the whole rule, and testing only the half that fixes today's bug would let
+// the fix demote the user scope instead of the copy.
+func TestAKBCopyParticipatesOnlyWhenItIsAnOverride(t *testing.T) {
+	bin := getFS(t)
+	def := shippedDefault(t, codePb)
+	shippedGate := shippedStep(t, def, "check", "$FS_SCRIPTS/check-specs.sh")
+	myGate := "my own gate"
+
+	// The same one-line edit, in the three shapes a file can be in: a body the
+	// stamp does not match, a body with no stamp, and a body that is the default.
+	editedDefault := strings.Replace(def, "- check: "+shippedGate, "- check: "+myGate, 1)
+	if editedDefault == def {
+		t.Fatalf("the fixture did not edit the shipped default:\n%s", def)
+	}
+	older := "name: code\napplies_when: code\nentry:\n  - check: " + myGate + "\n"
+
+	for _, tc := range []struct {
+		name, content string
+		override      bool // the file is what runs, rather than the shipped default
+	}{
+		{"an unmodified copy is transparent", fileStamp(def) + def, false},
+		{"a stale copy is transparent", fileStamp(older) + older, false},
+		{"an unstamped copy of the default is transparent", def, false},
+		{"an edited copy is an override", fileStamp(def) + editedDefault, true},
+		{"an edited file with no stamp is an override", editedDefault, true},
+		{"a hand-written playbook is an override", older, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := testHome(t)
+			writeKBPlaybook(t, home, codePb, tc.content)
+
+			resp := runFSOK(t, bin, t.TempDir(), "kb", "get", codePb)
+			var got []string
+			for _, raw := range resp["data"].(map[string]any)["entry"].([]any) {
+				got = append(got, raw.(map[string]any)["body"].(string))
+			}
+
+			want, instead := shippedGate, myGate
+			if tc.override {
+				want, instead = myGate, shippedGate
+			}
+			if !slices.Contains(got, want) {
+				t.Errorf("the resolved gate is %q, want the one from %s", got, want)
+			}
+			if slices.Contains(got, instead) {
+				t.Errorf("the resolved gate is %q, which is the one from the other file", got)
+			}
+		})
+	}
+}
+
+// The list answers both questions a reader has, per playbook and in one
+// command: "is my edit live" (scope and edited) and "is my copy stale" (stale,
+// with the path of the copy it is talking about).
+func TestCLIKBListReportsWhatRunsAndWhatIsOnDisk(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 	home := testHome(t)
 	kbDir := filepath.Join(home, ".fs", "kb")
-	runFSOK(t, bin, dir, "bootstrap")
 
-	// An untouched seed is default.
-	for name, state := range playbooksOf(t, runFSOK(t, bin, dir, "kb", "list")) {
-		if state["state"] != "default" || state["edited"] != false || state["stale"] != false {
-			t.Errorf("untouched seed %s = %v, want state default with no flags", name, state)
-		}
+	// A copy that restates the default is transparent: it is reported with the
+	// path it lives at, its own state default, and the scope that runs.
+	runFSOK(t, bin, dir, "kb", "reset", codePb, "--yes")
+	state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[codePb]
+	if state["scope"] != "shipped" || state["state"] != "default" || state["edited"] != false {
+		t.Errorf("a copy of the default = %v, want scope shipped, state default, edited false", state)
+	}
+	if state["path"] != filepath.Join(kbDir, codePb+".yaml") {
+		t.Errorf("a copy of the default path = %v, want the file it lives at", state["path"])
 	}
 
-	// A one-line change is edited.
+	// A one-line change is an override: edited, and the scope it resolves from is
+	// the global KB, because that file is now what runs.
 	devPath := filepath.Join(kbDir, codePb+".yaml")
 	writeRaw(t, devPath, readRaw(t, devPath)+"  - say: an added step\n")
-	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[codePb]; state["state"] != "edited" {
-		t.Errorf("an edited playbook = %v, want state edited", state)
+	state = playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[codePb]
+	if state["scope"] != "global" || state["state"] != "edited" || state["edited"] != true {
+		t.Errorf("an edited playbook = %v, want scope global, state edited", state)
 	}
 
-	// A playbook whose stamp matches its own body but not the shipped default
-	// was seeded from a default that has since moved on: stale, not edited.
+	// A playbook whose stamp matches its own body but not the shipped default was
+	// written from a default that has since moved on: stale, and still not what
+	// runs — the scope stays shipped, which is the half that says the copy is
+	// being ignored.
 	older := "name: cap\ncap:\n  - say: older\n"
 	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
-	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[capPlaybook]; state["state"] != "stale" {
-		t.Errorf("a stale playbook = %v, want state stale", state)
+	state = playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[capPlaybook]
+	if state["scope"] != "shipped" || state["state"] != "stale" || state["stale"] != true || state["edited"] != false {
+		t.Errorf("a stale playbook = %v, want scope shipped with state stale", state)
 	}
 
 	// A hand-written playbook with no shipped default is local.
@@ -262,20 +336,54 @@ func TestCLIKBListReportsDrift(t *testing.T) {
 	}
 }
 
+// A playbook in a project's scope resolves from that scope, and the list says
+// so: the same reading has to name the project when a project is what runs.
+func TestCLIKBListNamesTheProjectScope(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	home := testHome(t)
+	runFSOK(t, bin, dir, "project", "create", "--name", "proj")
+	kbDir := filepath.Join(home, ".fs", "projects", "proj", "kb")
+	if err := os.MkdirAll(kbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, filepath.Join(kbDir, capPlaybook+".yaml"), "# mine\nname: cap\ncap:\n  - say: this project's rule\n")
+
+	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list", "--project", "proj"))[capPlaybook]; state["scope"] != "proj" {
+		t.Errorf("a project's playbook = %v, want scope proj", state)
+	}
+	// Without the project, the same name is the shipped default again: the scope
+	// is a fact about the reading, not about the file.
+	if state := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list"))[capPlaybook]; state["scope"] != "shipped" {
+		t.Errorf("the same playbook outside its project = %v, want scope shipped", state)
+	}
+}
+
 func TestCLIKBDiffAndReset(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 	home := testHome(t)
 	capPath := filepath.Join(home, ".fs", "kb", capPlaybook+".yaml")
-	runFSOK(t, bin, dir, "bootstrap")
 
 	diffOf := func(name string) string {
 		t.Helper()
 		return runFSOK(t, bin, dir, "kb", "diff", name)["data"].(map[string]any)["diff"].(string)
 	}
 
+	// Nothing is on disk, so there is nothing to diff: saying so is more useful
+	// than an empty diff, which reads as "your file is fine".
+	resp, code := runFS(t, bin, dir, "kb", "diff", capPlaybook)
+	if code != 1 {
+		t.Fatalf("diff with no copy exit = %d, want 1: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "no copy on disk") {
+		t.Errorf("error %q must say there is no copy", errMsg)
+	}
+
+	// The copy one command writes diffs empty: it is the shipped default.
+	runFSOK(t, bin, dir, "kb", "reset", capPlaybook, "--yes")
 	if diff := diffOf(capPlaybook); diff != "" {
-		t.Errorf("a pristine seed must diff empty, got:\n%s", diff)
+		t.Errorf("a copy of the default must diff empty, got:\n%s", diff)
 	}
 
 	body := shippedDefault(t, capPlaybook)
@@ -301,7 +409,7 @@ func TestCLIKBDiffAndReset(t *testing.T) {
 	}
 
 	// Without --yes, reset refuses and changes nothing.
-	resp, code := runFS(t, bin, dir, "kb", "reset", capPlaybook)
+	resp, code = runFS(t, bin, dir, "kb", "reset", capPlaybook)
 	if code != 1 {
 		t.Fatalf("reset without --yes exit = %d, want 1: %v", code, resp)
 	}
@@ -377,7 +485,6 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 	home := testHome(t)
-	runFSOK(t, bin, dir, "bootstrap")
 
 	stdout, stderr, code := rawFS(t, bin, dir, home, "kb", "prompt")
 	if code != 0 {
@@ -390,15 +497,16 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 		t.Errorf("kb prompt must be plain text, not the JSON envelope: %q", stdout)
 	}
 
-	// The standing-rules line, one stamped header per cap playbook the session's
-	// tags select, and the rules themselves — read from the shipped default, so
+	// The standing-rules line, one header per cap playbook the session's tags
+	// select, and the rules themselves — read from the shipped default, so
 	// rewording the playbook cannot break a test that only means "the prompt
-	// carries the herdr rules".
+	// carries the herdr rules". Nothing was written to the home: the rules come
+	// out of the binary, which is what the header says.
 	for _, want := range []string{
 		"Standing rules for this session",
 		"not suggestions",
-		"# cap — moments cap; default, stamp sha256:",
-		"# herdr — moments cap; default, stamp sha256:",
+		"# cap — moments cap; shipped",
+		"# herdr — moments cap; shipped",
 		shippedStep(t, shippedDefault(t, herdrPlaybook), "say", ""),
 	} {
 		if !strings.Contains(stdout, want) {
@@ -419,13 +527,15 @@ func TestCLIKBPromptPrintsTheCapStandingRules(t *testing.T) {
 	}
 }
 
-// A prompt built from a playbook whose shipped default has moved on says so, so
-// the cap can tell its rules are stale without a second command.
-func TestCLIKBPromptMarksAStalePlaybook(t *testing.T) {
+// A copy that has fallen behind the default does not run, and the prompt says
+// both halves in one header: the rules the cap is reading came out of the
+// binary, and the file beneath them is the user's, stale, and stamped. A cap
+// that edited its own playbook can tell from its own prompt that the edit is
+// not what it is following.
+func TestCLIKBPromptNamesTheRunningScopeAndTheStaleCopyBeneathIt(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 	home := testHome(t)
-	runFSOK(t, bin, dir, "bootstrap")
 
 	older := "name: cap\ncap:\n  - say: older\n"
 	writeKBPlaybook(t, home, capPlaybook, fileStamp(older)+older)
@@ -434,14 +544,19 @@ func TestCLIKBPromptMarksAStalePlaybook(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("kb prompt exit = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "# cap — moments cap; stale, stamp sha256:") {
-		t.Errorf("a stale playbook must be marked stale in the prompt:\n%s", stdout)
+	if !strings.Contains(stdout, "# cap — moments cap; shipped, stale, stamp sha256:") {
+		t.Errorf("a stale copy must be named beneath the scope that runs:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "older") {
+		t.Errorf("the stale copy's steps do not run and must not be printed:\n%s", stdout)
 	}
 }
 
-// An empty knowledge center is not an error: a fresh HOME has no playbooks yet,
-// and the prompt says what to run rather than coming out empty.
-func TestCLIKBPromptOnAFreshHomeSaysToBootstrap(t *testing.T) {
+// A fresh home is not an empty knowledge center: the playbooks the binary ships
+// are what runs, so the cap's standing rules are there without anything being
+// written first — and they still are after a copy is written, since a copy of
+// the default is not an override.
+func TestCLIKBPromptOnAFreshHomeCarriesTheShippedRules(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()
 	home := t.TempDir()
@@ -450,8 +565,13 @@ func TestCLIKBPromptOnAFreshHomeSaysToBootstrap(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("kb prompt exit = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "fs bootstrap") {
-		t.Errorf("an unseeded knowledge center must say how to fill it:\n%s", stdout)
+	for _, want := range []string{"Standing rules for this session", "# cap — moments cap; shipped"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("a fresh home must carry the shipped rules (%q):\n%s", want, stdout)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".fs", "kb", capPlaybook+".yaml")); !os.IsNotExist(err) {
+		t.Errorf("kb prompt wrote a playbook to disk: %v", err)
 	}
 }
 

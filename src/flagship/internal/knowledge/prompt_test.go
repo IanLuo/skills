@@ -1,10 +1,11 @@
 package knowledge_test
 
 // fs kb prompt renders the cap's standing rules from the playbooks that carry
-// them: the `phase: cap` playbooks whose applies_when the session's tags satisfy.
+// them: the `cap:` playbooks whose applies_when the session's tags satisfy. The
+// rules travel out of the binary, so a fresh home gets them with nothing
+// written to disk.
 
 import (
-	"io/fs"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ const (
 		"entry:\n  - check: true\n"
 )
 
-// promptFS is a shipped-defaults tree holding one playbook per seeded name.
+// promptFS is a shipped-defaults tree holding one playbook per named playbook.
 func promptFS(names ...string) map[string]string {
 	all := map[string]string{
 		"herdr.yaml":      herdrYAML,
@@ -37,29 +38,21 @@ func promptFS(names ...string) map[string]string {
 	return files
 }
 
-// seedPrompt opens a knowledge center seeded from the given shipped playbooks,
-// and hands back the root so a test can break a file on disk.
-func seedPrompt(t *testing.T, names ...string) (*knowledge.Center, string, fs.FS) {
+// openPrompt opens a center whose shipped tree holds the given playbooks, and
+// hands back the root so a test can write a file on disk beneath them.
+func openPrompt(t *testing.T, names ...string) (*knowledge.Center, string) {
 	t.Helper()
 	fsRoot := tempFS(t)
-	kc, err := knowledge.Open(fsRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shipped := shippedFS(promptFS(names...))
-	if _, err := kc.Seed(shipped); err != nil {
-		t.Fatalf("Seed: %v", err)
-	}
-	return kc, fsRoot, shipped
+	return openWith(t, fsRoot, promptFS(names...)), fsRoot
 }
 
 // The prompt is the cap's rules, not every playbook: a work playbook and an
 // entry gate are both excluded, and so is a cap playbook whose applies_when the
 // session's tags do not satisfy.
 func TestPromptIncludesOnlyTheCapPlaybooksTheTagsSelect(t *testing.T) {
-	kc, _, shipped := seedPrompt(t, "herdr", "aaa-other", "dev-task", "code-entry")
+	kc, _ := openPrompt(t, "herdr", "aaa-other", "dev-task", "code-entry")
 
-	prompt, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
+	prompt, err := kc.Prompt(map[string]any{"engine": "herdr"})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -76,7 +69,7 @@ func TestPromptIncludesOnlyTheCapPlaybooksTheTagsSelect(t *testing.T) {
 
 	// The engine is a fact about the session, so a cap playbook that asks for it
 	// is not loaded for a session that does not have it.
-	prompt, err = kc.Prompt(shipped, nil)
+	prompt, err = kc.Prompt(nil)
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -91,9 +84,9 @@ func TestPromptIncludesOnlyTheCapPlaybooksTheTagsSelect(t *testing.T) {
 // Playbooks come out in name order, so two runs of the same KB produce the same
 // prompt and a diff of two prompts means something changed.
 func TestPromptOrdersPlaybooksByName(t *testing.T) {
-	kc, _, shipped := seedPrompt(t, "herdr", "aaa-other")
+	kc, _ := openPrompt(t, "herdr", "aaa-other")
 
-	prompt, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
+	prompt, err := kc.Prompt(map[string]any{"engine": "herdr"})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -107,19 +100,20 @@ func TestPromptOrdersPlaybooksByName(t *testing.T) {
 }
 
 // The standing-rules line is what tells the cap these are rules rather than
-// context, and each header names its playbook, its phase and the stamp it was
-// seeded with, so a stale prompt is detectable from the prompt alone.
-func TestPromptStatesTheRulesAndEachPlaybooksStamp(t *testing.T) {
-	kc, _, shipped := seedPrompt(t, "herdr")
+// context, and each header names its playbook, its phase and where the rules
+// came from, so a rule read out of the binary is distinguishable from one read
+// out of a file the user wrote.
+func TestPromptStatesTheRulesAndTheScopeTheyCameFrom(t *testing.T) {
+	kc, _ := openPrompt(t, "herdr")
 
-	prompt, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
+	prompt, err := kc.Prompt(map[string]any{"engine": "herdr"})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
 	for _, want := range []string{
 		"Standing rules for this session",
 		"not suggestions",
-		"# herdr — moments cap; default, stamp sha256:",
+		"# herdr — moments cap; shipped",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt must contain %q:\n%s", want, prompt)
@@ -127,28 +121,56 @@ func TestPromptStatesTheRulesAndEachPlaybooksStamp(t *testing.T) {
 	}
 }
 
-// A playbook whose shipped default has moved on reads stale in the prompt, so
-// the cap can tell its rules came from a binary that is no longer current.
-func TestPromptMarksAStalePlaybook(t *testing.T) {
-	kc, fsRoot, shipped := seedPrompt(t, "herdr")
+// A copy that has fallen behind the default does not run — the binary's default
+// does — and the header says both halves: the rules came from the shipped
+// default, and the file underneath it is the user's, stale, and carries the
+// stamp of the default it was written from. Without that a cap reading its own
+// prompt would think its edit was live.
+func TestPromptNamesTheRunningScopeAndTheCopyBeneathIt(t *testing.T) {
+	kc, fsRoot := openPrompt(t, "herdr")
 	older := "name: herdr\napplies_when: engine=herdr\ncap:\n  - say: older\n"
 	writeFile(t, kbPath(fsRoot, "herdr"), stampOf(older)+older)
 
-	prompt, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
+	prompt, err := kc.Prompt(map[string]any{"engine": "herdr"})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if !strings.Contains(prompt, "# herdr — moments cap; stale, stamp sha256:") {
-		t.Errorf("a stale playbook must be marked stale in the prompt:\n%s", prompt)
+	if !strings.Contains(prompt, "# herdr — moments cap; shipped, stale, stamp sha256:") {
+		t.Errorf("a stale copy must be named as one, beneath the scope that runs:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "a worker runs in its own tab") {
+		t.Errorf("the running steps are the shipped default's:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "older") {
+		t.Errorf("the stale copy's steps do not run and must not be printed:\n%s", prompt)
+	}
+}
+
+// An override is what runs, and the header names the scope it came from rather
+// than the default it shadows.
+func TestPromptNamesAnOverrideAsItsOwnScope(t *testing.T) {
+	kc, fsRoot := openPrompt(t, "herdr")
+	mine := "name: herdr\napplies_when: engine=herdr\ncap:\n  - say: my own rule\n"
+	writeFile(t, kbPath(fsRoot, "herdr"), stampOf(herdrYAML)+mine)
+
+	prompt, err := kc.Prompt(map[string]any{"engine": "herdr"})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if !strings.Contains(prompt, "# herdr — moments cap; global, edited, stamp sha256:") {
+		t.Errorf("an override must be named as the scope it resolves from:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "my own rule") || strings.Contains(prompt, "a worker runs in its own tab") {
+		t.Errorf("the override's steps are the ones that run:\n%s", prompt)
 	}
 }
 
 // The output is piped whole into one --append-system-prompt argument: a blank
 // line would split it into separate blocks, so there are none.
 func TestPromptHasNoBlankLines(t *testing.T) {
-	kc, _, shipped := seedPrompt(t, "herdr", "aaa-other", "dev-task", "code-entry")
+	kc, _ := openPrompt(t, "herdr", "aaa-other", "dev-task", "code-entry")
 
-	prompt, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
+	prompt, err := kc.Prompt(map[string]any{"engine": "herdr"})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -159,36 +181,34 @@ func TestPromptHasNoBlankLines(t *testing.T) {
 	}
 }
 
-// An empty knowledge center is not an error: a fresh HOME has no playbooks yet,
-// and the prompt says what to run instead of silently becoming empty.
-func TestPromptOnAnEmptyCenterSaysToBootstrap(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+// A session with no matching cap playbook is not an error and not an empty
+// prompt: the standing-rules line is there and the file says why nothing
+// follows it, rather than coming out blank.
+func TestPromptWithNoMatchingCapPlaybookSaysSo(t *testing.T) {
+	kc, _ := openPrompt(t, "herdr")
 
-	prompt, err := kc.Prompt(shippedFS(promptFS("herdr")), nil)
+	prompt, err := kc.Prompt(nil)
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if !strings.Contains(prompt, "fs bootstrap") {
-		t.Errorf("an empty center must say how to fill it:\n%s", prompt)
+	if !strings.Contains(prompt, "No playbook with a `cap:` section matches") {
+		t.Errorf("a prompt with no rules must say so:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Standing rules for this session") {
 		t.Errorf("the standing-rules line must be there even with no playbooks:\n%s", prompt)
 	}
 }
 
-// A file left from the removed schema is refused rather than skipped: seeding
-// never deletes, so after an upgrade the old playbooks are still there, and the
+// A file left from the removed schema is refused rather than skipped: nothing
+// deletes it, so after an upgrade the old playbooks are still there, and the
 // prompt says which one to remove instead of quietly leaving out a rule the cap
 // used to get.
 func TestPromptRefusesAPlaybookFromTheRemovedSchema(t *testing.T) {
-	kc, fsRoot, shipped := seedPrompt(t, "herdr")
+	kc, fsRoot := openPrompt(t, "herdr")
 	writeFile(t, kbPath(fsRoot, "superseded"),
 		"name: superseded\ntype: prerequisite\ntrigger: superseded\nsteps:\n  - check: true\n")
 
-	_, err := kc.Prompt(shipped, map[string]any{"engine": "herdr"})
+	_, err := kc.Prompt(map[string]any{"engine": "herdr"})
 	if err == nil {
 		t.Fatal("a playbook from the removed schema must be refused, not skipped")
 	}

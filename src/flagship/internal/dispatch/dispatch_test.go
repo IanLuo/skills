@@ -111,7 +111,7 @@ func newFixture(t *testing.T, root string) *fixture {
 
 	// knowledge.Open takes the fs root, not the playbooks directory: it is the
 	// scope above `kb/` that a project's own playbooks are named against.
-	kc, err := knowledge.Open(fsRoot)
+	kc, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatalf("knowledge.Open: %v", err)
 	}
@@ -171,7 +171,7 @@ func (f *fixture) close(hc dispatch.HerdrCLI, req dispatch.CloseRequest) command
 	return dispatch.Close(f.h, hc, f.reg, f.kc, f.lg, req)
 }
 
-// writePlaybook puts one playbook in the global scope, the way fs bootstrap or a
+// writePlaybook puts one playbook in the global scope, the way `fs kb add` or a
 // user's editor would.
 func (f *fixture) writePlaybook(t *testing.T, name, content string) {
 	t.Helper()
@@ -1074,12 +1074,12 @@ entry:
 	}
 }
 
-// Seeding never deletes, so after an upgrade the knowledge center still holds
-// the playbooks the removed schema named. They are refused rather than skipped:
-// a dispatch that silently dropped a protocol would be a dispatch that silently
-// changed what it gates. This is why the operator migration after `fs bootstrap`
-// is not cosmetic — one file left behind refuses every dispatch, not just its
-// own.
+// Nothing deletes a playbook, so after an upgrade the knowledge center still
+// holds the files the removed schema named. They are refused rather than
+// skipped: a dispatch that silently dropped a protocol would be a dispatch that
+// silently changed what it gates. This is why the operator migration — `fs kb
+// remove` for each retired name — is not cosmetic: one file left behind refuses
+// every dispatch, not just its own.
 func TestPrepareRefusesWhileAPlaybookFromTheRemovedSchemaIsOnDisk(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "code-entry", passingEntry)

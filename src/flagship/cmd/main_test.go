@@ -992,7 +992,7 @@ func TestCLIHelpTopLevel(t *testing.T) {
 func TestCLIHelpSubcommands(t *testing.T) {
 	bin := getFS(t)
 
-	for _, sub := range []string{"project", "task", "status", "query", "log", "kb", "dispatch", "close", "unfinished", "bootstrap"} {
+	for _, sub := range []string{"project", "task", "status", "query", "log", "kb", "dispatch", "close", "unfinished"} {
 		t.Run(sub, func(t *testing.T) {
 			for _, form := range []string{"--help", "-h", "help"} {
 				home := t.TempDir()
@@ -1106,7 +1106,6 @@ func TestCLIRejectsUnknownFlags(t *testing.T) {
 		"kb diff":        {"kb", "diff", "n", "--bogus"},
 		"kb prompt":      {"kb", "prompt", "--bogus"},
 		"kb reset":       {"kb", "reset", "n", "--bogus"},
-		"bootstrap":      {"bootstrap", "--bogus"},
 		"close":          {"close", "--node", "n", "--bogus"},
 		"unfinished":     {"unfinished", "--bogus"},
 	}
@@ -1306,16 +1305,17 @@ entry:
 		return resp, exitCode
 	}
 
-	// kb list — empty.
+	// kb list — the shipped playbooks and nothing else. A fresh home resolves
+	// them all out of the binary, so the list is never empty and a playbook
+	// nobody has written is not a playbook that is missing.
 	resp, code := runKB("kb", "list")
 	if code != 0 {
 		t.Fatalf("list exit %d: %v", code, resp["error"])
 	}
-	data := resp["data"].(map[string]any)
-	if pbs := data["playbooks"]; pbs != nil {
-		if arr, ok := pbs.([]any); ok && len(arr) != 0 {
-			t.Errorf("expected empty list, got %v", pbs)
-		}
+	if listed := playbooksOf(t, resp); len(listed) != len(shippedPlaybooks) {
+		t.Errorf("expected the %d shipped playbooks, got %d: %v", len(shippedPlaybooks), len(listed), listed)
+	} else if _, ok := listed["dev-prereqs"]; ok {
+		t.Errorf("dev-prereqs is listed before it was added: %v", listed)
 	}
 
 	// kb add.
@@ -1337,14 +1337,18 @@ entry:
 		t.Errorf("entry section missing: %v", pbData)
 	}
 
-	// kb list — one item.
+	// kb list — the shipped playbooks plus the one just added, which has no
+	// shipped default behind it and so is local to this home.
 	resp, code = runKB("kb", "list")
 	if code != 0 {
 		t.Fatalf("list exit %d: %v", code, resp["error"])
 	}
-	pbs := resp["data"].(map[string]any)["playbooks"].([]any)
-	if len(pbs) != 1 {
-		t.Fatalf("expected 1 playbook, got %d", len(pbs))
+	listed := playbooksOf(t, resp)
+	if len(listed) != len(shippedPlaybooks)+1 {
+		t.Fatalf("expected the shipped playbooks plus dev-prereqs, got %d: %v", len(listed), listed)
+	}
+	if got := listed["dev-prereqs"]["state"]; got != "local" {
+		t.Errorf("an added playbook state = %v, want local", got)
 	}
 
 	// kb edit.
@@ -1675,30 +1679,55 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// A dispatch whose plan declares no realization refuses, naming worker.yaml as
-// the place to declare it — the missing-protocol signal, not an error to be
-// papered over with a Go default.
-func TestCLIDispatchRefusesWhenNothingDeclaresTheRealization(t *testing.T) {
+// A dispatch on a home nobody has written to resolves its realization out of
+// the binary: the shipped worker playbook declares the standing engine and
+// agent, so it is live without being written to disk first. The refusal for a
+// dispatch nothing declares a realization for is still there — the plan a
+// binary with no worker resolves is one — and it is covered where a plan can be
+// built without the shipped set, in the dispatch package.
+func TestCLIDispatchResolvesTheRealizationOutOfTheBinary(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
+	home := testHome(t)
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
-	writeKBPlaybook(t, testHome(t), "code-only", `name: code-only
+	writeKBPlaybook(t, home, "code-only", `name: code-only
 applies_when: code
 entry:
   - check: test -f AGENTS.md
 `)
 
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "no-such-type", "--goal", "x")
-	if code != 1 {
-		t.Fatalf("a dispatch nothing declares a realization for must refuse, exit %d: %v", code, resp)
+	if code != 0 {
+		t.Fatalf("a dispatch must resolve the shipped worker's realization, exit %d: %v", code, resp)
 	}
-	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"worker.yaml", "engine", "agent"} {
-		if !strings.Contains(errMsg, want) {
-			t.Errorf("refusal %q must mention %q", errMsg, want)
+	data := resp["data"].(map[string]any)
+	worker := shippedDefault(t, "worker")
+	for _, field := range []string{"engine", "agent"} {
+		want := shippedField(t, worker, field)
+		if want == "" {
+			t.Fatalf("the shipped worker declares no %s to resolve", field)
+		}
+		if data[field] != want {
+			t.Errorf("dispatch %s = %v, want the shipped worker's %q", field, data[field], want)
 		}
 	}
+
+	// Nothing was written: the realization came out of the binary.
+	if _, err := os.Stat(filepath.Join(home, ".fs", "kb", "worker.yaml")); !os.IsNotExist(err) {
+		t.Errorf("the dispatch materialised the shipped worker: %v", err)
+	}
+}
+
+// shippedField returns a playbook body's value for one top-level field.
+func shippedField(t *testing.T, body, field string) string {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if val, ok := strings.CutPrefix(line, field+":"); ok {
+			return strings.TrimSpace(val)
+		}
+	}
+	return ""
 }
 
 // writeKBPlaybook installs a playbook in the isolated home's knowledge center.
@@ -1713,11 +1742,10 @@ func writeKBPlaybook(t *testing.T, home, name, content string) {
 	}
 }
 
-// writeWorkerPlaybook seeds the standing worker playbook — engine: herdr,
-// agent: pi — in the isolated home, the way fs bootstrap would. A dispatch
-// resolves its realization from a playbook, and the shipped worker is the one
-// that declares it; these CLI tests write their own gates, so they bring the
-// standing declaration with them.
+// writeWorkerPlaybook writes the standing worker playbook — engine: herdr,
+// agent: pi — into the isolated home. A dispatch resolves its realization from a
+// playbook, and the shipped worker is the one that declares it; these CLI tests
+// write their own gates, so they bring the standing declaration with them.
 func writeWorkerPlaybook(t *testing.T) {
 	t.Helper()
 	writeKBPlaybook(t, testHome(t), "worker", shippedDefault(t, "worker"))

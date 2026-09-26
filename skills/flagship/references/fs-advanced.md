@@ -186,22 +186,23 @@ fs kb add --name my-gate --file /tmp/playbook.yaml --project myapp
 
 ### Shipped defaults and drift
 
-Fourteen playbooks ship inside the binary and are seeded into `~/.fs/kb/`:
-`cap`, `herdr`, `worker`, `code-entry`, `code-exit`, `plan`, `development`, `tdd`,
-`review`, `research`, `parallel-entry`, `parallel-exit`, `integration-entry`, and
-`integration-exit`. They live in `src/flagship/defaults/kb/` and are embedded with
+Fourteen playbooks ship inside the binary and run from there — nothing is
+installed: `cap`, `herdr`, `worker`, `code`, `plan`, `development`, `tdd`,
+`review`, `independent-review`, `research`, `batch`, `member`, `integration`, and
+`spec`. They live in `src/flagship/defaults/kb/` and are embedded with
 `//go:embed`, so the contract is versioned with the code and survives a wipe.
 
 ```bash
-fs bootstrap                  # create ~/.fs/kb and write every absent playbook
 fs kb list                    # each playbook's scope and state against the shipped default
-fs kb diff NAME               # shipped default vs the playbook on disk
-fs kb reset NAME --yes        # restore the shipped default
+fs kb diff NAME               # shipped default vs the copy on disk
+fs kb reset NAME --yes        # write the shipped default to disk, to edit
 ```
 
-`bootstrap` is idempotent and never overwrites: each file is reported `created`
-(absent, written) or `kept` (present, untouched). A seeded file starts with
-the stamp line
+`~/.fs/kb/` is for overrides only, and a fresh home has no such directory: the
+shipped set resolves out of the binary. `kb reset --yes` is the one command that
+writes a default to disk — how you ask for a copy to edit, and how an edited copy
+goes back. It creates the scope's directory, so it works where nothing is there
+yet. A written copy starts with the stamp line
 
 ```yaml
 # fs-default: sha256=<sha256 of the shipped default's body>
@@ -212,22 +213,28 @@ the binary:
 
 | state | meaning |
 |---|---|
-| `default` | unedited, and identical to the shipped default |
-| `edited` | its body differs from the default it was seeded from |
-| `stale` | the shipped default has moved on since it was seeded |
+| `shipped` | no file on disk; the binary's default runs |
+| `default` | a copy identical to the shipped default — transparent |
+| `edited` | a copy whose body differs from the stamp it carries |
+| `stale` | the copy was stamped from an older default |
 | `local` | no shipped default with that name — hand-written |
 
 The comparison is `edited` = body hash ≠ stamp, `stale` = stamp ≠ the current
 default's hash; both can hold at once and both are reported as flags alongside
 the headline `state` (stale wins). A playbook with no stamp is compared to the
 shipped default as it is now, so an identical hand-written file reads `default`.
-`fs kb list` also reports each playbook's `scope` (`global` or the project name)
-and `used_by` (`prompt: …` for a `cap` playbook, `dispatch: …` otherwise, `none`
-when nothing selects it).
+`fs kb list` also reports each playbook's `scope` (`shipped`, `global` or the
+project name) and `used_by` (`prompt: …` for a `cap` playbook, `dispatch: …`
+otherwise, `none` when nothing selects it).
 
-A new binary never rewrites a playbook its reader depends on: a moved default is
-reported `stale` and applied only by `kb reset --yes`. `kb diff` ignores the
-stamp line, so a freshly seeded playbook diffs empty.
+Only an **override** participates: a copy that restates the default is
+transparent and the shipped default below it resolves, so a copy can never pin
+the binary and a `git pull` that changes a playbook is live with no operator
+step. `edited` is the one predicate behind both resolution and reporting, so
+`kb list` and a dispatch cannot disagree. A copy that has fallen behind is
+reported `stale`, and it runs only if it is also edited. `kb diff` reads the copy
+rather than what resolves, so a stale copy shows its drift, and it ignores the
+stamp line, so a copy that restates the default diffs empty.
 
 ## Project registry
 

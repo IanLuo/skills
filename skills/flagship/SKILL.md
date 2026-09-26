@@ -27,8 +27,8 @@ add that directory yourself or `nix profile install .#flagship` for a
 nix-managed entry. In every example below, `fs` means one of those.
 
 If the binary doesn't exist, the skill can't function — run the build first.
-Then `fs bootstrap` seeds `~/.fs/kb/` with the playbooks shipped inside the
-binary (see Playbooks below).
+The playbooks ship inside the binary and are live from it: `~/.fs/kb/` holds your
+own overrides and nothing has to be installed there (see Playbooks below).
 
 ## The rule: always read context first
 
@@ -172,13 +172,15 @@ A node with no trace prints `no trace was written for <node>` and exits 1 — ne
 
 ### Scopes and `include`
 
-Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/`. A project playbook with the same `name` as a global one **overrides the fields and sections it declares and inherits the rest** from the global playbook — so a shadow that changes only the agent names only `agent:`, and the engine it runs under stays declared in one file. Declared and absent are not the same as empty: `applies_when:` with no terms is a standing declaration and does not inherit the terms below, while an absent `applies_when` does. A shadow that declares nothing but its name changes nothing and is **refused**. `fs kb get` marks which names a resolved playbook inherited. `fs kb list` prints each playbook's `scope` (`global` or the project name) beside its state.
+Three KB scopes, resolved in this order: a project's `~/.fs/projects/<project>/kb/`, the global `~/.fs/kb/`, and the defaults shipped **inside the binary**. A playbook with the same `name` in a higher scope **overrides the fields and sections it declares and inherits the rest** from the same-named playbook below it — so a shadow that changes only the agent names only `agent:`, and the engine it runs under stays declared in one file. Declared and absent are not the same as empty: `applies_when:` with no terms is a standing declaration and does not inherit the terms below, while an absent `applies_when` does. A shadow that declares nothing but its name changes nothing and is **refused**. `fs kb get` marks which names a resolved playbook inherited. `fs kb list` prints each playbook's `scope` — `shipped`, `global` or the project name — beside its state.
 
-`include: <name>` is a **separate** mechanism over the same scopes: it splices that playbook's steps at that position, resolved in the same scope order (project first, then global). Inheritance picks which fields and sections the playbook has; the splice then fills them — so a shadow whose `work:` says `- include: <its own name>` ends with the global steps exactly once, not twice. A cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
+The shipped default is a **scope**, not a copy of one, so nothing has to be installed for the playbooks to run. A file on disk participates only when it is an **override**: a body that differs from the stamp it carries, or an unstamped body that differs from the shipped default. A file that merely restates the default — current or stale — is **transparent** and the default below it is what resolves, so a copy can never shadow the binary it was written from, and a `git pull` that changes a playbook takes effect with no operator step. `fs kb reset NAME --yes` writes the shipped default to disk when you want one to edit, and puts an edited copy back.
+
+`include: <name>` is a **separate** mechanism over the same scopes: it splices that playbook's steps at that position, resolved in the same scope order (project, then global, then the shipped default). Inheritance picks which fields and sections the playbook has; the splice then fills them — so a shadow whose `work:` says `- include: <its own name>` ends with the steps below exactly once, not twice. A cycle is refused with a message naming the chain. A project with no KB directory behaves exactly as global-only — absence is never an error.
 
 ### The shipped playbooks
 
-`fs bootstrap` seeds these into `~/.fs/kb/` (see Knowledge center below):
+These ship inside the binary and run from there; nothing has to be written to disk (see Knowledge center below):
 
 | name | sections | applies_when | order | job |
 |---|---|---|---|---|
@@ -202,15 +204,15 @@ Two KB scopes: global `~/.fs/kb/`, and a project's `~/.fs/projects/<project>/kb/
 ```bash
 fs kb add --name NAME --file PATH [--project P]   # add a playbook; --project writes to that project's KB
 fs kb get NAME [--project P]                       # read a playbook
-fs kb list [--project P]                           # list playbooks, their scope and state
+fs kb list [--project P]                           # every playbook, the scope it resolves from and what is on disk
 fs kb prompt [--project P]                         # the cap's standing rules, as plain text
 fs kb edit --name NAME --file PATH [--project P]   # update
 fs kb remove NAME [--project P]                    # delete
-fs kb diff NAME [--project P]                      # shipped default vs the playbook on disk
-fs kb reset NAME --yes [--project P]               # restore the shipped default
+fs kb diff NAME [--project P]                      # shipped default vs the copy on disk
+fs kb reset NAME --yes [--project P]               # write the shipped default to disk
 ```
 
-`fs kb prompt` is how a playbook reaches the agent that has to follow it: it concatenates every playbook with a `cap:` section whose `applies_when` the session's tags satisfy, in name order, each under a header naming the playbook, its moments and its state and stamp. Plain text on stdout and nothing else, so it pipes straight into a prompt:
+`fs kb prompt` is how a playbook reaches the agent that has to follow it: it concatenates every playbook with a `cap:` section whose `applies_when` the session's tags satisfy, in name order, each under a header naming the playbook, its moments, the scope the rules resolved from and the state and stamp of the copy beneath it. Plain text on stdout and nothing else, so it pipes straight into a prompt:
 
 ```bash
 pi --append-system-prompt "$(fs kb prompt)"
@@ -218,24 +220,24 @@ pi --append-system-prompt "$(fs kb prompt)"
 
 No blank lines, deliberately: line breaks would split it into separate blocks. The headers are what make a stale prompt detectable — they say which playbooks went in and where each came from.
 
-The playbooks above ship **inside the binary** and are seeded into `~/.fs/kb/`:
+The playbooks above ship **inside the binary**. Nothing installs them: `~/.fs/kb/` is for your own overrides, and a fresh home runs the full set with the directory absent.
 
 ```bash
-fs bootstrap                           # seed ~/.fs/kb from the binary's playbooks
-fs kb diff NAME                        # shipped default vs the playbook on disk
-fs kb reset NAME --yes                 # restore the shipped default
+fs kb reset NAME --yes                 # write the shipped default to disk, to edit
+fs kb diff NAME                        # shipped default vs the copy on disk
 ```
 
-`bootstrap` is idempotent and never overwrites: an absent playbook is reported `created`, an existing one `kept` and left byte-for-byte alone. Each seeded file carries `# fs-default: sha256=<hash of the default body>`, which is what lets `kb list` tell a user's edit from a change to the shipped default:
+A copy on disk participates only when it is an **override** — its body differs from the stamp it carries, or it carries no stamp and differs from the shipped default. A copy that restates the default is *transparent*: it is ignored, and the shipped default below it runs. That is what makes the shipped default a scope rather than a seed — a copy can never pin the binary, and a `git pull` that changes a playbook is live with nothing to re-run. Each written copy carries `# fs-default: sha256=<hash of the default body>`, which is how the two are told apart:
 
-| state | meaning |
-|---|---|
-| `default` | unedited, and identical to the shipped default |
-| `edited` | differs from the default it was seeded from |
-| `stale` | the shipped default has moved on since it was seeded |
-| `local` | no shipped default with that name — hand-written |
+| state | meaning | runs? |
+|---|---|---|
+| `shipped` | no file on disk; the binary's default runs | yes |
+| `default` | a copy identical to the shipped default | no — the default runs |
+| `edited` | a copy that differs from the stamp it carries | yes |
+| `stale` | the copy was stamped from an older default | only if you also edited it; otherwise the default runs |
+| `local` | no shipped default with that name — hand-written | yes |
 
-A new binary never rewrites a playbook the cap is reading: a moved default shows as `stale` and is applied only by `kb reset` — **`fs bootstrap` reports `kept` and changes nothing**, so an edited shipped playbook is inert in the install until someone runs `fs kb reset <name>` for it. `fs kb list` is where that shows, and nothing refuses on it: a stale `code` closes dispatches under the old protocol and says nothing. Playbooks the binary does not ship are written by hand or with `kb add`. `fs kb list` also reports `used_by` — which tags load a playbook and, for a dispatch playbook, which moments (`prompt: …` for a playbook with a `cap:` section, `dispatch: … (entry, exit)` otherwise, `none` when nothing selects it) — and the `scope` it came from.
+`fs kb list` answers both questions in one row: the `scope` a playbook resolves from (`shipped`, `global` or the project name) and the state of the copy beneath it. A row whose `scope` is `shipped` and whose `state` is `stale` is the case worth learning — the file on disk has fallen behind, it is not what runs, and the binary's default is. Nothing refuses on it, so it is reported rather than silent: `fs kb diff NAME` shows the drift, and `fs kb reset NAME --yes` puts the copy back to the default when you want to start from it again. Nothing is ever written to `~/.fs/kb/` except by `kb add`, `kb edit` and `kb reset`; a playbook the binary does not ship is written by hand or with `kb add`. `fs kb list` also reports `used_by` — which tags load a playbook and, for a dispatch playbook, which moments (`prompt: …` for a playbook with a `cap:` section, `dispatch: … (entry, exit)` otherwise, `none` when nothing selects it).
 
 ## Dispatch and close-out
 

@@ -13,13 +13,13 @@ const scriptsSource = "defaults/scripts"
 // MaterializeScripts writes the embedded scripts to ~/.fs/scripts and returns
 // that directory, so a playbook can address one as "$FS_SCRIPTS/<name>".
 //
-// It is the counterpart to bootstrap and differs from it deliberately. A
-// playbook in ~/.fs/kb becomes the user's once seeded — bootstrap creates what
-// is absent and never overwrites — but a script is fs's own code: shipped with
-// the binary, never edited by hand. So it is written whenever it differs, which
-// means a fixed script takes effect on the next dispatch with no `kb reset`
-// equivalent to remember, and no way for ~/.fs to drift from the binary running
-// it.
+// It differs from how a playbook is materialised, deliberately. A playbook in
+// ~/.fs/kb is the user's once written — `fs kb reset` puts one there only when
+// asked, and a copy nobody changed is transparent to resolution — but a script
+// is fs's own code: shipped with the binary, never edited by hand. So it is
+// written whenever it differs, which means a fixed script takes effect on the
+// next dispatch with no `kb reset` equivalent to remember, and no way for ~/.fs
+// to drift from the binary running it.
 //
 // This exists because a shipped playbook's check step was naming a repo-relative
 // path: `batch.yaml` ran `bin/check-parallel.sh`, which resolved in exactly one

@@ -71,9 +71,6 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "bootstrap":
-		checkArgs("bootstrap", os.Args[2:])
-		bootstrapCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
 	case "task":
@@ -190,15 +187,15 @@ Commands:
                                                 that dispatch's delivery record
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
-  bootstrap                                     Seed ~/.fs/kb from the playbooks
-                                                shipped in the binary
   kb add --name NAME --file PATH [--project P]  Add a playbook; --project P
                                                 writes it to that project's own
                                                 KB instead of the global one
   kb get NAME [--project P]                     Get a playbook
-  kb list [--project P]                         List playbooks, their scope
-                                                (global or a project) and their
-                                                state against the shipped default
+  kb list [--project P]                         List every playbook, the scope it
+                                                resolves from (shipped, global or
+                                                a project) and its state against
+                                                the shipped default — what is
+                                                actually running
   kb prompt [--project P]                       Print the cap's standing rules:
                                                 the phase: cap playbooks the
                                                 session's tags match. Plain text
@@ -206,7 +203,9 @@ Commands:
                                                 pi --append-system-prompt
   kb diff NAME [--project P]                    Diff the shipped default against
                                                 the playbook on disk
-  kb reset NAME --yes [--project P]             Restore the shipped default
+  kb reset NAME --yes [--project P]             Write the shipped default to disk
+                                                — a copy to edit, or the default
+                                                back over an edited one
   kb edit --name NAME --file PATH [--project P] Edit a playbook
   kb remove NAME [--project P]                  Remove a playbook
   dispatch --project P --type TYPE --goal GOAL [--cards CARD[,CARD...]]
@@ -840,7 +839,7 @@ func kbGet(args []string) {
 func kbList(args []string) {
 	kc := openKB(flagVal(args, "--project", ""))
 
-	states, err := kc.States(shippedKB())
+	states, err := kc.States()
 	if err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
 		return
@@ -860,7 +859,7 @@ func kbPrompt(args []string) {
 	if err != nil {
 		promptError(err)
 	}
-	prompt, err := kc.Prompt(shippedKB(), tags)
+	prompt, err := kc.Prompt(tags)
 	if err != nil {
 		promptError(err)
 	}
@@ -885,7 +884,7 @@ func kbDiff(args []string) {
 
 	kc := openKB(flagVal(args, "--project", ""))
 
-	diff, err := kc.Diff(shippedKB(), name)
+	diff, err := kc.Diff(name)
 	if err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
 		return
@@ -893,8 +892,11 @@ func kbDiff(args []string) {
 	output(command.Response{OK: true, Data: map[string]string{"name": name, "diff": diff}})
 }
 
-// kbReset puts the shipped default back. It refuses without --yes: resetting
-// discards the user's edits, which is not something to do by accident.
+// kbReset writes the shipped default to disk. It is the one command that
+// materialises a default — for a reader who wants a copy to edit, since the
+// shipped default is already what a dispatch reads without one — and it puts an
+// edited copy back. It refuses without --yes: resetting discards the user's
+// edits, which is not something to do by accident.
 func kbReset(args []string) {
 	if len(args) < 1 {
 		fatal("fs kb reset: NAME required")
@@ -909,7 +911,7 @@ func kbReset(args []string) {
 
 	kc := openKB(flagVal(args, "--project", ""))
 
-	path, err := kc.Reset(shippedKB(), name)
+	path, err := kc.Reset(name)
 	if err != nil {
 		output(command.Response{OK: false, Error: err.Error()})
 		return
@@ -917,25 +919,9 @@ func kbReset(args []string) {
 	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "reset", "path": path}})
 }
 
-// bootstrapCmd materialises the playbooks shipped in the binary into ~/.fs/kb.
-// It is safe on every install: what is absent is created and what is there is
-// left alone, so a playbook the user edited is never quietly replaced.
-func bootstrapCmd(_ []string) {
-	kc := openKB("")
-
-	outcomes, err := kc.Seed(shippedKB())
-	if err != nil {
-		output(command.Response{OK: false, Error: err.Error()})
-		return
-	}
-	output(command.Response{OK: true, Data: map[string]any{
-		"kb_path":   kbDir(),
-		"playbooks": outcomes,
-	}})
-}
-
 // shippedKB is the playbooks embedded in the binary, rooted at the KB
-// directory. They are the reference every kb command compares against.
+// directory. They are the last scope the knowledge center resolves against, and
+// the reference every kb command compares what is on disk to.
 func shippedKB() fs.FS {
 	kb, err := flagship.KB()
 	if err != nil {
@@ -1021,7 +1007,7 @@ func openKB(project string) *knowledge.Center {
 // refusing it because the registry row is gone would hide a record that is
 // still on disk.
 func kbCenter(project string) *knowledge.Center {
-	kc, err := knowledge.Open(fsHome())
+	kc, err := knowledge.Open(fsHome(), shippedKB())
 	if err != nil {
 		fatal(err.Error())
 	}

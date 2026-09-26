@@ -48,7 +48,7 @@ func projectKBPath(fsRoot, project, name string) string {
 
 func TestOpenCreatesDir(t *testing.T) {
 	dir := tempFS(t)
-	if _, err := knowledge.Open(dir); err != nil {
+	if _, err := knowledge.Open(dir, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "kb")); err != nil {
@@ -62,7 +62,7 @@ func TestOpenCreatesDir(t *testing.T) {
 }
 
 func TestAddAndGet(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestAddAndGet(t *testing.T) {
 // An absent order is the default, not zero: a playbook that does not say where
 // it sits runs after the ones that did.
 func TestOrderDefaultsWhenAbsent(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ work:
 }
 
 func TestAddDuplicateRejects(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestAddDuplicateRejects(t *testing.T) {
 }
 
 func TestAddNameMismatch(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestAddNameMismatch(t *testing.T) {
 }
 
 func TestAddInvalidYAML(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestAddInvalidYAML(t *testing.T) {
 }
 
 func TestGetNotFound(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestGetNotFound(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestList(t *testing.T) {
 }
 
 func TestEdit(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestEdit(t *testing.T) {
 }
 
 func TestEditNotFound(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestEditNotFound(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestRemove(t *testing.T) {
 }
 
 func TestRemoveNotFound(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestRemoveNotFound(t *testing.T) {
 // A step without a known kind prefix — including prose carrying a colon of its
 // own — defaults to say, so a playbook body may hold a colon and still read.
 func TestStepKindDefaultsToSay(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ work:
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kc, err := knowledge.Open(tempFS(t))
+			kc, err := knowledge.Open(tempFS(t), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -446,7 +446,7 @@ work:
 // runs — and what it splices is held to the including playbook's phase by the
 // validation that runs on the resolved result.
 func TestIncludeIsAllowedInEveryPhase(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ work:
 // What an include splices must be legal for the playbook that spliced it, or a
 // gate could act by including a playbook that acts.
 func TestIncludeRefusesStepsIllegalForTheIncludingPhase(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +517,7 @@ entry:
 // step index is the resolved one — so a spliced step is addressed the same way
 // as a written one.
 func TestIncludeSplicesInPlace(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +555,7 @@ work:
 
 // An include that reaches itself is refused by name rather than recursed into.
 func TestIncludeCycleIsRefusedNamingTheChain(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ work:
 
 // A mutual include is a cycle too, and the refusal names the whole chain.
 func TestIncludeMutualCycleIsRefused(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestIncludeMutualCycleIsRefused(t *testing.T) {
 // `code-exit` gets the global one rather than itself.
 func TestProjectScopeShadowsTheGlobalOne(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ exit:
 // never an error.
 func TestProjectWithoutAKBReadsTheGlobalOne(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,7 +691,7 @@ func TestProjectWithoutAKBReadsTheGlobalOne(t *testing.T) {
 // that is present but unreadable, which a gate must refuse rather than skip.
 func TestHasDistinguishesAbsentFromBroken(t *testing.T) {
 	fsRoot := tempFS(t)
-	kc, err := knowledge.Open(fsRoot)
+	kc, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +748,7 @@ func TestRemovedFieldsAreRefusedNamingTheReplacement(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kc, err := knowledge.Open(tempFS(t))
+			kc, err := knowledge.Open(tempFS(t), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -779,7 +779,7 @@ func TestEveryPhaseAcceptsItsOwnKinds(t *testing.T) {
 	}
 	for moment, pb := range cases {
 		t.Run(moment, func(t *testing.T) {
-			kc, err := knowledge.Open(tempFS(t))
+			kc, err := knowledge.Open(tempFS(t), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -793,7 +793,7 @@ func TestEveryPhaseAcceptsItsOwnKinds(t *testing.T) {
 // engine: and agent: are parsed and resolved, and each must be a single
 // non-empty token when present — a name, not an expression.
 func TestEngineAndAgentAreParsedAndValidated(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +827,7 @@ func TestEngineAndAgentAreParsedAndValidated(t *testing.T) {
 // off disk in the first place; this is the path a hand-edited file meets.)
 func TestGetRefusesAPlaybookThatIsNotLegalForItsPhase(t *testing.T) {
 	fsRoot := tempFS(t)
-	kc, err := knowledge.Open(fsRoot)
+	kc, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -876,7 +876,7 @@ func TestMatches(t *testing.T) {
 // A trailing comma in applies_when is dropped rather than kept as a term
 // nothing can match — the difference between a typo and an inert playbook.
 func TestAppliesWhenDropsEmptyTerms(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +892,7 @@ func TestAppliesWhenDropsEmptyTerms(t *testing.T) {
 // MarshalJSON renders the playbook the way its file spells it, so `fs kb get`
 // shows the schema a reader edits rather than the resolver's internals.
 func TestMarshalJSONShowsTheFileSchema(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -924,7 +924,7 @@ func TestAFieldTheSchemaDoesNotKnowIsRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kc, err := knowledge.Open(tempFS(t))
+			kc, err := knowledge.Open(tempFS(t), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -946,7 +946,7 @@ func TestAFieldTheSchemaDoesNotKnowIsRefused(t *testing.T) {
 // non-moment field went nowhere. It is refused, naming the comma-separated form
 // to write instead.
 func TestABlockListOutsideAMomentSectionIsRefused(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -967,7 +967,7 @@ func TestABlockListOutsideAMomentSectionIsRefused(t *testing.T) {
 // /tmp/x` holds a slash and a space, and both are legal argv. This is the proof
 // the two validators are different on purpose.
 func TestAgentArgsAreParsedAsCommaSeparatedArgvElements(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +990,7 @@ func TestAgentArgsAreParsedAsCommaSeparatedArgvElements(t *testing.T) {
 // realization has a parallel field list in MarshalJSON — a field missing from it
 // is one a reader of kb get never sees.
 func TestMarshalJSONCarriesAgentArgs(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1018,7 +1018,7 @@ func TestAnEmptyAgentArgsIsRefused(t *testing.T) {
 		"name: p\nagent_args:\nwork:\n  - say: x\n",
 		"name: p\nagent_args: , ,\nwork:\n  - say: x\n",
 	} {
-		kc, err := knowledge.Open(tempFS(t))
+		kc, err := knowledge.Open(tempFS(t), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1031,7 +1031,7 @@ func TestAnEmptyAgentArgsIsRefused(t *testing.T) {
 // The tolerated shapes stay tolerated. A `---` document start and a line with no
 // colon are not fields, so refusing an unknown field must not refuse them.
 func TestLinesThatAreNotFieldsStayTolerated(t *testing.T) {
-	kc, err := knowledge.Open(tempFS(t))
+	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1093,7 +1093,7 @@ func writePlaybookFile(t *testing.T, path, body string) {
 // else, so changing the dispatch engine is a single line in one file.
 func TestShadowInheritsTheFieldsItDoesNotDeclare(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1153,7 +1153,7 @@ work:
 // not merge on top of what the file already says.
 func TestShadowKeepingASectionDoesNotInheritIt(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1185,7 +1185,7 @@ func TestShadowKeepingASectionDoesNotInheritIt(t *testing.T) {
 // and not just the presence.
 func TestShadowIncludingItsOwnNameSplicesTheGlobalStepsOnce(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1219,7 +1219,7 @@ func TestShadowIncludingItsOwnNameSplicesTheGlobalStepsOnce(t *testing.T) {
 // section arrives resolved, so its include is not spliced a second time.
 func TestTwoLevelChainResolves(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1265,7 +1265,7 @@ work:
 // why parse records presence instead.
 func TestDeclaredEmptyAppliesWhenIsStandingNotAbsent(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1306,7 +1306,7 @@ func TestDeclaredEmptyAppliesWhenIsStandingNotAbsent(t *testing.T) {
 // the global-only case, never an error and never a refusal.
 func TestAnAbsentFieldWithNoCounterpartIsSimplyAbsent(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1337,7 +1337,7 @@ func TestAnAbsentFieldWithNoCounterpartIsSimplyAbsent(t *testing.T) {
 // naming that it changes nothing — the same stance as the unknown-key refusal.
 func TestShadowThatChangesNothingIsRefused(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1368,7 +1368,7 @@ func TestShadowThatChangesNothingIsRefused(t *testing.T) {
 // being self-describing.
 func TestKbGetMarksTheInheritedFields(t *testing.T) {
 	fsRoot := tempFS(t)
-	global, err := knowledge.Open(fsRoot)
+	global, err := knowledge.Open(fsRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

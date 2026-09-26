@@ -22,36 +22,32 @@ import (
 // against stamp is edited, stamp against the current default is stale.
 const stampPrefix = "# fs-default: sha256="
 
-// Seed actions: what seeding did to one playbook.
-const (
-	ActionCreated = "created" // written, stamped, from the shipped default
-	ActionKept    = "kept"    // already present; left untouched
-)
-
 // Playbook states, relative to the shipped defaults.
 const (
-	StateDefault = "default" // seeded and unedited; identical to the shipped default
-	StateEdited  = "edited"  // differs from the default it was seeded from
-	StateStale   = "stale"   // the shipped default has moved on since it was seeded
+	StateShipped = "shipped" // no file on disk; the shipped default is what runs
+	StateDefault = "default" // the copy is unedited; it restates the shipped default
+	StateEdited  = "edited"  // the copy differs from the default it was stamped from
+	StateStale   = "stale"   // the shipped default has moved on since the copy was stamped
 	StateLocal   = "local"   // no shipped default with that name
 )
-
-// SeedOutcome is what seeding did to one shipped default.
-type SeedOutcome struct {
-	Name   string `json:"name"`
-	Action string `json:"action"` // created | kept
-	Path   string `json:"path"`
-}
 
 // UsedByNone is the used_by value for a playbook nothing can select: it is
 // inert, and fs kb list says so rather than leaving it looking shipped.
 const UsedByNone = "none"
 
-// PlaybookState is one playbook on disk and how it relates to the shipped
-// defaults. Edited and stale are independent — a user's edit and an upstream
-// change can both be true — so both are reported, with State as the headline.
-// Scope says which KB it came from; UsedBy says which tags load it, and
-// UsedByNone is the warning that nothing does.
+// PlaybookState is one playbook and what a reader can do with it.
+//
+// The two halves answer two questions and are deliberately not merged. Scope and
+// Edited answer "is what I wrote live": Scope is where the name RESOLVES, so a
+// copy that is not an override reads as shipped whatever its own state, and
+// Edited is true exactly when the file is the override that runs. Stale answers
+// "is my copy behind": it compares the copy's stamp to the shipped default, and
+// is true of a copy that no longer participates as well as of one that does.
+//
+// Edited and stale are independent — a user's edit and an upstream change can
+// both be true — so both are reported, with State as the headline. Path is the
+// copy on disk, "" when there is none; UsedBy says which tags load the playbook
+// that runs, and UsedByNone is the warning that nothing does.
 type PlaybookState struct {
 	Name   string `json:"name"`
 	Scope  string `json:"scope"`
@@ -62,55 +58,22 @@ type PlaybookState struct {
 	Path   string `json:"path"`
 }
 
-// Seed writes every shipped default in defaults into the center, one file per
-// playbook, each stamped with the default's hash.
+// States reports every playbook this center can resolve — every name the binary
+// ships and every file in the two on-disk scopes — with the scope each one
+// resolves from, the condition of the copy on disk, and which tags load it.
 //
-// It is idempotent and never overwrites: an absent playbook is written and
-// reported created, an existing one is left byte-for-byte alone and reported
-// kept. Leaving an existing file alone is the point — a new binary carrying a
-// changed default must not rewrite a contract underneath the agent reading it.
-// That change is reported as stale by States, and applied only by Reset.
-func (c *Center) Seed(defaults fs.FS) ([]SeedOutcome, error) {
-	books, err := defaultBodies(defaults)
+// It is the answer to "what is actually running", which the directory listing
+// cannot give: a copy nothing changed is not what a dispatch reads, and a change
+// that landed only in the binary is live without anyone having seeded it.
+func (c *Center) States() ([]PlaybookState, error) {
+	names, err := c.names()
 	if err != nil {
 		return nil, err
 	}
 
-	outcomes := make([]SeedOutcome, 0, len(books))
-	for _, book := range books {
-		path := filepath.Join(c.writeDir(), book.name+".yaml")
-		outcome := SeedOutcome{Name: book.name, Path: path}
-
-		switch _, err := os.Stat(path); {
-		case err == nil:
-			outcome.Action = ActionKept
-		case errors.Is(err, fs.ErrNotExist):
-			if err := os.WriteFile(path, stamped(book.body), 0o644); err != nil {
-				return nil, fmt.Errorf("knowledge: seed %s: %w", book.name, err)
-			}
-			outcome.Action = ActionCreated
-		default:
-			return nil, fmt.Errorf("knowledge: stat %s: %w", path, err)
-		}
-
-		outcomes = append(outcomes, outcome)
-	}
-	return outcomes, nil
-}
-
-// States reports every playbook in the center and how it relates to the shipped
-// defaults. State is the headline — stale wins over edited, because a moved
-// default is the drift this reports — with the two flags carrying the full
-// answer when both hold.
-func (c *Center) States(defaults fs.FS) ([]PlaybookState, error) {
-	books, err := c.scopedNames()
-	if err != nil {
-		return nil, err
-	}
-
-	states := make([]PlaybookState, 0, len(books))
-	for _, book := range books {
-		state, err := c.state(defaults, book)
+	states := make([]PlaybookState, 0, len(names))
+	for _, name := range names {
+		state, err := c.state(name)
 		if err != nil {
 			return nil, err
 		}
@@ -119,11 +82,17 @@ func (c *Center) States(defaults fs.FS) ([]PlaybookState, error) {
 	return states, nil
 }
 
-// Diff returns the unified diff from the shipped default named name to the
-// playbook on disk, stamp line excluded so a pristine seed diffs empty. A
-// playbook with no shipped default has nothing to compare to and is an error.
-func (c *Center) Diff(defaults fs.FS, name string) (string, error) {
-	def, shipped, err := defaultBody(defaults, name)
+// Diff returns the unified diff from the shipped default named name to the copy
+// on disk, stamp line excluded so a copy that restates the default diffs empty.
+//
+// It reads the copy and not what resolution picks, because the two differ
+// exactly when it matters: a copy that has fallen behind the default does not
+// participate, so a diff taken through resolution would come out empty for the
+// one file a reader runs this command to look at. A playbook with no shipped
+// default has nothing to compare to, and one with no copy has nothing to
+// compare; both are errors rather than an empty diff that reads as "unchanged".
+func (c *Center) Diff(name string) (string, error) {
+	def, shipped, err := c.shippedBody(name)
 	if err != nil {
 		return "", err
 	}
@@ -131,9 +100,15 @@ func (c *Center) Diff(defaults fs.FS, name string) (string, error) {
 		return "", fmt.Errorf("knowledge: no shipped default named %q to diff against", name)
 	}
 
-	content, err := c.read(name)
+	path := c.copyPath(name)
+	if path == "" {
+		return "", fmt.Errorf(
+			"knowledge: playbook %q has no copy on disk to diff; run `fs kb reset %s` to write one", name, name)
+	}
+
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("knowledge: read %s: %w", path, err)
 	}
 
 	_, body, _ := splitStamp(content)
@@ -143,11 +118,16 @@ func (c *Center) Diff(defaults fs.FS, name string) (string, error) {
 	), nil
 }
 
-// Reset writes the shipped default named name over the playbook on disk,
-// stamped as freshly seeded. It is unconditional — asking the user first is the
-// caller's job, because only the caller knows whether they meant it.
-func (c *Center) Reset(defaults fs.FS, name string) (string, error) {
-	def, shipped, err := defaultBody(defaults, name)
+// Reset writes the shipped default named name to the playbook path in the scope
+// this center is bound to, stamped as freshly written — the one command that
+// materialises a default on disk, for a reader who wants a copy to edit rather
+// than one to run. It creates the scope's directory, so it is how a scope that
+// has no KB yet asks for its first playbook.
+//
+// It is unconditional over what is there: asking the user first is the caller's
+// job, because only the caller knows whether they meant it.
+func (c *Center) Reset(name string) (string, error) {
+	def, shipped, err := c.shippedBody(name)
 	if err != nil {
 		return "", err
 	}
@@ -156,42 +136,60 @@ func (c *Center) Reset(defaults fs.FS, name string) (string, error) {
 	}
 
 	path := filepath.Join(c.writeDir(), name+".yaml")
+	if err := os.MkdirAll(c.writeDir(), 0o755); err != nil {
+		return "", fmt.Errorf("knowledge: create dir %s: %w", c.writeDir(), err)
+	}
 	if err := os.WriteFile(path, stamped(def), 0o644); err != nil {
 		return "", fmt.Errorf("knowledge: reset %s: %w", name, err)
 	}
 	return path, nil
 }
 
-// state compares one playbook on disk to the shipped default of the same name.
-func (c *Center) state(defaults fs.FS, book scopedPlaybook) (PlaybookState, error) {
-	content, err := os.ReadFile(book.path)
-	if err != nil {
-		return PlaybookState{}, fmt.Errorf("knowledge: read %s: %w", book.path, err)
-	}
-
-	def, shipped, err := defaultBody(defaults, book.name)
+// state describes one playbook by name. Every field is read off what a lookup
+// does rather than off the directory: Scope is where the name resolves, Path is
+// the copy on disk and may be a file that does not participate, and UsedBy comes
+// from the playbook that actually runs.
+func (c *Center) state(name string) (PlaybookState, error) {
+	id, err := c.lookup(name, nil)
 	if err != nil {
 		return PlaybookState{}, err
 	}
 
 	state := PlaybookState{
-		Name:   book.name,
-		Scope:  book.scope,
-		Path:   book.path,
-		UsedBy: usedByFor(book.name, content),
+		Name:  name,
+		Scope: c.scopeOf(id),
+		Path:  c.copyPath(name),
+	}
+	if pb, err := c.Get(name); err == nil {
+		state.UsedBy = usedByFor(pb)
+	} else {
+		state.UsedBy = UsedByNone
+	}
+
+	if state.Path == "" {
+		// Nothing on disk: the shipped default is what runs, and there is no copy
+		// to be drifted.
+		state.State = StateShipped
+		return state, nil
+	}
+
+	content, err := os.ReadFile(state.Path)
+	if err != nil {
+		return PlaybookState{}, fmt.Errorf("knowledge: read %s: %w", state.Path, err)
+	}
+	def, shipped, err := c.shippedBody(name)
+	if err != nil {
+		return PlaybookState{}, err
 	}
 	if !shipped {
 		state.State = StateLocal
 		return state, nil
 	}
 
-	stampHash, body, stamped := splitStamp(content)
-	switch {
-	case stamped && hashBody(body) != stampHash:
-		state.Edited = true
-	case !stamped && hashBody(body) != hashBody(def):
-		state.Edited = true // hand-written, and not the shipped default
-	}
+	// Edited is the same predicate resolution uses, so what this reports and what
+	// a dispatch reads cannot disagree.
+	state.Edited = edited(def, content)
+	stampHash, _, stamped := splitStamp(content)
 	state.Stale = stamped && stampHash != hashBody(def)
 
 	switch {
@@ -205,22 +203,31 @@ func (c *Center) state(defaults fs.FS, book scopedPlaybook) (PlaybookState, erro
 	return state, nil
 }
 
-// usedByFor says which tags load a playbook, derived from the playbook itself:
-// a playbook with a cap section is loaded by the session prompt, every other
-// moment by a dispatch whose tags satisfy its applies_when. `always` is a
+// edited reports whether a playbook's body is an override of the shipped default
+// def rather than a copy of it: a body that differs from the stamp it carries,
+// or an unstamped body that differs from the default. It is the one definition
+// of what makes a file the user's — resolution uses it to decide whether a file
+// participates, reporting uses it to mark the ones that are overrides.
+func edited(def, content []byte) bool {
+	stampHash, body, stamped := splitStamp(content)
+	if stamped {
+		return hashBody(body) != stampHash
+	}
+	return hashBody(body) != hashBody(def)
+}
+
+// usedByFor says which tags load a playbook, derived from the playbook that
+// resolves: a playbook with a cap section is loaded by the session prompt, every
+// other moment by a dispatch whose tags satisfy its applies_when. `always` is a
 // playbook with no terms — one that loads for every dispatch. The moments are
 // named because a playbook serving two of them (a `batch`'s entry and exit) is
 // the reason one file is one participant.
 //
-// A file that does not parse is reported as loaded by nothing rather than
-// failing the whole list: a malformed playbook declares nothing, so nothing can
-// select it, and fs kb get is where the parse error surfaces.
-func usedByFor(name string, content []byte) string {
-	pb, err := parsePlaybook(name, content)
-	if err != nil {
-		return UsedByNone
-	}
-
+// It is the resolved playbook and not the file, because a file on disk is no
+// longer necessarily what runs: a copy that restates the default is transparent,
+// and a shadow that declares only fields is loaded by the tags its inherited
+// sections serve.
+func usedByFor(pb *Playbook) string {
 	tags := "always"
 	if len(pb.AppliesWhen) > 0 {
 		tags = strings.Join(pb.AppliesWhen, ",")

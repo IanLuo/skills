@@ -32,7 +32,7 @@ func openStore(t *testing.T) *store.Store {
 func openKB(t *testing.T) *knowledge.Center {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "kb")
-	kc, err := knowledge.Open(dir)
+	kc, err := knowledge.Open(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

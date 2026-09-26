@@ -2,9 +2,10 @@
 // that live in ~/.fs/scripts inside the fs binary.
 //
 // Both are embedded from defaults/, so the cap's operating contract is
-// versioned with the code instead of being a hand-written file outside git:
-// `fs bootstrap` materialises the playbooks, `fs kb` compares them against what
-// is on disk, and MaterializeScripts writes the scripts.
+// versioned with the code instead of being a hand-written file outside git: the
+// playbooks are the last scope `fs kb` resolves against, so a shipped playbook
+// is live without being written to disk first, and MaterializeScripts writes the
+// scripts.
 package flagship
 
 import (
