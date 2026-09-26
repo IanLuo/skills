@@ -209,10 +209,59 @@ def main():
     # The root is the one path with no last component to append, so the format
     # that builds every other answer would print it as `//`.
     for label, spelled in [("the root", "/"), ("a doubled root", "//"),
-                           ("a tripled root", "///")]:
+                           ("a tripled root", "///"),
+                           ("the root as /.", "/."), ("the root as /..", "/.."),
+                           ("the root as //.", "//.")]:
         code, out, err = run(spelled)
         check(f"{label} resolves to one slash",
               code == 0 and out == "/", f"exit {code}: {out!r} {err!r}")
+
+    # 13 — one directory has many spellings, and the contract every caller rests
+    # on is that they all come back as ONE string: the caller compares this
+    # against `git worktree list --porcelain`, so a second answer is a worktree
+    # the caller is told is not registered. That is asserted here as a property
+    # over combinations rather than as a list of the spellings someone thought
+    # of — folding a trailing slash can expose a `/.`, and folding a `/.` can
+    # expose a `//`, so the interesting cases are the compositions.
+    #
+    # The same property covers idempotence: the answer must be a spelling with
+    # nothing left to fold, so resolving it again has to change nothing.
+    prop = root / "prop"
+    (prop / "sub" / "inner").mkdir(parents=True)
+    prop_link = root / "prop-link"
+    prop_link.symlink_to(prop)
+
+    #
+    # Every ref in these sets names `prop` itself — a `/sub/..` in the middle
+    # comes back, and `inner/..` alone does not: it leaves you in `prop/sub`,
+    # a different directory with its own one spelling. A ref that leaves is not
+    # wrong, it is a spelling of somewhere else, and asserting it here would be
+    # asserting something false about the resolver.
+    spellings = []
+    for base in (str(prop), str(prop_link)):
+        for lead in ("", "/"):
+            for mid in ("", "/./", "//", "/sub/..", "/sub/inner/../..", "/sub/../."):
+                for tail in ("", "/", "/.", "/./", "//."):
+                    spellings.append(lead + base + mid + tail)
+
+    answers, problems = {}, []
+    for spelled in spellings:
+        code, out, err = run(spelled)
+        if code != 0:
+            problems.append(f"{spelled!r} -> exit {code}: {err!r}")
+            continue
+        answers.setdefault(out, []).append(spelled)
+        again_code, again, _ = run(out)
+        if again_code != 0 or again != out:
+            problems.append(f"{spelled!r} -> {out!r}, and resolving that gave {again!r}")
+
+    check("every spelling of one directory comes back as one string",
+          len(answers) == 1,
+          f"{len(answers)} distinct answers: {sorted(answers)[:3]}")
+    check("and it is that directory",
+          list(answers) == [str(real / "prop")], f"{list(answers)}")
+    check("resolving an answer again changes nothing",
+          not problems, f"{len(problems)} of {len(spellings)}: {problems[:4]}")
 
     print()
     if FAILS:

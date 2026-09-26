@@ -303,6 +303,38 @@ func TestCodeTeardownRefusesTheProjectsOwnCheckout(t *testing.T) {
 	}
 }
 
+// The same refusal in the layout the guard could not see: a project root is
+// allowed to be a linked worktree itself, and then the main checkout — the
+// first stanza of git's listing — is a different directory. The guard asked
+// whether the recorded path was that first entry, so a record naming the
+// project's OWN worktree matched nothing, and the step tore down its own
+// checkout and deleted its branch. The guess the guard needed was already in
+// the step's own footing: the exit steps run from the project root, so
+// `git rev-parse --show-toplevel` is that checkout, whichever one it is.
+func TestCodeTeardownRefusesTheProjectsOwnCheckoutAsAWorktree(t *testing.T) {
+	repo := scratchGitRepo(t)
+	root := filepath.Join(t.TempDir(), "project-root")
+	branch := "project-root"
+	goGit(t, repo, "worktree", "add", "-q", "-b", branch, root)
+
+	out, err := runTeardownStep(t, branchStep(t), root, map[string]string{
+		"FS_WORKTREE_PATH": root, "FS_WORKTREE": "wX",
+	})
+	if err == nil {
+		t.Errorf("the step tore down the project's own worktree instead of refusing:\n%s", out)
+	}
+	if !gitHasBranch(t, repo, branch) {
+		t.Fatalf("the branch the project's own worktree stands on (%s) was deleted:\n%s", branch, out)
+	}
+	if head, attached := headBranch(t, root); !attached || head != branch {
+		t.Errorf("the project's own worktree was left detached (HEAD=%q attached=%v):\n%s",
+			head, attached, out)
+	}
+	if !strings.Contains(out, "the project's own checkout") {
+		t.Errorf("the refusal must say what it refused; got:\n%s", out)
+	}
+}
+
 // The state that defect is reached by, without a wrong record: a directory at
 // the recorded path that git registers no worktree at — what `git worktree
 // remove` leaves when it drops the registration and then fails to delete the
@@ -369,6 +401,52 @@ func TestCodeTeardownRefusesTheRepositoriesDefaultBranch(t *testing.T) {
 	}
 	if !strings.Contains(out, "default branch") {
 		t.Errorf("the refusal must say it is the default branch; got:\n%s", out)
+	}
+}
+
+// The refusal above reads refs/remotes/origin/HEAD, which is where a repository
+// records which branch is its default — and a repository with no remote records
+// it nowhere. The guard computed an empty name and stood down, so nothing of
+// ours stood between the step and the branch the trunk itself is on: the step
+// detached the worktree holding it, and only then did git refuse the deletion
+// for it. The first stanza of git's listing is the main checkout and carries
+// that checkout's own branch line, which is the same fact with no remote
+// behind it.
+//
+// The layout takes `--ignore-other-worktrees`: a plain checkout refuses to put
+// a second worktree on a branch the trunk already has, so two checkouts on one
+// branch is a state git is talked into rather than one it drifts into.
+//
+// This is the branch the trunk is ON, not the branch the repository was CREATED
+// on. Move the trunk to another branch and the created-on branch is the default
+// only by convention: no remote names it, no worktree stands on it, and this
+// step deletes it in silence. The test below stays on the branch the trunk is
+// on because that is the fact the step can read.
+func TestCodeTeardownRefusesTheBranchTheProjectStandsOn(t *testing.T) {
+	repo := scratchGitRepo(t)
+	trunk := trunkBranch(t, repo)
+
+	checkout := filepath.Join(repo, "wt")
+	goGit(t, repo, "worktree", "add", "-q", "--detach", checkout)
+	goGit(t, checkout, "checkout", "-q", "--ignore-other-worktrees", trunk)
+
+	out, err := runTeardownStep(t, branchStep(t), repo, map[string]string{
+		"FS_WORKTREE_PATH": checkout, "FS_WORKTREE": "wX",
+	})
+	if err == nil {
+		t.Errorf("the step acted on the branch the project stands on instead of refusing:\n%s", out)
+	}
+	if !gitHasBranch(t, repo, trunk) {
+		t.Fatalf("the branch the project stands on (%s) was deleted:\n%s", trunk, out)
+	}
+	// The refusal comes before the detach, not after it: the worktree is the
+	// delivery's, and a step that refuses has no business having moved it.
+	if branch, attached := headBranch(t, checkout); !attached || branch != trunk {
+		t.Errorf("the worktree was left detached from %s (HEAD=%q attached=%v):\n%s",
+			trunk, branch, attached, out)
+	}
+	if !strings.Contains(out, "branch "+trunk) {
+		t.Errorf("the refusal must name the branch it refused; got:\n%s", out)
 	}
 }
 

@@ -87,37 +87,60 @@ case "$path" in
         ;;
 esac
 
-# A trailing slash names the same directory and hides a symlink at the end of
-# the path from -L, so it goes first. "/" itself keeps its one slash.
-while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
-    path="${path%/}"
-done
-
-# A trailing `.` or `..` is a reference to a directory, not a name for one, and
-# it has to go before the last component is read: `dirname /x/.` is `/x` and
-# `basename /x/.` is `.`, so the two put the spelling back together exactly as
-# it came in. Anywhere earlier in the path the kernel folds these for us, which
-# is why this looks only at the end — and why it repeats, since folding one can
-# expose another.
+# Everything that names a directory by REFERENCE rather than by name — a
+# doubled slash, a trailing slash, a `/.`, a `..` — is folded away here, before
+# the last component is read: `dirname /x/.` is `/x` and `basename /x/.` is `.`,
+# so a reference left on the end is put back together exactly as it came in — a
+# spelling git never prints, and a match that finds nothing.
+#
+# The fold is TEXTUAL, which is what makes it a fold rather than a visit. The
+# path being resolved need not exist — the branch step resolves the recorded
+# path of a worktree whose checkout was deleted out of band, and a `..` in that
+# path still has to fold — so `cd`, which refuses a path it cannot enter, is
+# wrong for exactly the case this exists for. Folding one KIND of reference at a
+# time is wrong for the combinations: a trailing slash hides a `/.`, a `/.`
+# hides a `//`, and a `..` is not a suffix to truncate at all — the parent of
+# `x/sub/..` is `x`, not `x/sub`. So the path is walked once, component by
+# component, `.` dropped and `..` popping the component before it. That is every
+# one of these cases at once, and it is why the result has nothing left to fold:
+# resolving it again changes nothing.
+#
+# `..` at the root is the root, and a relative path keeps the `..`s it cannot
+# pop, so the result is always a path — never the empty string, which a caller
+# would read as the working directory and match against git's listing as a
+# miss. `.` and `..` are the two results that are not a directory plus a last
+# component at all, and the `cd` below is where they are answered.
+abs=""
+case "$path" in /*) abs="/" ;; esac
+out=""
+rest="$path"
 while :; do
-    case "$path" in
-        */.)  path="${path%/.}" ;;
-        */..) rest="${path%/..}"
-              case "$rest" in
-                  /*)  parent="${rest%/*}"; [ -n "$parent" ] || parent="/" ;;
-                  */*) parent="${rest%/*}" ;;
-                  *)   parent="." ;;
-              esac
-              path="$parent"
-              ;;
-        *) break ;;
+    case "$rest" in
+        */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
+        *)   comp="$rest"; rest="" ;;
     esac
+    case "$comp" in
+        ""|.) ;;
+        ..) case "$out" in
+                ""|..) [ -n "$abs" ] || out="$out${out:+/}.." ;;
+                */*)   out="${out%/*}" ;;
+                *)     out="" ;;
+            esac ;;
+        *) out="$out${out:+/}$comp" ;;
+    esac
+    [ -n "$rest" ] || break
 done
+case "$abs" in
+    "/") path="/$out" ;;
+    *)   [ -n "$out" ] || out="."
+         path="$out" ;;
+esac
 
-# A path that was nothing but `.` or `..` folds to one of them, and neither can
-# be split into a directory and a last component at all. It is a directory that
-# exists — a path that did not could not have been asked about — so `cd` answers
-# it, which is the same resolution the directory below gets.
+# `.` and `..` are directories that exist — a caller resolving them is asking
+# about a directory it is in or above — and neither splits into a directory plus
+# a last component, so `cd` answers both, the same way it answers the directory
+# below. A relative path that folds away to nothing is spelled `.` rather than
+# left empty, because that is what `a/..` means: the directory the caller is in.
 case "$path" in
     .|..) path="$(cd "$path" 2>/dev/null && pwd -P)" || exit 1 ;;
 esac

@@ -112,14 +112,33 @@ exit:
   # symlinked final component matches nothing, and a match that finds nothing
   # reads as "already gone" rather than as the miss it is.
   #
-  # Two refusals stand in front of the deletion, and neither of them compares a
-  # branch name to a literal — both compare what git says about the branch to
-  # what git says about the project. The project's own checkout is refused
+  # Three refusals stand in front of the deletion, and none of them compares a
+  # branch name to a literal — each compares what git says about the branch to
+  # what git says about the project. The checkout this step runs in is refused
   # before any branch is read at all: it is registered like any other worktree,
-  # so a wrong recorded path naming it looks exactly like a delivery's. And the
-  # repository's default branch is refused, which `git branch -d` will not do
-  # for us — it refuses a branch another worktree has checked out, but not the
-  # branch the project stands on.
+  # so a wrong recorded path naming it looks exactly like a delivery's. Which
+  # checkout that is comes from `git rev-parse --show-toplevel`, which answers
+  # for the project's own checkout whether the project root is the main one or,
+  # as a project root itself can be, a linked worktree. The first stanza of
+  # git's listing is a different question and was the wrong one: in that second
+  # layout it names a different directory, so a wrong record naming the
+  # project's own worktree matched nothing and this step tore down its own
+  # checkout.
+  #
+  # The branch that checkout stands on is refused too, which is what the
+  # default-branch guard means to ask when there is no remote to answer it: a
+  # repository with no origin records no default branch, so that guard computed
+  # an empty name and stood down, and nothing of ours stood between this step
+  # and the branch the trunk itself is on.
+  #
+  # What that cannot see is the branch the repository was created on once the
+  # trunk has moved off it: no remote names it and no worktree stands on it, so
+  # nothing in the repository says it is the default, and this step still deletes
+  # it. Naming it would take a git config lookup or a guess at the name.
+  #
+  # And the repository's default branch is refused as before, which `git branch
+  # -d` will not do for us: it refuses a branch another worktree has checked
+  # out, but not the branch the project stands on.
   #
   # Already done is not a failure: a path git registers no worktree at, and a
   # worktree whose branch is already detached, deleted or pruned, are skipped.
@@ -128,7 +147,7 @@ exit:
   # close that destroys work to succeed is not a close worth having.
   # $FS_WORKTREE is the herdr workspace; $FS_WORKTREE_PATH is the checkout git
   # knows.
-  - do: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve the recorded path $p, so which worktree it names cannot be told" >&2; exit 1; }; p="$rp"; listing=$(git worktree list --porcelain) || { echo "cannot read git's worktree list, so which worktree $p names cannot be told" >&2; exit 1; }; trunk=$(printf '%s\n' "$listing" | sed -n '1s|^worktree ||p'); [ "$p" = "$trunk" ] && { echo "the recorded path $p is the project's own checkout, not a delivery's worktree; refusing to touch it" >&2; exit 1; }; b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || exit 0; [ "$b" = HEAD ] && exit 0; default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""; default="${default#*/}"; [ -z "$default" ] || [ "$b" != "$default" ] || { echo "branch $b is the repository's default branch; refusing to delete it" >&2; exit 1; }; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi
+  - do: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve the recorded path $p, so which worktree it names cannot be told" >&2; exit 1; }; p="$rp"; listing=$(git worktree list --porcelain) || { echo "cannot read git's worktree list, so which worktree $p names cannot be told" >&2; exit 1; }; rq=$(git rev-parse --show-toplevel 2>/dev/null); here=$("$FS_BIN" script resolve-path.sh "$rq") || { echo "cannot resolve this project's own checkout $rq, so whether the recorded path $p is it cannot be told" >&2; exit 1; }; [ "$p" != "$here" ] || { echo "the recorded path $p is the project's own checkout, not a delivery's worktree; refusing to touch it" >&2; exit 1; }; b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || exit 0; [ "$b" = HEAD ] && exit 0; tb=$(printf '%s\n' "$listing" | sed -n '1,3s|^branch refs/heads/||p'); [ -z "$tb" ] || [ "$b" != "$tb" ] || { echo "branch $b stands in the project's own checkout; refusing to delete it" >&2; exit 1; }; default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""; default="${default#*/}"; [ -z "$default" ] || [ "$b" != "$default" ] || { echo "branch $b is the repository's default branch; refusing to delete it" >&2; exit 1; }; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi
 
   # git owns the worktree and its registration; `git worktree prune` is what
   # clears a registration whose checkout is already gone. A worktree git refuses
