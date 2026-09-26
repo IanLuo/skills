@@ -2,13 +2,20 @@ package main
 
 // The declared teardown's branch step, run for real.
 //
-// The step is the fix for a branch that nothing would ever collect: a worktree
-// whose checkout was deleted out of band — `rm -rf`, or someone else's
-// `git worktree remove` — still has a registration and still has its branch
-// checked out there, and the step used to name the branch by asking the
-// checkout, which is no longer there. The case is therefore built the way it
-// happens: make a worktree, delete the directory, run the step as the engine
-// runs it, and ask git whether the branch is gone.
+// The step exists for a branch nothing would otherwise collect: a worktree whose
+// checkout was deleted out of band — `rm -rf`, or a `git worktree remove` that
+// dropped the registration and then failed to delete the directory — still has a
+// registration and still has its branch checked out there, and a worktree that is
+// still there has to be detached before its branch can be deleted at all.
+//
+// It names the branch from git's own registration, and never by asking the
+// directory. Asking the directory — `git -C "$p" rev-parse` — answers for
+// whatever repository ENCLOSES $p, so a recorded path naming the project's own
+// checkout came back with the project's own branch, and the step detached that
+// checkout and deleted that branch: exit 0, no error, a close reporting success.
+// The states a mistaken, stale or half-torn-down recorded path produces are
+// therefore built here the way they happen, and asserted on what survives rather
+// than on what was printed.
 //
 // The step body is read from the shipped playbook rather than restated, so a
 // reworded step keeps testing the same behaviour (the helper's contract), and
@@ -203,6 +210,127 @@ func TestCodeRegistrationCheckRefusesASymlinkedPathGitStillRegisters(t *testing.
 	}
 }
 
+// The destructive defect, and the reason the branch is named from git's
+// registration rather than by asking the directory. `git -C "$p" rev-parse`
+// answers for whatever repository encloses $p, so a recorded path naming the
+// project's OWN checkout came back with the project's own branch — and the step
+// then detached that checkout and deleted that branch. It reported exit 0 with
+// no error: a close reporting success over the branch the project stands on.
+//
+// The guard that looked like it stopped this compared a branch name to the
+// literal string HEAD, which no branch is called, and `merge-base --is-ancestor
+// main HEAD` was trivially true, so nothing else refused either.
+func TestCodeTeardownRefusesTheProjectsOwnCheckout(t *testing.T) {
+	repo := scratchGitRepo(t)
+	trunk := trunkBranch(t, repo)
+
+	out, err := runTeardownStep(t, branchStep(t), repo, map[string]string{
+		"FS_WORKTREE_PATH": repo, "FS_WORKTREE": "wX",
+	})
+	if err == nil {
+		t.Errorf("the step acted on the project's own checkout instead of refusing:\n%s", out)
+	}
+	if !gitHasBranch(t, repo, trunk) {
+		t.Fatalf("the branch the project stands on (%s) was deleted:\n%s", trunk, out)
+	}
+	if branch, attached := headBranch(t, repo); !attached || branch != trunk {
+		t.Errorf("the project's checkout was left detached (HEAD=%q attached=%v):\n%s",
+			branch, attached, out)
+	}
+	if !strings.Contains(out, "the project's own checkout") {
+		t.Errorf("the refusal must say what it refused; got:\n%s", out)
+	}
+}
+
+// The state that defect is reached by, without a wrong record: a directory at
+// the recorded path that git registers no worktree at — what `git worktree
+// remove` leaves when it drops the registration and then fails to delete the
+// directory. Nothing about that state says which branch the step is looking at,
+// so it must not touch one; and the close must still refuse rather than report
+// success over it.
+func TestCodeTeardownLeavesTheBranchOfAnUnregisteredPathAlone(t *testing.T) {
+	repo := scratchGitRepo(t)
+	trunk := trunkBranch(t, repo)
+	sub := filepath.Join(repo, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"FS_WORKTREE_PATH": sub, "FS_WORKTREE": "wX"}
+
+	out, err := runTeardownStep(t, branchStep(t), repo, env)
+	if !gitHasBranch(t, repo, trunk) {
+		t.Fatalf("the branch the project stands on (%s) was deleted:\n%s", trunk, out)
+	}
+	if branch, attached := headBranch(t, repo); !attached || branch != trunk {
+		t.Errorf("the project's checkout was left detached (HEAD=%q attached=%v):\n%s",
+			branch, attached, out)
+	}
+	// A path git registers no worktree at is nothing for this step to do, which
+	// is what keeps a close after a completed teardown quiet. The tree step is
+	// what refuses it, and that refusal is the close's.
+	if err != nil {
+		t.Errorf("the branch step refused a path git registers no worktree at: %v\n%s", err, out)
+	}
+	treeOut, treeErr := runTeardownStep(t, treeStep(t), repo, env)
+	if treeErr == nil {
+		t.Errorf("the tree step accepted a path that is not a worktree:\n%s", treeOut)
+	}
+}
+
+// The repository's default branch is never a delivery's to delete, and `git
+// branch -d` will not refuse it for us: it refuses a branch another worktree has
+// checked out, and here only $p has it. The trunk is on another branch and a
+// linked worktree holds `main`, so the deletion would have succeeded had the
+// step asked for it.
+func TestCodeTeardownRefusesTheRepositoriesDefaultBranch(t *testing.T) {
+	repo := scratchGitRepo(t)
+	// The branch the scratch repo was created on stands in for the repository's
+	// default: the trunk is moved off it so that a linked worktree can hold it,
+	// which is the one way `git branch -d` will happily delete a default branch.
+	defaultBranch := trunkBranch(t, repo)
+	goGit(t, repo, "checkout", "-q", "-b", "release")
+	checkout := filepath.Join(repo, "wt")
+	goGit(t, repo, "worktree", "add", "-q", checkout, defaultBranch)
+	// With the trunk off the default branch, the remote-tracking symref is the
+	// only place the repository records which branch is its default.
+	sha := strings.TrimSpace(gitOut(t, repo, "rev-parse", defaultBranch))
+	goGit(t, repo, "update-ref", "refs/remotes/origin/"+defaultBranch, sha)
+	goGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+defaultBranch)
+
+	out, err := runTeardownStep(t, branchStep(t), repo, map[string]string{
+		"FS_WORKTREE_PATH": checkout, "FS_WORKTREE": "wX",
+	})
+	if err == nil {
+		t.Errorf("the step deleted the repository's default branch instead of refusing:\n%s", out)
+	}
+	if !gitHasBranch(t, repo, defaultBranch) {
+		t.Fatalf("the repository's default branch (%s) was deleted:\n%s", defaultBranch, out)
+	}
+	if !strings.Contains(out, "default branch") {
+		t.Errorf("the refusal must say it is the default branch; got:\n%s", out)
+	}
+}
+
+// A refusal that cannot name what it refused sends its reader looking for the
+// path somewhere else. The resolved path is read into a variable of its own and
+// named $p only once the call succeeded: assigning it straight to $p set $p to
+// the empty stdout the moment the resolver failed, and the message read "cannot
+// resolve the recorded path , so which worktree it names cannot be told".
+func TestCodeTeardownRefusalNamesThePathItCouldNotResolve(t *testing.T) {
+	repo := scratchGitRepo(t)
+	missing := filepath.Join(repo, "no-such-parent", "child")
+
+	out, err := runTeardownStep(t, branchStep(t), repo, map[string]string{
+		"FS_WORKTREE_PATH": missing, "FS_WORKTREE": "wX",
+	})
+	if err == nil {
+		t.Fatalf("an unresolvable path did not refuse:\n%s", out)
+	}
+	if !strings.Contains(out, "no-such-parent") {
+		t.Errorf("the refusal does not name the path it was about; got:\n%s", out)
+	}
+}
+
 // worktreeInState builds a scratch repo holding one worktree in the named state:
 // live or deleted out of band, reached plainly or through a symlink, its branch
 // merged into HEAD or not. It returns the repo, the branch and the path the
@@ -252,6 +380,42 @@ func branchStep(t *testing.T) string {
 func registrationCheck(t *testing.T) string {
 	t.Helper()
 	return shippedStep(t, shippedDefault(t, codePb), "check", "grep -qxF")
+}
+
+// treeStep is the shipped step that removes the worktree itself. It is the step
+// after the branch step, and it is the one that refuses a recorded path git
+// registers no worktree at — so a test about a mistaken path has to ask it too.
+func treeStep(t *testing.T) string {
+	t.Helper()
+	return shippedStep(t, shippedDefault(t, codePb), "do", "worktree remove")
+}
+
+// headBranch answers which branch the main checkout has checked out, and whether
+// it has one at all: a detached checkout has none, and a detached project
+// checkout is what a mistaken deletion leaves behind. Absence is an exit code and
+// not an error, which the fatal-on-failure runner cannot say.
+func headBranch(t *testing.T, repo string) (string, bool) {
+	t.Helper()
+	cmd := exec.Command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// trunkBranch is the branch the project itself stands on. It is read rather than
+// written down: the tests' scratch repo is a plain `git init`, so the name is
+// whatever this machine's init.defaultBranch says, and a test that wrote "main"
+// would be asserting about the machine rather than about the step.
+func trunkBranch(t *testing.T, repo string) string {
+	t.Helper()
+	branch, ok := headBranch(t, repo)
+	if !ok {
+		t.Fatalf("the scratch repo has no branch checked out")
+	}
+	return branch
 }
 
 // runTeardownStep runs one declared step the way the playbook engine runs it —

@@ -24,15 +24,23 @@
 # the link is all that is left, and the registration and its branch are still
 # there to be collected.
 #
-# Two things about that loop are easy to get wrong, and both were, so they are
-# named here. A trailing slash has to go before the loop: `/tmp/` names the same
-# directory as `/tmp`, but `-L` on it asks the question of the directory rather
-# than of the link, says no, and the path is then resolved as if it were not a
-# symlink at all — the exact silent miss this script exists to prevent. And a
-# target read out of a link can be relative — macOS has /tmp pointing at
+# Three things about that loop are easy to get wrong, and two of them were, so
+# they are named here. A trailing slash has to go before the loop: `/tmp/` names
+# the same directory as `/tmp`, but `-L` on it asks the question of the directory
+# rather than of the link, says no, and the path is then resolved as if it were
+# not a symlink at all — the exact silent miss this script exists to prevent.
+# And a target read out of a link can be relative — macOS has /tmp pointing at
 # `private/tmp` — so it is joined to the directory the link sits in, which is
 # what the kernel does; joining with a bare `/` builds `//private/tmp`, which is
 # not a spelling git ever prints.
+#
+# The loop is bounded, because a link can lead back to a link: `a -> b -> a`, or
+# a link to itself, never terminates. `readlink` does not resolve, it only reads
+# the target, so nothing underneath refuses on the script's behalf and the loop
+# spins forever — and a teardown step that hangs is a close that never returns.
+# The kernel gives up on such a chain with ELOOP after a fixed number of links,
+# and this gives up in the same place, at the same exit code as any other path it
+# cannot resolve, so the caller refuses instead of waiting.
 #
 # Usage:
 #   resolve-path.sh PATH
@@ -40,7 +48,8 @@
 # Exit codes:
 #   0  the resolved path, alone on stdout
 #   1  the path cannot be resolved — the directory holding it does not exist, so
-#      there is nothing to match and the caller must refuse rather than pass
+#      there is nothing to match and the caller must refuse rather than pass, or
+#      the final component is a symlink chain that never ends
 #   2  the command line was wrong
 set -uo pipefail
 
@@ -61,8 +70,15 @@ while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
     path="${path%/}"
 done
 
-# Follow a final symlink, however many of them there are.
+# Follow a final symlink, however many of them there are — up to the kernel's
+# own limit, past which the chain is a cycle or a path nothing would resolve.
+hops=0
 while [ -L "$path" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+        echo "resolve-path: $1 is a symlink chain that never ends — a cycle, or more than 40 links" >&2
+        exit 1
+    fi
     target="$(readlink "$path")" || break
     case "$target" in
         /*) path="$target" ;;

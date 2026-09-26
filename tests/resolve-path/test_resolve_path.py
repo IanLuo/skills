@@ -26,6 +26,13 @@ refusals are the point:
   8. a path whose directory does not exist exits 1 with nothing on stdout,
      so the caller refuses rather than matching nothing and passing
   9. no argument, an empty argument and two arguments exit 2
+ 10. a symlink that leads back to a symlink exits 1 rather than spinning:
+     `readlink` reads a target, it does not resolve one, so nothing underneath
+     refuses on the script's behalf and the loop would never end. A teardown step
+     that hangs is a close that never returns, so this is checked with a timeout —
+     the failure it is guarding against looks exactly like a test that stopped.
+ 11. a chain longer than the bound exits 1 too, and a short one still resolves,
+     so the bound is a bound and not a refusal of everything.
 
 Usage: python3 tests/resolve-path/test_resolve_path.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -52,8 +59,14 @@ def check(name, cond, detail=""):
         print(f"FAIL {name}: {detail}")
 
 
-def run(*args):
-    p = subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True)
+def run(*args, timeout=20):
+    """A check that hangs must fail the suite, not stop it. A timeout comes back
+    as no exit code at all, which no assertion here accepts."""
+    try:
+        p = subprocess.run(["bash", str(SCRIPT), *args], capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "", f"did not return within {timeout}s"
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 
@@ -130,6 +143,44 @@ def main():
                        (("/tmp", "/tmp"), "two arguments")]:
         code, _, err = run(*args)
         check(f"{what} exits 2", code == 2, f"exit {code}: {err!r}")
+
+    # 10 — a link that leads back to a link never terminates. This is the case
+    # that hung: `readlink` reads the target instead of resolving it, so no
+    # syscall underneath ever returns ELOOP and the loop has nothing to stop it.
+    cyc_a, cyc_b = root / "cycle-a", root / "cycle-b"
+    cyc_a.symlink_to(cyc_b)
+    cyc_b.symlink_to(cyc_a)
+    code, out, err = run(str(cyc_a), timeout=10)
+    check("a cyclic symlink exits 1", code == 1, f"exit {code}: {out!r} {err!r}")
+    check("a cyclic symlink says so rather than hanging", "never ends" in err, f"{err!r}")
+
+    self_link = root / "self"
+    self_link.symlink_to(self_link)
+    code, out, err = run(str(self_link), timeout=10)
+    check("a symlink to itself exits 1", code == 1, f"exit {code}: {out!r} {err!r}")
+
+    # 11 — the bound is a bound: a chain past it refuses like any other path it
+    # cannot resolve, and a chain under it still resolves to the real directory.
+    short = root / "short-target"
+    short.mkdir()
+    prev = short
+    for i in range(5):
+        nxt = root / f"short-{i}"
+        nxt.symlink_to(prev)
+        prev = nxt
+    code, out, err = run(str(prev))
+    check("a chain under the bound still resolves",
+          code == 0 and out == str(real / "short-target"), f"exit {code}: {out!r} {err!r}")
+
+    long_target = root / "long-target"
+    long_target.mkdir()
+    prev = long_target
+    for i in range(45):
+        nxt = root / f"long-{i}"
+        nxt.symlink_to(prev)
+        prev = nxt
+    code, out, err = run(str(prev), timeout=10)
+    check("a chain past the bound exits 1", code == 1, f"exit {code}: {out!r} {err!r}")
 
     print()
     if FAILS:
