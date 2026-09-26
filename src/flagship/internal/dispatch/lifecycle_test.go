@@ -1133,6 +1133,67 @@ func TestCloseRefusesAWorkerThatIsNotDone(t *testing.T) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
 	}
+	if strings.Contains(resp.Error, "reported done") {
+		t.Errorf("error %q must not claim a report that was never made", resp.Error)
+	}
+}
+
+// The refusal a worker that reported done and went idle produces. The old text
+// said "read its node and let it finish" about work that had finished, and cost
+// four round trips in a day — a cap telling an idle worker to mark its own node.
+//
+// The status is deliberately not moved for a report: the node is the record of
+// the work and the cap closes the dispatch, so a worker saying "done" must not
+// mark its own node done. What the refusal owes the reader is the real condition
+// — the node is unmarked, and the report is not the status — and the one command
+// that ends it.
+func TestCloseNamesAWorkerThatReportedDoneButLeftItsNodeUnmarked(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
+	workerID := addWorkerNode(t, f, "active")
+	recordDelivery(t, f, brief.CapNodeID, "w1:p9", workerID)
+	if resp := f.h.ReportAdd("skills", workerID, command.ReportDone, "done: the parser and its tests"); !resp.OK {
+		t.Fatalf("ReportAdd: %s", resp.Error)
+	}
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "x"})
+	if resp.OK {
+		t.Fatal("an unmarked worker node must still block close-out")
+	}
+	for _, want := range []string{"worker skills:" + workerID, "reported done", "is active", "fs task update", "--abandoned"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if strings.Contains(resp.Error, "let it finish") {
+		t.Errorf("error %q must not tell the cap to wait for a worker that reported done", resp.Error)
+	}
+	if got := nodeStatus(t, f, "skills", workerID); got != "active" {
+		t.Errorf("the refused close moved the worker's status to %q — a refusal records nothing", got)
+	}
+}
+
+// A report is not the status however it is worded: only a done report earns the
+// refusal above, and a question leaves the old one — a worker waiting on a
+// decision has not finished and is not what that message is for.
+func TestCloseReadsOnlyADoneReportAsFinished(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-exit", codeExit)
+	brief := prepareOnly(t, f, devReq("sample"))
+	workerID := addWorkerNode(t, f, "active")
+	recordDelivery(t, f, brief.CapNodeID, "w1:p9", workerID)
+	if resp := f.h.ReportAdd("skills", workerID, command.ReportQuestion, "which store?"); !resp.OK {
+		t.Fatalf("ReportAdd: %s", resp.Error)
+	}
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "x"})
+	if resp.OK {
+		t.Fatal("an unfinished worker must block close-out")
+	}
+	if strings.Contains(resp.Error, "reported done") {
+		t.Errorf("error %q must not read a question as a completion", resp.Error)
+	}
 }
 
 func TestCloseRefusesAnUnknownWorker(t *testing.T) {

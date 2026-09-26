@@ -124,6 +124,7 @@ func TestPendingClassifiesEachDispatch(t *testing.T) {
 		{"a done worker is ready however herdr reads", "done", "working", dispatch.StateReady},
 		{"a working agent is running", "active", "working", dispatch.StateRunning},
 		{"an idle agent is still running", "active", "idle", dispatch.StateRunning},
+		{"an agent parked on a prompt needs a human", "active", "blocked", dispatch.StateBlocked},
 		{"herdr finished it unseen", "active", "done", dispatch.StateUnseen},
 		{"herdr has no such agent", "active", "", dispatch.StateGone},
 	}

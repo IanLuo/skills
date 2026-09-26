@@ -431,7 +431,18 @@ func TestCLITaskKindGapsAndUnfinished(t *testing.T) {
 	dir := t.TempDir()
 	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
 
-	gapResp, code := runFS(t, bin, dir, "task", "add", "--kind", "gap", "--found-by", "p:t-found", "--goal", "the teardown is untested", "--project", "p")
+	// The reference names a node that exists and is done, so it is the gap's
+	// provenance without joining the unfinished set the assertions below count.
+	finder, code := runFS(t, bin, dir, "task", "add", "--goal", "the node that noticed", "--project", "p")
+	if code != 0 {
+		t.Fatalf("finder add exit %d: %v", code, finder["error"])
+	}
+	foundBy := "p:" + finder["data"].(map[string]any)["node_id"].(string)
+	if _, code := runFS(t, bin, dir, "task", "update", foundBy, "--status", "done", "--project", "p"); code != 0 {
+		t.Fatalf("finder update exit %d", code)
+	}
+
+	gapResp, code := runFS(t, bin, dir, "task", "add", "--kind", "gap", "--found-by", foundBy, "--goal", "the teardown is untested", "--project", "p")
 	if code != 0 {
 		t.Fatalf("gap add exit %d: %v", code, gapResp["error"])
 	}
@@ -446,7 +457,7 @@ func TestCLITaskKindGapsAndUnfinished(t *testing.T) {
 		t.Fatalf("gaps = %v, want the one gap node", list)
 	}
 	gap := list[0].(map[string]any)
-	if gap["goal"] != "the teardown is untested" || gap["found_by"] != "p:t-found" || gap["status"] != "pending" {
+	if gap["goal"] != "the teardown is untested" || gap["found_by"] != foundBy || gap["status"] != "pending" {
 		t.Errorf("gap = %v, want the goal, found_by and status of the gap", gap)
 	}
 

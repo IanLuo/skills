@@ -337,12 +337,13 @@ Start every turn with `fs pending`; never wait on one and never poll with a slee
 | state | meaning | what to do |
 |---|---|---|
 | `ready` | the worker's node is done | read the node, then `fs close` |
-| `running` | the node is not done and herdr still has the agent | let it work |
+| `blocked` | the node is not done and herdr reports the agent `blocked` — parked on a prompt or a modal nothing will dismiss | it stopped and only a person can move it — go look, and never answer an approval prompt for it |
+| `running` | the node is not done and herdr still has the agent (working *or* idle) | let it work |
 | `unseen` | the node is not done but herdr reports the agent `done` | finished unseen — go look |
 | `gone` | the node is not done and herdr has no such agent | the worker died; needs the user |
 | `unlinked` | no delivery record, or one written before it carried a node | close it with `--abandoned`, or `--worker` for an old record |
 
-herdr is a hint about *when to look*, never the truth about whether the work is done — `ready` is the state to act on.
+herdr is a hint about *when to look*, never the truth about whether the work is done — `ready` and `blocked` are the states to act on, and `idle` is deliberately not `blocked`: a worker between two tool calls is thinking, not stuck.
 
 `fs pending` also answers the other half: it carries the cap's `pane_id`, `tab_id`, `agent`, `claimed_at` and `state` (`none`/`live`/`dead`/`unknown`), and each entry's `reports`. `none` and `dead` do not read alike — an unclaimed scope is free to take, and a claim whose pane is gone is a cap nobody holds. `unknown` means herdr could not be asked, which is never a take-over's proof.
 

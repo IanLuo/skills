@@ -217,6 +217,19 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 		if err := validNodeRef(foundBy); err != nil {
 			return errResp(err.Error())
 		}
+		// A provenance field that names nothing is a claim with no evidence, which
+		// is what this store refuses everywhere else: the gap would point at
+		// nothing forever, and events are immutable, so the mistake could never be
+		// corrected. Existence is a task-created event, not tree membership — the
+		// same test the parent check below makes.
+		missing, err := h.foundByMissing(foundBy)
+		if err != nil {
+			h.logger.Error("store replay failed", "command", "task-add", "error", err)
+			return errResp(err.Error())
+		}
+		if missing != "" {
+			return errResp(missing)
+		}
 	}
 	if integrates != "" {
 		if err := validIntegrates(integrates); err != nil {
@@ -329,6 +342,50 @@ func (h *Handler) nodeExists(projectID, nodeID string) (bool, error) {
 		return false, err
 	}
 	return len(events) > 0, nil
+}
+
+// foundByMissing reports why a --found-by reference names no node, or "" when it
+// names one.
+//
+// A reference carries its own scope prefix, so only that project is the one the
+// reference means — but the way this has actually gone wrong is a prefix that is
+// the wrong part, taken from some other command's output. So the other scopes are
+// searched too, and the refusal can say where the node really is: one query on a
+// write-time path, in exchange for a refusal the reader can act on instead of a
+// guess. The message names every project searched, so an empty answer is
+// distinguishable from a check that did not run.
+func (h *Handler) foundByMissing(ref string) (string, error) {
+	project, node, _ := strings.Cut(ref, ":")
+	exists, err := h.nodeExists(project, node)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return "", nil
+	}
+
+	scopes, err := h.store.Scopes()
+	if err != nil {
+		return "", err
+	}
+	searched := []string{project}
+	for _, scope := range scopes {
+		if scope == project {
+			continue
+		}
+		exists, err := h.nodeExists(scope, node)
+		if err != nil {
+			return "", err
+		}
+		if exists {
+			return fmt.Sprintf(
+				"found_by %s: project %s has no such node, but %s does — the reference carries its own scope prefix, so use %s:%s",
+				ref, project, scope, scope, node), nil
+		}
+		searched = append(searched, scope)
+	}
+	return fmt.Sprintf("found_by %s does not exist — no such node in %s",
+		ref, strings.Join(searched, ", ")), nil
 }
 
 // resolveWriteNode resolves the node id a write names and confirms it exists in

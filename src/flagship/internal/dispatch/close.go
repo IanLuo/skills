@@ -189,9 +189,11 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 			return errResp(fmt.Sprintf("worker %s not found in project %s", workerRef, workerProject))
 		}
 		if worker.Status != "done" {
-			return errResp(fmt.Sprintf(
-				"worker %s is %s — read its node and let it finish, or close with --abandoned",
-				workerRef, worker.Status))
+			refusal, err := workerNotDone(h, workerProject, workerID, workerRef, worker.Status)
+			if err != nil {
+				return errResp(fmt.Sprintf("close: read reports for %s: %v", workerRef, err))
+			}
+			return errResp(refusal)
 		}
 		if req.Decision == "" {
 			return errResp("--decision is required: record the verdict this close-out rests on")
@@ -1185,6 +1187,41 @@ func capNode(h *command.Handler, nodeID string) (command.TaskInfo, error) {
 		return command.TaskInfo{}, fmt.Errorf("no node %s in scope %s", nodeID, capScope)
 	}
 	return node, nil
+}
+
+// workerNotDone is the refusal a close gets when its worker's node is not done.
+//
+// Two conditions wear this one message and they are not the same fact. A worker
+// still going has not finished and the cap should let it work. A worker that
+// reported done and went idle *has* finished — what is unmarked is its node — and
+// the old text told the cap to wait for work that was already over, which cost
+// four round trips in a day, each one a cap telling an idle worker to run
+// `fs task update --status done`.
+//
+// The status is deliberately not moved for a report: the node is the record of
+// the work and the cap closes the dispatch, so a worker saying "done" must not
+// mark its own node done, and a close gate that passed on the assertion rather
+// than the record is worse than the round trip it saves. What the refusal owes
+// the reader instead is the real condition and the one command that ends it.
+//
+// Only a done report counts. A question or a note is a worker that has not
+// finished, and reading either as a completion would be the same misdescription
+// in the other direction.
+func workerNotDone(h *command.Handler, project, nodeID, ref, status string) (string, error) {
+	reports, err := h.ReportsFor(project, nodeID)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range reports {
+		if r.Kind == command.ReportDone {
+			return fmt.Sprintf(
+				"worker %s is %s but has reported done — a report is not the status, and this close reads the node: mark the node done (fs task update %s --status done), or close with --abandoned",
+				ref, status, ref), nil
+		}
+	}
+	return fmt.Sprintf(
+		"worker %s is %s — read its node and let it finish, or close with --abandoned",
+		ref, status), nil
 }
 
 // scopeNode finds one node in a scope via derived state, the same way fs status

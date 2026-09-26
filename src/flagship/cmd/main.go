@@ -167,11 +167,14 @@ Commands:
                                                 open ones first, with found_by
   pending                                      Every dispatch not closed out, with
                                                 what the cap should do about each:
-                                                ready, running, unseen, gone,
-                                                unlinked — the undispatched gap
-                                                count, and the cap's own address
-                                                and liveness beside every open
-                                                report
+                                                ready, blocked, running, unseen,
+                                                gone, unlinked — blocked being a
+                                                worker parked on a prompt only a
+                                                person can answer, which running
+                                                does not distinguish from thinking
+                                                — the undispatched gap count, and
+                                                the cap's own address and liveness
+                                                beside every open report
   cap claim [--reconstructed "WHAT YOU READ"]  Become the cap: register this pane
                                                 as the scope's address. Refused
                                                 while a live cap holds it, naming

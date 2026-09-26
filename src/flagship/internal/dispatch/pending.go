@@ -17,7 +17,16 @@ import (
 const (
 	// StateReady: the worker's node is done. Read the node, then close.
 	StateReady = "ready"
-	// StateRunning: the worker's node is not done and herdr still has the agent.
+	// StateBlocked: the worker's node is not done and herdr reports the agent
+	// blocked — a pane parked on a prompt or a modal that nothing in the worker's
+	// own session will dismiss. It is the one unfinished state that is not work in
+	// progress: the harness stopped and only a person can move it, so it is
+	// reported beside ready rather than left to look like thinking.
+	StateBlocked = "blocked"
+	// StateRunning: the worker's node is not done and herdr still has the agent,
+	// working or idle. Idle is included deliberately: an agent between two tool
+	// calls is not blocked, and a state that fires on both is a state the cap
+	// learns to ignore.
 	StateRunning = "running"
 	// StateUnseen: the worker's node is not done but herdr reports the agent
 	// done — work that finished and nobody looked at.
@@ -31,7 +40,7 @@ const (
 )
 
 // pendingStates is every state, in the order a cap acts on them.
-var pendingStates = []string{StateReady, StateRunning, StateUnseen, StateGone, StateUnlinked}
+var pendingStates = []string{StateReady, StateBlocked, StateRunning, StateUnseen, StateGone, StateUnlinked}
 
 // PendingEntry is one dispatch node the cap has not closed out.
 type PendingEntry struct {
@@ -178,6 +187,8 @@ func pendingState(h *command.Handler, delivery command.DeliveryRecord, recorded 
 		return StateGone
 	case state == "done":
 		return StateUnseen
+	case state == "blocked":
+		return StateBlocked
 	default:
 		return StateRunning
 	}

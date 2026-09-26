@@ -446,12 +446,16 @@ func TestTaskAddDefaultsToWork(t *testing.T) {
 }
 
 // A gap carries its kind and the node that found it, so the backlog is
-// structural rather than a prefix on the goal.
+// structural rather than a prefix on the goal. The reference names a node that
+// exists, which is the only kind of reference this field now accepts.
 func TestTaskAddKindWithFoundBy(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
+	h.ProjectCreate("other", "/tmp/other")
+	finder := h.TaskAdd("other", "the node that noticed", nil)
+	foundBy := "other:" + finder.Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "skills:t-found", "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, foundBy, "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}
@@ -460,8 +464,48 @@ func TestTaskAddKindWithFoundBy(t *testing.T) {
 	if task.Kind != query.KindGap {
 		t.Errorf("kind = %q, want %q", task.Kind, query.KindGap)
 	}
-	if task.FoundBy != "skills:t-found" {
-		t.Errorf("found_by = %q, want skills:t-found", task.FoundBy)
+	if task.FoundBy != foundBy {
+		t.Errorf("found_by = %q, want %s", task.FoundBy, foundBy)
+	}
+}
+
+// found_by is a provenance field, and a provenance field that names nothing is a
+// claim with no evidence — which is what this store refuses everywhere else. The
+// gap it attributes would point at nothing forever, and events are immutable, so
+// the mistake could never be corrected. The refusal names the projects searched.
+func TestTaskAddRefusesAFoundByThatNamesNoNode(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	h.ProjectCreate("other", "/tmp/other")
+
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:t-nothing", "", "", nil)
+	if resp.OK {
+		t.Fatal("a found_by naming no node must be refused")
+	}
+	for _, want := range []string{"proj:t-nothing", "proj", "other"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must name %q", resp.Error, want)
+		}
+	}
+}
+
+// The way this has actually gone wrong: the id is right and the scope prefix is
+// not, because the ref was built from a dispatch's output. The other scopes are
+// searched so the refusal can say where the node really is, which costs one query
+// and saves the guess.
+func TestTaskAddRefusesAFoundByInTheWrongScope(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	h.ProjectCreate("other", "/tmp/other")
+	finder := h.TaskAdd("other", "the node that noticed", nil)
+	node := finder.Data.(command.EventData).NodeID
+
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:"+node, "", "", nil)
+	if resp.OK {
+		t.Fatal("a found_by naming a node in another project must be refused")
+	}
+	if !strings.Contains(resp.Error, "other") {
+		t.Errorf("error %q must name the project the node is actually in", resp.Error)
 	}
 }
 
@@ -533,7 +577,9 @@ func TestUnfinishedGroupsByKind(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 	h.TaskAdd("proj", "ordinary work", nil)
 	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", "", "", nil)
-	h.TaskAddKind("proj", "a gap", query.KindGap, "skills:t-found", "", "", nil)
+	finder := h.TaskAdd("proj", "the node that noticed", nil).Data.(command.EventData).NodeID
+	h.TaskUpdate("proj", finder, "done", "noticed and filed", nil)
+	h.TaskAddKind("proj", "a gap", query.KindGap, "proj:"+finder, "", "", nil)
 
 	resp := h.Unfinished(nil)
 	if !resp.OK {
@@ -565,7 +611,9 @@ func TestGapsListsOpenFirstAcrossScopes(t *testing.T) {
 	if resp := h.TaskUpdate("proj", doneGap, "done", "fixed", nil); !resp.OK {
 		t.Fatalf("TaskUpdate: %s", resp.Error)
 	}
-	h.TaskAddKind("proj", "an open gap", query.KindGap, "skills:t-found", "", "", nil)
+	finder := h.TaskAdd("proj", "the node that noticed", nil).Data.(command.EventData).NodeID
+	h.TaskUpdate("proj", finder, "done", "noticed and filed", nil)
+	h.TaskAddKind("proj", "an open gap", query.KindGap, "proj:"+finder, "", "", nil)
 	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", "", "", nil)
 	h.TaskAdd("proj", "ordinary work", nil)
 
@@ -586,7 +634,7 @@ func TestGapsListsOpenFirstAcrossScopes(t *testing.T) {
 		if gap.Status != "pending" {
 			t.Errorf("open gap = %+v, want pending", gap)
 		}
-		if gap.FoundBy == "skills:t-found" {
+		if gap.FoundBy == "proj:"+finder {
 			found = true
 		}
 	}

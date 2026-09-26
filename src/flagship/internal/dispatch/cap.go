@@ -167,8 +167,17 @@ func Guard(h *command.Handler, paneID string) error {
 		return nil
 	}
 
+	// The refusal names the route that works, because the act it refuses is the
+	// one a worker's own playbook told it to take: worker.yaml instructed the
+	// worker to file its finding as a gap node naming the scope it belongs to,
+	// and a finding from a dispatched investigation belongs to the cap's scope,
+	// which is the write this function refuses. The worker was left holding a
+	// finding with no permitted way to place it — the guard is a discipline
+	// guard and says so, so the fix is the obligation and not the guard: the
+	// worker reports, and the cap files. This text is where the worker learns
+	// that, so it names the command rather than the prohibition alone.
 	return fmt.Errorf(
-		"refused: pane %s holds the delivery record for %s:%s (dispatch %s) — a worker does not coordinate; report with fs report %s:%s, or finish the work and let the cap close it",
+		"refused: pane %s holds the delivery record for %s:%s (dispatch %s) — a worker does not coordinate; a finding goes to the cap as a report (fs report %s:%s --question), and the cap files it; or finish the work and let the cap close it",
 		paneID, delivery.Project, delivery.Node, capNode, delivery.Project, delivery.Node)
 }
 
