@@ -12,19 +12,35 @@ Manage projects, tasks, decisions, and knowledge via the `fs` CLI. Every state c
 
 ## Setup
 
-The `fs` binary lives at `skills/flagship/scripts/fs` after building:
+Build the binary from the repo root — and ask the binary what it is before you
+trust what it says:
 
 ```bash
 # Build (from the skills repo root)
 ./bin/build-project.sh flagship
+
+# Check: is this fs the build of the tree I am working on?
+fs version                       # the revision it was built from, and its own path
+bash bin/check-binary-fresh.sh   # refuses a binary this tree has moved past
 ```
 
-That builds `packages.flagship` with nix — Go 1.27, named because `go.mod`
-requires >= 1.26.7 and nixpkgs' default `go` is older, with dependencies vendored
-in `src/flagship/vendor` so the build is hermetic and offline — and installs the
-binary at `skills/flagship/scripts/fs`. Nothing installs it on your `PATH`: either
-add that directory yourself or `nix profile install .#flagship` for a
-nix-managed entry. In every example below, `fs` means one of those.
+`build-project.sh` builds `packages.flagship` with nix — Go 1.27, named because
+`go.mod` requires >= 1.26.7 and nixpkgs' default `go` is older, with dependencies
+vendored in `src/flagship/vendor` so the build is hermetic and offline — and
+installs the result at `skills/flagship/scripts/fs`. Nothing installs it on your
+`PATH`: either add that directory yourself or `nix profile install .#flagship`
+for a nix-managed entry. In every example below, `fs` means one of those.
+
+Use the script rather than `nix build` on its own: a bare `nix build .#flagship`
+leaves `./result/bin/fs` where it is, a second copy of the tool that installs
+nothing and that nothing keeps current. Three builds of this binary have sat on
+one machine at once, all different, and a fix that worked was twice concluded to
+have failed because the build under test predated it. Either way, `fs version`
+names the file it is running from, so a build can always be identified:
+
+```bash
+./result/bin/fs version   # names the file it is running from and the revision it was built from
+```
 
 If the binary doesn't exist, the skill can't function — run the build first.
 The playbooks ship inside the binary and are live from it: `~/.fs/kb/` holds your

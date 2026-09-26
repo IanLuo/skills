@@ -5,8 +5,37 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
-  outputs = { nixpkgs, ... }:
+  outputs = { self, nixpkgs, ... }:
     let
+      # What the build is a build OF, stamped into the binary so it can say so.
+      #
+      # This is the only place the revision can be read: a nix build is
+      # hermetic, so the sandbox has no .git to ask, and the value has to come
+      # from the flake evaluation. `self` carries one of three things, and all
+      # three are reported as they are rather than smoothed over:
+      #
+      #   self.rev        a clean git checkout — the revision itself
+      #   self.dirtyRev   tracked files modified — "<revision>-dirty", which
+      #                   says both the revision and that the tree was not
+      #                   clean. Untracked files do not dirty a flake to nix,
+      #                   and nix copies tracked files only, so they cannot
+      #                   reach the build either.
+      #   neither         no git at all — a path or a tarball. There is no
+      #                   revision, and the build says "unknown" instead of
+      #                   naming one it was not built from.
+      #
+      # A build id that can be wrong is worse than none: three builds of this
+      # binary sat on one machine, all different, and nothing in the artifact
+      # could say which was which.
+      buildRevision =
+        if self ? rev then self.rev
+        else if self ? dirtyRev then builtins.replaceStrings [ "-dirty" ] [ "" ] self.dirtyRev
+        else "unknown";
+      buildDirty =
+        if self ? dirtyRev then "true"
+        else if self ? rev then "false"
+        else "unknown";
+
       # Every project is exposed for these systems. Building a project's source
       # for a system other than the host needs a builder for it (e.g.
       # nixpkgs.linux-builder or a remote builder); the outputs still evaluate.
@@ -52,6 +81,15 @@
           # Go names an installed binary after its package directory — here `cmd`;
           # the skill expects `fs`.
           postInstall = "mv $out/bin/cmd $out/bin/fs";
+          # The build names itself. These two -X flags set the variables
+          # cmd/version.go declares, so `fs version` reports the revision this
+          # binary is a build of, whether that tree was dirty, and its own path.
+          # Without them the variables keep their "unknown" defaults, which is
+          # what a plain `go build` reports.
+          ldflags = [
+            "-X main.buildRevision=${buildRevision}"
+            "-X main.buildDirty=${buildDirty}"
+          ];
           # cmd/main_test.go shells out to git, so the check phase needs it on PATH.
           nativeCheckInputs = [ pkgs.git ];
           meta.description = "Event-sourced project, task, and dispatch store for agent orchestration";

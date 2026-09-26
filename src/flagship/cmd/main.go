@@ -106,6 +106,9 @@ func main() {
 		traceCmd(os.Args[2:])
 	case "script":
 		scriptCmd(os.Args[2:])
+	case "version":
+		checkArgs("version", os.Args[2:])
+		versionCmd()
 	case "unfinished":
 		checkArgs("unfinished", os.Args[2:])
 		unfinishedCmd()
@@ -294,7 +297,12 @@ Commands:
                                                Exit 1 when no trace was written
   script NAME [ARGS...]                       Run a script the binary ships —
                                                read out of the binary, written
-                                               nowhere — and exit with its status`)
+                                               nowhere — and exit with its status
+  version                                      Print the revision this binary
+                                               was built from, whether that
+                                               tree was dirty, and the file it
+                                               is running from. A build with no
+                                               stamp says "unknown"`)
 }
 
 // fsHome returns ~/.fs, creating it if needed. Every persistent artifact lives

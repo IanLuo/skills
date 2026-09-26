@@ -256,6 +256,22 @@ it does.`,
 	"gaps":       {usage: "Usage: fs gaps"},
 	"pending":    {usage: "Usage: fs pending"},
 
+	"version": {
+		usage: `Usage: fs version
+
+Print the build this binary is: the revision the flake stamped into it at link
+time, whether the tree it was built from had uncommitted changes, and the file
+it is running from. Nothing is read and nothing is written — the answer is in
+the binary — so it is the one question that can be asked of a build that is too
+old to trust.
+
+revision is "unknown" for a build with no stamp (a plain "go build") and for a
+build whose flake could read no revision at all (a path or a tarball, where nix
+exposes neither rev nor dirtyRev). dirty is then "unknown" too, rather than
+"false": a build that cannot say what it was built from does not get to claim it
+was built from a clean tree.`,
+	},
+
 	"cap claim": {
 		usage: `Usage: fs cap claim [--reconstructed "WHAT YOU READ"]
 
