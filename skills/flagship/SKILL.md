@@ -20,9 +20,14 @@ trust what it says:
 ./bin/build-project.sh flagship
 
 # Check: is this fs the build of the tree I am working on?
-fs version                       # the revision it was built from, and its own path
-bash bin/check-binary-fresh.sh   # refuses a binary this tree has moved past
+fs version                                                    # revision, dirty, and the file it is running from
+bash bin/check-binary-fresh.sh ./skills/flagship/scripts/fs   # exit 0 current, 1 refused with the reason
 ```
+
+Name the build to judge. Bare — `bash bin/check-binary-fresh.sh` — it is exit 2
+(`no binary named`), because that form is the gate's: as a playbook check step it
+runs with `$FS_BIN` set to the binary that is running the step, so the build
+being judged is the one producing the evidence.
 
 `build-project.sh` builds `packages.flagship` with nix — Go 1.27, named because
 `go.mod` requires >= 1.26.7 and nixpkgs' default `go` is older, with dependencies
