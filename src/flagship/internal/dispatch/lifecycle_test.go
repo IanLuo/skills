@@ -60,12 +60,17 @@ type fakeHerdr struct {
 	paneExists    bool
 	paneExistsErr error
 
-	// worktreeNewID/worktreeNewPath/worktreeNewErr stand in for --worktree-new:
-	// CreateWorktree returns the workspace id and checkout path a real
-	// `herdr worktree create` would, which Deliver records on the delivery.
-	worktreeNewID   string
-	worktreeNewPath string
-	worktreeNewErr  error
+	// worktreeNewID/worktreeNewPath/worktreeNewBranch/worktreeNewErr stand in
+	// for --worktree-new: CreateWorktree returns the workspace id, checkout path
+	// and branch a real `herdr worktree create` would, and Deliver records all
+	// three on the delivery. An empty worktreeNewBranch is the detached checkout
+	// a real herdr reports no branch for, and the zero value of this fake — so a
+	// test that says nothing about the branch gets a delivery that records none,
+	// which is what the branch postcondition stands down on.
+	worktreeNewID     string
+	worktreeNewPath   string
+	worktreeNewBranch string
+	worktreeNewErr    error
 
 	created          []string
 	worktreesCreated []string
@@ -107,12 +112,12 @@ func (f *fakeHerdr) WorktreeCheckout(wsID string) (string, error) {
 	return f.checkoutPath, nil
 }
 
-func (f *fakeHerdr) CreateWorktree(cwd string) (string, string, error) {
+func (f *fakeHerdr) CreateWorktree(cwd string) (string, string, string, error) {
 	f.worktreesCreated = append(f.worktreesCreated, cwd)
 	if f.worktreeNewErr != nil {
-		return "", "", f.worktreeNewErr
+		return "", "", "", f.worktreeNewErr
 	}
-	return f.worktreeNewID, f.worktreeNewPath, nil
+	return f.worktreeNewID, f.worktreeNewPath, f.worktreeNewBranch, nil
 }
 
 func (f *fakeHerdr) StartAgent(paneID, name, kind string, args []string) error {
@@ -380,9 +385,19 @@ func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID, project str
 // worktree can be removed after the workspace is forgotten.
 func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path string) {
 	t.Helper()
+	recordWorktreeDeliveryOnBranch(t, f, capNode, paneID, workerID, wsID, path, "")
+}
+
+// recordWorktreeDeliveryOnBranch is the same record with the branch the delivery
+// created, which a test writes when it is about what a close asserts over the
+// branch. The delivery records a branch only for a worktree it made itself, so
+// the empty branch above is the ordinary record rather than a missing field.
+func recordWorktreeDeliveryOnBranch(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path, branch string) {
+	t.Helper()
 	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
 		PaneID: paneID, TabID: wsID + ":t1", Agent: "dispatch-parallel", Engine: "herdr",
 		Project: "skills", Node: workerID, Type: "parallel", Worktree: wsID, WorktreePath: path,
+		Branch: branch,
 	})
 	if !resp.OK {
 		t.Fatalf("RecordDelivery: %s", resp.Error)

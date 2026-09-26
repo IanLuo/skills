@@ -741,9 +741,28 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 			t.Errorf("code's exit action %q does not defer on FS_BATCH — a member's tree would not survive its close", body)
 		}
 	}
+	// The rule is that a postcondition is about a resource THIS dispatch's record
+	// owns, and it used to be spelled "contains FS_WORKTREE" — true of every
+	// postcondition there was, because both of them were about the worktree (its
+	// path, and the herdr workspace the delivery recorded with it). The branch
+	// postcondition is the first that is about neither, and it is about a
+	// resource of exactly the same kind: FS_BRANCH is written by this delivery
+	// from what it created, and the check reads it from there rather than
+	// re-deriving it. So the assertion is widened to the property it was a proxy
+	// for, not relaxed: a body that names none of the record's own fields is
+	// still caught, and one that reaches for the repo instead still is.
+	//
+	// The FS_BATCH rule below is new, and it is the same rule the do steps above
+	// are held to. A member's tree and branch belong to its batch, and the batch's
+	// close removes them — so a member's postcondition that fired over its own
+	// still-present worktree would refuse every member's close, which is the
+	// false gate this task is about, one layer over.
 	for _, body := range postconditionsOf(t, codePb, dev) {
-		if !strings.Contains(body, "FS_WORKTREE") {
-			t.Errorf("code's exit postcondition %q is not about this dispatch's own worktree", body)
+		if !strings.Contains(body, "FS_WORKTREE") && !strings.Contains(body, "FS_BRANCH") {
+			t.Errorf("code's exit postcondition %q names no resource this dispatch's record owns", body)
+		}
+		if !strings.Contains(body, "FS_BATCH") {
+			t.Errorf("code's exit postcondition %q does not defer on FS_BATCH — a member's tree and branch are the batch's to remove", body)
 		}
 	}
 	// One pre-teardown check, and it is about this dispatch's own record rather

@@ -1032,6 +1032,15 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // are what lets a declared action be about this dispatch's own tree — removing
 // it, deleting its branch — without the mechanism knowing how.
 //
+// FS_BRANCH is the branch that checkout was created on, empty when this delivery
+// created no worktree. It is what lets a postcondition ask whether the branch
+// step did its job without re-deriving the branch from the tree it just removed
+// — the derivation that named the wrong branch four rounds running. It is
+// deliberately the record's value and not a lookup: a close that had to find the
+// branch again would be asking the question the branch is gone, and empty means
+// "this branch was not mine to remove", which is the answer a step must be able
+// to tell from "the branch I was responsible for is still here".
+//
 // FS_BIN is the running binary's own path, the same contract the entry gate
 // gets. The review gate is the step that needs it: `fs reviews $FS_NODE` is a
 // shipped check, and `fs` is not on PATH — the binary lives in ~/.fs — so the
@@ -1063,6 +1072,7 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, with
 		"FS_PANE=" + delivery.PaneID,
 		"FS_WORKTREE=" + delivery.Worktree,
 		"FS_WORKTREE_PATH=" + delivery.WorktreePath,
+		"FS_BRANCH=" + delivery.Branch,
 		"FS_BATCH=" + batch,
 		"FS_WITHOUT_REVIEW=" + withoutReview,
 		"FS_BIN=" + binaryPath(),

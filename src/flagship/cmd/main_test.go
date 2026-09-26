@@ -2076,13 +2076,21 @@ case "$cmd $sub" in
     printf '{"result":{"pane":{"pane_id":"%s","cwd":"%s","foreground_cwd":"%s"}}}\n' "$id" "$cwd" "$cwd"
     ;;
   "workspace get")
-    # A worktree workspace is named by HERDR_TEST_WORKTREE_WS; anything else is
-    # simply not there, the way a typo'd workspace id is not. A closed workspace
-    # is gone too — that is the state the teardown's postcondition asserts.
+    # A worktree workspace is either one this fake created (worktree create
+    # below) or the one the test named with HERDR_TEST_WORKTREE_WS; anything else
+    # is simply not there, the way a typo'd workspace id is not. A closed
+    # workspace is gone too — that is the state the teardown's postcondition
+    # asserts.
     id="${1:-}"
     [ -f "$(id_file closed_workspace "$id")" ] && not_found workspace "$id" || true
-    [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$id"
-    printf '{"result":{"workspace":{"workspace_id":"%s","worktree":{"checkout_path":"%s","is_linked_worktree":true}}}}\n' "$id" "$HERDR_TEST_WORKTREE_CWD"
+    if [ -f "$(id_file worktree "$id")" ]; then
+      read -r _ checkout _ _ < "$(id_file worktree "$id")"
+    elif [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ]; then
+      checkout="$HERDR_TEST_WORKTREE_CWD"
+    else
+      not_found workspace "$id"
+    fi
+    printf '{"result":{"workspace":{"workspace_id":"%s","worktree":{"checkout_path":"%s","is_linked_worktree":true}}}}\n' "$id" "$checkout"
     ;;
   "workspace close")
     # Closing the worktree workspace removes the workspace and its panes, and
@@ -2090,7 +2098,7 @@ case "$cmd $sub" in
     # The two are separate resources, which is why the teardown removes them with
     # separate steps.
     id="${1:-}"
-    [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$id"
+    [ -f "$(id_file worktree "$id")" ] || [ "$id" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$id"
     : > "$(id_file closed_workspace "$id")"
     rm -f "$(id_file pane "$id:p1")"
     printf '{"result":{"type":"ok"}}\n'
@@ -2101,12 +2109,36 @@ case "$cmd $sub" in
       if [ "$1" = "--workspace" ]; then ws="${2:-}"; shift 2 || true; else shift; fi
     done
     [ -f "$(id_file closed_workspace "$ws")" ] && not_found workspace "$ws" || true
-    [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ] || not_found workspace "$ws"
+    if [ -f "$(id_file worktree "$ws")" ]; then
+      read -r _ checkout _ _ < "$(id_file worktree "$ws")"
+    elif [ "$ws" = "${HERDR_TEST_WORKTREE_WS:-}" ]; then
+      checkout="$HERDR_TEST_WORKTREE_CWD"
+    else
+      not_found workspace "$ws"
+    fi
     # A worktree workspace has its root pane from the moment herdr made it, at
     # the worktree's own checkout — no split needed to run a worker in it.
     pane="$ws:p1"
-    printf '%s' "$HERDR_TEST_WORKTREE_CWD" > "$(id_file pane "$pane")"
-    printf '{"result":{"panes":[{"pane_id":"%s","tab_id":"%s:t1","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$pane" "$ws" "$ws" "$HERDR_TEST_WORKTREE_CWD" "$HERDR_TEST_WORKTREE_CWD"
+    printf '%s' "$checkout" > "$(id_file pane "$pane")"
+    printf '{"result":{"panes":[{"pane_id":"%s","tab_id":"%s:t1","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$pane" "$ws" "$ws" "$checkout" "$checkout"
+    ;;
+  "worktree create")
+    # --worktree-new: herdr makes the tree and reports the workspace, its
+    # checkout and the branch it put that checkout on. The branch is made by git
+    # here rather than invented by this script, because that is where a real
+    # herdr's branch comes from too — a delivery that recorded a fake's guess
+    # would pass a test no real dispatch could pass.
+    cwd=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--cwd" ]; then cwd="${2:-}"; shift 2 || true; else shift; fi
+    done
+    n=$(( $(cat "$state/wt_seq" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "$state/wt_seq"
+    ws="wWT$n"; branch="wt-branch-$n"
+    checkout="$(dirname "$cwd")/$(basename "$cwd")-wt$n"
+    git -C "$cwd" worktree add -q -b "$branch" "$checkout"
+    printf '%s %s %s %s\n' "$cwd" "$checkout" "$branch" "$ws" > "$(id_file worktree "$ws")"
+    printf '{"result":{"workspace":{"workspace_id":"%s","worktree":{"checkout_path":"%s","is_linked_worktree":true}},"worktree":{"branch":"%s"}}}\n' "$ws" "$checkout" "$branch"
     ;;
   "worktree list")
     printf '{"result":{"worktrees":[]}}\n'

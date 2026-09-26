@@ -62,6 +62,14 @@ type UpdateResult struct {
 // made from. Both are recorded because they can die separately: herdr can
 // forget a workspace — its agent having ended — while the checkout survives on
 // disk, and then the workspace id alone names nothing that can be removed.
+//
+// Branch names the branch that checkout stands on, and it is recorded only for
+// a worktree this delivery created — `--worktree-new`. A worktree named with
+// `--worktree` came from elsewhere, and its branch is not this delivery's to
+// remove; an empty Branch is how an exit step tells those two apart without
+// asking a question it cannot answer. Empty is also what a created worktree
+// carries when herdr reports no branch at all — a detached checkout — so the
+// field is a claim about what was created, never a guess at what to delete.
 type DeliveryRecord struct {
 	PaneID       string `json:"pane_id"`
 	TabID        string `json:"tab_id,omitempty"`
@@ -72,6 +80,7 @@ type DeliveryRecord struct {
 	Type         string `json:"type,omitempty"`
 	Worktree     string `json:"worktree,omitempty"`
 	WorktreePath string `json:"worktree_path,omitempty"`
+	Branch       string `json:"branch,omitempty"`
 }
 
 // TaskInfo represents derived task state for status output.

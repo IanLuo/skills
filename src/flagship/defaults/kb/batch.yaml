@@ -109,3 +109,29 @@ exit:
   # passed on that would be the same fail-open gate this whole task is about. It
   # passes only on workspace_not_found, and refuses when it cannot tell.
   - check: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | .worktree // ""' | while read -r ws; do [ -n "$ws" ] || continue; if out=$(herdr workspace get "$ws" 2>&1); then echo "herdr still knows workspace $ws" >&2; exit 1; fi; case "$out" in *workspace_not_found*) ;; *) echo "cannot tell whether workspace $ws is gone: $out" >&2; exit 1;; esac; done
+
+  # Every member's branch is gone — the same assertion code.yaml makes for one
+  # delivery, held here over the fan-out. The batch's teardown deletes each
+  # member's branch from the members' own delivery records, so a member's branch
+  # surviving the batch's close is the same defect as a delivery's surviving its
+  # own, over more members, and nothing asserted either one. Closing it for the
+  # delivery alone would have converted an instance rather than the class: the
+  # act is the same act, and the assertion belongs where the deletion is.
+  #
+  # Per member, and the refusal names the member. A loop that reported "a branch
+  # was not deleted" over a fan-out of five would name nothing a reader could
+  # act on; the member is the address of the failure, and it comes from the same
+  # loop the steps above iterate rather than from a second enumeration.
+  #
+  # The branch comes from each member's delivery record — `fs batch` reads it
+  # from there — and an empty one is skipped, which is the member whose worktree
+  # its delivery did not create and whose branch was therefore never the batch's
+  # to remove. Nothing is re-derived from the member's tree: the tree is what the
+  # steps above just removed, and asking it would re-open the question that named
+  # the wrong branch four rounds running.
+  #
+  # Three answers, one pass. `rev-parse --verify --quiet` exits 0 when the name
+  # resolves (the branch survived; refuse), 1 when it does not, and anything else
+  # when git could not be asked at all — which refuses rather than passing, the
+  # same reason the workspace check above passes only on workspace_not_found.
+  - check: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | [.node // "", .branch // ""] | @tsv' | while IFS="$(printf '\t')" read -r n b; do [ -n "$b" ] || continue; out=$(git rev-parse --verify --quiet "refs/heads/$b" 2>&1); st=$?; [ "$st" -eq 0 ] && { echo "branch $b still exists after the teardown of member $n — the batch's branch step skipped it, or deleted a different branch" >&2; exit 1; }; [ "$st" -eq 1 ] || { echo "cannot tell whether member $n branch $b is gone: $out" >&2; exit 1; }; done

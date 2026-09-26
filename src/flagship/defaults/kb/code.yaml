@@ -183,3 +183,41 @@ exit:
   # evidence the workspace is gone, so an unreachable herdr refuses instead of
   # passing a gate it could not evaluate.
   - check: [ -n "$FS_BATCH" ] && exit 0; ws="$FS_WORKTREE"; [ -n "$ws" ] || exit 0; if out=$(herdr workspace get "$ws" 2>&1); then echo "herdr still knows workspace $ws" >&2; exit 1; fi; case "$out" in *workspace_not_found*) exit 0;; *) echo "cannot tell whether workspace $ws is gone: $out" >&2; exit 1;; esac
+
+  # The branch this delivery created is gone. This is the postcondition the four
+  # rounds above it did not have, and its absence is why seven defects survived
+  # them. The two postconditions before this one assert the tree and the
+  # workspace; nothing asserted the branch, so a branch step that skipped in
+  # silence — or that deleted a branch which was not the delivery's — left every
+  # gate green and the branch behind, named by no record. A postcondition is not
+  # a better branch step; it is the reason the close has to look.
+  #
+  # The branch is read from the record, never re-derived from the tree. Every
+  # defect in those rounds came from naming the branch by asking a directory —
+  # `git -C "$p" rev-parse` answers for the repository that ENCLOSES $p, so a
+  # path that was not a worktree came back naming the project's own branch — and
+  # re-deriving it here would re-open the same question at the one moment the
+  # tree is gone and no directory can be asked at all. FS_BRANCH is what the
+  # delivery created; git is asked only whether that name still resolves.
+  #
+  # Two stand-downs, and they are different facts rather than one exemption. A
+  # member of a batch leaves its branch to the batch: FS_BATCH is set, and the
+  # batch's own postcondition asserts every member's branch, naming the member.
+  # A delivery that created no worktree — `--worktree` names one that came from
+  # elsewhere — records no branch, because that branch was never this
+  # delivery's to remove. An empty FS_BRANCH is how the second is told from "the
+  # branch I was responsible for is still here", and the record is what makes
+  # that decidable: it says which branches were ever this delivery's, so a step
+  # here cannot refuse over a branch its delivery never made.
+  #
+  # git answers three ways and exactly one of them passes. `rev-parse --verify
+  # --quiet` exits 0 when the name resolves — the branch survived, and that is
+  # the refusal this step exists for — and 1 when it does not. Anything else
+  # means git could not be asked (128, a repository that is not there), and that
+  # refuses rather than passing: a gate that read every non-zero status as "gone"
+  # would certify on a git it never reached, which is the fail-open shape the
+  # workspace check above passes only workspace_not_found to avoid. The cost is
+  # stated rather than hidden: if a git ever answered 128 for a missing ref
+  # instead of 1, this step would refuse a check it could not evaluate — the
+  # safe direction, and a refusal a reader can see, not a gate that certifies.
+  - check: [ -n "$FS_BATCH" ] && exit 0; b="$FS_BRANCH"; [ -n "$b" ] || exit 0; out=$(git rev-parse --verify --quiet "refs/heads/$b" 2>&1); st=$?; [ "$st" -eq 0 ] && { echo "branch $b still exists after the teardown — the branch step skipped, or deleted a different branch" >&2; exit 1; }; [ "$st" -eq 1 ] || { echo "cannot tell whether branch $b is gone: $out" >&2; exit 1; }; exit 0

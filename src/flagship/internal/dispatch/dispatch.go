@@ -911,12 +911,16 @@ func batchMember(h *command.Handler, batch string) (string, error) {
 
 // BatchMember is one member of a batch, as fs batch reports it: the node, the
 // project its worker lived in, and the resources its delivery opened — the
-// worktree, checkout path and pane the batch's declared teardown removes.
+// worktree, checkout path, branch and pane the batch's declared teardown
+// removes. Branch is empty for a member whose worktree the delivery did not
+// create, which is how a per-member postcondition tells a branch that was never
+// the batch's to remove from one it failed to remove.
 type BatchMember struct {
 	Node         string `json:"node"`
 	Project      string `json:"project,omitempty"`
 	Worktree     string `json:"worktree,omitempty"`
 	WorktreePath string `json:"worktree_path,omitempty"`
+	Branch       string `json:"branch,omitempty"`
 	Pane         string `json:"pane,omitempty"`
 	IntegratedBy string `json:"integrated_by,omitempty"`
 }
@@ -974,6 +978,7 @@ func Batch(h *command.Handler, batch string) command.Response {
 			member.Project = d.Project
 			member.Worktree = d.Worktree
 			member.WorktreePath = d.WorktreePath
+			member.Branch = d.Branch
 			member.Pane = d.PaneID
 		}
 		if integrated := Integrated(h, task.NodeID); integrated.OK {

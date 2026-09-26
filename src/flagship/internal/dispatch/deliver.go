@@ -76,10 +76,15 @@ type HerdrCLI interface {
 	// gate refuses on rather than guessing.
 	WorktreeCheckout(wsID string) (string, error)
 	// CreateWorktree creates a new worktree workspace rooted at cwd and returns
-	// its workspace id and checkout path. It is the mechanism behind
-	// --worktree-new: the workspace's root pane sits at the checkout, which is
-	// what the delivery record must keep for the teardown to remove it.
-	CreateWorktree(cwd string) (workspaceID, checkout string, err error)
+	// its workspace id, its checkout path, and the branch herdr put that checkout
+	// on. It is the mechanism behind --worktree-new: the workspace's root pane
+	// sits at the checkout, which is what the delivery record must keep for the
+	// teardown to remove it, and the branch is what it must keep for the close to
+	// assert the removal happened. herdr names the branch when --branch is not
+	// given, so the create response is the only place this delivery can learn
+	// which branch it caused to exist; a detached checkout reports none, and that
+	// is an empty string rather than a guess.
+	CreateWorktree(cwd string) (workspaceID, checkout, branch string, err error)
 	// StartAgent starts an interactive agent named name in an existing pane, of
 	// the kind the plan's `agent:` field resolved to and with the arguments its
 	// `agent_args:` field named — one argv element per entry, in order.
@@ -126,18 +131,26 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 	// before the delivery record exists.
 	madePath := ""
 
+	// The branch that checkout stands on, known at the same moment and for the
+	// same reason. It is recorded only when this delivery created the worktree:
+	// a worktree named with --worktree came from elsewhere, and an empty Branch
+	// is what tells the two apart at close, where an exit step has to know
+	// whether the branch was this delivery's to remove at all.
+	madeBranch := ""
+
 	// --worktree-new creates the worktree rather than naming an existing one:
 	// the workspace and its checkout path are recorded on the delivery exactly
 	// as --worktree records them, so the existing teardown removes them with no
 	// new flags. The creation happens before the worker's pane is found because
 	// the worker starts inside the tree.
 	if brief.WorktreeNew {
-		workspace, checkout, err := hc.CreateWorktree(brief.RootPath)
+		workspace, checkout, branch, err := hc.CreateWorktree(brief.RootPath)
 		if err != nil {
 			return deliverErr(h, brief, madePath, fmt.Errorf("create worktree: %w", err))
 		}
 		brief.Worktree = workspace
 		madePath = checkout
+		madeBranch = branch
 	}
 
 	paneID, tabID, worktreePath, err := workerPane(hc, brief)
@@ -190,6 +203,7 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 		Type:         brief.TaskType,
 		Worktree:     brief.Worktree,
 		WorktreePath: worktreePath,
+		Branch:       madeBranch,
 	}
 	if resp := h.RecordDelivery(capScope, brief.CapNodeID, delivery); !resp.OK {
 		abandonWorker(hc, brief.Worktree, paneID)
@@ -539,13 +553,20 @@ func sameFile(a, b string) bool {
 }
 
 // CreateWorktree creates a new worktree workspace rooted at cwd and returns its
-// workspace id and checkout path. herdr worktree create reports the workspace as
-// .result.workspace.workspace_id and the checkout as
-// .result.workspace.worktree.checkout_path.
-func (herdrCLI) CreateWorktree(cwd string) (string, string, error) {
+// workspace id, its checkout path, and the branch the checkout stands on. herdr
+// worktree create reports the workspace as .result.workspace.workspace_id, the
+// checkout as .result.workspace.worktree.checkout_path, and the branch as
+// .result.worktree.branch — the created worktree's own record, beside the
+// workspace's.
+//
+// The branch is read from the same response rather than asked of the checkout
+// afterwards: it is the branch herdr just created for this worktree, and asking
+// git afterwards would report what the checkout happens to stand on by then —
+// the substitution the teardown's branch step was written to stop making.
+func (herdrCLI) CreateWorktree(cwd string) (string, string, string, error) {
 	out, err := runHerdr("worktree", "create", "--cwd", cwd, "--no-focus")
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	var resp struct {
@@ -556,15 +577,18 @@ func (herdrCLI) CreateWorktree(cwd string) (string, string, error) {
 					CheckoutPath string `json:"checkout_path"`
 				} `json:"worktree"`
 			} `json:"workspace"`
+			Worktree struct {
+				Branch string `json:"branch"`
+			} `json:"worktree"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		return "", "", fmt.Errorf("herdr worktree create: parse response: %w", err)
+		return "", "", "", fmt.Errorf("herdr worktree create: parse response: %w", err)
 	}
 	if resp.Result.Workspace.WorkspaceID == "" {
-		return "", "", errors.New("herdr worktree create: response carried no workspace id")
+		return "", "", "", errors.New("herdr worktree create: response carried no workspace id")
 	}
-	return resp.Result.Workspace.WorkspaceID, resp.Result.Workspace.Worktree.CheckoutPath, nil
+	return resp.Result.Workspace.WorkspaceID, resp.Result.Workspace.Worktree.CheckoutPath, resp.Result.Worktree.Branch, nil
 }
 
 // WorktreeCheckout returns the checkout path of the worktree workspace wsID, or
