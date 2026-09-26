@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
@@ -118,22 +120,32 @@ type HerdrCLI interface {
 // rollbackWorker): a failed delivery neither leaves outstanding work behind nor
 // claims a delivery that did not happen.
 func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) command.Response {
+	// The checkout --worktree-new made, known before the worker's pane is found:
+	// a delivery that fails in between has to be able to name the tree it leaves
+	// standing, and for --worktree-new this is the only place the path is known
+	// before the delivery record exists.
+	madePath := ""
+
 	// --worktree-new creates the worktree rather than naming an existing one:
 	// the workspace and its checkout path are recorded on the delivery exactly
 	// as --worktree records them, so the existing teardown removes them with no
 	// new flags. The creation happens before the worker's pane is found because
 	// the worker starts inside the tree.
 	if brief.WorktreeNew {
-		workspace, _, err := hc.CreateWorktree(brief.RootPath)
+		workspace, checkout, err := hc.CreateWorktree(brief.RootPath)
 		if err != nil {
-			return deliverErr(brief, fmt.Errorf("create worktree: %w", err))
+			return deliverErr(h, brief, madePath, fmt.Errorf("create worktree: %w", err))
 		}
 		brief.Worktree = workspace
+		madePath = checkout
 	}
 
 	paneID, tabID, worktreePath, err := workerPane(hc, brief)
 	if err != nil {
-		return deliverErr(brief, err)
+		return deliverErr(h, brief, madePath, err)
+	}
+	if worktreePath == "" {
+		worktreePath = madePath
 	}
 
 	// The worker's node comes first because the agent is named after it: two
@@ -141,21 +153,21 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 	// "dispatch-<type>", and herdr could not tell one's pane from the other's.
 	workerID, err := createWorkerNode(h, brief)
 	if err != nil {
-		abandonWorker(hc, paneID)
-		return deliverErr(brief, err)
+		abandonWorker(hc, brief.Worktree, paneID)
+		return deliverErr(h, brief, worktreePath, err)
 	}
 
 	agent := workerAgent(brief.TaskType, workerID)
-	if err := hc.StartAgent(paneID, agent, brief.Agent, brief.AgentArgs); err != nil {
-		abandonWorker(hc, paneID)
+	if err := startAgent(hc, paneID, agent, brief.Agent, brief.AgentArgs); err != nil {
+		abandonWorker(hc, brief.Worktree, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("start agent %s: %v", agent, err))
-		return deliverErr(brief, fmt.Errorf("start agent %s: %w", agent, err))
+		return deliverErr(h, brief, worktreePath, fmt.Errorf("start agent %s: %w", agent, err))
 	}
 
 	if err := hc.Prompt(paneID, renderBrief(brief)); err != nil {
-		abandonWorker(hc, paneID)
+		abandonWorker(hc, brief.Worktree, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("send brief: %v", err))
-		return deliverErr(brief, fmt.Errorf("send brief: %w", err))
+		return deliverErr(h, brief, worktreePath, fmt.Errorf("send brief: %w", err))
 	}
 
 	// The handover is now on the record, one line per work playbook. A line that
@@ -163,9 +175,9 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 	// playbook was never handed over, and a delivery that cannot be recorded is a
 	// delivery that cannot be closed as if it had happened.
 	if err := recordLoaded(lg, brief); err != nil {
-		abandonWorker(hc, paneID)
+		abandonWorker(hc, brief.Worktree, paneID)
 		rollbackWorker(h, brief.Project, workerID, err.Error())
-		return deliverErr(brief, err)
+		return deliverErr(h, brief, worktreePath, err)
 	}
 
 	delivery := command.DeliveryRecord{
@@ -180,15 +192,15 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 		WorktreePath: worktreePath,
 	}
 	if resp := h.RecordDelivery(capScope, brief.CapNodeID, delivery); !resp.OK {
-		abandonWorker(hc, paneID)
+		abandonWorker(hc, brief.Worktree, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("record delivery: %s", resp.Error))
-		return deliverErr(brief, fmt.Errorf("record delivery: %s", resp.Error))
+		return deliverErr(h, brief, worktreePath, fmt.Errorf("record delivery: %s", resp.Error))
 	}
 	if err := recordDecision(h, brief.CapNodeID, fmt.Sprintf("delivered to pane %s, agent %s", paneID, agent)); err != nil {
-		return deliverErr(brief, err)
+		return deliverErr(h, brief, worktreePath, err)
 	}
 	if resp := h.TaskUpdate(capScope, brief.CapNodeID, "active", "", nil); !resp.OK {
-		return deliverErr(brief, fmt.Errorf("mark node active: %s", resp.Error))
+		return deliverErr(h, brief, worktreePath, fmt.Errorf("mark node active: %s", resp.Error))
 	}
 
 	brief.Delivery = &delivery
@@ -260,11 +272,77 @@ func createWorkerNode(h *command.Handler, brief *Brief) (string, error) {
 	return data.NodeID, nil
 }
 
-// workerAgent names the agent that carries a dispatch's brief: the task type
-// plus the worker's node. Two dispatches of one type running at once are two
-// names, so herdr's record of one cannot be read as the other's.
+// agentNameMax is the longest name herdr accepts. Its grammar for a live agent
+// name is `[a-z][a-z0-9_-]{0,31}` (herdr's own skill text, and `herdr agent
+// start` refuses what does not match), so a longer one is refused in herdr's
+// vocabulary — invalid_agent_name — which names neither fs nor the limit that
+// was hit.
+const agentNameMax = 32
+
+// workerAgent names the agent that carries a dispatch's brief: the task type,
+// and the worker's node when there is one. Two dispatches of one type running
+// at once are two names, so herdr's record of one cannot be read as the other's.
+// With no node — the line nextCommand prints before anything is delivered — the
+// type stands alone.
+//
+// The type is shortened when the whole name would not fit herdr's limit, and the
+// node is never cut: the node is what makes the name unique, so a bound that
+// trimmed it would trade a refusal for a collision, which is the worse failure
+// and the quieter one. A type long enough to overflow is worth more shortened
+// than refused — the dispatch is otherwise perfectly deliverable, and the name is
+// a handle for a person reading `herdr agent list`, not a record: the type is on
+// the node, in the trace, and in the brief.
 func workerAgent(taskType, workerID string) string {
-	return "dispatch-" + taskType + "-" + workerID
+	tail := ""
+	if workerID != "" {
+		tail = "-" + workerID
+	}
+	head := "dispatch-" + taskType
+	if room := agentNameMax - len(tail); len(head) > room {
+		head = head[:room]
+	}
+	return head + tail
+}
+
+// agentStartAttempts bounds how many times a start is tried while herdr says the
+// pane is not yet a shell. herdr starts an agent only in a pane sitting at an
+// interactive prompt, and a pane split a moment ago is not one yet: `agent start`
+// answers agent_pane_busy and does so immediately — its own --timeout, which is
+// herdr's readiness wait, does not cover this case (measured, see the dispatch's
+// notes) — so the wait has to be fs's.
+const agentStartAttempts = 20
+
+// agentStartBackoff is how long to wait between those attempts. It is a variable
+// only so a test can zero it; nothing in fs sets it.
+var agentStartBackoff = 200 * time.Millisecond
+
+// startAgent starts the agent in paneID, retrying for as long as herdr reports
+// the pane is not yet an available shell.
+//
+// Detect-and-retry, not wait-for-readiness, because herdr publishes no readiness
+// to wait on: neither `pane get` nor the api snapshot tells a shell at a prompt
+// apart from a pane with no shell at all — both report agent_status "unknown" —
+// so a readiness wait would have to be a sleep of a guessed length before every
+// start. That is slower in the case that already worked and no more reliable in
+// the case that did not. The retry costs nothing when the pane was ready, is
+// bounded by an attempt count rather than by a guess, and gives up returning
+// herdr's own error, so a start that never becomes possible reads exactly as it
+// did before.
+//
+// Only agent_pane_busy is retried. An invalid name or a pane herdr does not know
+// is not a race, and does not become one by being asked again.
+func startAgent(hc HerdrCLI, paneID, name, kind string, args []string) error {
+	var err error
+	for attempt := 0; attempt < agentStartAttempts; attempt++ {
+		err = hc.StartAgent(paneID, name, kind, args)
+		if herdrErrorCode(err) != "agent_pane_busy" {
+			return err
+		}
+		if attempt < agentStartAttempts-1 {
+			time.Sleep(agentStartBackoff)
+		}
+	}
+	return err
 }
 
 // rollbackWorker resolves a worker node whose delivery did not complete. The
@@ -275,18 +353,56 @@ func rollbackWorker(h *command.Handler, project, workerID, reason string) {
 	_ = h.TaskUpdate(project, workerID, "done", "dispatch never delivered: "+reason, nil)
 }
 
-// deliverErr reports a delivery that did not happen, naming the cap node it
-// left unresolved so the cap can find and close it instead of guessing.
-func deliverErr(brief *Brief, err error) command.Response {
-	return errResp(fmt.Sprintf(
-		"deliver: %v; cap node %s is unresolved — fix it and re-dispatch, or close it with fs close --abandoned",
-		err, brief.CapNodeID))
+// deliverErr reports a delivery that did not happen. It names the cap node it
+// left unresolved, so the cap can find and close it instead of guessing, and —
+// for a worktree dispatch — it names the tree the failure left standing.
+//
+// Leaving the tree is the point, not an oversight. A delivery that fails after
+// the worktree exists has made something: a checkout that no delivery-recorded
+// event mentions. Removing it would be fs destroying a tree on an inference —
+// that it is ours because we are the ones who made it — and the inference is
+// simply wrong for --worktree, where the tree was there before the dispatch was.
+// A failed delivery that tidies up after itself reports a clean failure and
+// takes a human's worktree with it. So nothing is removed: the refusal carries
+// the workspace and the path, and the same line is recorded against the cap
+// node, so a person reading either one knows what is on disk and can take it
+// down deliberately.
+func deliverErr(h *command.Handler, brief *Brief, worktreePath string, err error) command.Response {
+	msg := fmt.Sprintf("deliver: %v", err)
+
+	if brief.Worktree != "" {
+		where := brief.Worktree
+		if worktreePath != "" {
+			where += " at " + worktreePath
+		}
+		left := fmt.Sprintf(
+			"worktree %s was left standing — no delivery record names it, so inspect it and remove it by hand (git worktree remove, herdr workspace close %s)",
+			where, brief.Worktree)
+		msg += "; " + left
+		_ = recordDecision(h, brief.CapNodeID, "delivery failed, "+left)
+	}
+
+	return errResp(msg + fmt.Sprintf(
+		"; cap node %s is unresolved — fix it and re-dispatch, or close it with fs close --abandoned",
+		brief.CapNodeID))
 }
 
-// abandonWorker best-effort tears down a worker whose dispatch is not being
-// recorded, so a failed delivery does not leave its pane open. The pane is all
-// it owns: the tab it sits in is the cap's own.
-func abandonWorker(hc HerdrCLI, paneID string) {
+// abandonWorker best-effort tears down a worker whose dispatch is not going to
+// be recorded, so a failed delivery does not leave a pane it opened sitting
+// there. The split pane is all a plain dispatch owns: the tab it sits in is the
+// cap's own.
+//
+// A worktree dispatch owns nothing it may close. Its pane is not a split this
+// delivery made — it came with the workspace, and it is that workspace's only
+// way in — and the worktree underneath it is not fs's to remove. Closing the
+// pane would take down the one thing pointing at a checkout that the delivery
+// record never got written to mention, leaving a tree on disk that nothing
+// names. So for a worktree this does nothing, and deliverErr says where the tree
+// is instead.
+func abandonWorker(hc HerdrCLI, worktree, paneID string) {
+	if worktree != "" {
+		return
+	}
 	_ = tearDownPane(hc, paneID)
 }
 
@@ -353,7 +469,9 @@ func agentStartArgs(name, kind, paneID string, args []string) []string {
 // sits: herdr creates a worktree workspace with one pane already at the
 // worktree's checkout path, and that pane — not one split off later, and not the
 // root pane once someone has cd'd it elsewhere — is the workspace's own. If
-// several panes sit at the checkout, the first herdr lists is taken. A workspace
+// several panes sit at the checkout, the first herdr lists is taken. "Sits at" is
+// sameFile and not string equality, because the two paths come from two places
+// and one directory has several spellings (see sameFile). A workspace
 // with no such pane is ErrNoRootPane rather than a guess, because starting the
 // worker anywhere else would be the very bug this avoids.
 func (h herdrCLI) WorktreeRootPane(wsID string) (string, string, string, error) {
@@ -381,13 +499,43 @@ func (h herdrCLI) WorktreeRootPane(wsID string) (string, string, string, error) 
 	}
 
 	for _, pane := range resp.Result.Panes {
-		if pane.CWD == checkout || pane.ForegroundCWD == checkout {
+		if sameFile(pane.CWD, checkout) || sameFile(pane.ForegroundCWD, checkout) {
 			return pane.PaneID, pane.TabID, checkout, nil
 		}
 	}
 	return "", "", "", fmt.Errorf(
 		"%w: workspace %s has %d pane(s) and none sits at the worktree checkout %s",
 		ErrNoRootPane, wsID, len(resp.Result.Panes), checkout)
+}
+
+// sameFile reports whether two paths name the same directory.
+//
+// It is os.Stat + os.SameFile — the device-and-inode question — and deliberately
+// not a string compare, not filepath.EvalSymlinks, and not any canonical
+// spelling. herdr reports a pane's cwd as the process that owns it sees it and
+// the checkout as the workspace sees it, and one directory has more than one
+// spelling: `/tmp` and `/private/tmp` on macOS, a path that went through `..`, a
+// trailing slash, a case-insensitive filesystem, a bind mount. EvalSymlinks
+// answers the first two of those and not the last three; SameFile answers all of
+// them, because the filesystem has already decided what "the same directory"
+// means and this asks it rather than re-deriving it. A canonical form is a list
+// of the cases its author thought of, and the one that is missing is the one
+// that refuses a worker its own worktree.
+//
+// Two paths that cannot both be stat'd are the same as nothing. That is the
+// safe direction here: a pane at a checkout that is not there is not a pane the
+// worker can start in, and the caller refuses — ErrNoRootPane — rather than
+// starting the worker somewhere it did not mean.
+func sameFile(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 // CreateWorktree creates a new worktree workspace rooted at cwd and returns its

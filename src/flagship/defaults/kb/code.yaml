@@ -82,19 +82,31 @@ exit:
   # member, and the batch's batch-exit removes it once every member is
   # integrated. The guard is one visible line per step, not a naming convention.
   #
-  # The branch goes first, and that order is required: a worktree's branch can
-  # only be named while the worktree exists, and detaching it is the only way to
-  # free a branch another worktree has checked out. Deleting it before the tree
-  # means an unmerged branch refuses the close while the tree is still on disk to
-  # look at, instead of after the tree is gone and the branch is unrecoverable.
+  # The branch goes first, and that order is still required — though no longer
+  # for the reason it once was. The branch is named from git's own registration,
+  # `git worktree list --porcelain`, rather than from the checkout, because a
+  # worktree whose directory was deleted out of band still has a branch and
+  # still has it checked out: naming it with `rev-parse` inside the checkout
+  # needed the checkout to exist, so that case was skipped, and a branch nothing
+  # would ever collect was left behind. What forces the order now is the
+  # deletion: git refuses to delete a branch a worktree has checked out, so the
+  # branch is freed — detached where the tree is there, pruned where it is gone
+  # — before the tree-removal step below runs. And deleting the branch before
+  # the tree means an unmerged branch refuses the close while the tree is still
+  # on disk to look at, instead of after the tree is gone and the branch is
+  # unrecoverable.
   #
   # Already done is not a failure: with no worktree every step is a no-op, and a
-  # worktree whose branch is already detached or deleted is skipped. Nothing is
-  # forced — a branch that is not merged into HEAD refuses rather than being
-  # deleted, and a worktree git will not remove refuses — because a close that
-  # destroys work to succeed is not a close worth having. $FS_WORKTREE is the
-  # herdr workspace; $FS_WORKTREE_PATH is the checkout git knows.
-  - do: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; [ -e "$p" ] || exit 0; b=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null) || { echo "cannot resolve the branch in $p" >&2; exit 1; }; [ "$b" = HEAD ] && exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; git -C "$p" checkout -q --detach && git branch -d "$b"
+  # worktree whose branch is already detached, deleted or pruned is skipped.
+  # Nothing is forced — a branch that is not merged into HEAD refuses rather
+  # than being deleted, and a worktree git will not remove refuses — because a
+  # close that destroys work to succeed is not a close worth having.
+  # $FS_WORKTREE is the herdr workspace; $FS_WORKTREE_PATH is the checkout git
+  # knows. The recorded path is resolved through its parent before it is matched
+  # against git's list, the way the registration check below does it, because
+  # git prints the path it resolved and the recorded one may be reached by a
+  # different spelling: on macOS /var and /private/var are one directory.
+  - do: [ -n "$FS_BATCH" ] && exit 0; p="$FS_WORKTREE_PATH"; [ -n "$p" ] || { [ -z "$FS_WORKTREE" ] && exit 0; echo "the delivery names worktree $FS_WORKTREE but records no path" >&2; exit 1; }; d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) && p="$d/$(basename "$p")"; b=$(git worktree list --porcelain | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || exit 0; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi
 
   # git owns the worktree and its registration; `git worktree prune` is what
   # clears a registration whose checkout is already gone. A worktree git refuses

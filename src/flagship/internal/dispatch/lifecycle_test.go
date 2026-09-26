@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,6 +32,11 @@ type fakeHerdr struct {
 	closeErr  error
 	agents    map[string]string
 	agentsErr error
+
+	// startErrs is the race the split leaves behind, made deterministic: herdr
+	// answers agent_pane_busy for a pane that is not yet a shell, and this is one
+	// canned answer per start until it runs out and startErr takes over.
+	startErrs []error
 
 	// agentForPane stands in for the pane→name read a claim makes: herdr names
 	// the agent it hosts in a pane, and names none for a pane hosting none.
@@ -113,6 +119,11 @@ func (f *fakeHerdr) StartAgent(paneID, name, kind string, args []string) error {
 	f.started = append(f.started, paneID+"/"+name)
 	f.startKinds = append(f.startKinds, kind)
 	f.startArgs = append(f.startArgs, args)
+	if len(f.startErrs) > 0 {
+		err := f.startErrs[0]
+		f.startErrs = f.startErrs[1:]
+		return err
+	}
 	return f.startErr
 }
 
@@ -849,6 +860,169 @@ func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
 	if events := capEvents(t, f, store.DeliveryRecorded); len(events) != 0 {
 		t.Errorf("cap has %d delivery-recorded events, want none", len(events))
 	}
+}
+
+// A pane split a moment ago is not yet a shell, and herdr starts an agent
+// nowhere else: the delivery that follows a split loses the same race a person
+// copying the printed line loses. The start is asked again until the pane is
+// ready, and every ask names the same agent — a retry that renamed would be the
+// collision the name exists to prevent.
+func TestDeliverRetriesAStartRefusedByAPaneThatIsNotYetAShell(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
+
+	busy := &dispatch.HerdrError{
+		Code:    "agent_pane_busy",
+		Message: "agent target pane w1:p9 is not an available shell",
+	}
+	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9", startErrs: []error{busy, busy}}
+	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
+
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
+	if !resp.OK {
+		t.Fatalf("Deliver: %s", resp.Error)
+	}
+	if len(herdr.started) != 3 {
+		t.Fatalf("start attempts = %v, want three at one agent", herdr.started)
+	}
+	if herdr.started[0] != herdr.started[2] {
+		t.Errorf("the retry changed the agent name: %v", herdr.started)
+	}
+	if events := capEvents(t, f, store.DeliveryRecorded); len(events) != 1 {
+		t.Errorf("delivery-recorded events = %d, want 1: a retried start that took is a delivery", len(events))
+	}
+	if status := nodeStatus(t, f, "cap", nodeID); status != "active" {
+		t.Errorf("cap node status = %q, want active", status)
+	}
+}
+
+// A failed delivery into a worktree must not take the worktree down with it. The
+// root pane is not a split this delivery made — it came with the workspace — and
+// it is the only thing pointing at a checkout the delivery record never got
+// written to mention. Closing it leaves a tree on disk that nothing names, which
+// is the one outcome worse than a delivery that failed loudly.
+func TestDeliverLeavesAWorktreesRootPaneStandingWhenItFails(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+
+	herdr := &fakeHerdr{
+		rootPaneID: "wA:p1", rootPaneTab: "wA:t1", checkoutPath: "/checkouts/wA",
+		promptErr: errors.New("agent_prompt_stalled"),
+	}
+	brief := &dispatch.Brief{
+		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
+		CapNodeID: nodeID, Worktree: "wA",
+	}
+
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
+	if resp.OK {
+		t.Fatal("a failed send must not report a delivery")
+	}
+	if len(herdr.closed) != 0 {
+		t.Errorf("closed = %v, want nothing: a worktree's own pane is not the delivery's to close", herdr.closed)
+	}
+	for _, want := range []string{"wA", "/checkouts/wA", "left standing", nodeID, "unresolved"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+	if decisions := strings.Join(capDecisions(t, f, nodeID), "\n"); !strings.Contains(decisions, "left standing") {
+		t.Errorf("cap decisions = %q, want the standing worktree on the record", decisions)
+	}
+	if events := capEvents(t, f, store.DeliveryRecorded); len(events) != 0 {
+		t.Error("a failed delivery must not record a binding")
+	}
+}
+
+// --worktree-new makes the tree and then delivers into it, and the two can come
+// apart: the pane the workspace was made with may be missing. The tree is on
+// disk either way, and no delivery record names it, so the refusal is the only
+// place left that can say where it is.
+func TestDeliverNamesTheWorktreeItMadeWhenTheDeliveryFails(t *testing.T) {
+	root := t.TempDir()
+	f := newFixture(t, root)
+	nodeID := addCapNode(t, f, "dispatch parallel: sample")
+
+	herdr := &fakeHerdr{
+		worktreeNewID: "wN", worktreeNewPath: "/checkouts/sample-wN",
+		rootPaneErr: fmt.Errorf("%w: workspace wN has 0 pane(s)", dispatch.ErrNoRootPane),
+	}
+	brief := &dispatch.Brief{
+		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
+		CapNodeID: nodeID, WorktreeNew: true,
+	}
+
+	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
+	if resp.OK {
+		t.Fatal("a worktree with no root pane must be refused, not delivered")
+	}
+	if len(herdr.worktreesCreated) != 1 || herdr.worktreesCreated[0] != root {
+		t.Errorf("worktrees created = %v, want one at the project root", herdr.worktreesCreated)
+	}
+	for _, want := range []string{"wN", "/checkouts/sample-wN", "left standing"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// herdr reports a pane's cwd as the process that owns it sees it and the
+// checkout as the workspace sees it, and one directory has more than one
+// spelling. A worktree dispatch must find its own pane anyway: a string compare
+// refuses the worker the very worktree it was dispatched into, and the error
+// blames the workspace for having no pane at the checkout it is sitting in.
+func TestWorktreeRootPaneMatchesACheckoutReachedByAnotherSpelling(t *testing.T) {
+	real := t.TempDir()
+	linked := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(real, linked); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	fakeHerdrOnPath(t, map[string]string{
+		"workspace get": `{"result":{"workspace":{"worktree":{"checkout_path":"` + linked + `"}}}}`,
+		"pane list":     `{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1","cwd":"` + real + `","foreground_cwd":""}]}}`,
+	})
+
+	pane, tab, checkout, err := dispatch.NewHerdrCLI().WorktreeRootPane("w9")
+	if err != nil {
+		t.Fatalf("WorktreeRootPane: %v", err)
+	}
+	if pane != "w9:p1" || tab != "w9:t1" {
+		t.Errorf("pane=%q tab=%q, want the pane that sits at the checkout", pane, tab)
+	}
+	if checkout != linked {
+		t.Errorf("checkout = %q, want the workspace's own %q", checkout, linked)
+	}
+}
+
+// fakeHerdrOnPath puts a herdr on PATH answering each `herdr <verb> <noun>` with
+// canned output, so a test can drive the real herdrCLI — the argv it builds and
+// the JSON it parses — without a live terminal. Each answer is written to a file
+// and cat'd, so no JSON has to survive a shell.
+func fakeHerdrOnPath(t *testing.T, replies map[string]string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\ncase \"$1 $2\" in\n")
+	i := 0
+	for _, key := range slices.Sorted(maps.Keys(replies)) {
+		answer := filepath.Join(dir, fmt.Sprintf("answer-%d.json", i))
+		i++
+		if err := os.WriteFile(answer, []byte(replies[key]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&script, "  %q) cat %q ;;\n", key, answer)
+	}
+	script.WriteString("  *) echo \"fake herdr: unhandled $*\" >&2; exit 1 ;;\nesac\n")
+
+	binary := filepath.Join(dir, "herdr")
+	if err := os.WriteFile(binary, []byte(script.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // ---------------------------------------------------------------------------

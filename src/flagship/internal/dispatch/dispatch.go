@@ -1420,7 +1420,7 @@ func recordStatus(h *command.Handler, nodeID, status, summary string) error {
 // split is anchored to the cap's pane, and therefore to the cap's workspace, so
 // there is no workspace to get wrong. It is the same line Deliver runs.
 func nextCommand(b *Brief) string {
-	name := "dispatch-" + b.TaskType
+	name := workerAgent(b.TaskType, "")
 
 	// The `--` goes last, after every option: herdr's grammar is
 	// `<NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]`, so an
