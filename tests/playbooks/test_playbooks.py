@@ -60,6 +60,15 @@ sections in the same file. What it checks, per playbook:
      of a bare `fs`, so moving a step onto the exported path does not quietly
      stop checking the subcommand it names.
 
+ 13. No field line carries an inline comment. `parsePlaybook` is line-oriented and
+     takes everything after the colon as the value, so `order: 20  # ascending`
+     declares the value `20  # ascending` — refused where the field is validated,
+     and silently swallowed where it is not: in `applies_when` it becomes a term
+     that can never match, and in `agent_args` a harmless-looking second argument.
+     A comment owns its line. The detector may not be laxer than the parser it
+     stands in for, so a file this test passes has to be one `fs kb add` reads as
+     written.
+
 Rules 8, 10, 11 and 12 are the same question from four sides — can this step run at
 all in a project that is not this one? — and rule 10 is the one the other two
 could not have caught: a script check that resolves against a repo path is a
@@ -160,8 +169,10 @@ def check(name, cond, detail=""):
 
 def parse(path):
     """Parse one playbook the way the Go parser does: top-level `key:` lines,
-    `- kind: body` steps under a moment section, `#` comments dropped, blank
-    lines ignored."""
+    `- kind: body` steps under a moment section, whole-line `#` comments
+    dropped, blank lines ignored. Only a whole-line comment is dropped —
+    `parsePlaybook` takes everything after the colon as the value, so an inline
+    comment stays in it and rule 13 fails the file for carrying one."""
     playbook = {}
     moment = None
     for raw in path.read_text().splitlines():
@@ -186,11 +197,6 @@ def parse(path):
                 moment = None
                 playbook[key] = value
     return playbook
-
-
-def one_line(text):
-    """A value with an inline comment stripped: `applies_when: code  # why`."""
-    return text.split("#", 1)[0].strip()
 
 
 def fs_subcommands():
@@ -280,9 +286,22 @@ def main():
         check(f"{name}: declares at least one section", bool(sections),
               "no section declared")
 
+        # A comment owns its line. Nothing is stripped before the field checks
+        # below, because the parser strips nothing either: the whole line after
+        # the colon is the value, so a trailing comment is *in* it — a name that
+        # does not match its file, an order that is not an integer, a tag term
+        # and an argument that can never mean anything. Checked on every
+        # top-level field rather than on the four this file happens to validate,
+        # because the silent half is the dangerous half.
+        for key, value in pb.items():
+            if isinstance(value, str) and "#" in value:
+                check(f"{name}: {key} carries no inline comment", False,
+                      f"{key}: {value!r} — the parser takes everything after the colon as "
+                      f"the value, so a comment must own its line")
+
         order = pb.get("order")
         if order is not None:
-            check(f"{name}: order is an integer", re.fullmatch(r"-?\d+", one_line(order)) is not None,
+            check(f"{name}: order is an integer", re.fullmatch(r"-?\d+", order) is not None,
                   f"order: {order!r}")
 
         # engine: and agent: are optional; when present each is one non-empty
@@ -290,7 +309,7 @@ def main():
         for field in ("engine", "agent"):
             if field in pb:
                 check(f"{name}: {field} is a single non-empty token",
-                      re.fullmatch(r"[A-Za-z0-9_.-]+", one_line(pb[field])) is not None,
+                      re.fullmatch(r"[A-Za-z0-9_.-]+", pb[field]) is not None,
                       f"{field}: {pb[field]!r}")
 
         # agent_args: is optional; when present it is a comma-separated list of
@@ -300,7 +319,7 @@ def main():
         # value and fails, which is the point: fs's parser is line-oriented and
         # drops one in silence.
         if "agent_args" in pb:
-            terms = [t for t in (s.strip() for s in one_line(pb["agent_args"]).split(",")) if t]
+            terms = [t for t in (s.strip() for s in pb["agent_args"].split(",")) if t]
             check(f"{name}: agent_args names at least one comma-separated term",
                   bool(terms),
                   f"agent_args: {pb['agent_args']!r} — write `agent_args: one, two` on the "
@@ -319,7 +338,7 @@ def main():
                           f"a {kind} step names what it is for")
 
         if "applies_when" in pb:
-            terms = one_line(pb["applies_when"]).split()
+            terms = pb["applies_when"].split()
             check(f"{name}: applies_when is not empty when declared", bool(terms),
                   "an empty applies_when belongs on a playbook that omits the key")
             # A term MAY match a derived tag — `type=parallel` and
