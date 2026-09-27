@@ -71,11 +71,6 @@ if [ -e "$DOC" ] && [ ! -f "$DOC" ]; then
   printf 'lock: %s is not a file; <doc> must name a doc\n' "$DOC" >&2; exit 2
 fi
 
-# The staged body must not outlive the run on any path, not only the ones this
-# script plans for: a doc that cannot be written (a read-only file) fails at the
-# redirect with the stage already on disk.
-trap 'rm -f "${DOC}.body"' EXIT
-
 case "$TYPE" in
   spec|system-design|architecture) ;;
   *) printf 'lock: --type must be spec|system-design|architecture (got "%s")\n' "${TYPE:-}" >&2; exit 2 ;;
@@ -100,9 +95,10 @@ fi
 # Anchored at the start of a line because that is where a marker is a marker: the
 # docs that quote the shape in prose (README.md, AGENTS.md, design-task/SKILL.md)
 # begin those lines with something else.
+MARKER_SHAPE='^<!-- [A-Za-z][A-Za-z0-9_-]*:locked:'
 FOREIGN=""
 if [ "$ALREADY_LOCKED" -eq 0 ] && [ -f "$DOC" ]; then
-  FOREIGN="$(grep -m1 -E '^<!-- [A-Za-z][A-Za-z0-9_-]*:locked:' "$DOC" || true)"
+  FOREIGN="$(grep -m1 -E "$MARKER_SHAPE" "$DOC" || true)"
 fi
 
 MISSING=""
@@ -189,9 +185,23 @@ CONTRACT_HEADER="## Link contract"
 UPSTREAM_LINE="- **upstream** (this doc relies on): ${UPSTREAM_NORM}"
 REFERRERS_LINE="- **referrers** (must cite this when they change): ${REFERRERS_NORM}"
 
-# Read existing body, stripping old marker + contract block.
+# The staged body must not outlive the run on any path, not only the ones this
+# script plans for: a doc that cannot be written (a read-only file) fails at the
+# redirect below with the stage already on disk. Armed here rather than at the
+# top of the script, because until this point the run has written nothing — every
+# refusal above exits without staging, and a <doc>.body on disk at that moment
+# belongs to someone else. Armed earlier, the trap was a delete of whatever
+# carried that name, including on the one exit path that staged nothing at all.
+trap 'rm -f "${DOC}.body"' EXIT
+
+# Read existing body, stripping old marker + contract block. The marker stripped
+# is any lock marker, not only this script's own shape: --force is the way past
+# the foreign-marker refusal above, and a doc that was told its lock would be
+# replaced must not come out carrying both the one it had and the new one. The
+# line stripped is line 1 — where both regimes write a marker — so a doc that
+# quotes the shape further down, as a fenced example, keeps it.
 if [ -f "$DOC" ]; then
-  awk -v marker_re='^<!-- specs:locked:' -v contract_hdr="$CONTRACT_HEADER" '
+  awk -v marker_re="$MARKER_SHAPE" -v contract_hdr="$CONTRACT_HEADER" '
     BEGIN { skip = 0; started = 0 }
     NR == 1 && $0 ~ marker_re { next }
     NR == 2 && $0 == "" { next }

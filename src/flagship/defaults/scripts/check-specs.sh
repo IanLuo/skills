@@ -50,7 +50,12 @@
 #
 # It runs as a gate step in a playbook, so its exit code is the answer:
 #   0 — every marker is current
-#   1 — at least one is behind, named with the commits that moved past it
+#   1 — at least one doc was not cleared, with the reason named: it is behind
+#       (the commits that moved past it are listed), it carries no marker, its
+#       sha is not a commit here or not an ancestor of HEAD, or its range could
+#       not be measured at all (git's refusal is shown instead). Re-locking, or
+#       --confirm, answers only the first — nothing is behind in the others —
+#       so the body says which case this is.
 #   2 — the command line itself was wrong
 #
 # The remedy is one of two, and the choice is the cap's, recorded as a decision:
@@ -86,14 +91,28 @@ done
 # that was never evaluated, which arrives at the comparison below as "nothing
 # moved". The loop below cannot catch it: the empty string is not a path that
 # does not exist, it is not a path, and it appends nothing to the list it builds.
+#
+# An entry is trimmed before it is judged or used. Comma plus space is the
+# natural spelling of the documented "comma-separated", and lock.sh's
+# contract_entries trims its entries the same way; untrimmed, ` docs` named a
+# path that is not here and refused honest work with the space still in the
+# message. The trimming comes first so that a whitespace-only entry is judged
+# for what it is — empty — rather than passing the check and reaching git as
+# an empty pathspec.
 if [ -n "$covered" ]; then
     IFS=',' read -r -a covered_paths <<< "$covered"
-    for p in "${covered_paths[@]}"; do
-        if [ -z "$p" ]; then
+    for i in "${!covered_paths[@]}"; do
+        covered_paths[$i]="$(printf '%s' "${covered_paths[$i]}" |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [ -z "${covered_paths[$i]}" ]; then
             echo "check-specs: --covered \"$covered\" has an empty path in it" >&2
             exit 2
         fi
     done
+    # Recomposed so that every reader below — the measurement, the path it names
+    # as missing, and the green's "the covered paths (...)" — sees the same
+    # trimmed entries the list was judged on.
+    covered="$(IFS=,; printf '%s' "${covered_paths[*]}")"
 fi
 
 # A project with no docs directory has no locked doc that can be behind: the
@@ -160,11 +179,23 @@ for doc in "$dir"/*.md; do
     # as the same value. The check above removes the pathspec this script knows
     # how to make git refuse; any other refusal it has would otherwise be
     # swallowed by 2>/dev/null and read as "nothing moved".
-    moved=$(git log --oneline "$sha"..HEAD -- "${paths[@]}" 2>&1)
+    #
+    # Its status and its output answer different questions, so they are read
+    # separately. Stdout is the commit list and nothing else. Stderr is git
+    # talking about the range rather than reporting it: a fatal when the status
+    # is non-zero, and — the case merging the two streams created — a *warning*
+    # on a status of zero, such as an ambiguous refname, which then arrived
+    # where the commits go and reddened a marker that is current. A green range
+    # with a warning on it is still a green range.
+    err_file="$(mktemp)"
+    moved=$(git log --oneline "$sha"..HEAD -- "${paths[@]}" 2>"$err_file")
     log_status=$?
+    git_err="$(cat "$err_file")"
+    rm -f "$err_file"
+
     if [ "$log_status" -ne 0 ]; then
         echo "$doc could not be measured against $shown:" >&2
-        printf '%s\n' "$moved" | sed 's/^/  /' >&2
+        printf '%s\n' "$git_err" | sed 's/^/  /' >&2
         status=1
         continue
     fi

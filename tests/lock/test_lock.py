@@ -15,8 +15,14 @@ missing.
 
 Every refusal case asserts the same three things: the script exits non-zero,
 its message names what was wrong, and the target is byte-identical afterwards
-with nothing left beside it. The last case asserts a correct invocation still
-writes the contract it was given, so a refusal cannot pass by refusing always.
+with nothing left beside it. Case 5 asserts a correct invocation still writes
+the contract it was given, so a refusal cannot pass by refusing always.
+
+"Leaves nothing beside it" is a claim about what this run wrote, not a licence
+to clear the directory: cases 14-16 are that claim from both sides — a
+<doc>.body that was already there survives a refusal that staged nothing, and
+the stage this run did write does not survive a write that failed. Case 17 is
+the other half of `--force`: replacing a marker replaces it.
 
 Usage: python3 tests/lock/test_lock.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -255,6 +261,62 @@ def main():
     check("and leaves nothing beside it",
           sorted(os.listdir(adir.parent)) == before_files, sorted(os.listdir(adir.parent)))
     check("and is still a directory", adir.is_dir())
+    shutil.rmtree(repo)
+
+    # 14 — the cleanup removes only what this run staged. A <doc>.body that was
+    #      already there belongs to someone else, and a bad --type is the exit
+    #      path where the script wrote nothing at all: it used to delete the
+    #      stranger's file on the way out.
+    repo, doc = new_repo()
+    stranger = pathlib.Path(repo) / f"{DOC}.body"
+    stranger.write_text("PRECIOUS USER DATA\n")
+    code, out, err = run(repo, DOC, "--type", "bogus",
+                         "--upstream", "none", "--referrers", "none")
+    check("a bad --type is refused", code != 0, f"exit 0: {out}")
+    check("and names the type it got", "bogus" in err, err)
+    check("and a body it did not write survives", stranger.exists(),
+          "the run removed a file it did not create")
+    after = stranger.read_text() if stranger.exists() else None
+    check("and that body's contents are unchanged", after == "PRECIOUS USER DATA\n",
+          f"the file now holds {after!r}")
+    shutil.rmtree(repo)
+
+    # 15 — and the other half: the path the cleanup exists for. A read-only doc
+    #      stages its body and then fails at the redirect, so the stage is on
+    #      disk with nothing left to remove it but the trap.
+    repo, doc = new_repo()
+    doc.chmod(0o444)
+    before_files, before_sha = listing(doc), digest(doc)
+    code, out, err = run(repo, DOC, "--type", "spec", "--force",
+                         "--upstream", "none", "--referrers", "none")
+    check("a read-only doc fails the write", code != 0, f"exit 0: {out}")
+    check("and leaves nothing beside it", listing(doc) == before_files, listing(doc))
+    check("and the doc is unwritten", digest(doc) == before_sha, "the doc was rewritten")
+    shutil.rmtree(repo)
+
+    # 16 — a missing parent directory: the stage cannot even be created, so
+    #      nothing may be left behind either.
+    repo, _ = new_repo()
+    before_root = sorted(os.listdir(repo))
+    code, out, err = run(repo, "nodir/x.md", "--type", "spec",
+                         "--upstream", "none", "--referrers", "none")
+    check("a missing parent directory is refused", code != 0, f"exit 0: {out}")
+    check("and leaves nothing behind",
+          sorted(os.listdir(repo)) == before_root, sorted(os.listdir(repo)))
+    shutil.rmtree(repo)
+
+    # 17 — replacing a marker replaces it. --force is the documented way past
+    #      the refusal above, so a doc it was told to replace must not end up
+    #      carrying both locks.
+    repo, doc6 = new_repo()
+    doc6.write_text(DESIGN_LOCKED)
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc6.read_text()
+    check("--force over a foreign marker succeeds", code == 0, f"exit {code}: {out}")
+    check("and the doc carries one marker", text.count(":locked:") == 1, text)
+    check("and no trace of the lock it replaced", "design:locked" not in text, text)
+    check("and the body survives", "# Design" in text, text)
     shutil.rmtree(repo)
 
     print()

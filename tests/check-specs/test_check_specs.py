@@ -33,11 +33,19 @@ stubbed history. The refusal cases are the point:
      --covered "" still widens to the whole project
  14. a range git refuses to evaluate fails the run, rather than reading as an
      empty range and passing
+ 15. the exit-code list in the header covers every arm exit 1 answers for
+ 16. git's exit status and git's output are different answers: a warning on a
+     range that is genuinely empty does not count as commits that moved
+ 17. a list entry is trimmed before it is judged or used, so `--covered 'src,
+     docs'` measures src and docs
 
 Case 11 is the one that is not about a status: the script's exit code is the
 same either way, and the reading a caller takes from green is the thing that was
 wrong. Cases 12-14 are all that same misreading one layer in — a green taken for
-more than it established, up to a green over a range that never ran.
+more than it established, up to a green over a range that never ran. Cases 15-17
+ask the neighbouring questions: whether the list a reader takes the exit code
+from is complete, whether a warning is a commit, and whether a spaced list names
+the paths it looks like it names.
 
 Usage: python3 tests/check-specs/test_check_specs.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -100,6 +108,22 @@ def run(repo, *args):
     p = subprocess.run(["bash", str(SCRIPT), *args], cwd=repo,
                        capture_output=True, text=True, env=e)
     return p.returncode, p.stdout + p.stderr
+
+
+def header_prose():
+    """The script's header comment read as prose: the comment markers and the
+    line wrapping removed, so a case can assert a phrase the header states
+    rather than whichever fragment a re-wrap left on one line."""
+    header = SCRIPT.read_text().split("set -uo")[0]
+    return " ".join(line.lstrip("#").strip() for line in header.splitlines())
+
+
+def git_stderr(repo, *args):
+    """What git wrote to stderr, for the cases where the reading is a warning
+    rather than an exit status."""
+    e = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                          text=True, env=e).stderr
 
 
 def new_repo():
@@ -245,7 +269,9 @@ def main():
     #      so the doc was reported current with a commit past it.
     repo, a, b, c = new_repo()
     lock(repo, ".agents/specs/a.md", a)
-    for decl in (",src", "src,,"):
+    # The whitespace-only entry is the same refusal one step on: an entry is
+    # trimmed before it is judged, so a space is as empty as nothing.
+    for decl in (",src", "src,,", " ,src"):
         code, out = run(repo, "--covered", decl)
         check(f"--covered {decl!r} refuses", code != 0, f"exit {code}: {out}")
         check(f"--covered {decl!r} names the declaration", decl in out, out)
@@ -272,6 +298,56 @@ def main():
     check("and shows why rather than swallowing it",
           "Invalid pathspec magic" in out, out)
     check("and does not report the doc current", "every marker current" not in out, out)
+    shutil.rmtree(repo)
+
+    # 15 — the header's exit-code list is what the reader of a gate step takes,
+    #      and exit 1 answers for a range that could not be measured as well as
+    #      for a doc that is behind. The two have different remedies — nothing
+    #      is behind in the first — so the list has to name both, or it names
+    #      the wrong remedy for one of them.
+    prose = header_prose()
+    check("the exit-code list covers a range that could not be measured",
+          "could not be measured" in prose, "the exit list does not name it")
+    check("and still names the doc that is behind", "behind" in prose, prose)
+
+    # 16 — a range git refuses and a range git measures as empty are different
+    #      answers, and so is a warning. This range is genuinely empty; git
+    #      exits 0 and writes to stderr only because a tag carries the marker's
+    #      short sha as its name, which makes that refname ambiguous. Merged
+    #      with 2>&1 the warning landed where the commits go, and the doc was
+    #      reported behind on the strength of a line that is not a commit.
+    repo, a, b, c = new_repo()
+    # lock.sh writes `git rev-parse --short HEAD`, so the marker names a short
+    # sha — which is also what a bare token in a range can be read as a refname.
+    short = git(repo, "rev-parse", "--short", b)
+    lock(repo, ".agents/specs/a.md", short)
+    git(repo, "tag", short, b)
+    check("the refname really is ambiguous",
+          "ambiguous" in git_stderr(repo, "log", "--oneline", f"{short}..HEAD", "--", "docs"),
+          "git did not warn, so this case proves nothing")
+    code, out = run(repo, "--covered", "docs")
+    check("a warning on a clean range does not fail the run", code == 0,
+          f"exit {code}: {out}")
+    check("and the doc is reported current", "every marker current" in out, out)
+    check("and the warning is not reported as commits moved",
+          "ambiguous" not in out, out)
+    shutil.rmtree(repo)
+
+    # 17 — a list entry is trimmed before it is judged or used. Comma plus space
+    #      is the natural spelling of the documented "comma-separated", and
+    #      lock.sh trims its contract entries the same way; untrimmed, ` docs`
+    #      named a path that is not here and refused honest work.
+    repo, a, b, c = new_repo()
+    lock(repo, ".agents/specs/a.md", b)
+    code, out = run(repo, "--covered", "src, docs")
+    check("a spaced list measures both paths it names", code == 1, f"exit {code}: {out}")
+    check("and reds on the one that moved", "src,docs has moved since" in out, out)
+    check("and not on a path that does not exist",
+          "does not exist here" not in out, out)
+    lock(repo, ".agents/specs/a.md", c)
+    code, out = run(repo, "--covered", "src, docs")
+    check("and greens when neither moved", code == 0, f"exit {code}: {out}")
+    check("naming the paths it measured", "the covered paths (src,docs)" in out, out)
     shutil.rmtree(repo)
 
     print()

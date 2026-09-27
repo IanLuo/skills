@@ -72,8 +72,10 @@ When the whole ladder **plus** the contract rung clears, run:
     --upstream <comma docs> --referrers <comma docs> [--force]
 ```
 
-`--force` rotates an existing lock to the current sha + date. Without it an
-already-locked doc refuses so you can't clobber a frozen doc by accident.
+`--force` rotates an existing lock to the current sha + date, and replaces a lock
+marker this script did not write — another regime's (`design:locked:`), or its own
+shape without the `type=` it reads. Without it both refuse, so you can't clobber a
+frozen doc by accident.
 
 ### 4. Hand off
 
