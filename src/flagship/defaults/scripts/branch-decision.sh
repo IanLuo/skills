@@ -16,10 +16,11 @@
 # So the decision lives here and answers in its status, one state per status,
 # never in the text it prints:
 #
-#   0  nothing to do. stdout and stderr are both empty. Nothing to do covers all
-#      three ways of there being no branch to delete: no worktree at the path, a
-#      worktree standing on no branch, and a worktree standing on `HEAD` — the
-#      one name that arrives looking like a branch and is not one.
+#   0  nothing to do: this decision found no delivery branch to free. stdout is
+#      empty, and so is the script's own stderr. It is the answer when there is no
+#      worktree at the recorded path, when the worktree there stands on no branch,
+#      and when it stands on `HEAD` — a name git's listing prints in the branch
+#      slot that is not a branch name.
 #   1  delete the branch named on stdout. stdout is the branch name and nothing
 #      else; stderr is empty.
 #   2  the command line was wrong. stderr says how.
@@ -105,6 +106,25 @@ here=$("$FS_BIN" script resolve-path.sh "$rq") || {
     exit 3
 }
 
+# The first stanza is the repository's main checkout, and a delivery's worktree
+# is never that either: it exists only in a record that is wrong about what the
+# delivery was given. This is asked as a path, the same question as the guard
+# above, because the fact about the main checkout is where it is — naming its
+# branch instead refused a linked worktree that held the same name, and said the
+# project's own checkout when it meant this one.
+#
+# It stands above the branch guards, before the branch is even read, because a
+# refusal must not be reachable around — the rule the status contract rests on.
+# Which checkout this is does not depend on what that checkout stands on: with
+# this guard below them, a record naming the repository's main checkout answered
+# nothing-to-do whenever that checkout stood on no branch or on `HEAD`, and the
+# refusal was never reached at all.
+main=$(printf '%s\n' "$listing" | sed -n '1s|^worktree ||p')
+[ "$p" != "$main" ] || {
+    echo "${label}the recorded path $p is the repository's main checkout, not a delivery's worktree; refusing to touch it" >&2
+    exit 3
+}
+
 # The branch the worktree at $p stands on, out of its own stanza. No stanza at
 # that path is not an error and not a failure to look: the worktree was already
 # torn down, or there never was one there, and there is nothing to do. A detached
@@ -114,34 +134,30 @@ b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch re
 [ -n "$b" ] || exit 0
 
 # `HEAD` is a name git's listing prints in the branch slot, and it is not a
-# branch. `git -C <worktree> symbolic-ref HEAD refs/heads/HEAD` makes the
-# registration read `branch refs/heads/HEAD`, so the name is read out of git's
-# own output like any other — and it is the one name git will not delete:
-# `git branch -d HEAD` refuses — with the worktree in place, because that
-# worktree uses it. A decision answering "delete" here would authorise a destroy
-# git cannot honour: the caller detaches the worktree for nothing and the step
-# ends non-zero, on a state whose only correct answer is silence.
+# branch name: `git check-ref-format --branch HEAD`, `git branch HEAD` and
+# `git worktree add -b HEAD` all refuse it, with "'HEAD' is not a valid branch
+# name". No delivery holds a branch by it, and `refs/heads/HEAD` exists only where
+# a raw write put it — `git update-ref refs/heads/HEAD <sha>` skips the check
+# every branch command makes — and while it exists the repository cannot answer
+# the name with one value: `git rev-parse HEAD` reports `warning: refname 'HEAD'
+# is ambiguous`.
+#
+# What this answer rests on is the decision's own subject, not git's cooperation —
+# and git does cooperate, which this comment claimed otherwise until it was
+# measured: with the worktree detached, `git branch -d HEAD` answers `Deleted
+# branch HEAD (was …)` and exits 0. The script authorises freeing the branch a
+# delivery's worktree stands on, and this is not one, so the answer is the same
+# nothing-to-do as for a worktree standing on no branch, for the same reason:
+# there is no delivery branch here.
 #
 # The guard that used to stand in the step, `[ "$b" = HEAD ] && exit 0`, was
-# dropped while this decision was being written on the argument that no branch
-# is called HEAD — an unreachability inferred from a failed attempt to build the
-# state rather than from the state being unbuildable. It is buildable, in one
-# command, and this is the row in the tests that builds it. It sits next to the
-# "no branch line" answer because it is the same answer for the same reason:
-# there is no branch here to delete.
+# dropped while this decision was written on the argument that no branch is called
+# HEAD — an unreachability inferred from a failed attempt to build the state
+# rather than from the state being unbuildable. It is buildable: the row in
+# cmd/kb_branch_decision_test.go points a worktree's HEAD at the name in one
+# command. The guard is a question about a branch, so it sits below the checkout
+# guards and beside the "no branch line" answer.
 [ "$b" != HEAD ] || exit 0
-
-# The first stanza is the repository's main checkout, and a delivery's worktree
-# is never that either: it exists only in a record that is wrong about what the
-# delivery was given. This is asked as a path, the same question as the guard
-# above, because the fact about the main checkout is where it is — naming its
-# branch instead refused a linked worktree that held the same name, and said the
-# project's own checkout when it meant this one.
-main=$(printf '%s\n' "$listing" | sed -n '1s|^worktree ||p')
-[ "$p" != "$main" ] || {
-    echo "${label}the recorded path $p is the repository's main checkout, not a delivery's worktree; refusing to touch it" >&2
-    exit 3
-}
 
 # A branch is checked out in exactly one worktree unless git was talked into it
 # with --ignore-other-worktrees, and git refuses to delete a branch another

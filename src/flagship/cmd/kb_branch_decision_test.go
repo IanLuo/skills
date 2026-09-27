@@ -340,6 +340,44 @@ func TestBranchDecisionAnswersOneStatePerStatus(t *testing.T) {
 			wantStatus: 3, wantOut: "", wantErr: "repository's main checkout",
 		},
 		{
+			// The same state, with the main checkout standing on `HEAD`. The
+			// question "is this the project's own checkout" is not conditioned on
+			// what that checkout stands on, so it is asked before any question
+			// about a branch — and with the checkout guard sitting below the
+			// `HEAD` guard this record answered nothing to do instead, losing the
+			// refusal. `refs/heads/HEAD` is not a name git's branch commands will
+			// make — `git branch HEAD` refuses it — so the ref is written raw,
+			// which is the one way the state exists.
+			name:     "refuse: the repository's main checkout standing on HEAD",
+			overRepo: true,
+			build: func(t *testing.T) (string, []string) {
+				repo := scratchGitRepo(t)
+				root := filepath.Join(t.TempDir(), "project-root")
+				goGit(t, repo, "worktree", "add", "-q", "-b", "project-root", root)
+				goGit(t, repo, "update-ref", "refs/heads/HEAD", gitOut(t, repo, "rev-parse", "HEAD"))
+				goGit(t, repo, "symbolic-ref", "HEAD", "refs/heads/HEAD")
+				return root, []string{repo}
+			},
+			wantStatus: 3, wantOut: "", wantErr: "repository's main checkout",
+		},
+		{
+			// The same state with the main checkout detached — the instance the
+			// "no branch line" guard pre-empted, and the one that makes this a
+			// question about the checkout rather than about a branch: a checkout
+			// on no branch was answered nothing-to-do about before the guard was
+			// asked.
+			name:     "refuse: the repository's main checkout, detached",
+			overRepo: true,
+			build: func(t *testing.T) (string, []string) {
+				repo := scratchGitRepo(t)
+				root := filepath.Join(t.TempDir(), "project-root")
+				goGit(t, repo, "worktree", "add", "-q", "-b", "project-root", root)
+				goGit(t, repo, "checkout", "-q", "--detach")
+				return root, []string{repo}
+			},
+			wantStatus: 3, wantOut: "", wantErr: "repository's main checkout",
+		},
+		{
 			// A project root is allowed to be a linked worktree, and then the
 			// repository's main checkout is a different directory. The checkout
 			// this runs in is the project's own, whichever one it is.
