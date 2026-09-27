@@ -239,6 +239,18 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		}
 	}
 
+	// A waiver names a skip, and a skip needs a gate that stood down. An
+	// abandoned close runs no exit check at all, so it faced no gate to waive,
+	// and the reason is refused rather than recorded: the decision says "waived
+	// the review gate", and writing it there is the record asserting the very
+	// thing --without-review exists to make visible. The refusal is about the
+	// close, not about running the exit phase, so it cannot live where the exit
+	// run can skip it — a never-delivered close skips that run too.
+	if req.Abandoned && req.WithoutReview != "" {
+		return errResp(
+			"close: --without-review was given, but an abandoned close runs no exit check, so this dispatch faced no review gate to waive — drop the flag")
+	}
+
 	// An exit phase is teardown-and-verify, and a dispatch with no delivery
 	// record has no pane, no worktree, no worker and no work: there is nothing
 	// to tear down and nothing to verify. So a never-delivered dispatch runs no
@@ -775,30 +787,25 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 		return exitRun{}, fmt.Errorf("close: %v", err)
 	}
 
-	// A waiver names a skip, and a skip needs a gate that stood down. There is
-	// none in either of the two ways that can happen, and the reason is refused
-	// rather than recorded: the decision says "waived the review gate", and
+	// A waiver names a skip, and a skip needs a gate that stood down: a plan
+	// that carries no review gate has none to face. The reason is refused rather
+	// than recorded, because the decision says "waived the review gate", and
 	// writing it on a close that never met one is the record asserting the very
-	// thing --without-review exists to make visible. An abandoned close runs no
-	// exit check at all; a plan that carries no review gate has none to face.
-	// Both leave the cap one move — drop the flag — and the refusal says so.
-	if withoutReview != "" {
-		if abandoned {
-			return exitRun{}, fmt.Errorf(
-				"close: --without-review was given, but an abandoned close runs no exit check, so this dispatch faced no review gate to waive — drop the flag")
+	// thing --without-review exists to make visible. The other way a close faces
+	// no gate — an abandoned one, which runs no exit check — is refused before
+	// this run is reached, because it is the close that decides it and not this
+	// phase. Either way the cap has one move, and the refusal says which.
+	if withoutReview != "" && !reviewGate(steps) {
+		// Named by its playbooks, or named as the plan when there are none: a
+		// plan with no exit phase at all is a shape this refusal has to read as
+		// well as one whose exit phase simply has no gate in it.
+		phase := strings.Join(playbookNames(steps), ", ")
+		if phase == "" {
+			phase = "this plan"
 		}
-		if !reviewGate(steps) {
-			// Named by its playbooks, or named as the plan when there are none:
-			// a plan with no exit phase at all is a shape this refusal has to
-			// read as well as one whose exit phase simply has no gate in it.
-			phase := strings.Join(playbookNames(steps), ", ")
-			if phase == "" {
-				phase = "this plan"
-			}
-			return exitRun{}, fmt.Errorf(
-				"close: --without-review was given, but the exit phase of %s carries no review gate, so there is nothing to waive — drop the flag",
-				phase)
-		}
+		return exitRun{}, fmt.Errorf(
+			"close: --without-review was given, but the exit phase of %s carries no review gate, so there is nothing to waive — drop the flag",
+			phase)
 	}
 
 	if len(steps) == 0 {

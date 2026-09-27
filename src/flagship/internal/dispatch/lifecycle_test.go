@@ -1360,6 +1360,43 @@ func TestCloseOfANeverDeliveredDispatchRunsNoExitSteps(t *testing.T) {
 	}
 }
 
+// A waiver names a skip, and a close that ran no exit step skipped nothing. The
+// refusal is about the close, not about running the exit phase, so it cannot
+// live where a never-delivered close skips: 202ff717 left it inside runExit, the
+// `if delivered` guard skipped runExit, and the close then recorded
+// "waived the review gate" on a dispatch that faced no gate — the record
+// asserting the very thing the flag exists to make visible.
+func TestCloseOfANeverDeliveredDispatchRefusesAReviewWaiver(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
+	// The exit gate lives in the project's own KB, so a plan whose exit phase
+	// cannot be resolved is the shape a never-delivered close is in.
+	writeFile(t, filepath.Join(f.fsRoot, "projects", "skills", "kb", "code-exit.yaml"), codeExit)
+
+	brief := prepareOnly(t, f, devReq("sample"))
+	before := capDecisions(t, f, brief.CapNodeID)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Abandoned: true, Reason: "the user withdrew the request",
+		WithoutReview: "no review was needed",
+	})
+	if resp.OK {
+		t.Fatalf("a close that ran no exit step accepted a review waiver: %#v", resp.Data)
+	}
+	if !strings.Contains(resp.Error, "--without-review") {
+		t.Errorf("refusal %q must name the flag", resp.Error)
+	}
+	// A refusal records nothing, and the record it must not gain is the waiver:
+	// "waived the review gate" on a close that met no gate is the assertion the
+	// flag exists to make visible, made falsely.
+	if after := capDecisions(t, f, brief.CapNodeID); len(after) != len(before) {
+		t.Errorf("decisions gained %v on a refused close, want none", after[len(before):])
+	}
+	if got := nodeStatus(t, f, "cap", brief.CapNodeID); got != "pending" {
+		t.Errorf("node status = %q, want pending: a refused close marks nothing done", got)
+	}
+}
+
 // The worker's node comes from the delivery record, so a cap that passes no
 // --worker still cannot close out work that is not done.
 func TestCloseRefusesAWorkerThatIsNotDone(t *testing.T) {

@@ -1171,6 +1171,73 @@ func TestUnfinishedReRunsARecordedBlockCheck(t *testing.T) {
 	}
 }
 
+// A block with no check of its own is not read through the node's: the node's
+// check is a claim about the node, and a blocked node's answer is its block. A
+// gap filed with --check and then blocked with no --check carries both, and
+// 202ff717 fell through to the node's — a condition the block never recorded,
+// reported as the block's own wording.
+func TestABlockWithoutItsOwnCheckIsNotReadThroughTheNodes(t *testing.T) {
+	h := setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker")
+	check := "test -f " + marker
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.ProjectCreate("proj", root)
+	// The node's own claim is over — the marker is there — so a reader that runs
+	// it under the block has something to say. It must not say it.
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
+		Data.(command.EventData).NodeID
+	if resp := h.TaskBlock("proj", nodeID, "waiting on a person"); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	rootOf := func(string) string { return root }
+	status := ""
+	for _, task := range h.StatusIn("proj", root).Data.(command.StatusResult).Tasks {
+		if task.NodeID == nodeID {
+			status = task.Status
+		}
+	}
+	unfinished := ""
+	groups := h.Unfinished(rootOf).Data.(map[string]any)["unfinished"].(map[string][]command.UnfinishedNode)
+	for _, node := range groups[string(query.KindGap)] {
+		if node.NodeID == nodeID {
+			unfinished = node.Status
+		}
+	}
+	gaps := ""
+	for _, gap := range h.Gaps(rootOf).Data.(map[string]any)["gaps"].([]command.GapNode) {
+		if gap.NodeID == nodeID {
+			gaps = gap.Status
+		}
+	}
+
+	for _, reader := range []struct{ name, got string }{
+		{"fs status", status},
+		{"fs unfinished", unfinished},
+		{"fs gaps", gaps},
+	} {
+		if reader.got != "blocked" {
+			t.Errorf("%s = %q, want plain blocked: the block recorded no check", reader.name, reader.got)
+		}
+	}
+
+	// A block that does record a check is still read through it, and the node's
+	// own check is still the one an unblocked node is read through.
+	if resp := h.TaskUnblock("proj", nodeID); !resp.OK {
+		t.Fatalf("unblock: %s", resp.Error)
+	}
+	want := "pending (claim no longer holds — " + check + " exited 0)"
+	for _, gap := range h.Gaps(rootOf).Data.(map[string]any)["gaps"].([]command.GapNode) {
+		if gap.NodeID == nodeID && gap.Status != want {
+			t.Errorf("unblocked gap = %q, want %q", gap.Status, want)
+		}
+	}
+}
+
 // A later block replaces the previous one's check: the record is the last
 // block, not an accumulation of every condition the node was ever under.
 func TestTaskBlockReplacesTheRecordedCheck(t *testing.T) {

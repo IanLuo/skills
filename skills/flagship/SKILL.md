@@ -96,8 +96,10 @@ Commands that take a scope (`status`, `query`, `log`, `task *`) resolve it from 
 
 ```bash
 # Add (top-level or subtask). --kind names what the node is: work (default), dispatch, or gap.
-# --found-by PROJECT:NODE records what a gap was found by.
-fs task add --goal "Implement auth" [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--project ID]
+# --found-by PROJECT:NODE records what a gap was found by. --check names a shell
+# command that would show the node's claim is over — a gap's defect, as a block's
+# condition — and applies to a gap as much as to a block.
+fs task add --goal "Implement auth" [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--check "SHELL COMMAND"] [--project ID]
 
 # Show one task's derived state; exit 1 when no such node exists, or when --kind names a different kind
 fs task get NODE_ID [--project ID] [--kind work|dispatch|gap]
@@ -109,7 +111,7 @@ fs task update NODE_ID --status STATUS [--decision TEXT] [--project ID]
 fs task edit NODE_ID [--goal "New goal text"] [--kind work|dispatch|gap] [--project ID]
 
 # Block / unblock. --check names a shell command that would show the condition is
-# over, which fs pending and fs unfinished re-run.
+# over, which fs status, fs task get, fs unfinished, fs gaps and fs pending re-run.
 fs task block NODE_ID --reason "Waiting for API keys" [--check "SHELL COMMAND"] [--project ID]
 fs task unblock NODE_ID [--project ID]
 

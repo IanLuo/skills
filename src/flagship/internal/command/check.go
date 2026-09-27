@@ -56,9 +56,11 @@ func reportedStatus(status, blockCheck, check, dir string) string {
 	if status == "done" {
 		return status
 	}
-	if status == "blocked" && blockCheck != "" {
-		if _, err := RunShell(blockCheck, dir, nil); err == nil {
-			return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", blockCheck)
+	if status == "blocked" {
+		if blockCheck != "" {
+			if _, err := RunShell(blockCheck, dir, nil); err == nil {
+				return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", blockCheck)
+			}
 		}
 		return status
 	}
