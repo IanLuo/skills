@@ -68,9 +68,20 @@ type PendingEntry struct {
 	// Status is the node's own status when it is blocked: plain "blocked", or
 	// "blocked (condition no longer holds …)" when the check the block recorded
 	// now exits 0. It also carries a node's claim once the check it recorded has
-	// expired — "<status> (claim no longer holds …)" — which is the one thing a
-	// reader must not be left to repeat as current truth. It is empty for any
-	// other node, where State is the whole answer.
+	// expired — "<status> (claim no longer holds …)". Both are resolved readings:
+	// the recorded condition is over, which is the one thing a reader must not be
+	// left to repeat as current truth.
+	//
+	// The third reading is the opposite one. A check the deadline stopped says
+	// nothing about the claim — it was neither confirmed nor denied — and reads
+	// "blocked [check did not finish …]" or "<status> [check did not finish …]",
+	// so a reader is not told a condition is over that nobody finished asking
+	// about. A resolved reading is parenthesised and an unresolved one bracketed:
+	// the two senses are opposite, and the delimiter is what tells them apart, so
+	// a reader keyed on "the status is decorated" cannot read a timeout as an
+	// expiry.
+	//
+	// It is empty for any other node, where State is the whole answer.
 	Status string `json:"status,omitempty"`
 	// Reports is every report the worker recorded on its node, oldest first. A
 	// worker waiting on a decision reads as running, whose documented meaning is

@@ -52,7 +52,7 @@ var ErrCheckTimeout = errors.New("check did not finish")
 // command's combined output and the run's error.
 //
 // It is unbounded, which is what a gate and a step get: they run a command that
-// may do real work. The re-run is bounded — see runCheck.
+// may do real work. The re-run is bounded — see reRun.
 func RunShell(body, dir string, env []string) (string, error) {
 	return runShell(body, dir, env, 0)
 }
@@ -156,7 +156,9 @@ func NodeStatus(n UnfinishedNode, dir string) string {
 //
 // A check that did not finish is a third reading, and not a shade of either: the
 // deadline stopped it, so the claim was neither confirmed nor denied, and saying
-// it held would report a condition nobody finished asking about.
+// it held would report a condition nobody finished asking about. It is bracketed
+// where a resolved reading is parenthesised: the two senses are opposite, and a
+// reader has to be able to tell them apart without reading the words.
 //
 // A blocked node is read through the check its block recorded, which is the
 // check about the block. The node's own check is about the node, and is read
@@ -171,7 +173,7 @@ func reportedStatus(status, blockCheck, check, dir string) string {
 			if _, err := reRun(blockCheck, dir); err == nil {
 				return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", blockCheck)
 			} else if errors.Is(err, ErrCheckTimeout) {
-				return fmt.Sprintf("blocked (%v)", err)
+				return fmt.Sprintf("blocked [%v]", err)
 			}
 		}
 		return status
@@ -180,7 +182,7 @@ func reportedStatus(status, blockCheck, check, dir string) string {
 		if _, err := reRun(check, dir); err == nil {
 			return fmt.Sprintf("%s (claim no longer holds — %s exited 0)", status, check)
 		} else if errors.Is(err, ErrCheckTimeout) {
-			return fmt.Sprintf("%s (%v)", status, err)
+			return fmt.Sprintf("%s [%v]", status, err)
 		}
 	}
 	return status

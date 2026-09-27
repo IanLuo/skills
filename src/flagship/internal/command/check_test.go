@@ -92,7 +92,7 @@ func TestACheckThatDoesNotFinishReadsAsItsOwnState(t *testing.T) {
 	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
 		Data.(command.EventData).NodeID
 
-	want := "pending (check did not finish — " + check + " exceeded " + command.CheckTimeout.String() + ")"
+	want := "pending [check did not finish — " + check + " exceeded " + command.CheckTimeout.String() + "]"
 	for _, task := range h.StatusIn("proj", t.TempDir()).Data.(command.StatusResult).Tasks {
 		if task.NodeID != nodeID {
 			continue
@@ -103,6 +103,40 @@ func TestACheckThatDoesNotFinishReadsAsItsOwnState(t *testing.T) {
 		return
 	}
 	t.Fatalf("no task %s in status", nodeID)
+}
+
+// A resolved reading and an unresolved one are opposite — the first says the
+// recorded condition is over, the second that nobody finished asking about it —
+// so a reader must be able to tell them apart without reading the words. The
+// resolved reading is parenthesised and the unresolved one bracketed, and the
+// rule holds for a block's condition as much as for a node's claim: a reader
+// keyed on "the status is decorated" would otherwise read a timeout as an
+// expiry.
+func TestATimedOutReadingIsBracketedAndAnExpiredClaimIsNot(t *testing.T) {
+	h := setup(t)
+	over := h.TaskAddKind("proj", "the widget is fixed", query.KindGap, "", "", "", "true", nil).
+		Data.(command.EventData).NodeID
+
+	check := "sleep 30"
+	parked := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "", nil).
+		Data.(command.EventData).NodeID
+	if resp := h.TaskBlockWithCheck("proj", parked, "waiting on the widget", check); !resp.OK {
+		t.Fatalf("block: %s", resp.Error)
+	}
+
+	got := make(map[string]string)
+	for _, task := range h.StatusIn("proj", t.TempDir()).Data.(command.StatusResult).Tasks {
+		got[task.NodeID] = task.Status
+	}
+
+	if expired := got[over]; !strings.Contains(expired, "(claim no longer holds") {
+		t.Errorf("expired claim = %q, want a parenthesised resolved reading", expired)
+	}
+
+	want := "blocked [check did not finish — " + check + " exceeded " + command.CheckTimeout.String() + "]"
+	if got[parked] != want {
+		t.Errorf("block whose check did not finish = %q, want %q", got[parked], want)
+	}
 }
 
 // The deadline is the re-run's alone, and it does not read a fast failure as
