@@ -4,15 +4,26 @@
 #
 # Usage:
 #   lock.sh <doc> --type <spec|system-design|architecture> \
-#           [--upstream <docs>] [--referrers <docs>] [--force] [--date YYYY-MM-DD]
+#           --upstream <docs> --referrers <docs> [--force] [--date YYYY-MM-DD]
 #
-#   --upstream   docs this one relied on at lock time ("none" for a root).
-#   --referrers  docs/code that must cite this one when they change.
+#   --upstream   docs this one relied on at lock time ("none" for a root). Required.
+#   --referrers  docs/code that must cite this one when they change. Required.
 #   --force      rotate an existing lock to the current sha + date. Without it,
 #                an already-locked doc exits non-zero.
 #   --date       override today's date (deterministic tests).
 #
-# Exit codes: 0 written/rotated · 1 refuse (already locked, no --force) · 2 usage error.
+# Both contract flags are required, and "none" is how a doc says it has none: an
+# omitted flag is not an answer, and rendering one as "none" made a contract
+# destroyed by a bare --force indistinguishable from a doc that genuinely has no
+# upstream or no referrers. For an untracked doc the contract is the only record
+# of that graph — there is no git history to recover it from — so a rotation was
+# also silent. Every entry must name something that exists.
+#
+# Nothing is written until every check has passed: a refusal leaves the doc
+# byte-identical and leaves nothing beside it.
+#
+# Exit codes: 0 written/rotated · 1 refuse (already locked, no --force) ·
+#             2 usage error (missing or invalid argument).
 
 set -euo pipefail
 
@@ -20,17 +31,19 @@ DOC=""
 TYPE=""
 UPSTREAM=""
 REFERRERS=""
+UPSTREAM_SET=0
+REFERRERS_SET=0
 FORCE=0
 DATE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --type)       shift; TYPE="${1:-}"; shift ;;
-    --upstream)   shift; UPSTREAM="${1:-}"; shift ;;
-    --referrers)  shift; REFERRERS="${1:-}"; shift ;;
+    --upstream)   shift; UPSTREAM="${1:-}"; UPSTREAM_SET=1; shift ;;
+    --referrers)  shift; REFERRERS="${1:-}"; REFERRERS_SET=1; shift ;;
     --force)      FORCE=1; shift ;;
     --date)       shift; DATE="${1:-}"; shift ;;
-    -h|--help)    printf 'Usage: lock.sh <doc> --type <spec|system-design|architecture> [--upstream <docs>] [--referrers <docs>] [--force] [--date YYYY-MM-DD]\n'; exit 0 ;;
+    -h|--help)    printf 'Usage: lock.sh <doc> --type <spec|system-design|architecture> --upstream <docs> --referrers <docs> [--force] [--date YYYY-MM-DD]\n'; exit 0 ;;
     -*)           printf 'lock: unknown option: %s\n' "$1" >&2; exit 2 ;;
     *)
       if [ -z "$DOC" ]; then DOC="$1"
@@ -45,19 +58,81 @@ case "$TYPE" in
   *) printf 'lock: --type must be spec|system-design|architecture (got "%s")\n' "${TYPE:-}" >&2; exit 2 ;;
 esac
 
+DOC_DIR="$(dirname "$DOC")"
+
+ALREADY_LOCKED=0
+RECORDED=""
+if [ -f "$DOC" ] && grep -qE '^<!-- specs:locked:[0-9a-f]+ [0-9-]+ type=' "$DOC"; then
+  ALREADY_LOCKED=1
+  # The contract this doc already carries. Reading it back is the only way a
+  # caller can pass it through a rotation unchanged, so it is shown when a
+  # rotation is refused for a missing flag.
+  RECORDED="$(grep -m2 -E '^- \*\*(upstream|referrers)\*\*' "$DOC" || true)"
+fi
+
+MISSING=""
+[ "$UPSTREAM_SET" -eq 1 ] || MISSING="--upstream"
+[ "$REFERRERS_SET" -eq 1 ] || MISSING="${MISSING:+$MISSING and }--referrers"
+
+if [ -n "$MISSING" ]; then
+  printf 'lock: %s is required; pass "none" to say there is genuinely none\n' "$MISSING" >&2
+  if [ -n "$RECORDED" ]; then
+    printf 'lock: %s records — pass these back to rotate without changing them:\n' "$DOC" >&2
+    printf '%s\n' "$RECORDED" | sed 's/^/  /' >&2
+  fi
+  exit 2
+fi
+
+# One entry per line, from a comma-or-pipe separated value.
+contract_entries() {
+  printf '%s' "$1" | sed 's/|/,/g' | tr ',' '\n' |
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true
+}
+
+# A contract value names docs that exist, or is the whole list "none". A sha, a
+# path that is not here, or a bare word that matches no doc is refused by name:
+# each of those renders as a plausible-looking contract line and none of them is
+# one. Resolved against the caller's cwd or against the doc's own directory,
+# which is where the specs skill writes a basename like `playbook-system.md`.
+check_contract() {  # $1 flag, $2 value
+  local flag="$1" raw="$2" entries count entry
+  entries="$(contract_entries "$raw")"
+  if [ -z "$entries" ]; then
+    printf 'lock: %s was given no value; use "%s none" to say there is none\n' "$flag" "$flag" >&2
+    return 1
+  fi
+  count="$(printf '%s\n' "$entries" | wc -l | tr -d ' ')"
+  while IFS= read -r entry; do
+    if [ "$entry" = none ]; then
+      if [ "$count" -gt 1 ]; then
+        printf 'lock: %s lists "none" beside other entries; "none" is the whole list\n' "$flag" >&2
+        return 1
+      fi
+      continue
+    fi
+    if [ -e "$entry" ] || [ -e "$DOC_DIR/$entry" ]; then
+      continue
+    fi
+    printf 'lock: %s got "%s", which names no doc that exists here\n' "$flag" "$entry" >&2
+    return 1
+  done <<< "$entries"
+}
+
+check_contract --upstream "$UPSTREAM" || exit 2
+check_contract --referrers "$REFERRERS" || exit 2
+
+if [ "$ALREADY_LOCKED" -eq 1 ] && [ "$FORCE" -ne 1 ]; then
+  printf 'lock: %s is already locked; pass --force to rotate\n' "$DOC" >&2; exit 1
+fi
+
 SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
 if [ -z "$SHA" ]; then
   printf 'lock: not in a git repo (no HEAD); cannot record lock sha\n' >&2; exit 1
 fi
 [ -n "$DATE" ] || DATE="$(date +%F)"
 
-if grep -qE '^<!-- specs:locked:[0-9a-f]+ [0-9-]+ type=' "$DOC" 2>/dev/null; then
-  if [ "$FORCE" -ne 1 ]; then
-    printf 'lock: %s is already locked; pass --force to rotate\n' "$DOC" >&2; exit 1
-  fi
-fi
-
-# Normalize upstream/referrers: comma-or-pipe separated → comma+space, or "none".
+# Normalize upstream/referrers: comma-or-pipe separated → comma+space.
+# Both values are validated above, so neither can be empty here.
 normalize_list() {
   local raw="${1:-}"
   [ -z "$raw" ] && { printf 'none'; return; }
@@ -66,8 +141,6 @@ normalize_list() {
 
 UPSTREAM_NORM="$(normalize_list "$UPSTREAM")"
 REFERRERS_NORM="$(normalize_list "$REFERRERS")"
-[ -z "$UPSTREAM_NORM" ] && UPSTREAM_NORM="none"
-[ -z "$REFERRERS_NORM" ] && REFERRERS_NORM="none"
 
 MARKER="<!-- specs:locked:${SHA} ${DATE} type=${TYPE} -->"
 CONTRACT_HEADER="## Link contract"

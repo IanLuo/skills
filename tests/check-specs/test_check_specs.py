@@ -23,6 +23,14 @@ stubbed history. The refusal cases are the point:
   8. a doc locked at a sha that is no commit in the repo fails
   9. a doc locked at a commit that is not an ancestor of HEAD fails
  10. one stale doc among several fails the run, and names the stale one only
+ 11. every pass says what it established, and says what it did not: a marker
+     being current is not the doc still describing the code. A doc locked by the
+     design regime is reported by that wording as carrying no marker at all,
+     which is the scope the script states rather than a defect it hides.
+
+Case 11 is the one that is not about a status: the script's exit code is the
+same either way, and the reading a caller takes from green is the thing that was
+wrong.
 
 Usage: python3 tests/check-specs/test_check_specs.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -108,6 +116,7 @@ def main():
     repo, a, b, c = new_repo()
     code, out = run(repo, "--dir", ".agents/specs")
     check("a project with no docs directory passes", code == 0, f"exit {code}: {out}")
+    check("and says nothing was checked", "nothing was checked" in out, out)
     shutil.rmtree(repo)
 
     # 2 — the directory exists and holds nothing.
@@ -115,6 +124,7 @@ def main():
     (pathlib.Path(repo) / "specs").mkdir()
     code, out = run(repo, "--dir", "specs")
     check("a docs directory holding no files passes", code == 0, f"exit {code}: {out}")
+    check("and says nothing was checked", "nothing was checked" in out, out)
     shutil.rmtree(repo)
 
     # 3 — locked at HEAD.
@@ -122,6 +132,11 @@ def main():
     lock(repo, ".agents/specs/a.md", c)
     code, out = run(repo)
     check("a doc locked at HEAD passes", code == 0, f"exit {code}: {out}")
+    # The green is the misreading this covers: a caller that reads only the
+    # status takes it as "the doc still describes the code".
+    check("a pass says what it established", "every marker current" in out, out)
+    check("and says what it did not", "does not say a doc still describes the code" in out, out)
+    check("and counts what it read", "1 locked doc," in out, out)
     shutil.rmtree(repo)
 
     # 4 — locked behind commits, and with no --covered the whole project counts.
@@ -181,6 +196,23 @@ def main():
     check("one stale doc fails the run", code == 1, f"exit {code}: {out}")
     check("the stale doc is named and the current one is not",
           "stale.md" in out and "current.md" not in out, out)
+    shutil.rmtree(repo)
+
+    # 11 — the two boundaries the header states, so the statement cannot drift
+    #      from the code: a design-locked doc is not a specs lock, and a
+    #      directory of plain references fails while a directory of current
+    #      specs passes.
+    repo, a, b, c = new_repo()
+    lock(repo, ".agents/specs/a.md", c)
+    lock(repo, ".agents/specs/b.md", c)
+    write(repo, "specs/design-system.md", f"<!-- design:locked:{c} 2026-01-01 -->\n")
+    code, out = run(repo, "--dir", "specs")
+    check("a design-locked doc fails as an unlocked one", code == 1, f"exit {code}: {out}")
+    check("under the wording the header states",
+          "specs/design-system.md carries no specs:locked marker" in out, out)
+    code, out = run(repo, "--dir", ".agents/specs")
+    check("two current docs pass together", code == 0, f"exit {code}: {out}")
+    check("and the pass counts both", "2 locked docs," in out, out)
     shutil.rmtree(repo)
 
     print()

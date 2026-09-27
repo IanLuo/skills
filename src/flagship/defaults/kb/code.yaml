@@ -10,12 +10,15 @@ entry:
   - check: test -f AGENTS.md
   - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
   # A locked doc is only a claim about the code at the commit it names. The step
-  # above proves one exists; this one proves it is still true. Without it a spec
-  # rots silently — the doc keeps reading as authoritative while the code moves
-  # past it, and only a reader who diffs the two can tell. That is not a reader's
-  # job, so the gate asks instead, and the cap answers one of two ways: revise
-  # and re-lock (`fs dispatch --tag spec`), or proceed with --confirm, accepting
-  # the delta as a recorded decision rather than an oversight.
+  # above proves one exists; this one proves nothing has moved past that commit.
+  # It does not prove the doc still describes the code — a marker rotated to HEAD
+  # passes tautologically — which is why the `spec` participant reads the doc
+  # before it moves a marker. Without this step a spec rots silently: the doc
+  # keeps reading as authoritative while the code moves past it, and only a
+  # reader who diffs the two can tell. That is not a reader's job, so the gate
+  # asks instead, and the cap answers one of two ways: revise and re-lock
+  # (`fs dispatch --tag spec`), or proceed with --confirm, accepting the delta as
+  # a recorded decision rather than an oversight.
   #
   # The script runs out of the binary — "$FS_BIN" script <name>, so there is no
   # directory it was written to and nothing on disk to go stale. It takes no
