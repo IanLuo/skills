@@ -1112,8 +1112,8 @@ func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 // dropped, so the record of what was noticed survives.
 //
 // rootOf resolves a scope to the directory a recorded check runs in — the
-// project root — the same way fs status, fs pending and fs unfinished resolve
-// it, so a gap whose claim the check has just denied reads as expired here too.
+// project root — the same way every reader that renders a status resolves it,
+// so a gap whose claim the check has just denied reads as expired here too.
 // This is the reader the cap reads its backlog with, so it is the one that
 // matters most: a gap read as open in this one list while every other reader
 // says the claim is over is the defect this re-run exists to close. A nil

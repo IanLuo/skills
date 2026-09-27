@@ -3533,11 +3533,11 @@ exit:
 	}
 }
 
-// fs status must agree with fs pending and fs unfinished: a block whose recorded
-// condition is over reports so, in all three. The check runs in the project's
-// own root, so this reads status from somewhere else entirely — a status that
-// ran the check wherever it was standing would repeat the expired block as
-// current truth, which is the disagreement this fixes.
+// fs status must agree with every reader that renders a status: a block whose
+// recorded condition is over reports so in all of them. The check runs in the
+// project's own root, so this reads status from somewhere else entirely — a
+// status that ran the check wherever it was standing would repeat the expired
+// block as current truth, which is the disagreement this fixes.
 func TestCLIStatusReRunsABlockCheckInTheProjectRoot(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()

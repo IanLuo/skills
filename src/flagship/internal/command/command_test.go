@@ -1528,10 +1528,10 @@ func TestUnfinishedAcrossScopes(t *testing.T) {
 	}
 }
 
-// fs status must agree with fs pending and fs unfinished about a block whose
-// recorded condition is over. All three re-run the check and report the same
-// string; before this, only the other two did, so one of the three readers
-// repeated an expired block as current truth.
+// fs status must agree with every reader that renders a status about a block
+// whose recorded condition is over. They all re-run the check and report the
+// same string; before this, only some did, so one reader repeated an expired
+// block as current truth.
 func TestStatusReRunsARecordedBlockLikeUnfinished(t *testing.T) {
 	h := setup(t)
 	root := t.TempDir()

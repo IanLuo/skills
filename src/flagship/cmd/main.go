@@ -143,7 +143,7 @@ Commands:
   project list                                 List all projects
   project get NAME                             Get project info
   task add --goal GOAL [--parent NODE_ID]       Add a task; --kind names what it
-                                                is (work, dispatch, gap — work
+     [--check "SHELL COMMAND"]                  is (work, dispatch, gap — work
                                                 by default), --found-by
                                                 PROJECT:NODE records what a gap
                                                 was found by, and --check names
@@ -158,8 +158,8 @@ Commands:
                                                 its structural kind, or both
   task block NODE_ID --reason REASON            Block a task; --check names a
                                                 shell command that would show
-                                                the condition is over, which fs
-                                                pending and fs unfinished re-run
+                                                the condition is over, re-run by
+                                                every reader that renders a status
   task unblock NODE_ID                          Unblock a task
   task knowledge NODE_ID --summary TEXT         Add knowledge to a task
   status [--project PROJECT_ID]                 Show project status
@@ -516,8 +516,8 @@ Subcommands:
   block NODE_ID --reason REASON [--check "SHELL COMMAND"]
                                            Block a task; --check names a shell
                                            command that would show the
-                                           condition is over, re-run by fs
-                                           pending and fs unfinished
+                                           condition is over, re-run by
+                                           every reader that renders a status
   unblock NODE_ID                          Unblock a task
   knowledge NODE_ID --summary TEXT         Add knowledge to a task`)
 		if len(args) < 1 {

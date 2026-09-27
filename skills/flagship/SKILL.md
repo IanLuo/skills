@@ -111,7 +111,7 @@ fs task update NODE_ID --status STATUS [--decision TEXT] [--project ID]
 fs task edit NODE_ID [--goal "New goal text"] [--kind work|dispatch|gap] [--project ID]
 
 # Block / unblock. --check names a shell command that would show the condition is
-# over, which fs status, fs task get, fs unfinished, fs gaps and fs pending re-run.
+# over, re-run by every reader that renders a status.
 fs task block NODE_ID --reason "Waiting for API keys" [--check "SHELL COMMAND"] [--project ID]
 fs task unblock NODE_ID [--project ID]
 

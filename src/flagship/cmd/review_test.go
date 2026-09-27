@@ -48,6 +48,21 @@ func deliverWork(t *testing.T, bin, root string, env []string) (capNode, workerR
 	return capNode, workerRef
 }
 
+// prepareWork runs a code work dispatch without --deliver: the plan is recorded
+// and the cap node exists, but no pane was opened and no delivery was written.
+// It is the shape fs pending calls unlinked and tells the cap to close with
+// --abandoned — and the shape a close runs no exit step for at all.
+func prepareWork(t *testing.T, bin, root string, env []string) string {
+	t.Helper()
+	resp, code := runFSEnv(t, bin, root, env, "dispatch",
+		"--project", "skills", "--type", "dev-task", "--goal", "change the code",
+		"--tag", "code", "--confirm", "--allow-unresolved")
+	if code != 0 {
+		t.Fatalf("dispatch exit %d: %v", code, resp["error"])
+	}
+	return resp["data"].(map[string]any)["cap_node_id"].(string)
+}
+
 // closeWork closes a delivered dispatch. The response is returned rather than
 // asserted on, because a refusal is the measurement in half these tests.
 func closeWork(t *testing.T, bin, root string, env []string, capNode string, extra ...string) (map[string]any, int) {
@@ -360,16 +375,37 @@ func TestCLIWithoutReviewRefusesWhenNoGateWouldStandDown(t *testing.T) {
 		}
 	}
 
-	// And an abandoned close runs no exit check, so it faced no gate either —
-	// this is the reproduction the review filed, which used to record a waiver
-	// on a dispatch whose cleanup was "no exit phase".
+	// And an abandoned close runs no exit check, so it faced no gate either. This
+	// is a DELIVERED node, so it still reaches the refusal inside the exit run.
 	abandoned, code := closeWork(t, bin, root, env, work,
-		"--abandoned", "--reason", "never delivered", "--without-review", "docs-only")
+		"--abandoned", "--reason", "the change was withdrawn", "--without-review", "docs-only")
 	if code == 0 {
 		t.Fatalf("an abandoned close accepted a waiver: %v", abandoned)
 	}
 	if errMsg, _ := abandoned["error"].(string); !strings.Contains(errMsg, "abandoned") {
 		t.Errorf("refusal %q must say the close was abandoned, so no check ran", errMsg)
+	}
+
+	// The reproduction the review actually filed, and the case the delivered one
+	// above cannot reach: a dispatch that was PREPARED and never delivered. The
+	// refusal lived inside the exit run, which this close skips entirely, so it
+	// recorded "waived the review gate" on a node whose cleanup was "no exit
+	// phase" — asserting a skip that never happened. The refusal alone does not
+	// catch that (the delivered case above refuses either way); the waiver not
+	// being recorded is the assertion that does.
+	prepared := prepareWork(t, bin, root, env)
+	noWaiver, code := closeWork(t, bin, root, env, prepared,
+		"--abandoned", "--reason", "never delivered", "--without-review", "docs-only")
+	if code == 0 {
+		t.Fatalf("a never-delivered close accepted a waiver: %v", noWaiver)
+	}
+	if errMsg, _ := noWaiver["error"].(string); !strings.Contains(errMsg, "--without-review") {
+		t.Errorf("refusal %q must name the flag", errMsg)
+	}
+	for _, decision := range decisionsOf(t, bin, root, env, prepared) {
+		if strings.Contains(decision, "waived the review gate") {
+			t.Errorf("a close that ran no exit step recorded %q: no gate was faced", decision)
+		}
 	}
 }
 
