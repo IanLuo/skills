@@ -47,6 +47,14 @@ LOCKED = """<!-- specs:locked:abc1234 2026-01-01 type=spec -->
 The body.
 """
 
+# The contract line a locked doc records. A doc carrying someone else's marker
+# has none, so those cases assert the marker survived instead.
+CONTRACT_REFERRERS = "- **referrers** (must cite this when they change): specs/other.md"
+
+# A marker lock.sh did not write, in the position both regimes write one in.
+DESIGN_LOCKED = "<!-- design:locked:640b994 2026-09-28 -->\n\n# Design\n"
+NO_TYPE_LOCKED = "<!-- specs:locked:640b994 2026-09-28 -->\n\n# AG\n"
+
 
 def check(name, cond, detail=""):
     global PASS
@@ -104,7 +112,7 @@ def new_repo():
     return repo, pathlib.Path(repo) / DOC
 
 
-def refusal(name, repo, doc, args, expect_in):
+def refusal(name, repo, doc, args, expect_in, contains=CONTRACT_REFERRERS):
     """One refusal case: non-zero, says what is wrong on stderr, changes nothing."""
     before_sha, before_files = digest(doc), listing(doc)
     code, out, err = run(repo, DOC, "--type", "spec", *args)
@@ -114,9 +122,9 @@ def refusal(name, repo, doc, args, expect_in):
           digest(doc) == before_sha, "the doc was rewritten")
     check(f"{name} leaves nothing beside the doc",
           listing(doc) == before_files, f"{listing(doc)} != {before_files}")
-    check(f"{name} keeps the recorded contract",
-          "- **referrers** (must cite this when they change): specs/other.md" in doc.read_text(),
-          doc.read_text())
+    if contains:
+        check(f"{name} keeps the recorded contract", contains in doc.read_text(),
+              doc.read_text())
 
 
 def main():
@@ -201,6 +209,52 @@ def main():
     check("a doc-relative basename is accepted", code == 0, f"exit {code}: {out}")
     check("and lands in the contract",
           "- **upstream** (this doc relies on): other.md" in doc2.read_text(), doc2.read_text())
+    shutil.rmtree(repo)
+
+    # 10 — a lock this script did not write. Another regime's marker is not an
+    #      unlocked doc: the write is unconditional, so a marker the script does
+    #      not recognise is one it would destroy. Reproduced before the fix —
+    #      the design freeze was gone and the exit was 0.
+    repo, doc3 = new_repo()
+    doc3.write_text(DESIGN_LOCKED)
+    refusal("another regime's marker", repo, doc3,
+            ["--upstream", "none", "--referrers", "none"], "design:locked", contains=None)
+    shutil.rmtree(repo)
+
+    # 11 — the shape README.md documents, which carries no type= and so is not a
+    #      marker this script can parse. Unparseable is a refusal too: the
+    #      filename is the same, the marker is not.
+    repo, doc4 = new_repo()
+    doc4.write_text(NO_TYPE_LOCKED)
+    refusal("a marker with no type=", repo, doc4,
+            ["--upstream", "none", "--referrers", "none"], "specs:locked:640b994", contains=None)
+    shutil.rmtree(repo)
+
+    # 12 — and --force is the documented way past it, so the refusal is not a
+    #      blanket refusal of a doc that carries someone else's marker.
+    repo, doc5 = new_repo()
+    doc5.write_text(DESIGN_LOCKED)
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    head = git(repo, "rev-parse", "--short", "HEAD")
+    check("--force replaces a marker it did not write", code == 0, f"exit {code}: {out}")
+    check("and writes its own",
+          doc5.read_text().startswith(f"<!-- specs:locked:{head} "), doc5.read_text()[:80])
+    shutil.rmtree(repo)
+
+    # 13 — a directory is not a doc. It used to reach the write and leave a
+    #      staged <dir>.body beside it, which is not a refusal.
+    repo, _ = new_repo()
+    adir = pathlib.Path(repo) / "specs/adir"
+    adir.mkdir()
+    before_files = sorted(os.listdir(adir.parent))
+    code, out, err = run(repo, "specs/adir", "--type", "spec",
+                         "--upstream", "none", "--referrers", "none")
+    check("a directory is refused", code != 0, f"exit 0: {out}")
+    check("and named as not a file", "specs/adir" in err, err)
+    check("and leaves nothing beside it",
+          sorted(os.listdir(adir.parent)) == before_files, sorted(os.listdir(adir.parent)))
+    check("and is still a directory", adir.is_dir())
     shutil.rmtree(repo)
 
     print()

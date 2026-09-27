@@ -43,7 +43,10 @@
 #   --dir DIR       where the locked docs live (default: .agents/specs)
 #   --covered PATH  measure every doc against PATH instead of the whole project,
 #                   repeatable or comma-separated. For a repo whose docs describe
-#                   one part of it, or to ask a narrower question once.
+#                   one part of it, or to ask a narrower question once. An empty
+#                   element — a stray comma — is a usage error; omitting the
+#                   value entirely measures the whole project, which measures
+#                   more rather than less.
 #
 # It runs as a gate step in a playbook, so its exit code is the answer:
 #   0 — every marker is current
@@ -75,6 +78,23 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# An empty element in a covered list is a stray comma, and it is not the same
+# thing as --covered "": that omits the value, so the caller names no narrowing
+# at all and the whole project is measured. An empty element is an empty
+# pathspec, which git refuses — and what a refused range leaves behind is a range
+# that was never evaluated, which arrives at the comparison below as "nothing
+# moved". The loop below cannot catch it: the empty string is not a path that
+# does not exist, it is not a path, and it appends nothing to the list it builds.
+if [ -n "$covered" ]; then
+    IFS=',' read -r -a covered_paths <<< "$covered"
+    for p in "${covered_paths[@]}"; do
+        if [ -z "$p" ]; then
+            echo "check-specs: --covered \"$covered\" has an empty path in it" >&2
+            exit 2
+        fi
+    done
+fi
 
 # A project with no docs directory has no locked doc that can be behind: the
 # question is vacuously settled, and refusing would gate every dispatch in a
@@ -136,7 +156,19 @@ for doc in "$dir"/*.md; do
         continue
     fi
 
-    moved=$(git log --oneline "$sha"..HEAD -- "${paths[@]}" 2>/dev/null)
+    # A range git refuses is not an empty range, and the two must not arrive here
+    # as the same value. The check above removes the pathspec this script knows
+    # how to make git refuse; any other refusal it has would otherwise be
+    # swallowed by 2>/dev/null and read as "nothing moved".
+    moved=$(git log --oneline "$sha"..HEAD -- "${paths[@]}" 2>&1)
+    log_status=$?
+    if [ "$log_status" -ne 0 ]; then
+        echo "$doc could not be measured against $shown:" >&2
+        printf '%s\n' "$moved" | sed 's/^/  /' >&2
+        status=1
+        continue
+    fi
+
     if [ -n "$moved" ]; then
         echo "$doc is locked at $sha but $shown has moved since:" >&2
         printf '%s\n' "$moved" | sed 's/^/  /' >&2
@@ -157,6 +189,13 @@ if [ "$checked" -eq 0 ]; then
 else
     noun=docs
     [ "$checked" -eq 1 ] && noun=doc
-    echo "check-specs: $checked locked $noun, every marker current — no commit has moved past the one a marker names; this does not say a doc still describes the code"
+    # The range this green was measured over, named as the header names it. With
+    # --covered it is the covered paths and not the whole history: a commit that
+    # moved past the marker without touching them leaves the marker current, so
+    # "no commit has moved past the one a marker names" was a claim only the
+    # whole-project measurement could make.
+    measured="the project"
+    [ -n "$covered" ] && measured="the covered paths ($covered)"
+    echo "check-specs: $checked locked $noun, every marker current — no commit has landed on $measured since the sha a marker names; this does not say a doc still describes the code"
 fi
 exit 0

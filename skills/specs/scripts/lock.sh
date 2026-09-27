@@ -8,8 +8,9 @@
 #
 #   --upstream   docs this one relied on at lock time ("none" for a root). Required.
 #   --referrers  docs/code that must cite this one when they change. Required.
-#   --force      rotate an existing lock to the current sha + date. Without it,
-#                an already-locked doc exits non-zero.
+#   --force      rotate an existing lock to the current sha + date, or replace a
+#                lock marker this script did not write. Without it, either is a
+#                refusal.
 #   --date       override today's date (deterministic tests).
 #
 # Both contract flags are required, and "none" is how a doc says it has none: an
@@ -19,11 +20,19 @@
 # of that graph — there is no git history to recover it from — so a rotation was
 # also silent. Every entry must name something that exists.
 #
+# What the doc already carries is established before anything is written. Its own
+# marker is a rotation; any *other* lock marker is one this script did not write
+# — another regime's (`design:locked:`), or its own shape without the `type=` it
+# reads — and since the write is unconditional, a marker it does not recognise is
+# one it would destroy rather than replace. Both are refusals, and --force is the
+# way past either.
+#
 # Nothing is written until every check has passed: a refusal leaves the doc
 # byte-identical and leaves nothing beside it.
 #
-# Exit codes: 0 written/rotated · 1 refuse (already locked, no --force) ·
-#             2 usage error (missing or invalid argument).
+# Exit codes: 0 written/rotated · 1 refuse (already locked, or carrying a lock
+#             this script did not write) · 2 usage error (missing or invalid
+#             argument, including a <doc> that is not a file).
 
 set -euo pipefail
 
@@ -53,6 +62,20 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$DOC" ] || { printf 'lock: <doc> is required\n' >&2; exit 2; }
+
+# <doc> must name a doc this script can write. A directory used to get as far as
+# the redirect at the end — after the body had been staged beside it — and exit
+# leaving <dir>.body behind: not a refusal, and the header's "leaves nothing
+# beside it" broken by the one input that could never have succeeded.
+if [ -e "$DOC" ] && [ ! -f "$DOC" ]; then
+  printf 'lock: %s is not a file; <doc> must name a doc\n' "$DOC" >&2; exit 2
+fi
+
+# The staged body must not outlive the run on any path, not only the ones this
+# script plans for: a doc that cannot be written (a read-only file) fails at the
+# redirect with the stage already on disk.
+trap 'rm -f "${DOC}.body"' EXIT
+
 case "$TYPE" in
   spec|system-design|architecture) ;;
   *) printf 'lock: --type must be spec|system-design|architecture (got "%s")\n' "${TYPE:-}" >&2; exit 2 ;;
@@ -68,6 +91,18 @@ if [ -f "$DOC" ] && grep -qE '^<!-- specs:locked:[0-9a-f]+ [0-9-]+ type=' "$DOC"
   # caller can pass it through a rotation unchanged, so it is shown when a
   # rotation is refused for a missing flag.
   RECORDED="$(grep -m2 -E '^- \*\*(upstream|referrers)\*\*' "$DOC" || true)"
+fi
+
+# A lock this script did not write. Its own shape is read above, so anything
+# else that is a lock marker is either another regime's or its own shape missing
+# the `type=` it needs to read — and the write below is unconditional, so a
+# marker it does not recognise is one it would overwrite rather than rotate.
+# Anchored at the start of a line because that is where a marker is a marker: the
+# docs that quote the shape in prose (README.md, AGENTS.md, design-task/SKILL.md)
+# begin those lines with something else.
+FOREIGN=""
+if [ "$ALREADY_LOCKED" -eq 0 ] && [ -f "$DOC" ]; then
+  FOREIGN="$(grep -m1 -E '^<!-- [A-Za-z][A-Za-z0-9_-]*:locked:' "$DOC" || true)"
 fi
 
 MISSING=""
@@ -123,6 +158,13 @@ check_contract --referrers "$REFERRERS" || exit 2
 
 if [ "$ALREADY_LOCKED" -eq 1 ] && [ "$FORCE" -ne 1 ]; then
   printf 'lock: %s is already locked; pass --force to rotate\n' "$DOC" >&2; exit 1
+fi
+
+if [ -n "$FOREIGN" ] && [ "$FORCE" -ne 1 ]; then
+  printf 'lock: %s carries a lock this script did not write:\n' "$DOC" >&2
+  printf '  %s\n' "$FOREIGN" >&2
+  printf 'lock: pass --force to replace it\n' >&2
+  exit 1
 fi
 
 SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"

@@ -27,10 +27,17 @@ stubbed history. The refusal cases are the point:
      being current is not the doc still describing the code. A doc locked by the
      design regime is reported by that wording as carrying no marker at all,
      which is the scope the script states rather than a defect it hides.
+ 12. the pass under --covered names the covered paths as what it measured, since
+     a commit can move past the marker without touching them
+ 13. an empty element in a covered list is a usage error rather than a pass, and
+     --covered "" still widens to the whole project
+ 14. a range git refuses to evaluate fails the run, rather than reading as an
+     empty range and passing
 
 Case 11 is the one that is not about a status: the script's exit code is the
 same either way, and the reading a caller takes from green is the thing that was
-wrong.
+wrong. Cases 12-14 are all that same misreading one layer in — a green taken for
+more than it established, up to a green over a range that never ran.
 
 Usage: python3 tests/check-specs/test_check_specs.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -137,6 +144,8 @@ def main():
     check("a pass says what it established", "every marker current" in out, out)
     check("and says what it did not", "does not say a doc still describes the code" in out, out)
     check("and counts what it read", "1 locked doc," in out, out)
+    check("and names the whole project as what it measured",
+          "no commit has landed on the project since" in out, out)
     shutil.rmtree(repo)
 
     # 4 — locked behind commits, and with no --covered the whole project counts.
@@ -213,6 +222,56 @@ def main():
     code, out = run(repo, "--dir", ".agents/specs")
     check("two current docs pass together", code == 0, f"exit {code}: {out}")
     check("and the pass counts both", "2 locked docs," in out, out)
+    shutil.rmtree(repo)
+
+    # 12 — the pass under --covered says which paths it measured. A commit can
+    #      move past the marker and still miss them, so "no commit has moved past
+    #      the one a marker names" was true only for the whole project. Here the
+    #      marker sits at b and c has landed on src; --covered docs is current.
+    repo, a, b, c = new_repo()
+    lock(repo, ".agents/specs/a.md", b)
+    code, out = run(repo, "--covered", "docs")
+    check("a pass under --covered passes", code == 0, f"exit {code}: {out}")
+    check("and names the covered paths as what it measured",
+          "no commit has landed on the covered paths (docs) since" in out, out)
+    check("not the whole history",
+          "no commit has moved past the one a marker names" not in out, out)
+    shutil.rmtree(repo)
+
+    # 13 — an empty element in a covered list. The loop written to catch a path
+    #      that is not here cannot see it: the empty string appends nothing to
+    #      `missing`. It then reached git log as an empty pathspec, which is a
+    #      fatal, which 2>/dev/null made indistinguishable from an empty range —
+    #      so the doc was reported current with a commit past it.
+    repo, a, b, c = new_repo()
+    lock(repo, ".agents/specs/a.md", a)
+    for decl in (",src", "src,,"):
+        code, out = run(repo, "--covered", decl)
+        check(f"--covered {decl!r} refuses", code != 0, f"exit {code}: {out}")
+        check(f"--covered {decl!r} names the declaration", decl in out, out)
+        check(f"--covered {decl!r} does not report the doc current",
+              "every marker current" not in out, out)
+    code, out = run(repo, "--covered", "")
+    check("--covered '' still widens to the whole project", code == 1,
+          f"exit {code}: {out}")
+    check("and says so", "the project has moved since" in out, out)
+    code, out = run(repo, "--covered", "src")
+    check("a correct --covered still reports", code == 1, f"exit {code}: {out}")
+    check("and names the paths it measured", "src has moved since" in out, out)
+    shutil.rmtree(repo)
+
+    # 14 — a range git refuses to evaluate is not an empty range. The pathspec
+    #      here exists, so it clears the loop above, and git rejects it as
+    #      invalid magic: without the status check that failure was swallowed.
+    repo, a, b, c = new_repo()
+    lock(repo, ".agents/specs/a.md", a)
+    write(repo, ":(badmagic)x", "not a doc\n")
+    code, out = run(repo, "--covered", ":(badmagic)x")
+    check("a range git refuses fails the run", code == 1, f"exit {code}: {out}")
+    check("and says the doc could not be measured", "could not be measured" in out, out)
+    check("and shows why rather than swallowing it",
+          "Invalid pathspec magic" in out, out)
+    check("and does not report the doc current", "every marker current" not in out, out)
     shutil.rmtree(repo)
 
     print()
