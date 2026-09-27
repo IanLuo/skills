@@ -6,8 +6,8 @@ package main
 // used to be assembled inside the step out of shell test results: a text match
 // against git's listing, then `[ -n "$b" ] || exit 0`. That shape cannot tell
 // "the match found nothing" from "there is correctly nothing to do", because
-// both are empty stdout and exit 0, and three of the seven defects four rounds
-// of fixes produced were exactly that. The decision now lives in
+// both are empty stdout and exit 0, and that shape produced more than one of the
+// defects this step has been through. The decision now lives in
 // `defaults/scripts/branch-decision.sh`, whose exit status is the answer:
 //
 //	0  nothing to do                     1  delete the branch named on stdout
@@ -20,8 +20,8 @@ package main
 // be empty are the proof that a caller that ignores the status has no name to
 // delete unless the seam authorised the deletion.
 //
-// The rows are the four rounds' findings turned into cases rather than shell
-// guards, and they are split by what the answer needs to be decided:
+// The rows are the findings turned into cases rather than shell guards, and they
+// are split by what the answer needs to be decided:
 //
 //   - Rows that need no repository at all: the command line, and a path that
 //     cannot be resolved. The answer is decided before git is asked anything,
@@ -202,15 +202,17 @@ func TestBranchDecisionAnswersOneStatePerStatus(t *testing.T) {
 			wantStatus: 0, wantOut: "", wantErr: "",
 		},
 		{
-			// `HEAD` arrives here as a branch name, and it is not one. A worktree
+			// `HEAD` arrives here as a branch name, and it is not one: a worktree
 			// whose HEAD was pointed at `refs/heads/HEAD` makes git's listing print
 			// `branch refs/heads/HEAD`, so the name is read out of the registration
-			// like any other — and `HEAD` is the one name git will not delete.
-			// Answering "delete" for it sends the caller to detach a worktree for a
-			// branch that cannot go. This row exists because the guard that used to
-			// stand in the step was read as unreachable while this decision was
-			// written, on the argument that no branch is called HEAD; the argument
-			// is wrong, and the construction below is what makes it wrong.
+			// like any other. It is not a name a delivery holds a branch by — `git
+			// check-ref-format --branch HEAD`, `git branch HEAD` and `git worktree
+			// add -b HEAD` all refuse it — so there is no delivery branch here to
+			// free, whatever git would do with a ref of that name. This row exists
+			// because the guard that used to stand in the step was read as
+			// unreachable while this decision was written, on the argument that no
+			// branch is called HEAD; the argument is wrong, and the construction
+			// below is what makes it wrong.
 			name:     "no branch here: a worktree whose branch is named HEAD",
 			overRepo: true,
 			build: func(t *testing.T) (string, []string) {
@@ -346,8 +348,8 @@ func TestBranchDecisionAnswersOneStatePerStatus(t *testing.T) {
 			// about a branch — and with the checkout guard sitting below the
 			// `HEAD` guard this record answered nothing to do instead, losing the
 			// refusal. `refs/heads/HEAD` is not a name git's branch commands will
-			// make — `git branch HEAD` refuses it — so the ref is written raw,
-			// which is the one way the state exists.
+			// make — `git branch HEAD` refuses it — so the ref is put there out of
+			// band, with `update-ref`.
 			name:     "refuse: the repository's main checkout standing on HEAD",
 			overRepo: true,
 			build: func(t *testing.T) (string, []string) {
@@ -449,8 +451,9 @@ func TestBranchDecisionAnswersOneStatePerStatus(t *testing.T) {
 
 // The regression the seam has to be watched for: a decision that is safe in the
 // tests and a foot-gun in the shell. A caller is not careful by construction —
-// the step bodies are shell, and the shape that made seven defects was the
-// careless one — so both careless callers are run against real repositories.
+// the step bodies are shell, and the careless shape is the one that deleted a
+// branch that was not the delivery's — so both careless callers are run against
+// real repositories.
 //
 // What makes them safe is arithmetic, not attention: the branch name reaches
 // stdout on exactly one status and it is not 0. A caller that ignores the status

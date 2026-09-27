@@ -4,27 +4,31 @@
 # do with the branch a delivery's worktree stands on.
 #
 # The teardown has one thing to decide: what to do with the branch the delivery
-# created. Four rounds of fixes produced seven defects from that decision, and
-# three of them were the same defect — the step assembled its answer out of shell
-# test results, a text match against git's listing followed by
-# `[ -n "$b" ] || exit 0`, so "the match found nothing" and "there is correctly
-# nothing to do" were the same value: empty stdout, exit 0. A branch that matched
-# nothing was skipped in silence; a branch that matched the wrong worktree was
-# deleted. The defect was never the language. It was where the answer was
-# assembled.
+# created. The step used to assemble its answer out of shell test results — a text
+# match against git's listing followed by `[ -n "$b" ] || exit 0` — and that shape
+# cannot tell "the match found nothing" from "there is correctly nothing to do",
+# because both are empty stdout and exit 0. The defect was never the language. It
+# was where the answer was assembled.
 #
 # So the decision lives here and answers in its status, one state per status,
 # never in the text it prints:
 #
 #   0  nothing to do: this decision found no delivery branch to free. stdout is
-#      empty, and so is the script's own stderr. It is the answer when there is no
-#      worktree at the recorded path, when the worktree there stands on no branch,
-#      and when it stands on `HEAD` — a name git's listing prints in the branch
-#      slot that is not a branch name.
+#      empty. It is the answer when there is no worktree at the recorded path, when
+#      the worktree there stands on no branch, and when it stands on `HEAD` — a
+#      name git's listing prints in the branch slot that is not a branch name.
 #   1  delete the branch named on stdout. stdout is the branch name and nothing
-#      else; stderr is empty.
+#      else.
 #   2  the command line was wrong. stderr says how.
 #   3  refuse. stderr is the reason, one line, prefixed with LABEL when given.
+#
+# stderr is where the script writes those reasons, and it is not a channel the
+# script owns alone: the git commands it runs share it, so a repository whose
+# `HEAD` is an ambiguous name puts git's own warning there beside the answer. The
+# contract is about what the script writes. Silencing git instead would take the
+# diagnostics away from a refusal for the sake of a promise nothing here needs —
+# the status and stdout are what a caller acts on, and stderr emptiness was never
+# part of what makes the answer safe.
 #
 # The property that makes a caller safe is arithmetic, not attention: the branch
 # name reaches stdout on exactly one status, and it is not 0. A caller that
@@ -136,11 +140,9 @@ b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch re
 # `HEAD` is a name git's listing prints in the branch slot, and it is not a
 # branch name: `git check-ref-format --branch HEAD`, `git branch HEAD` and
 # `git worktree add -b HEAD` all refuse it, with "'HEAD' is not a valid branch
-# name". No delivery holds a branch by it, and `refs/heads/HEAD` exists only where
-# a raw write put it — `git update-ref refs/heads/HEAD <sha>` skips the check
-# every branch command makes — and while it exists the repository cannot answer
-# the name with one value: `git rev-parse HEAD` reports `warning: refname 'HEAD'
-# is ambiguous`.
+# name". No delivery holds a branch by it, and while a ref of that name exists the
+# repository cannot answer the name with one value: `git rev-parse HEAD` reports
+# `warning: refname 'HEAD' is ambiguous`.
 #
 # What this answer rests on is the decision's own subject, not git's cooperation —
 # and git does cooperate, which this comment claimed otherwise until it was
