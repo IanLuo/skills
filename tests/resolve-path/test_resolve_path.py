@@ -21,7 +21,10 @@ refusals are the point:
      gets wrong
   5. a trailing slash resolves the same as no trailing slash — `-L` on it asks
      about the directory, not the link, and skips the resolution entirely
-  6. a symlink above the last component resolves too
+  6. a symlink above the last component resolves too, and one whose target
+     leaves the link's own directory is where the textual fold and the kernel
+     answer different directories — the shipped answer is asserted, so the
+     choice the resolver's comment records is pinned by a test
   7. two spellings of one directory come back identical
   8. a path whose directory does not exist exits 1 with nothing on stdout,
      so the caller refuses rather than matching nothing and passing
@@ -39,6 +42,14 @@ refusals are the point:
      back out unchanged — a match against git's listing that finds nothing, which
      a caller reads as "already gone" rather than as the miss it is. That is the
      leak this closes: a branch left behind, exit 0, nothing said.
+ 13. one directory has many spellings and every one of them comes back as the
+     same single string — the caller compares that against `git worktree list
+     --porcelain`, so a second answer is a worktree it is told is not
+     registered. Asserted as a property over combinations rather than as a list
+     of the spellings someone thought of, because folding a trailing slash can
+     expose a `/.` and folding a `/.` can expose a `//`, so the interesting
+     cases are the compositions — and together with idempotence, since an answer
+     with nothing left to fold is one resolving again cannot change.
 
 Usage: python3 tests/resolve-path/test_resolve_path.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -124,13 +135,39 @@ def main():
     check("a trailing slash resolves the same as without it",
           code == 0 and out == str(real / "target"), f"exit {code}: {out!r} {err!r}")
 
-    # 6 — a link above the last component.
+    # 6 — a link above the last component, which is the one place the fold and
+    # the kernel are not the same question. A link pointing INTO the directory
+    # it sits in, as `up` does above, is a link the two folds agree about. A
+    # link pointing OUT of it is not: `..` pops the component before it in the
+    # STRING, so it pops the LINK rather than the directory the link names, and
+    # `beside/l/../sibling` answers `beside/sibling` where the kernel follows
+    # `l` to `away` first and reaches the sibling of `away`'s parent. Two
+    # different directories. The textual answer is the shipped one, by choice,
+    # and both are asserted below: the resolver's own comment is where the
+    # choice is written down, and until this case existed nothing failed if a
+    # later swap to a physical fold changed the answer here.
     above = root / "above"
     (above / "inner").mkdir(parents=True)
     (root / "up").symlink_to(target)
     code, out, err = run(str(root / "up" / ".." / "target"))
     check("a symlink above the last component resolves",
           code == 0 and out == str(real / "target"), f"exit {code}: {out!r} {err!r}")
+
+    beside = root / "beside"
+    beside.mkdir()
+    (root / "away").mkdir()
+    (root / "sibling").mkdir()
+    os.symlink("../away", str(beside / "l"))
+    spelled = str(beside / "l" / ".." / "sibling")
+    code, out, err = run(spelled)
+    check("a link above the last component that leaves its own directory "
+          "answers the textual fold",
+          code == 0 and out == str(real / "beside" / "sibling"),
+          f"exit {code}: {out!r} want {str(real / 'beside' / 'sibling')!r} {err!r}")
+    check("and the kernel answers a different directory, so the two folds are "
+          "told apart by this case",
+          os.path.realpath(spelled) == str(real / "sibling"),
+          f"realpath {os.path.realpath(spelled)!r} want {str(real / 'sibling')!r}")
 
     # 7 — the property the steps actually depend on.
     _, a, _ = run(str(link))
