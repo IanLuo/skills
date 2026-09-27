@@ -25,6 +25,8 @@ package main
 // Its own file's tests build a real batch and run the shipped step against it.
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -389,6 +391,97 @@ func TestBatchBranchPostconditionPassesAfterTheTeardownItselfRuns(t *testing.T) 
 	if err != nil {
 		t.Fatalf("the batch postcondition refused a fan-out its own teardown had removed: %v\n%s", err, out)
 	}
+}
+
+// The read is a gate too, and this is the case that was found in `nix build`:
+// the batch's steps read the members through jq, the build's check phase carried
+// git and not jq, and `sh` printed `jq: command not found`, wrote no rows, and
+// the pipeline exited 0. So the branch step deleted nothing and passed, and the
+// postcondition below it certified: a check whose body never ran reported success
+// over every member. That is the defect this whole task is about, one layer in —
+// a gate that cannot read its input and does not say so.
+//
+// A missing jq is "cannot tell", not "nothing to do": the members are unknown, so
+// nothing about them can be asserted and nothing may be certified. Both steps now
+// read in two assignments and refuse on either failing, and this test is what
+// holds them to it. It refuses rather than passing, and it does not act — every
+// member's branch is still there afterwards, which is what a step that could not
+// read its input is allowed to have done.
+//
+// The PATH is built rather than emptied: a directory holding a symlink to git and
+// nothing else. That is deliberate, because on a machine where git and jq share a
+// bin directory — this one does, both in ~/.nix-profile/bin — a PATH pointed at
+// git's own directory still resolves jq, and a test written that way would prove
+// nothing while looking like it did.
+func TestBatchStepsRefuseWhenTheyCannotReadTheMemberRecords(t *testing.T) {
+	_, root, batch, members := batchWithWorktreeMembers(t, "one", "two")
+	path := pathWithGitAlone(t)
+
+	steps := []struct {
+		name string
+		body string
+	}{
+		{"the branch step", batchBranchStep(t)},
+		{"the branch postcondition", batchBranchPostcondition(t)},
+	}
+	for _, step := range steps {
+		out, err := runTeardownStep(t, step.body, root, map[string]string{
+			"HOME": testHome(t), "FS_NODE": batch, "FS_BATCH": batch, "PATH": path,
+		})
+		if err == nil {
+			t.Errorf("%s passed with no jq to read the members through, so it certified a batch it "+
+				"never read:\n%s", step.name, out)
+			continue
+		}
+		// The refusal has to be about the read. Without jq the step could also fall
+		// over later and refuse for an unrelated reason, which would look the same
+		// from the outside and would not be this guard.
+		if !strings.Contains(out, "jq") {
+			t.Errorf("%s refused, but not because it could not read the members through jq; got:\n%s",
+				step.name, out)
+		}
+	}
+
+	// It refused without acting: nothing was deleted by a step that could not tell
+	// whose branch it was looking at.
+	for _, m := range members {
+		if !gitHasBranch(t, root, m.branch) {
+			t.Errorf("branch %s was deleted by a step that could not read the member records", m.branch)
+		}
+	}
+}
+
+// batchBranchStep is the shipped batch step that frees each member's branch — the
+// destructive one, and the one whose silent no-op left branches behind.
+func batchBranchStep(t *testing.T) string {
+	t.Helper()
+	return shippedStep(t, shippedDefault(t, batchPb), "do", "which member's branch to free")
+}
+
+// pathWithGitAlone is a PATH that resolves git and deliberately does not resolve
+// jq: a directory of its own holding a symlink to this machine's git. git runs
+// from it — it resolves its own exec path through the symlink — and nothing else
+// is there to be found. jq is asserted absent rather than assumed, because the
+// whole test is only worth anything if it really is.
+func pathWithGitAlone(t *testing.T) string {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git is not on PATH, so a PATH with git and without jq cannot be built: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(git, filepath.Join(dir, "git")); err != nil {
+		t.Fatalf("symlinking %s into the restricted PATH: %v", git, err)
+	}
+	// Checked through the same shell the steps run under, so what is asserted is
+	// what the step will experience rather than what this process's PATH holds.
+	probe := exec.Command("sh", "-c", "command -v jq")
+	probe.Env = []string{"PATH=" + dir}
+	if out, err := probe.CombinedOutput(); err == nil {
+		t.Fatalf("jq resolves at %q through the restricted PATH, so the steps would read fine and this "+
+			"test would prove nothing", strings.TrimSpace(string(out)))
+	}
+	return dir
 }
 
 // batchWithWorktreeMembers builds a real batch the way a cap does: a batch node,

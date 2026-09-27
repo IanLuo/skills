@@ -45,6 +45,31 @@ exit:
   # single declaration replaces the byte-identical six steps that parallel-exit
   # and integration-exit each carried.
   #
+  # Every step below reads the members through `jq`, and every one of them used
+  # to read them as a bare pipeline: `"$FS_BIN" batch ... | jq ... | while`. That
+  # is a fail-open shape, and the sharpest one here, because the failure is
+  # invisible in exactly the way the steps are meant to detect. A `jq` that is
+  # not on PATH prints `jq: command not found`, writes no rows, and the pipeline
+  # exits with the status of the loop it never entered — 0. So the branch step
+  # deleted nothing and passed, and the postconditions below CERTIFIED: a check
+  # whose body never ran reports success over every member. It was found in
+  # `nix build`'s check phase, where the sandbox carries git and not jq, and it
+  # is the same defect the branch postcondition exists for, one layer in: a gate
+  # that cannot read its input and does not say so.
+  #
+  # So each step reads in two assignments, and refuses on either. The first
+  # captures `fs batch`'s stdout alone — its log line goes to stderr, and folding
+  # that into the data would hand jq a line that is not JSON. The second pipes
+  # that into jq and captures the rows, jq's own stderr included, so a refusal
+  # can quote it. Both are plain `||`, not `set -o pipefail`: these steps run
+  # under whatever `sh` the invoking system provides, and pipefail is a bash
+  # extension — a guard that is itself a portability gamble is the same defect
+  # one layer down. The rule is the one the seam for the branch decision will be
+  # held to: the status that authorises a pass must not be reachable by a failure
+  # to look. Nothing is forced by it — a batch whose members are all gone reads
+  # fine and every loop below is a no-op — and the refusal names what could not
+  # be read.
+  #
   # The branch goes first, and that order is still required — though no longer
   # for the reason it once was. What forces it is the deletion: git refuses to
   # delete a branch a worktree has checked out, so the branch is freed —
@@ -68,7 +93,7 @@ exit:
   # refuses rather than being deleted, and a worktree git will not remove
   # refuses — because a close that destroys work to succeed is not a close worth
   # having.
-  - do: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | [.worktree_path // "", .worktree // ""] | @tsv' | while IFS="$(printf '\t')" read -r p ws; do [ -n "$p" ] || { [ -z "$ws" ] && continue; echo "member $ws records no path" >&2; exit 1; }; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve member $ws path $p, so which worktree it names cannot be told" >&2; exit 1; }; p="$rp"; listing=$(git worktree list --porcelain) || { echo "cannot read git's worktree list, so which worktree member $ws names cannot be told" >&2; exit 1; }; rq=$(git rev-parse --show-toplevel 2>/dev/null); here=$("$FS_BIN" script resolve-path.sh "$rq") || { echo "cannot resolve this project's own checkout $rq, so whether member $ws path $p is it cannot be told" >&2; exit 1; }; [ "$p" != "$here" ] || { echo "member $ws records the project's own checkout $p, not a delivery's worktree; refusing to touch it" >&2; exit 1; }; b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || continue; [ "$b" = HEAD ] && continue; tb=$(printf '%s\n' "$listing" | sed -n '1,3s|^branch refs/heads/||p'); [ -z "$tb" ] || [ "$b" != "$tb" ] || { echo "branch $b stands in the project's own checkout; refusing to delete it for member $ws" >&2; exit 1; }; default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""; default="${default#*/}"; [ -z "$default" ] || [ "$b" != "$default" ] || { echo "branch $b is the repository's default branch; refusing to delete it" >&2; exit 1; }; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi; done
+  - do: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so which member's branch to free cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | [.worktree_path // "", .worktree // ""] | @tsv' 2>&1) || { echo "cannot read the batch's member records through jq, so which member's branch to free cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r p ws; do [ -n "$p" ] || { [ -z "$ws" ] && continue; echo "member $ws records no path" >&2; exit 1; }; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve member $ws path $p, so which worktree it names cannot be told" >&2; exit 1; }; p="$rp"; listing=$(git worktree list --porcelain) || { echo "cannot read git's worktree list, so which worktree member $ws names cannot be told" >&2; exit 1; }; rq=$(git rev-parse --show-toplevel 2>/dev/null); here=$("$FS_BIN" script resolve-path.sh "$rq") || { echo "cannot resolve this project's own checkout $rq, so whether member $ws path $p is it cannot be told" >&2; exit 1; }; [ "$p" != "$here" ] || { echo "member $ws records the project's own checkout $p, not a delivery's worktree; refusing to touch it" >&2; exit 1; }; b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || continue; [ "$b" = HEAD ] && continue; tb=$(printf '%s\n' "$listing" | sed -n '1,3s|^branch refs/heads/||p'); [ -z "$tb" ] || [ "$b" != "$tb" ] || { echo "branch $b stands in the project's own checkout; refusing to delete it for member $ws" >&2; exit 1; }; default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""; default="${default#*/}"; [ -z "$default" ] || [ "$b" != "$default" ] || { echo "branch $b is the repository's default branch; refusing to delete it" >&2; exit 1; }; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi; done
 
   # Remove each member's git worktree. `git worktree remove` is the command
   # because git is what owns a worktree and its registration; a path git no
@@ -76,7 +101,7 @@ exit:
   # — `git worktree prune` clears a stale registration and exits 0. A worktree
   # git refuses to remove — a dirty checkout — is a refusal naming what git
   # said, never a silent leak.
-  - do: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | [.worktree_path // "", .worktree // ""] | @tsv' | while IFS="$(printf '\t')" read -r p ws; do [ -n "$p" ] || { [ -z "$ws" ] && continue; echo "member $ws records no path" >&2; exit 1; }; if [ -e "$p" ]; then git worktree remove "$p"; else git worktree prune; fi; done
+  - do: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so which member's worktree to remove cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | [.worktree_path // "", .worktree // ""] | @tsv' 2>&1) || { echo "cannot read the batch's member records through jq, so which member's worktree to remove cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r p ws; do [ -n "$p" ] || { [ -z "$ws" ] && continue; echo "member $ws records no path" >&2; exit 1; }; if [ -e "$p" ]; then git worktree remove "$p"; else git worktree prune; fi; done
 
   # Remove each member's herdr workspace. This is the step whose absence leaked
   # wE and wG: `git worktree remove` never touches the workspace, so a fan-out
@@ -84,7 +109,7 @@ exit:
   # `herdr workspace close`, addressed by id. workspace_not_found is
   # already-gone (the goal state); any other failure refuses, because a
   # teardown that cannot tell gone from failed must not report success.
-  - do: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | .worktree // ""' | while read -r ws; do [ -n "$ws" ] || continue; if ! out=$(herdr workspace close "$ws" 2>&1); then case "$out" in *workspace_not_found*) ;; *) echo "herdr workspace close $ws failed: $out" >&2; exit 1;; esac; fi; done
+  - do: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so which member's workspace to close cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | .worktree // ""' 2>&1) || { echo "cannot read the batch's member records through jq, so which member's workspace to close cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while read -r ws; do [ -n "$ws" ] || continue; if ! out=$(herdr workspace close "$ws" 2>&1); then case "$out" in *workspace_not_found*) ;; *) echo "herdr workspace close $ws failed: $out" >&2; exit 1;; esac; fi; done
 
   # The postconditions. Each is about a resource the steps above claim to have
   # removed, and each fails loudly rather than trusting a return code — the
@@ -92,7 +117,7 @@ exit:
   #
   # They run after the trees are gone, so their cwd is the project root: a check
   # about a removed path has no footing inside it.
-  - check: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | .worktree_path // ""' | while read -r p; do [ -z "$p" ] || [ ! -e "$p" ] || { echo "the checkout is still on disk at $p" >&2; exit 1; }; done
+  - check: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so whether a member's checkout is still on disk cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | .worktree_path // ""' 2>&1) || { echo "cannot read the batch's member records through jq, so whether a member's checkout is still on disk cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while read -r p; do [ -z "$p" ] || [ ! -e "$p" ] || { echo "the checkout is still on disk at $p" >&2; exit 1; }; done
 
   # git's listing prints the path it resolved when the worktree was added, so the
   # recorded path is resolved first, through the same resolve-path.sh the branch
@@ -102,13 +127,13 @@ exit:
   # into a variable of its own and named $p only once the call succeeded, so a
   # refusal can still name the path it was about instead of the empty stdout the
   # assignment would otherwise have left there.
-  - check: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | .worktree_path // ""' | while read -r p; do [ -n "$p" ] || continue; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve member path $p, so whether git still registers a worktree there cannot be told" >&2; exit 1; }; p="$rp"; git worktree list --porcelain | grep -qxF "worktree $p" && { echo "git still registers worktree $p" >&2; exit 1; }; done
+  - check: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so whether git still registers a member's worktree cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | .worktree_path // ""' 2>&1) || { echo "cannot read the batch's member records through jq, so whether git still registers a member's worktree cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while read -r p; do [ -n "$p" ] || continue; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve member path $p, so whether git still registers a worktree there cannot be told" >&2; exit 1; }; p="$rp"; git worktree list --porcelain | grep -qxF "worktree $p" && { echo "git still registers worktree $p" >&2; exit 1; }; done
 
   # The workspace check is deliberately not `! herdr workspace get`: a herdr that
   # cannot be reached is not evidence the workspace is gone, and a check that
   # passed on that would be the same fail-open gate this whole task is about. It
   # passes only on workspace_not_found, and refuses when it cannot tell.
-  - check: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | .worktree // ""' | while read -r ws; do [ -n "$ws" ] || continue; if out=$(herdr workspace get "$ws" 2>&1); then echo "herdr still knows workspace $ws" >&2; exit 1; fi; case "$out" in *workspace_not_found*) ;; *) echo "cannot tell whether workspace $ws is gone: $out" >&2; exit 1;; esac; done
+  - check: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so whether a member's workspace is gone cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | .worktree // ""' 2>&1) || { echo "cannot read the batch's member records through jq, so whether a member's workspace is gone cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while read -r ws; do [ -n "$ws" ] || continue; if out=$(herdr workspace get "$ws" 2>&1); then echo "herdr still knows workspace $ws" >&2; exit 1; fi; case "$out" in *workspace_not_found*) ;; *) echo "cannot tell whether workspace $ws is gone: $out" >&2; exit 1;; esac; done
 
   # Every member's branch is gone — the same assertion code.yaml makes for one
   # delivery, held here over the fan-out. The batch's teardown deletes each
@@ -134,4 +159,4 @@ exit:
   # resolves (the branch survived; refuse), 1 when it does not, and anything else
   # when git could not be asked at all — which refuses rather than passing, the
   # same reason the workspace check above passes only on workspace_not_found.
-  - check: "$FS_BIN" batch "$FS_NODE" | jq -r '.data.members[] | [.node // "", .branch // ""] | @tsv' | while IFS="$(printf '\t')" read -r n b; do [ -n "$b" ] || continue; out=$(git rev-parse --verify --quiet "refs/heads/$b" 2>&1); st=$?; [ "$st" -eq 0 ] && { echo "branch $b still exists after the teardown of member $n — the batch's branch step skipped it, or deleted a different branch" >&2; exit 1; }; [ "$st" -eq 1 ] || { echo "cannot tell whether member $n branch $b is gone: $out" >&2; exit 1; }; done
+  - check: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so whether a member's branch is gone cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | [.node // "", .branch // ""] | @tsv' 2>&1) || { echo "cannot read the batch's member records through jq, so whether a member's branch is gone cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r n b; do [ -n "$b" ] || continue; out=$(git rev-parse --verify --quiet "refs/heads/$b" 2>&1); st=$?; [ "$st" -eq 0 ] && { echo "branch $b still exists after the teardown of member $n — the batch's branch step skipped it, or deleted a different branch" >&2; exit 1; }; [ "$st" -eq 1 ] || { echo "cannot tell whether member $n branch $b is gone: $out" >&2; exit 1; }; done

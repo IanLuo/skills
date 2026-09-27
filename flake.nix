@@ -91,7 +91,11 @@
             "-X main.buildDirty=${buildDirty}"
           ];
           # cmd/main_test.go shells out to git, so the check phase needs it on PATH.
-          nativeCheckInputs = [ pkgs.git ];
+          # jq too: the batch playbook's steps read the members' records through
+          # it, and tests that run those steps end to end need the same jq the
+          # steps expect — a check phase without it exercises the fail-closed
+          # guard instead of the step.
+          nativeCheckInputs = [ pkgs.git pkgs.jq ];
           meta.description = "Event-sourced project, task, and dispatch store for agent orchestration";
         };
       });
