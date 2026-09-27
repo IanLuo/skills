@@ -122,6 +122,11 @@ type UnfinishedNode struct {
 	Goal      string     `json:"goal"`
 	Kind      query.Kind `json:"kind"`
 	FoundBy   string     `json:"found_by,omitempty"`
+	// ParentNodeID is the node this one was created under, for a reader that has
+	// to ask what a node is part of rather than what it is — the batch a member
+	// belongs to. It is derivable from fs status, which walks the tree; it is
+	// carried here so a reader can ask the question without the tree.
+	ParentNodeID string `json:"parent_node_id,omitempty"`
 	// BlockCheck is the command the node's last block recorded, when one did:
 	// what fs pending and fs unfinished re-run to tell a live block from one
 	// whose condition is over. Empty for a block with no check.
@@ -1177,13 +1182,14 @@ func (h *Handler) UnfinishedIn(scope string) ([]UnfinishedNode, error) {
 			continue
 		}
 		unfinished = append(unfinished, UnfinishedNode{
-			ProjectID:  scope,
-			NodeID:     node.NodeID,
-			Status:     node.Status,
-			Goal:       node.Goal,
-			Kind:       node.Kind,
-			FoundBy:    node.FoundBy,
-			BlockCheck: node.BlockCheck,
+			ProjectID:    scope,
+			NodeID:       node.NodeID,
+			Status:       node.Status,
+			Goal:         node.Goal,
+			Kind:         node.Kind,
+			FoundBy:      node.FoundBy,
+			ParentNodeID: node.ParentID,
+			BlockCheck:   node.BlockCheck,
 		})
 	}
 	return unfinished, nil

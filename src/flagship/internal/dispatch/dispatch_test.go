@@ -1221,6 +1221,57 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testi
 	}
 }
 
+// A batch exists to run its members concurrently, so a sibling member's dispatch
+// is the work this one runs alongside rather than a dispatch piled on top of it:
+// member two prepares while member one is still open, without --allow-unresolved.
+//
+// The exemption is the relation the dispatch declares — here `--batch` — and
+// never the node id appearing in its text, so a dispatch that only *mentions*
+// the open node still refuses; and a batch exempts its own members, not the
+// open work beside them.
+func TestPrepareGatesOnOtherOpenDispatchesButNotOnItsBatchSiblings(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
+	batch := mustAdd(t, f.h, "cap", "the batch", query.KindBatch, "", nil)
+	memberOne := mustAdd(t, f.h, "cap", "dispatch dev-task: member one", query.KindDispatch, "", &batch)
+
+	second := func(goal string) dispatch.PrepareRequest {
+		return dispatch.PrepareRequest{
+			Project: "skills", TaskType: "dev-task", Goal: goal,
+			Tags: []string{"code"}, Batch: batch,
+		}
+	}
+
+	// Member one is open and undelivered; member two prepares anyway.
+	if resp := f.prepare(second("member two")); !resp.OK {
+		t.Fatalf("a batch sibling must not trip the unresolved gate: %s", resp.Error)
+	}
+
+	// The same goal text with no declared relation grants nothing.
+	resp := f.prepare(devReq("member one"))
+	if resp.OK {
+		t.Fatal("a node id in the goal text must not exempt anything")
+	}
+	for _, want := range []string{"unresolved dispatches", memberOne, "--allow-unresolved"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
+	}
+
+	// A dispatch outside the batch is still other work piled on top of this one.
+	other := mustAdd(t, f.h, "cap", "dispatch dev-task: unrelated", query.KindDispatch, "", nil)
+	resp = f.prepare(second("member three"))
+	if resp.OK {
+		t.Fatal("an open dispatch outside the batch must still trip the gate")
+	}
+	if !strings.Contains(resp.Error, other) {
+		t.Errorf("refusal %q must name the open dispatch %s", resp.Error, other)
+	}
+	if strings.Contains(resp.Error, memberOne) {
+		t.Errorf("refusal %q must not name the exempt sibling %s", resp.Error, memberOne)
+	}
+}
+
 // The entry gate sees the member this dispatch integrates, so it can be a gate
 // about this integration and not about the batch.
 func TestPrepareGivesChecksTheIntegratesLink(t *testing.T) {

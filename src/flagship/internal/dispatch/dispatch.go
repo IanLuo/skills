@@ -296,26 +296,29 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	// --allow-unresolved is this gate's only override: --confirm is about a
 	// failing check and must not pass this one.
 	//
-	// The dispatch this one names as its subject is expected to be unresolved,
-	// and is not the open work this gate protects — it is what this dispatch is
-	// about. That holds for both links, for the same reason. A member's dispatch
-	// is closed only after the integration it waits on is done; and a review is
-	// by construction about a dispatch that has not closed, because the order
-	// the review gate exists for is the review first — a review dispatched after
-	// the close reads a change nobody can act on any more. Every other open
-	// dispatch still refuses.
+	// What the gate subtracts is the set of nodes this dispatch declares a
+	// relation to — see declaredSubjects. Those are the dispatches it is about
+	// or runs alongside, not open work piled on top of it, and every one of them
+	// is expected to be unresolved when this dispatch is prepared. Every other
+	// open dispatch still refuses.
 	//
-	// So this is the rule, not a wider exemption: one named subject, the one
-	// this dispatch exists for. An exemption wider than that would let any
-	// dispatch past the gate by pointing at the work it is piling onto, which is
-	// exactly what the gate is for. --allow-unresolved stays what it was for
-	// everything else.
+	// So this is one rule over the parsed relations, not a list of exemptions:
+	// a relation is a pair of (flag, the nodes it names), and a fifth flag costs
+	// a line here rather than another gate. An exemption wider than the
+	// declaration would let any dispatch past the gate by pointing at the work
+	// it is piling onto, which is exactly what the gate is for — which is why
+	// the relations are read from the command line and never searched for in the
+	// dispatch's own text. --allow-unresolved stays what it was for everything
+	// else.
+	subjects, err := declaredSubjects(h, member, reviewed, batch)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
 	unresolved, err := unresolvedDispatches(h)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
-	unresolved = withoutNode(unresolved, member)
-	unresolved = withoutNode(unresolved, reviewed)
+	unresolved = withoutNodes(unresolved, subjects)
 	if len(unresolved) > 0 && !req.AllowUnresolved {
 		return errResp(unresolvedError(unresolved))
 	}
@@ -1007,17 +1010,62 @@ func Batch(h *command.Handler, batch string) command.Response {
 	}}
 }
 
-// withoutNode drops one node id from a list. It is how the dispatch one names
-// as its subject — the member an integration merges, the change a review reads
-// — is kept out of the unresolved-dispatch gate it would otherwise fail: that
-// gate is about other open work.
-func withoutNode(nodes []command.UnfinishedNode, nodeID string) []command.UnfinishedNode {
-	if nodeID == "" {
+// declaredSubjects is the exemption the unresolved-dispatch gate subtracts: the
+// cap-scope node ids this dispatch declares a relation to, read from the flags
+// fs already parses. Each relation says the named nodes are what this dispatch
+// is about rather than work it piles on top of — an integration's member, a
+// review's change, a member's siblings in a batch, which are by construction
+// running at the same time as it is.
+//
+// The flags are the declaration. A node id that merely appears in the dispatch's
+// goal text grants nothing, which is what keeps this an exemption the dispatch
+// states rather than one it can stumble into: every node named here was also
+// resolved and refused-if-absent before this ran (integrateMember,
+// reviewedDispatch, batchMember), so no dangling reference reaches the gate
+// through it.
+//
+// A relation fs does not parse is not an exemption, and a dispatch with no
+// relation declares nothing. That is how a fix round — which has no flag yet
+// (skills:t-500c6fc5) — still carries --allow-unresolved.
+func declaredSubjects(h *command.Handler, member, reviewed, batch string) (map[string]bool, error) {
+	subjects := map[string]bool{}
+	if member != "" {
+		subjects[member] = true
+	}
+	if reviewed != "" {
+		subjects[reviewed] = true
+	}
+	if batch == "" {
+		return subjects, nil
+	}
+
+	// --batch names the batch, and the batch's other members are the subjects:
+	// the fan-out's purpose is that they run concurrently, so a sibling is work
+	// this dispatch runs alongside, never work piled on top of it. Membership is
+	// the parent link the member's own dispatch wrote, so this is the same fact
+	// fs status renders as a tree, read without the tree.
+	unfinished, err := h.UnfinishedIn(capScope)
+	if err != nil {
+		return nil, err
+	}
+	for _, node := range unfinished {
+		if node.ParentNodeID == batch {
+			subjects[node.NodeID] = true
+		}
+	}
+	return subjects, nil
+}
+
+// withoutNodes drops every named node id from a list. It is how the nodes the
+// dispatch declares a relation to are kept out of the unresolved-dispatch gate
+// they would otherwise fail: that gate is about other open work.
+func withoutNodes(nodes []command.UnfinishedNode, drop map[string]bool) []command.UnfinishedNode {
+	if len(drop) == 0 {
 		return nodes
 	}
 	kept := make([]command.UnfinishedNode, 0, len(nodes))
 	for _, node := range nodes {
-		if node.NodeID != nodeID {
+		if !drop[node.NodeID] {
 			kept = append(kept, node)
 		}
 	}
