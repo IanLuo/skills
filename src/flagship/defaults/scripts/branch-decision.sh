@@ -16,7 +16,10 @@
 # So the decision lives here and answers in its status, one state per status,
 # never in the text it prints:
 #
-#   0  nothing to do. stdout and stderr are both empty.
+#   0  nothing to do. stdout and stderr are both empty. Nothing to do covers all
+#      three ways of there being no branch to delete: no worktree at the path, a
+#      worktree standing on no branch, and a worktree standing on `HEAD` — the
+#      one name that arrives looking like a branch and is not one.
 #   1  delete the branch named on stdout. stdout is the branch name and nothing
 #      else; stderr is empty.
 #   2  the command line was wrong. stderr says how.
@@ -109,6 +112,24 @@ here=$("$FS_BIN" script resolve-path.sh "$rq") || {
 # same reason — there is no branch here to delete.
 b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p')
 [ -n "$b" ] || exit 0
+
+# `HEAD` is a name git's listing prints in the branch slot, and it is not a
+# branch. `git -C <worktree> symbolic-ref HEAD refs/heads/HEAD` makes the
+# registration read `branch refs/heads/HEAD`, so the name is read out of git's
+# own output like any other — and it is the one name git will not delete:
+# `git branch -d HEAD` refuses — with the worktree in place, because that
+# worktree uses it. A decision answering "delete" here would authorise a destroy
+# git cannot honour: the caller detaches the worktree for nothing and the step
+# ends non-zero, on a state whose only correct answer is silence.
+#
+# The guard that used to stand in the step, `[ "$b" = HEAD ] && exit 0`, was
+# dropped while this decision was being written on the argument that no branch
+# is called HEAD — an unreachability inferred from a failed attempt to build the
+# state rather than from the state being unbuildable. It is buildable, in one
+# command, and this is the row in the tests that builds it. It sits next to the
+# "no branch line" answer because it is the same answer for the same reason:
+# there is no branch here to delete.
+[ "$b" != HEAD ] || exit 0
 
 # The first stanza is the repository's main checkout, and a delivery's worktree
 # is never that either: it exists only in a record that is wrong about what the

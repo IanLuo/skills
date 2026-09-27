@@ -202,6 +202,27 @@ func TestBranchDecisionAnswersOneStatePerStatus(t *testing.T) {
 			wantStatus: 0, wantOut: "", wantErr: "",
 		},
 		{
+			// `HEAD` arrives here as a branch name, and it is not one. A worktree
+			// whose HEAD was pointed at `refs/heads/HEAD` makes git's listing print
+			// `branch refs/heads/HEAD`, so the name is read out of the registration
+			// like any other — and `HEAD` is the one name git will not delete.
+			// Answering "delete" for it sends the caller to detach a worktree for a
+			// branch that cannot go. This row exists because the guard that used to
+			// stand in the step was read as unreachable while this decision was
+			// written, on the argument that no branch is called HEAD; the argument
+			// is wrong, and the construction below is what makes it wrong.
+			name:     "no branch here: a worktree whose branch is named HEAD",
+			overRepo: true,
+			build: func(t *testing.T) (string, []string) {
+				repo := scratchGitRepo(t)
+				checkout := filepath.Join(repo, "wt")
+				goGit(t, repo, "worktree", "add", "-q", "--detach", checkout)
+				goGit(t, checkout, "symbolic-ref", "HEAD", "refs/heads/HEAD")
+				return repo, []string{checkout}
+			},
+			wantStatus: 0, wantOut: "", wantErr: "",
+		},
+		{
 			// The half-torn-down state `git worktree remove` leaves: a directory
 			// at the recorded path that git registers no worktree at. Nothing
 			// about it says which branch to look at, so nothing may be touched.
