@@ -375,7 +375,7 @@ func TestBatchBranchPostconditionPassesAfterTheTeardownItselfRuns(t *testing.T) 
 	_, root, batch, members := batchWithWorktreeMembers(t, "one", "two")
 
 	batchPb := shippedDefault(t, batchPb)
-	for _, kind := range []string{"merge-base", "worktree remove"} {
+	for _, kind := range []string{"branch-decision.sh", "worktree remove"} {
 		step := shippedStep(t, batchPb, "do", kind)
 		if out, err := runBatchStep(t, step, root, batch); err != nil {
 			t.Fatalf("the batch's own teardown step (%s) refused: %v\n%s", kind, err, out)

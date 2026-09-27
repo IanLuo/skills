@@ -507,10 +507,13 @@ func worktreeInState(t *testing.T, live, symlink, merged bool) (repo, branch, pa
 }
 
 // branchStep is the shipped branch step of the `code` teardown: the first `do:`
-// in code.yaml that asks git whether a branch is merged.
+// in code.yaml that asks the branch decision what to do with the branch. The
+// step itself no longer decides — see branch_decision_test.go for the decision,
+// which is tested where it lives — so this helper finds the step by the call it
+// makes to that decision.
 func branchStep(t *testing.T) string {
 	t.Helper()
-	return shippedStep(t, shippedDefault(t, codePb), "do", "merge-base")
+	return shippedStep(t, shippedDefault(t, codePb), "do", "branch-decision.sh")
 }
 
 // registrationCheck is the shipped postcondition that asserts git no longer

@@ -78,22 +78,33 @@ exit:
   # an unmerged branch refuses the close while the tree is still on disk to look
   # at, instead of after the tree is gone and the branch is unrecoverable.
   #
-  # A member's branch is named the way the code teardown names one — from git's
-  # own registration of the worktree, never by asking the directory — and the
-  # rule, the destructive defect it closes and the three refusals that guard the
-  # deletion are written out once, in code.yaml's branch step, rather than
+  # A member's branch is freed by the same decision the code teardown makes:
+  # `branch-decision.sh`, whose exit status is its answer — 0 nothing to do, 1
+  # delete the branch it prints on stdout, 2 usage, 3 refuse with the reason on
+  # stderr. The rule, the destructive defect it closes and the four rounds'
+  # findings are written out once, in that script and its tests, rather than
   # re-derived per step. Deriving it per step is how a symlinked member came to
   # match nothing and pass in silence, and asking the directory is how a member
   # whose recorded path was not a worktree at all came back naming the project's
   # own branch and had it deleted.
   #
+  # The member is passed as the script's label, so a refusal reads "member w1:
+  # branch ... is not merged into HEAD" — the address of the failure — rather
+  # than a reason a reader has to carry back to a member by hand.
+  #
+  # The member's recorded path is resolved here as well as in the decision,
+  # because the act below needs a path it can hand to git and test for
+  # existence, and the spelling a delivery records is not one: a path spelled
+  # `$p/sub/..` is on disk while `[ -e ]` says it is not, which would prune a
+  # worktree that is still there.
+  #
   # Already done is not a failure: a member whose path git registers no worktree
   # at is skipped, and a worktree whose branch is already detached, deleted or
-  # pruned is skipped. Nothing is forced — a branch that is not merged into HEAD
-  # refuses rather than being deleted, and a worktree git will not remove
-  # refuses — because a close that destroys work to succeed is not a close worth
-  # having.
-  - do: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so which member's branch to free cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | [.worktree_path // "", .worktree // ""] | @tsv' 2>&1) || { echo "cannot read the batch's member records through jq, so which member's branch to free cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r p ws; do [ -n "$p" ] || { [ -z "$ws" ] && continue; echo "member $ws records no path" >&2; exit 1; }; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve member $ws path $p, so which worktree it names cannot be told" >&2; exit 1; }; p="$rp"; listing=$(git worktree list --porcelain) || { echo "cannot read git's worktree list, so which worktree member $ws names cannot be told" >&2; exit 1; }; rq=$(git rev-parse --show-toplevel 2>/dev/null); here=$("$FS_BIN" script resolve-path.sh "$rq") || { echo "cannot resolve this project's own checkout $rq, so whether member $ws path $p is it cannot be told" >&2; exit 1; }; [ "$p" != "$here" ] || { echo "member $ws records the project's own checkout $p, not a delivery's worktree; refusing to touch it" >&2; exit 1; }; b=$(printf '%s\n' "$listing" | grep -A2 -xF "worktree $p" | sed -n 's|^branch refs/heads/||p'); [ -n "$b" ] || continue; [ "$b" = HEAD ] && continue; tb=$(printf '%s\n' "$listing" | sed -n '1,3s|^branch refs/heads/||p'); [ -z "$tb" ] || [ "$b" != "$tb" ] || { echo "branch $b stands in the project's own checkout; refusing to delete it for member $ws" >&2; exit 1; }; default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""; default="${default#*/}"; [ -z "$default" ] || [ "$b" != "$default" ] || { echo "branch $b is the repository's default branch; refusing to delete it" >&2; exit 1; }; git merge-base --is-ancestor "$b" HEAD || { echo "branch $b is not merged into HEAD; refusing to delete it" >&2; exit 1; }; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi; done
+  # pruned is skipped — both are status 0, an answer that names no branch to
+  # delete. Nothing is forced — a branch that is not merged into HEAD refuses
+  # rather than being deleted, and a worktree git will not remove refuses —
+  # because a close that destroys work to succeed is not a close worth having.
+  - do: out=$("$FS_BIN" batch "$FS_NODE") || { echo "cannot read the batch's member records, so which member's branch to free cannot be told: $out" >&2; exit 1; }; rows=$(printf '%s\n' "$out" | jq -r '.data.members[] | [.worktree_path // "", .worktree // ""] | @tsv' 2>&1) || { echo "cannot read the batch's member records through jq, so which member's branch to free cannot be told: $rows" >&2; exit 1; }; printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r p ws; do [ -n "$p" ] || { [ -z "$ws" ] && continue; echo "member $ws records no path" >&2; exit 1; }; rp=$("$FS_BIN" script resolve-path.sh "$p") || { echo "cannot resolve member $ws path $p, so which worktree it names cannot be told" >&2; exit 1; }; p="$rp"; b=$("$FS_BIN" script branch-decision.sh "$p" "member $ws"); st=$?; case "$st" in 0) continue;; 1) ;; *) exit 1;; esac; if [ -e "$p" ]; then git -C "$p" checkout -q --detach && git branch -d "$b"; else git worktree prune && git branch -d "$b"; fi; done
 
   # Remove each member's git worktree. `git worktree remove` is the command
   # because git is what owns a worktree and its registration; a path git no
