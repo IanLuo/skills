@@ -6,8 +6,7 @@ package main
 // used to be assembled inside the step out of shell test results: a text match
 // against git's listing, then `[ -n "$b" ] || exit 0`. That shape cannot tell
 // "the match found nothing" from "there is correctly nothing to do", because
-// both are empty stdout and exit 0, and that shape produced more than one of the
-// defects this step has been through. The decision now lives in
+// both are empty stdout and exit 0. The decision now lives in
 // `defaults/scripts/branch-decision.sh`, whose exit status is the answer:
 //
 //	0  nothing to do                     1  delete the branch named on stdout
