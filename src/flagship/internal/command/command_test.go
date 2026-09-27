@@ -1335,10 +1335,10 @@ func TestGapsReRunsARecordedClaimCheck(t *testing.T) {
 	}
 }
 
-// One rule, three readers in this package: fs status, fs unfinished and fs gaps
-// read a node's status through the same re-run, so they cannot disagree about
-// it. fs pending is the fourth reader, and internal/dispatch asserts the same
-// wording there.
+// One rule, every reader that renders a status: fs status, fs unfinished and fs
+// gaps read a node's status through the same re-run, so they cannot disagree
+// about it, and fs pending reads it the same way — internal/dispatch asserts the
+// same wording there.
 func TestStatusUnfinishedAndGapsAgreeOnAnExpiredClaim(t *testing.T) {
 	h := setup(t)
 	root := t.TempDir()

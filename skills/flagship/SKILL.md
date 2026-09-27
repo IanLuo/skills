@@ -340,14 +340,15 @@ Start every turn with `fs pending`; never wait on one and never poll with a slee
 |---|---|---|
 | `ready` | the worker's node is done | read the node, then `fs close` |
 | `blocked` | the node is not done and herdr reports the agent `blocked` — parked on a prompt or a modal nothing will dismiss | it stopped and only a person can move it — go look, and never answer an approval prompt for it |
-| `running` | the node is not done and the agent is neither `blocked` nor `done` — working *or* idle, and any value herdr cannot place: `unknown`, an unrecognised word, an empty one | let it work |
+| `running` | the node is not done, herdr answered, and the agent is neither `blocked` nor `done` — working *or* idle, and a value herdr itself cannot place: `unknown`, an unrecognised word, an empty one | let it work |
+| `unknown` | the node is not done and herdr could not be asked at all, so nothing about this worker was read — it may be working, dead, or there may be no herdr on this machine | nobody measured it — read the node, and go look before acting on the state |
 | `unseen` | the node is not done but herdr reports the agent `done` | finished unseen — go look |
 | `gone` | the node is not done and herdr has no such agent | the worker died; needs the user |
 | `unlinked` | no delivery record, or one written before it carried a node | close it with `--abandoned`, or `--worker` for an old record |
 
-herdr is a hint about *when to look*, never the truth about whether the work is done — `ready` and `blocked` are the states to act on. `running` is deliberately the wide one: `idle` is not `blocked`, because a worker between two tool calls is thinking and not stuck, and neither is an agent state herdr reports as `unknown` or one it cannot place at all — a state that cried wolf would be one the cap learns to ignore.
+herdr is a hint about *when to look*, never the truth about whether the work is done — `ready` and `blocked` are the states to act on. `running` is deliberately the wide one: `idle` is not `blocked`, because a worker between two tool calls is thinking and not stuck, and neither is an agent state herdr reports as `unknown` or one it cannot place at all — a state that cried wolf would be one the cap learns to ignore. `unknown` is the one state that says nothing was read: every other state follows a herdr answer, and `running` in particular asserts an agent exists.
 
-`fs pending` also answers the other half: it carries the cap's `pane_id`, `tab_id`, `agent`, `claimed_at` and `state` (`none`/`live`/`dead`/`unknown`), and each entry's `reports`. `none` and `dead` do not read alike — an unclaimed scope is free to take, and a claim whose pane is gone is a cap nobody holds. `unknown` means herdr could not be asked, which is never a take-over's proof.
+`fs pending` also answers the other half: it carries the cap's `pane_id`, `tab_id`, `agent`, `claimed_at` and `state` (`none`/`live`/`dead`/`unknown`), and each entry's `reports`. `none` and `dead` do not read alike — an unclaimed scope is free to take, and a claim whose pane is gone is a cap nobody holds. `unknown` means herdr could not be asked — the same word, and the same fact, an entry carries when herdr could not be asked about its worker — which is never a take-over's proof.
 
 ### The cap's address
 

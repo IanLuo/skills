@@ -495,8 +495,8 @@ func TestCLIEveryReaderAgreesOnAnExpiredClaim(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gap add exit %d: %v", code, gapResp["error"])
 	}
-	// fs pending renders the cap scope, so the fourth reader needs a dispatch
-	// node there: the only kind it lists.
+	// fs pending renders the cap scope, so it needs a dispatch node there: the
+	// only kind it lists.
 	dispResp, code := runFSEnv(t, bin, dir, cleanEnv,
 		"task", "add", "--kind", "dispatch", "--goal", "dispatch dev-task: sample", "--check", check, "--project", "cap")
 	if code != 0 {

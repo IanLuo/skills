@@ -1098,7 +1098,7 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, with
 		"FS_BRANCH=" + delivery.Branch,
 		"FS_BATCH=" + batch,
 		"FS_WITHOUT_REVIEW=" + withoutReview,
-		"FS_BIN=" + binaryPath(),
+		"FS_BIN=" + command.BinaryPath(),
 	}
 }
 

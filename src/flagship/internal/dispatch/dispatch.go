@@ -1297,30 +1297,8 @@ func checkEnv(project, taskType, goal string, cards []string, integrates string)
 		"FS_GOAL=" + goal,
 		"FS_CARDS=" + strings.Join(cards, ","),
 		"FS_INTEGRATES=" + integrates,
-		"FS_BIN=" + binaryPath(),
+		"FS_BIN=" + command.BinaryPath(),
 	}
-}
-
-// binaryPath is the path of the binary that is running, or "" when it cannot be
-// read. The empty case is deliberate: a step that needs fs has to be able to
-// see it is missing, and a gate that cannot evaluate what it was asked must
-// refuse rather than pass.
-//
-// os.Executable is the running process's own path, which is the point: a step
-// runs the binary that dispatched it, not one a PATH lookup happens to find.
-// filepath.Abs because a step's cwd is the worktree or the project root, never
-// the directory fs was started from, so a relative path would resolve to
-// somewhere else — or nowhere.
-func binaryPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	abs, err := filepath.Abs(exe)
-	if err != nil {
-		return ""
-	}
-	return abs
 }
 
 // runCheck runs a check's body through the shared shell runner and reports

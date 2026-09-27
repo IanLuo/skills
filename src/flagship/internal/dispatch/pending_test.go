@@ -96,10 +96,10 @@ func TestPendingLeavesAChecklessBlockAsProse(t *testing.T) {
 	}
 }
 
-// fs pending is the fourth reader that renders a node's status, and it re-runs a
-// node's recorded claim through the same rule as the other three, with the same
-// wording. The claim need not come from a block: a node that recorded a check
-// when it was created carries one too.
+// fs pending is one of the readers that renders a node's status, and it re-runs
+// a node's recorded claim through the same rule every reader that renders a
+// status does, with the same wording. The claim need not come from a block: a
+// node that recorded a check when it was created carries one too.
 func TestPendingReRunsACreatedNodeCheck(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -315,10 +315,12 @@ func TestPendingToleratesTwoRecordsSharingAnAgentName(t *testing.T) {
 	}
 }
 
-// herdr being unreadable is not the same as the agent being gone, so it must not
-// read as gone: the states are reported as still running and the reason is a
-// warning, the way fs close reports an unreachable herdr.
-func TestPendingWarnsWhenHerdrIsUnavailable(t *testing.T) {
+// herdr being unreadable is not the same as the agent being gone, and it is not
+// a worker that was read and is working either: nothing about this worker was
+// read at all. It gets its own state — the same word, and the same fact, as the
+// cap's own unknown — and the reason rides beside it as a warning, the way fs
+// close reports an unreachable herdr.
+func TestPendingReportsAnUnaskableHerdrAsUnknown(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	open := addCapNode(t, f, "dispatch dev-task: open")
 	workerID := addWorkerNode(t, f, "active")
@@ -327,10 +329,16 @@ func TestPendingWarnsWhenHerdrIsUnavailable(t *testing.T) {
 	herdrErr := errors.New("herdr: server is down")
 	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{agentsErr: herdrErr}))
 
-	if entry := pendingEntryFor(t, result, open); entry.State != dispatch.StateRunning {
-		t.Errorf("state = %q, want %q for a worker that is not done", entry.State, dispatch.StateRunning)
+	if entry := pendingEntryFor(t, result, open); entry.State != dispatch.StateUnknown {
+		t.Errorf("state = %q, want %q for a worker nothing was read about", entry.State, dispatch.StateUnknown)
 	}
-	for _, want := range []string{"server is down", dispatch.StateRunning} {
+	if result.Counts[dispatch.StateUnknown] != 1 {
+		t.Errorf("counts = %+v, want one %s", result.Counts, dispatch.StateUnknown)
+	}
+	if result.Counts[dispatch.StateRunning] != 0 {
+		t.Errorf("counts = %+v, want no %s: herdr never answered", result.Counts, dispatch.StateRunning)
+	}
+	for _, want := range []string{"server is down", dispatch.StateUnknown} {
 		if !strings.Contains(result.Warning, want) {
 			t.Errorf("warning %q must mention %q", result.Warning, want)
 		}

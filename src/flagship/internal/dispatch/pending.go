@@ -23,17 +23,26 @@ const (
 	// progress: the harness stopped and only a person can move it, so it is
 	// reported beside ready rather than left to look like thinking.
 	StateBlocked = "blocked"
-	// StateRunning: the worker's node is not done, herdr has the agent, and the
-	// state it reports is neither `blocked` nor `done` — working and idle among
-	// them, and also `unknown`, an unrecognised value and an empty one, because
-	// the switch below has `running` as its default arm. (No agent at all is
-	// StateGone, not this.) Idle is included deliberately: an agent between two
-	// tool calls is not blocked, and a state that fires on both is a state the
-	// cap learns to ignore. The default errs the same way and for the same
-	// reason: a state that could not be read is not a worker parked on a prompt,
-	// and reporting it as one would spend the cap's attention on a claim herdr
-	// never made.
+	// StateRunning: the worker's node is not done, herdr was asked, and the
+	// state it reported is neither `blocked` nor `done` — working and idle among
+	// them, and also a value herdr reports as `unknown`, an unrecognised value
+	// and an empty one, because the switch below has `running` as its default
+	// arm. (No agent at all is StateGone, not this; a herdr that could not be
+	// asked at all is StateUnknown, not this.) Idle is included deliberately: an
+	// agent between two tool calls is not blocked, and a state that fires on both
+	// is a state the cap learns to ignore. The default errs the same way and for
+	// the same reason: a state that could not be read is not a worker parked on a
+	// prompt, and reporting it as one would spend the cap's attention on a claim
+	// herdr never made.
 	StateRunning = "running"
+	// StateUnknown: the worker's node is not done and herdr could not be asked at
+	// all, so nothing about this worker was read — it may be working, dead, or
+	// there may be no herdr on this machine. It is not StateRunning: that one
+	// says an agent exists and is not blocked or done, which is a claim about a
+	// worker somebody measured, and every other route into it follows an actual
+	// herdr read. It takes its word, and its fact, from the cap's own unknown,
+	// because "herdr could not be asked" is one fact about one read.
+	StateUnknown = "unknown"
 	// StateUnseen: the worker's node is not done but herdr reports the agent
 	// done — work that finished and nobody looked at.
 	StateUnseen = "unseen"
@@ -46,7 +55,7 @@ const (
 )
 
 // pendingStates is every state, in the order a cap acts on them.
-var pendingStates = []string{StateReady, StateBlocked, StateRunning, StateUnseen, StateGone, StateUnlinked}
+var pendingStates = []string{StateReady, StateBlocked, StateRunning, StateUnknown, StateUnseen, StateGone, StateUnlinked}
 
 // PendingEntry is one dispatch node the cap has not closed out.
 type PendingEntry struct {
@@ -94,8 +103,9 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 	}
 
 	// herdr says when to look, not whether the work is done. When it cannot be
-	// asked, the states that depend on it are reported as still running rather
-	// than guessed at: an unreadable herdr is not an agent that has gone.
+	// asked, the states that depend on it are reported as unread rather than
+	// guessed at: an unreadable herdr is not an agent that has gone, and it is
+	// not an agent that was seen working either.
 	agents, herdrErr := hc.Agents()
 
 	entries := make([]PendingEntry, 0, len(unresolved))
@@ -137,7 +147,7 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 	if herdrErr != nil {
 		result.Warning = fmt.Sprintf(
 			"herdr is unavailable (%v): an unfinished worker's state cannot be read, and is reported as %q",
-			herdrErr, StateRunning)
+			herdrErr, StateUnknown)
 	}
 	return command.Response{OK: true, Data: result}
 }
@@ -180,6 +190,10 @@ func pendingEntry(h *command.Handler, capNodeID string, agents map[string]string
 // A record carrying no worker node is unlinked before anything else: there is no
 // node to read, and herdr reporting no such agent would otherwise be mistaken
 // for a worker that died.
+//
+// A herdr that could not be asked is its own state, never running: every other
+// route into running follows a read that placed the agent, and reporting an
+// unread worker as one that was read working is the state the cap acts on.
 func pendingState(h *command.Handler, delivery command.DeliveryRecord, recorded bool, agents map[string]string, herdrErr error) string {
 	if !recorded || delivery.Project == "" || delivery.Node == "" {
 		return StateUnlinked
@@ -190,7 +204,7 @@ func pendingState(h *command.Handler, delivery command.DeliveryRecord, recorded 
 	}
 
 	if herdrErr != nil {
-		return StateRunning
+		return StateUnknown
 	}
 	state, found := agents[delivery.Agent]
 	switch {

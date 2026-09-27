@@ -169,11 +169,12 @@ Commands:
                                                 open ones first, with found_by
   pending                                      Every dispatch not closed out, with
                                                 what the cap should do about each:
-                                                ready, blocked, running, unseen,
-                                                gone, unlinked — blocked being a
-                                                worker parked on a prompt only a
-                                                person can answer, which running
-                                                does not distinguish from thinking
+                                                ready, blocked, running, unknown,
+                                                unseen, gone, unlinked — blocked
+                                                being a worker parked on a prompt
+                                                only a person can answer, which
+                                                running does not distinguish from
+                                                thinking
                                                 — the undispatched gap count, and
                                                 the cap's own address and liveness
                                                 beside every open report
@@ -749,9 +750,9 @@ func taskKnowledge(args []string) {
 }
 
 // statusCmd shows one project's derived state. A blocked node's recorded check
-// runs in the project's own root — the same re-verification fs pending and fs
-// unfinished do — so all three readers agree on whether a block's condition
-// still holds.
+// runs in the project's own root — the same re-verification every reader that
+// renders a status does — so they agree on whether a block's condition still
+// holds.
 func statusCmd(args []string) {
 	projectID := flagVal(args, "--project", "")
 
@@ -1134,9 +1135,9 @@ func unfinishedCmd() {
 // the node that found it — the backlog, read from the store rather than
 // remembered. It is a read: it writes nothing.
 //
-// A gap's recorded check is re-run here the same way fs status, fs pending and
-// fs unfinished re-run it, in the gap's own project root, so a claim the check
-// has just denied reads as expired in the list the cap reads its backlog with.
+// A gap's recorded check is re-run here the same way every reader that renders
+// a status re-runs it, in the gap's own project root, so a claim the check has
+// just denied reads as expired in the list the cap reads its backlog with.
 // A scope with no registry row — cap, most of all — has no root, and the check
 // runs in this process's directory.
 func gapsCmd() {

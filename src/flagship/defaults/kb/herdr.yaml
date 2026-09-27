@@ -11,7 +11,7 @@ cap:
   # contradiction is resolved in favour of `cap`, because `cap` is the rule that
   # survives a dispatcher change and the one the user reads.
   - say: for any herdr work load the herdr skill first — skills/herdr/SKILL.md and its references/herdr-ops.md; it is marked disable-model-invocation so nothing loads it for you, and the installed CLI is the authority on syntax
-  - say: never wait and never poll — fs pending is the read. It says which dispatch is ready, blocked, running, unseen or gone, and every turn starts there
+  - say: never wait and never poll — fs pending is the read. It says which dispatch is ready, blocked, running, unknown, unseen or gone, and every turn starts there
   - say: a worker owns its own handover: it writes its node and stops. You do not park a call until it does
   - say: --wait is for a herdr operation that is genuinely synchronous in the call issuing it, never as a way to wait for a worker to finish
   - say: for a program rather than an agent, herdr pane wait-output --match is the right tool; for an agent, read fs pending
