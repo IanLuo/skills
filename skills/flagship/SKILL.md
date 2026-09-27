@@ -404,6 +404,7 @@ Exit steps get the closing dispatch's own inputs in their environment:
 | `FS_PANE` | the pane the delivery opened |
 | `FS_WORKTREE` | the worktree workspace the dispatch ran in; empty without one |
 | `FS_WORKTREE_PATH` | that worktree's checkout path; empty without one |
+| `FS_BRANCH` | the branch the delivery created its worktree on; empty when this delivery created no worktree. A step can then tell "this branch was not mine to remove" from "the branch I was responsible for is still here" without re-deriving the branch from a tree it may have just removed |
 | `FS_BATCH` | the batch node this dispatch is a member of; empty outside a batch — the marker `code`'s teardown defers on |
 | `FS_BIN` | the running binary's own path, the same contract the entry gate gets. It is what the review gate runs, because fs is not on PATH and `"$FS_BIN"` is — and it is how an exit step runs a shipped script, `"$FS_BIN" script <name>` |
 

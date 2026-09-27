@@ -105,6 +105,22 @@ esac
 # one of these cases at once, and it is why the result has nothing left to fold:
 # resolving it again changes nothing.
 #
+# The textual fold costs exactly one case, and it is the price of the property
+# above rather than an oversight. `..` pops the component before it in the
+# STRING, so a `..` behind a component that is itself a symlink pops the LINK
+# rather than the directory the link names: with `l -> B`, `A/l/../sibling`
+# answers `A/sibling`, where the kernel — and so `chdir`, which a shell's
+# logical `cd` does not imitate — reaches the sibling of `B`'s parent. Two
+# different directories, and a physical fold would agree with the kernel, which
+# is deliberately not what is done here: a visit asks the filesystem about every
+# component, and `readlink -f` refuses a dangling final link outright — the
+# checkout deleted out of band with the link left is exactly the case this
+# script exists for, so a resolving answer is worth more to its callers than a
+# kernel-faithful one. Text is also what the idempotence rests on: nothing is
+# left to fold, so resolving the answer again returns it unchanged, which is
+# what a caller matching this string against git's listing needs. A path handed
+# in with a `..` behind a symlink is therefore answered lexically, by choice.
+#
 # `..` at the root is the root, and a relative path keeps the `..`s it cannot
 # pop, so the result is always a path — never the empty string, which a caller
 # would read as the working directory and match against git's listing as a
