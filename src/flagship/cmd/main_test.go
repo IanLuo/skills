@@ -473,6 +473,113 @@ func TestCLITaskKindGapsAndUnfinished(t *testing.T) {
 	}
 }
 
+// Every reader that renders a node's status re-runs the claim it recorded, and
+// they agree on the wording: fs status, fs unfinished and fs gaps for a gap, and
+// fs pending for the cap-scope dispatch it alone reads. One rule and one wording
+// — the cap cannot be told a different story about the same node depending on
+// which command it ran.
+func TestCLIEveryReaderAgreesOnAnExpiredClaim(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	cleanEnv := []string{"HERDR_PANE_ID="}
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	// An absolute path, so the check means the same thing in every reader's
+	// directory — including fs pending's, which has no project root to run in.
+	marker := filepath.Join(dir, "marker")
+	check := "test -f " + marker
+	want := "pending (claim no longer holds — " + check + " exited 0)"
+
+	gapResp, code := runFSEnv(t, bin, dir, cleanEnv,
+		"task", "add", "--kind", "gap", "--goal", "the teardown is untested", "--check", check, "--project", "p")
+	if code != 0 {
+		t.Fatalf("gap add exit %d: %v", code, gapResp["error"])
+	}
+	// fs pending renders the cap scope, so the fourth reader needs a dispatch
+	// node there: the only kind it lists.
+	dispResp, code := runFSEnv(t, bin, dir, cleanEnv,
+		"task", "add", "--kind", "dispatch", "--goal", "dispatch dev-task: sample", "--check", check, "--project", "cap")
+	if code != 0 {
+		t.Fatalf("dispatch add exit %d: %v", code, dispResp["error"])
+	}
+
+	// Each reader, asked for the one node it renders of the two.
+	readers := []struct {
+		name string
+		read func() (string, bool)
+	}{
+		{"fs status", func() (string, bool) {
+			resp, _ := runFSEnv(t, bin, dir, cleanEnv, "status", "--project", "p")
+			return taskStatus(resp, "tasks", ""), true
+		}},
+		{"fs unfinished", func() (string, bool) {
+			resp, _ := runFSEnv(t, bin, dir, cleanEnv, "unfinished")
+			return taskStatus(resp, "unfinished", "gap"), true
+		}},
+		{"fs gaps", func() (string, bool) {
+			resp, _ := runFSEnv(t, bin, dir, cleanEnv, "gaps")
+			return taskStatus(resp, "gaps", ""), true
+		}},
+		{"fs pending", func() (string, bool) {
+			resp, _ := runFSEnv(t, bin, dir, cleanEnv, "pending")
+			for _, entry := range resp["data"].(map[string]any)["pending"].([]any) {
+				if entry.(map[string]any)["cap_node"] == dispResp["data"].(map[string]any)["node_id"] {
+					status, _ := entry.(map[string]any)["status"].(string)
+					return status, true
+				}
+			}
+			return "", false
+		}},
+	}
+
+	// While the claim holds every reader reports the plain status it always did:
+	// the check found nothing to say, so it says nothing.
+	for _, reader := range readers {
+		got, found := reader.read()
+		if !found {
+			t.Fatalf("%s does not render the node", reader.name)
+		}
+		if reader.name == "fs pending" {
+			if got != "" {
+				t.Errorf("%s = %q while the claim holds, want no status: the state is the answer", reader.name, got)
+			}
+			continue
+		}
+		if got != "pending" {
+			t.Errorf("%s = %q while the claim holds, want pending", reader.name, got)
+		}
+	}
+
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, reader := range readers {
+		got, found := reader.read()
+		if !found {
+			t.Fatalf("%s does not render the node", reader.name)
+		}
+		if got != want {
+			t.Errorf("%s = %q, want %q", reader.name, got, want)
+		}
+	}
+}
+
+// taskStatus digs one node's status out of a reader's JSON: a list under `tasks`
+// or `gaps`, or a list under `unfinished` keyed by kind.
+func taskStatus(resp map[string]any, field, kind string) string {
+	data := resp["data"].(map[string]any)
+	list := data[field]
+	if kind != "" {
+		list = data[field].(map[string]any)[kind]
+	}
+	for _, node := range list.([]any) {
+		if status, ok := node.(map[string]any)["status"].(string); ok {
+			return status
+		}
+	}
+	return ""
+}
+
 // A kind typo is refused at write time rather than stored as a kind nothing
 // reads.
 func TestCLITaskAddRefusesAnUnknownKind(t *testing.T) {

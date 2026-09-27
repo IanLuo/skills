@@ -96,6 +96,39 @@ func TestPendingLeavesAChecklessBlockAsProse(t *testing.T) {
 	}
 }
 
+// fs pending is the fourth reader that renders a node's status, and it re-runs a
+// node's recorded claim through the same rule as the other three, with the same
+// wording. The claim need not come from a block: a node that recorded a check
+// when it was created carries one too.
+func TestPendingReRunsACreatedNodeCheck(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	marker := filepath.Join(t.TempDir(), "marker")
+	check := "test -f " + marker
+	added := f.h.TaskAddKind("cap", "dispatch dev-task: sample", query.KindDispatch, "", "", "", check, nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	capNode := added.Data.(command.EventData).NodeID
+
+	before := scopeEventCount(t, f, "cap")
+	entry := pendingEntryFor(t, pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{})), capNode)
+	if entry.Status != "" {
+		t.Errorf("status while the claim holds = %q, want empty: the state is the whole answer", entry.Status)
+	}
+	if got := scopeEventCount(t, f, "cap"); got != before {
+		t.Errorf("cap events = %d, want %d: fs pending must write nothing", got, before)
+	}
+
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "pending (claim no longer holds — " + check + " exited 0)"
+	entry = pendingEntryFor(t, pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{})), capNode)
+	if entry.Status != want {
+		t.Errorf("status once the claim is over = %q, want %q", entry.Status, want)
+	}
+}
+
 // scopeEventCount counts the events in a scope, so a test can prove a command
 // wrote nothing.
 func scopeEventCount(t *testing.T, f *fixture, scope string) int {

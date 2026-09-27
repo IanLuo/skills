@@ -311,7 +311,7 @@ func addCapNode(t *testing.T, f *fixture, goal string) string {
 // dispatch gates pass over ordinary cap work.
 func addCapKindNode(t *testing.T, f *fixture, goal string, kind query.Kind) string {
 	t.Helper()
-	added := f.h.TaskAddKind("cap", goal, kind, "", "", "", nil)
+	added := f.h.TaskAddKind("cap", goal, kind, "", "", "", "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -322,7 +322,7 @@ func addCapKindNode(t *testing.T, f *fixture, goal string, kind query.Kind) stri
 // way fs dispatch --integrates does: one task-created event carrying the link.
 func addIntegrationNode(t *testing.T, f *fixture, member string) string {
 	t.Helper()
-	added := f.h.TaskAddKind("cap", "dispatch integrate: merge the member", query.KindDispatch, "", member, "", nil)
+	added := f.h.TaskAddKind("cap", "dispatch integrate: merge the member", query.KindDispatch, "", member, "", "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -408,7 +408,7 @@ func recordWorktreeDeliveryOnBranch(t *testing.T, f *fixture, capNode, paneID, w
 // does — a dispatch node — with the given status.
 func addWorkerNode(t *testing.T, f *fixture, status string) string {
 	t.Helper()
-	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", "", "", nil)
+	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", "", "", "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -1301,6 +1301,62 @@ func TestCloseRefusesWithoutADeliveryRecord(t *testing.T) {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
+	}
+}
+
+// A dispatch that was prepared and never delivered has no pane, no worktree, no
+// worker and no work: an exit phase is teardown-and-verify, and there is nothing
+// here to tear down and nothing to verify. So an abandoned close of one runs no
+// exit step at all — not even the plan's, which it cannot read: a plan's exit
+// playbooks are resolved against the project the dispatch was delivered into,
+// and this one never went anywhere. Without this the node could not be closed at
+// all, and it would refuse every later dispatch for good.
+func TestCloseOfANeverDeliveredDispatchRunsNoExitSteps(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
+	// The exit gate lives in the project's own KB, where only a close that reads
+	// the project scope can see it — the plan recorded at dispatch time can.
+	writeFile(t, filepath.Join(f.fsRoot, "projects", "skills", "kb", "code-exit.yaml"), codeExit)
+
+	brief := prepareOnly(t, f, devReq("sample"))
+	plan, ok, err := f.h.PlanFor("cap", brief.CapNodeID)
+	if err != nil || !ok {
+		t.Fatalf("prepare must record a plan: %v", err)
+	}
+	if !strings.Contains(string(plan), "code-exit") {
+		t.Fatalf("the recorded plan must name the project's exit playbook, got %s", plan)
+	}
+	// Nothing was delivered: no delivery record, so no pane was ever opened.
+	herdr := &fakeHerdr{}
+
+	resp := f.close(herdr, dispatch.CloseRequest{
+		NodeID: brief.CapNodeID, Abandoned: true, Reason: "the user withdrew the request",
+	})
+	if !resp.OK {
+		t.Fatalf("a never-delivered dispatch must close: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.CloseResult)
+	if len(result.Actions) != 0 || len(result.TornDown) != 0 {
+		t.Errorf("actions %v, torn down %v — a dispatch with no delivery has nothing to run or remove",
+			result.Actions, result.TornDown)
+	}
+	if len(herdr.closed) != 0 {
+		t.Errorf("closed panes %v, want none: no pane was opened", herdr.closed)
+	}
+	if !strings.Contains(result.Cleanup, "never delivered") {
+		t.Errorf("cleanup note %q must say the dispatch was never delivered", result.Cleanup)
+	}
+	if got := nodeStatus(t, f, "cap", brief.CapNodeID); got != "done" {
+		t.Errorf("node status = %q, want done", got)
+	}
+	decisions := capDecisions(t, f, brief.CapNodeID)
+	if !contains(decisions, "abandoned, never delivered: the user withdrew the request") {
+		t.Errorf("decisions = %v, want one naming the never-delivered abandonment", decisions)
+	}
+	// The record must claim no clearance it did not make: nothing ran, so the
+	// decision says nothing about exit actions or teardown.
+	if strings.Contains(strings.Join(decisions, " "), "exit action") {
+		t.Errorf("decisions = %v, want no claim that an exit step ran", decisions)
 	}
 }
 

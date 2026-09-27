@@ -38,8 +38,8 @@ var cmdSpecs = map[string]cmdSpec{
 	"project get":  {usage: "Usage: fs project get NAME", positionals: 1},
 
 	"task add": {
-		usage: "Usage: fs task add --goal GOAL [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--project PROJECT_ID]",
-		flags: map[string]bool{"--goal": true, "--parent": true, "--kind": true, "--found-by": true, "--project": true},
+		usage: "Usage: fs task add --goal GOAL [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--check \"SHELL COMMAND\"] [--project PROJECT_ID]",
+		flags: map[string]bool{"--goal": true, "--parent": true, "--kind": true, "--found-by": true, "--check": true, "--project": true},
 	},
 	"task update": {
 		usage:       "Usage: fs task update NODE_ID --status STATUS [--decision TEXT] [--project PROJECT_ID]",

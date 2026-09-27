@@ -94,10 +94,13 @@ type TaskInfo struct {
 	Orphan       bool       `json:"orphan,omitempty"`
 	Decisions    []string   `json:"decisions,omitempty"`
 	Knowledge    []string   `json:"knowledge,omitempty"`
-	// BlockCheck is the check the node's last block recorded, when one did. fs
-	// status re-runs it the same way fs pending and fs unfinished do, so all
-	// three readers report a block whose condition is over as such.
+	// BlockCheck is the check the node's last block recorded, when one did.
+	// Every reader that renders a status re-runs it, so a block whose condition
+	// is over is reported as such in all of them.
 	BlockCheck string `json:"block_check,omitempty"`
+	// Check is the check the node recorded when it was created, when one was: a
+	// gap's claim, which every reader that renders a status re-runs the same way.
+	Check string `json:"check,omitempty"`
 	// Integrates names the cap-scope dispatch node an integration dispatch
 	// merges. It is the structural link, read from the task-created payload.
 	Integrates string `json:"integrates,omitempty"`
@@ -128,9 +131,13 @@ type UnfinishedNode struct {
 	// carried here so a reader can ask the question without the tree.
 	ParentNodeID string `json:"parent_node_id,omitempty"`
 	// BlockCheck is the command the node's last block recorded, when one did:
-	// what fs pending and fs unfinished re-run to tell a live block from one
-	// whose condition is over. Empty for a block with no check.
+	// what every reader re-runs to tell a live block from one whose condition is
+	// over. Empty for a block with no check.
 	BlockCheck string `json:"block_check,omitempty"`
+	// Check is the command the node recorded when it was created, when one was:
+	// what the same readers re-run to tell a claim that still stands from one
+	// that is over. Empty for a node created without one.
+	Check string `json:"check,omitempty"`
 }
 
 // GapNode is one kind=gap node: something noticed and not dispatched, with
@@ -209,15 +216,16 @@ func (h *Handler) ProjectCreate(name, rootPath string) Response {
 
 // TaskAdd appends a task-created event of the default kind, work. AC2.
 func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response {
-	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", "", parentNodeID)
+	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", "", "", parentNodeID)
 }
 
 // TaskAddKind appends a task-created event carrying its structural kind — and,
 // for a gap, the node that noticed it; for an integration, the member it
-// integrates; for a review, the dispatch whose change it reads. It is the write
-// side of the kind the dispatch gates and fs gaps read, and of the two links
-// the member's exit gate and a dispatch's close each read.
-func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates, reviews string, parentNodeID *string) Response {
+// integrates; for a review, the dispatch whose change it reads; and, when one
+// was given, the check that would show its claim is over. It is the write side
+// of the kind the dispatch gates and fs gaps read, and of the two links the
+// member's exit gate and a dispatch's close each read.
+func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates, reviews, check string, parentNodeID *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -283,6 +291,9 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	}
 	if reviews != "" {
 		payload["reviews"] = reviews
+	}
+	if check != "" {
+		payload["check"] = check
 	}
 	data, _ := json.Marshal(payload)
 
@@ -991,19 +1002,19 @@ func (h *Handler) appendMetadata(projectID, nodeID, field, oldValue, newValue st
 }
 
 // Status derives current state for all tasks in a project. AC3.
-// Delegates tree-building to the query engine. It runs a blocked node's
-// recorded check in this process's own directory; StatusIn names the project
-// root the check belongs in.
+// Delegates tree-building to the query engine. It runs a node's recorded check
+// in this process's own directory; StatusIn names the project root the check
+// belongs in.
 func (h *Handler) Status(projectID string) Response {
 	return h.StatusIn(projectID, "")
 }
 
-// StatusIn is Status with the directory a blocked node's recorded check runs in:
-// the project root the node belongs to. The check is about that project, not
-// about wherever the terminal happens to be, and re-verifying it here is what
-// makes fs status agree with fs pending and fs unfinished — a block whose
-// condition is over must not read as current truth in one of the three readers
-// only. Nothing is unblocked: only the reported status changes.
+// StatusIn is Status with the directory a node's recorded check runs in: the
+// project root the node belongs to. The check is about that project, not about
+// wherever the terminal happens to be, and re-verifying it here is what makes
+// fs status agree with fs pending, fs unfinished and fs gaps — a claim that is
+// over must not read as current truth in one of the readers only. Nothing is
+// unblocked: only the reported status changes.
 func (h *Handler) StatusIn(projectID, blockDir string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
@@ -1023,7 +1034,7 @@ func (h *Handler) StatusIn(projectID, blockDir string) Response {
 	}
 	for i := range result.Tasks {
 		task := &result.Tasks[i]
-		task.Status = blockStatus(task.Status, task.BlockCheck, blockDir)
+		task.Status = reportedStatus(task.Status, task.BlockCheck, task.Check, blockDir)
 	}
 
 	return okResp(result)
@@ -1042,6 +1053,7 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 		Decisions:    node.Decisions,
 		Knowledge:    node.Knowledge,
 		BlockCheck:   node.BlockCheck,
+		Check:        node.Check,
 		Integrates:   node.Integrates,
 		Reviews:      node.Reviews,
 	})
@@ -1083,7 +1095,7 @@ func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 			h.logger.Error("store replay failed", "command", "unfinished", "scope", scope, "error", err)
 			return errResp(err.Error())
 		}
-		refreshBlockChecks(nodes, rootOf)
+		refreshChecks(nodes, rootOf)
 		for _, node := range nodes {
 			grouped[string(node.Kind)] = append(grouped[string(node.Kind)], node)
 			total++
@@ -1098,7 +1110,16 @@ func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 // reads its backlog in one place instead of remembering it. A gap that has been
 // dispatched or resolved is done and sorts after the open ones; it is not
 // dropped, so the record of what was noticed survives.
-func (h *Handler) Gaps() Response {
+//
+// rootOf resolves a scope to the directory a recorded check runs in — the
+// project root — the same way fs status, fs pending and fs unfinished resolve
+// it, so a gap whose claim the check has just denied reads as expired here too.
+// This is the reader the cap reads its backlog with, so it is the one that
+// matters most: a gap read as open in this one list while every other reader
+// says the claim is over is the defect this re-run exists to close. A nil
+// rootOf, or a scope it cannot resolve, runs the check in this process's own
+// directory.
+func (h *Handler) Gaps(rootOf func(scope string) string) Response {
 	scopes, err := h.store.Scopes()
 	if err != nil {
 		h.logger.Error("store scopes failed", "command", "gaps", "error", err)
@@ -1112,6 +1133,10 @@ func (h *Handler) Gaps() Response {
 			h.logger.Error("store replay failed", "command", "gaps", "scope", scope, "error", err)
 			return errResp(err.Error())
 		}
+		dir := ""
+		if rootOf != nil {
+			dir = rootOf(scope)
+		}
 		for _, node := range nodes {
 			if node.Kind != query.KindGap {
 				continue
@@ -1119,7 +1144,7 @@ func (h *Handler) Gaps() Response {
 			gaps = append(gaps, GapNode{
 				ProjectID: scope,
 				NodeID:    node.NodeID,
-				Status:    node.Status,
+				Status:    reportedStatus(node.Status, node.BlockCheck, node.Check, dir),
 				Goal:      node.Goal,
 				FoundBy:   node.FoundBy,
 			})
@@ -1190,6 +1215,7 @@ func (h *Handler) UnfinishedIn(scope string) ([]UnfinishedNode, error) {
 			FoundBy:      node.FoundBy,
 			ParentNodeID: node.ParentID,
 			BlockCheck:   node.BlockCheck,
+			Check:        node.Check,
 		})
 	}
 	return unfinished, nil

@@ -239,9 +239,25 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 		}
 	}
 
-	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, req.WithoutReview, plan, req.Confirm, req.Abandoned)
-	if err != nil {
-		return errResp(err.Error())
+	// An exit phase is teardown-and-verify, and a dispatch with no delivery
+	// record has no pane, no worktree, no worker and no work: there is nothing
+	// to tear down and nothing to verify. So a never-delivered dispatch runs no
+	// exit step at all, and none of the plan's playbooks are read for it — the
+	// scope those steps would resolve against is the project it was never
+	// delivered into, which is not a scope there is anything to read from. That
+	// is the same line the pane teardown is drawn on below.
+	//
+	// The guard is the delivery record, never a scope that could not be
+	// resolved: a delivered dispatch has its exit gate run and its declared
+	// actions run whatever its scope turns out to be.
+	var run exitRun
+	if delivered {
+		run, err = runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, req.WithoutReview, plan, req.Confirm, req.Abandoned)
+		if err != nil {
+			return errResp(err.Error())
+		}
+	} else {
+		run.Note = "no exit phase: the dispatch was never delivered, so there is nothing to tear down or verify"
 	}
 	result.Cleanup = run.Note
 	result.Actions = run.Actions

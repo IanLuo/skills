@@ -1,10 +1,10 @@
-// Running a recorded check, and what a block's check says about it.
+// Running a recorded check, and what it says about the node that recorded it.
 //
-// A block reason is prose, so nothing re-verifies it. A block may also record
-// the shell command that would show its condition is over — "0 work-type
-// playbooks" was true when it was written and false hours later — and fs
-// pending and fs unfinished re-run it. Visible, not automatic: nothing unblocks
-// itself, but a reader no longer reads an expired reason as current truth.
+// A node's prose is not re-verifiable. A node may also record the shell command
+// that would show its claim is over — a block's condition, a gap's defect — and
+// every reader that renders a node's status re-runs it here. Visible, not
+// automatic: nothing unblocks or closes itself, but a reader no longer reads an
+// expired claim as current truth.
 //
 // RunShell is shared with the prerequisite and cleanup gates, which run the same
 // kind of command in the same kind of place.
@@ -30,36 +30,55 @@ func RunShell(body, dir string, env []string) (string, error) {
 	return string(out), err
 }
 
-// BlockStatus is the status to report a node with: for a blocked node that
-// recorded a check, the check is re-run in dir and, when it exits 0, the status
-// says the condition no longer holds. Every other node keeps its own status — a
-// block with no check is prose and gets no claim of freshness.
-func BlockStatus(n UnfinishedNode, dir string) string {
-	return blockStatus(n.Status, n.BlockCheck, dir)
+// NodeStatus is the status to report a node with: a node that recorded a check
+// has it re-run in dir, and the report says so once the check exits 0. Every
+// other node keeps its own status — no check is prose alone, with no claim of
+// freshness.
+func NodeStatus(n UnfinishedNode, dir string) string {
+	return reportedStatus(n.Status, n.BlockCheck, n.Check, dir)
 }
 
-// blockStatus is the one re-verification fs status, fs pending, and fs unfinished
-// share, so a blocked node reads the same in all three: plain "blocked", or
-// "blocked (condition no longer holds …)" once the recorded check exits 0.
-func blockStatus(status, check, dir string) string {
-	if status != "blocked" || check == "" {
+// reportedStatus is the one re-verification fs status, fs pending, fs unfinished
+// and fs gaps share, so a node reads the same in all four.
+//
+// A node's recorded check exits 0 if and only if the condition it asserts is
+// over: for a block, that the condition no longer holds; for a gap, that the
+// defect is gone. The one rule covers every kind. It cannot tell a check written
+// the other way round — one that exits 0 while the defect stands — from a right
+// one, and it does not try: such a check reads as expired, which is what it is,
+// and the polarity is the author's to get right.
+//
+// A blocked node is read through the check its block recorded, which is the
+// check about the block. The node's own check is about the node, and is read
+// whenever the node is not blocked. A done node is done: there is nothing left
+// to re-verify.
+func reportedStatus(status, blockCheck, check, dir string) string {
+	if status == "done" {
 		return status
 	}
-	if _, err := RunShell(check, dir, nil); err == nil {
-		return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", check)
+	if status == "blocked" && blockCheck != "" {
+		if _, err := RunShell(blockCheck, dir, nil); err == nil {
+			return fmt.Sprintf("blocked (condition no longer holds — %s exited 0)", blockCheck)
+		}
+		return status
+	}
+	if check != "" {
+		if _, err := RunShell(check, dir, nil); err == nil {
+			return fmt.Sprintf("%s (claim no longer holds — %s exited 0)", status, check)
+		}
 	}
 	return status
 }
 
-// refreshBlockChecks replaces each node's status with its BlockStatus. rootOf
-// resolves a scope to the directory its checks run in; a nil rootOf, or a scope
-// it cannot resolve, runs in this process's own directory.
-func refreshBlockChecks(nodes []UnfinishedNode, rootOf func(scope string) string) {
+// refreshChecks replaces each node's status with its NodeStatus. rootOf resolves
+// a scope to the directory its checks run in; a nil rootOf, or a scope it cannot
+// resolve, runs in this process's own directory.
+func refreshChecks(nodes []UnfinishedNode, rootOf func(scope string) string) {
 	for i := range nodes {
 		dir := ""
 		if rootOf != nil {
 			dir = rootOf(nodes[i].ProjectID)
 		}
-		nodes[i].Status = BlockStatus(nodes[i], dir)
+		nodes[i].Status = NodeStatus(nodes[i], dir)
 	}
 }

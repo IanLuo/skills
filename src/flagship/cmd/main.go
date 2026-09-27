@@ -144,9 +144,11 @@ Commands:
   project get NAME                             Get project info
   task add --goal GOAL [--parent NODE_ID]       Add a task; --kind names what it
                                                 is (work, dispatch, gap — work
-                                                by default), and --found-by
+                                                by default), --found-by
                                                 PROJECT:NODE records what a gap
-                                                was found by
+                                                was found by, and --check names
+                                                a shell command that would show
+                                                the node's claim is over
   task get NODE_ID [--project P] [--kind KIND]  Show one task's derived state;
                                                 exit 1 when no such node exists,
                                                 or when --kind names a different
@@ -498,9 +500,13 @@ func taskCmd(args []string) {
 
 Subcommands:
   add --goal GOAL [--parent NODE_ID] [--kind KIND] [--found-by PROJECT:NODE]
+      [--check "SHELL COMMAND"]
                                            Add a task; --kind is work (default),
                                            dispatch or gap; --found-by names
-                                           the node a gap was found by
+                                           the node a gap was found by; --check
+                                           names a shell command that would
+                                           show the node's claim is over, re-run
+                                           by every reader that renders a status
   get NODE_ID [--project PROJECT_ID] [--kind KIND]
                                            Show one task's derived state; exit
                                            1 when no such node exists, or when
@@ -553,6 +559,7 @@ func taskAdd(args []string) {
 	projectID := flagVal(args, "--project", "")
 	kind := query.Kind(flagVal(args, "--kind", ""))
 	foundBy := flagVal(args, "--found-by", "")
+	check := flagVal(args, "--check", "")
 
 	h, projectID := handler(projectID)
 	defer h.Close()
@@ -573,7 +580,7 @@ func taskAdd(args []string) {
 		parentPtr = &parent
 	}
 
-	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", "", parentPtr)
+	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", "", check, parentPtr)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -1126,11 +1133,20 @@ func unfinishedCmd() {
 // gapsCmd lists every kind=gap node across every scope, open ones first, with
 // the node that found it — the backlog, read from the store rather than
 // remembered. It is a read: it writes nothing.
+//
+// A gap's recorded check is re-run here the same way fs status, fs pending and
+// fs unfinished re-run it, in the gap's own project root, so a claim the check
+// has just denied reads as expired in the list the cap reads its backlog with.
+// A scope with no registry row — cap, most of all — has no root, and the check
+// runs in this process's directory.
 func gapsCmd() {
 	h := openHandler("")
 	defer h.Close()
 
-	output(h.Gaps())
+	reg := openRegistry()
+	defer reg.Close()
+
+	output(h.Gaps(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
 // pendingCmd answers "what is waiting on the cap": every dispatch in the cap's

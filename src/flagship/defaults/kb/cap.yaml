@@ -16,6 +16,7 @@ cap:
   - say: answer with the smallest view that makes the point — a diagram, tree or pseudocode before prose
   - say: never do heavy work yourself — the work, the verification and the merge are each a dispatch
   - say: start every turn with fs pending, and close anything it reports ready BEFORE doing anything else; never wait and never poll — a queued close-out is the step that gets dropped
+  - say: search the store before you conclude — `fs query "<topic>"` reads every decision and knowledge entry in the scope, and a note is a claim at the time it was written: a fixed one is not a closed one
   - say: prepare and deliver in one step with fs dispatch; when it refuses, stop and tell the user
   - say: when fs dispatch refuses for want of a playbook, file a gap naming the protocol you needed (`fs task add --project cap --kind gap --found-by <your node> --goal ...`) and stop — never improvise the steps it would have carried
   - say: a dispatch's plan is what it is measured against; read it in the brief and in fs trace, and never assume a protocol ran because the task type sounded familiar

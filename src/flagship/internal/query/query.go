@@ -62,6 +62,13 @@ type Node struct {
 	// a block with no check — prose alone, with no claim of freshness.
 	BlockCheck string `json:"block_check,omitempty"`
 
+	// Check is the shell command the node recorded when it was created, when one
+	// was. A gap is a claim about the world — "this is broken" — and a claim
+	// nothing re-runs cannot notice itself going false; this is what lets a
+	// reader re-run it and see the claim is over. It is empty for a node created
+	// without one: prose alone, with no claim of freshness.
+	Check string `json:"check,omitempty"`
+
 	// Integrates names the cap-scope dispatch node this node integrates, when it
 	// is an integration dispatch. It is the structural link between an
 	// integration and the member it merges: recorded on the integration's own
@@ -128,6 +135,7 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				FoundBy    string `json:"found_by"`
 				Integrates string `json:"integrates"`
 				Reviews    string `json:"reviews"`
+				Check      string `json:"check"`
 			}
 			_ = json.Unmarshal(evt.Payload, &p)
 			parentID := ""
@@ -141,6 +149,7 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				FoundBy:    p.FoundBy,
 				Integrates: p.Integrates,
 				Reviews:    p.Reviews,
+				Check:      p.Check,
 				Status:     "pending",
 				ParentID:   parentID,
 			}

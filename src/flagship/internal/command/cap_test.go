@@ -252,7 +252,7 @@ func TestReportAddIsAddressedToANodeNotACap(t *testing.T) {
 // record is recorded on.
 func dispatchNode(t *testing.T, h *command.Handler, goal string) string {
 	t.Helper()
-	resp := h.TaskAddKind("cap", goal, query.KindDispatch, "", "", "", nil)
+	resp := h.TaskAddKind("cap", goal, query.KindDispatch, "", "", "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}

@@ -28,7 +28,7 @@ func liveCap(t *testing.T, f *fixture, hc *fakeHerdr, pane string) {
 // workerNode creates a node in the target project for a worker to report on.
 func workerNode(t *testing.T, f *fixture, goal string) string {
 	t.Helper()
-	resp := f.h.TaskAddKind("skills", goal, query.KindWork, "", "", "", nil)
+	resp := f.h.TaskAddKind("skills", goal, query.KindWork, "", "", "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}

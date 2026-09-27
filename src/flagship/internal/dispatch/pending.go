@@ -58,8 +58,10 @@ type PendingEntry struct {
 	State      string `json:"state"`
 	// Status is the node's own status when it is blocked: plain "blocked", or
 	// "blocked (condition no longer holds …)" when the check the block recorded
-	// now exits 0. It is empty for a node that is not blocked, where State is the
-	// whole answer.
+	// now exits 0. It also carries a node's claim once the check it recorded has
+	// expired — "<status> (claim no longer holds …)" — which is the one thing a
+	// reader must not be left to repeat as current truth. It is empty for any
+	// other node, where State is the whole answer.
 	Status string `json:"status,omitempty"`
 	// Reports is every report the worker recorded on its node, oldest first. A
 	// worker waiting on a decision reads as running, whose documented meaning is
@@ -106,13 +108,16 @@ func Pending(h *command.Handler, hc HerdrCLI) command.Response {
 		if err != nil {
 			return errResp("pending: " + err.Error())
 		}
-		// A blocked dispatch is still a dispatch the cap has not closed out, so
-		// its block is re-verified here: the recorded check runs in the cap
-		// scope's directory, which is this process's own — cap is never a
-		// registered project. Nothing is unblocked; the entry just says the
-		// reason has expired instead of repeating it as current truth.
-		if node.Status == "blocked" {
-			entry.Status = command.BlockStatus(node, "")
+		// An unfinished dispatch is still a dispatch the cap has not closed out,
+		// so its recorded check is re-run here: it runs in the cap scope's
+		// directory, which is this process's own — cap is never a registered
+		// project. Nothing is unblocked or closed; the entry just says the claim
+		// has expired instead of repeating it as current truth. A node whose
+		// report says no more than its status keeps its status out of the read —
+		// except a blocked one, whose block is the whole answer and is reported
+		// whether or not it still holds.
+		if reported := command.NodeStatus(node, ""); reported != node.Status || node.Status == "blocked" {
+			entry.Status = reported
 		}
 		counts[entry.State]++
 		entries = append(entries, entry)

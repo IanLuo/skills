@@ -455,7 +455,7 @@ func TestTaskAddKindWithFoundBy(t *testing.T) {
 	finder := h.TaskAdd("other", "the node that noticed", nil)
 	foundBy := "other:" + finder.Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, foundBy, "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, foundBy, "", "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}
@@ -478,7 +478,7 @@ func TestTaskAddRefusesAFoundByThatNamesNoNode(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 	h.ProjectCreate("other", "/tmp/other")
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:t-nothing", "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:t-nothing", "", "", "", nil)
 	if resp.OK {
 		t.Fatal("a found_by naming no node must be refused")
 	}
@@ -500,7 +500,7 @@ func TestTaskAddRefusesAFoundByInTheWrongScope(t *testing.T) {
 	finder := h.TaskAdd("other", "the node that noticed", nil)
 	node := finder.Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:"+node, "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:"+node, "", "", "", nil)
 	if resp.OK {
 		t.Fatal("a found_by naming a node in another project must be refused")
 	}
@@ -513,7 +513,7 @@ func TestTaskAddRefusesAnUnknownKind(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", "", "", nil)
+	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", "", "", "", nil)
 	if resp.OK {
 		t.Fatal("an unknown kind must be refused at write time, not stored")
 	}
@@ -527,7 +527,7 @@ func TestTaskAddRefusesAMalformedFoundBy(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 
 	for _, ref := range []string{"skills", "skills:", ":t-1", "skills:t-1:extra"} {
-		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, "", "", nil)
+		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, "", "", "", nil)
 		if resp.OK {
 			t.Errorf("found_by %q must be refused", ref)
 			continue
@@ -576,10 +576,10 @@ func TestUnfinishedGroupsByKind(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 	h.TaskAdd("proj", "ordinary work", nil)
-	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", "", "", nil)
+	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", "", "", "", nil)
 	finder := h.TaskAdd("proj", "the node that noticed", nil).Data.(command.EventData).NodeID
 	h.TaskUpdate("proj", finder, "done", "noticed and filed", nil)
-	h.TaskAddKind("proj", "a gap", query.KindGap, "proj:"+finder, "", "", nil)
+	h.TaskAddKind("proj", "a gap", query.KindGap, "proj:"+finder, "", "", "", nil)
 
 	resp := h.Unfinished(nil)
 	if !resp.OK {
@@ -607,17 +607,17 @@ func TestGapsListsOpenFirstAcrossScopes(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", "", "", nil).Data.(command.EventData).NodeID
+	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", "", "", "", nil).Data.(command.EventData).NodeID
 	if resp := h.TaskUpdate("proj", doneGap, "done", "fixed", nil); !resp.OK {
 		t.Fatalf("TaskUpdate: %s", resp.Error)
 	}
 	finder := h.TaskAdd("proj", "the node that noticed", nil).Data.(command.EventData).NodeID
 	h.TaskUpdate("proj", finder, "done", "noticed and filed", nil)
-	h.TaskAddKind("proj", "an open gap", query.KindGap, "proj:"+finder, "", "", nil)
-	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", "", "", nil)
+	h.TaskAddKind("proj", "an open gap", query.KindGap, "proj:"+finder, "", "", "", nil)
+	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", "", "", "", nil)
 	h.TaskAdd("proj", "ordinary work", nil)
 
-	resp := h.Gaps()
+	resp := h.Gaps(nil)
 	if !resp.OK {
 		t.Fatalf("Gaps: %s", resp.Error)
 	}
@@ -1199,6 +1199,155 @@ func TestTaskBlockReplacesTheRecordedCheck(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// A node's recorded claim
+// ---------------------------------------------------------------------------
+
+// A gap is a claim about the world — this is broken — and a claim nothing
+// re-runs cannot notice itself going false: a gap was fixed twenty minutes after
+// it was filed and read as open for seven days. fs task add --check records the
+// command that would show the claim is over, and every reader that renders a
+// status re-runs it: plain pending while the defect stands, and a status that
+// says so once the check exits 0. A gap with no check keeps its prose and claims
+// nothing — the same rule a block's check follows, for the same reason.
+func TestGapsReRunsARecordedClaimCheck(t *testing.T) {
+	h := setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker")
+	check := "test -f " + marker
+
+	h.ProjectCreate("proj", root)
+	finder := h.TaskAddKind("proj", "the node that found it", query.KindWork, "", "", "", "", nil).
+		Data.(command.EventData).NodeID
+	foundBy := "proj:" + finder
+	checked := h.TaskAddKind("proj", "the widget is broken", query.KindGap, foundBy, "", "", check, nil).
+		Data.(command.EventData).NodeID
+	prose := h.TaskAddKind("proj", "the widget is ugly", query.KindGap, "", "", "", "", nil).
+		Data.(command.EventData).NodeID
+
+	rootOf := func(scope string) string {
+		if scope == "proj" {
+			return root
+		}
+		return ""
+	}
+	gaps := func() map[string]command.GapNode {
+		t.Helper()
+		resp := h.Gaps(rootOf)
+		if !resp.OK {
+			t.Fatalf("Gaps: %s", resp.Error)
+		}
+		got := make(map[string]command.GapNode)
+		for _, gap := range resp.Data.(map[string]any)["gaps"].([]command.GapNode) {
+			got[gap.NodeID] = gap
+		}
+		return got
+	}
+
+	if got := gaps()[checked].Status; got != "pending" {
+		t.Errorf("gap whose claim still holds = %q, want pending", got)
+	}
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "pending (claim no longer holds — " + check + " exited 0)"
+	if got := gaps()[checked].Status; got != want {
+		t.Errorf("gap whose claim is over = %q, want %q", got, want)
+	}
+	if got := gaps()[prose].Status; got != "pending" {
+		t.Errorf("gap with no check = %q, want pending: there is nothing to re-run", got)
+	}
+
+	// The check is a second reading of the row, not a rewrite of it: the gap's
+	// own fields survive, and an expired claim is still a gap nobody has closed.
+	if got := gaps()[checked].FoundBy; got != foundBy {
+		t.Errorf("found_by = %q, want %q", got, foundBy)
+	}
+	if got := gaps()[checked].Goal; got != "the widget is broken" {
+		t.Errorf("goal = %q, want the goal it was filed with", got)
+	}
+}
+
+// One rule, three readers in this package: fs status, fs unfinished and fs gaps
+// read a node's status through the same re-run, so they cannot disagree about
+// it. fs pending is the fourth reader, and internal/dispatch asserts the same
+// wording there.
+func TestStatusUnfinishedAndGapsAgreeOnAnExpiredClaim(t *testing.T) {
+	h := setup(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "marker")
+	check := "test -f " + marker
+
+	h.ProjectCreate("proj", root)
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
+		Data.(command.EventData).NodeID
+	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "pending (claim no longer holds — " + check + " exited 0)"
+
+	rootOf := func(string) string { return root }
+
+	status := ""
+	for _, task := range h.StatusIn("proj", root).Data.(command.StatusResult).Tasks {
+		if task.NodeID == nodeID {
+			status = task.Status
+		}
+	}
+	unfinished := ""
+	groups := h.Unfinished(rootOf).Data.(map[string]any)["unfinished"].(map[string][]command.UnfinishedNode)
+	for _, node := range groups[string(query.KindGap)] {
+		if node.NodeID == nodeID {
+			unfinished = node.Status
+		}
+	}
+	gaps := ""
+	for _, gap := range h.Gaps(rootOf).Data.(map[string]any)["gaps"].([]command.GapNode) {
+		if gap.NodeID == nodeID {
+			gaps = gap.Status
+		}
+	}
+
+	for _, reader := range []struct{ name, got string }{
+		{"fs status", status},
+		{"fs unfinished", unfinished},
+		{"fs gaps", gaps},
+	} {
+		if reader.got != want {
+			t.Errorf("%s = %q, want %q", reader.name, reader.got, want)
+		}
+	}
+}
+
+// The check's polarity is the author's, and no reader guesses at it: a check
+// that exits 0 while the defect stands is a wrong check, and it reads as an
+// expired claim — never as healthy. The mechanism cannot tell a fixed thing from
+// a mis-written test, and it does not try: what it reports is what it saw, the
+// command exiting 0. A wrong check is loud here rather than silently reassuring.
+func TestACheckWrittenBackwardsReadsAsExpired(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", t.TempDir())
+	// `true` exits 0 whatever the world says.
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "true", nil).
+		Data.(command.EventData).NodeID
+
+	resp := h.Gaps(func(string) string { return "" })
+	if !resp.OK {
+		t.Fatalf("Gaps: %s", resp.Error)
+	}
+	want := "pending (claim no longer holds — true exited 0)"
+	for _, gap := range resp.Data.(map[string]any)["gaps"].([]command.GapNode) {
+		if gap.NodeID != nodeID {
+			continue
+		}
+		if gap.Status != want {
+			t.Errorf("a backwards check = %q, want %q", gap.Status, want)
+		}
+		return
+	}
+	t.Fatalf("gap %s not in fs gaps", nodeID)
+}
+
 func TestKnowledgeAddSearchable(t *testing.T) {
 	// Knowledge added events should be searchable via FTS5.
 	h := setup(t)
@@ -1415,10 +1564,10 @@ func TestStatusRunsABlockCheckInTheProjectRoot(t *testing.T) {
 // the goal text.
 func TestTaskAddKindRecordsTheIntegratesLink(t *testing.T) {
 	h := setup(t)
-	member := h.TaskAddKind("cap", "dispatch parallel: member", query.KindDispatch, "", "", "", nil).
+	member := h.TaskAddKind("cap", "dispatch parallel: member", query.KindDispatch, "", "", "", "", nil).
 		Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("cap", "dispatch integrate: merge member", query.KindDispatch, "", member, "", nil)
+	resp := h.TaskAddKind("cap", "dispatch integrate: merge member", query.KindDispatch, "", member, "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}
@@ -1455,7 +1604,7 @@ func TestTaskAddKindRecordsTheIntegratesLink(t *testing.T) {
 func TestTaskAddKindRefusesAMalformedIntegratesLink(t *testing.T) {
 	h := setup(t)
 	for _, ref := range []string{"cap:t-1", "t-1 t-2", " ", "t-1\t"} {
-		resp := h.TaskAddKind("cap", "dispatch integrate: x", query.KindDispatch, "", ref, "", nil)
+		resp := h.TaskAddKind("cap", "dispatch integrate: x", query.KindDispatch, "", ref, "", "", nil)
 		if resp.OK {
 			t.Errorf("integrates %q must be refused", ref)
 			continue

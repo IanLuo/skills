@@ -1405,7 +1405,7 @@ func recordCapNode(h *command.Handler, taskType, goal, project, integrates, revi
 	if parent != "" {
 		parentPtr = &parent
 	}
-	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, reviews, parentPtr)
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, reviews, "", parentPtr)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}
