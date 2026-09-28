@@ -5,9 +5,10 @@ package dispatch_test
 //
 // Two things are measured here, and they are the two the change exists for. The
 // first is that the reviewer and the self-reviewer are different participants
-// and never share a plan: `review` is `applies_when: code` and asks a worker to
-// re-read its own diff, `independent-review` is `applies_when: type=review-task`
-// and asks a worker to audit somebody else's change. A plan carrying both tells
+// and never share a plan: the self-review is the last four steps of `code-bar`,
+// which is `applies_when: code` and asks a worker to re-read its own diff, while
+// `independent-review` is `applies_when: type=review-task` and asks a worker to
+// audit somebody else's change. A plan carrying both tells
 // one worker to be its own adversary and then to report drift on a stranger's
 // work, which is why the tag sets are kept apart by test rather than by hope.
 //
@@ -73,7 +74,7 @@ func TestReviewTaskPlanCarriesTheReviewerAndNotTheSelfReview(t *testing.T) {
 	if !slices.Contains(names, "independent-review") {
 		t.Errorf("plan %v does not carry independent-review", names)
 	}
-	if slices.Contains(names, "review") {
+	if slices.Contains(names, "code-bar") {
 		t.Errorf("plan %v carries the self-review playbook too: one worker is told to "+
 			"re-read its own diff and to audit somebody else's", names)
 	}
@@ -91,9 +92,9 @@ func TestReviewTaskPlanCarriesTheReviewerAndNotTheSelfReview(t *testing.T) {
 }
 
 // TestCodePlanStillCarriesTheSelfReview is the other half: nothing about the
-// code situation changed. A code dispatch still loads the self-review playbook,
-// and never the independent reviewer — a worker is not asked to audit a change
-// it is in the middle of writing.
+// code situation changed. A code dispatch still loads the self-reviewing
+// `code-bar`, and never the independent reviewer — a worker is not asked to
+// audit a change it is in the middle of writing.
 func TestCodePlanStillCarriesTheSelfReview(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	withShipped(t, f)
@@ -111,8 +112,8 @@ func TestCodePlanStillCarriesTheSelfReview(t *testing.T) {
 	})
 
 	names := planNames(brief.Plan)
-	if !slices.Contains(names, "review") {
-		t.Errorf("plan %v does not carry the self-review playbook", names)
+	if !slices.Contains(names, "code-bar") {
+		t.Errorf("plan %v does not carry the self-reviewing playbook", names)
 	}
 	if slices.Contains(names, "independent-review") {
 		t.Errorf("plan %v carries the independent reviewer into a code dispatch", names)

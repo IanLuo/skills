@@ -427,9 +427,7 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 		"worker":      "dispatch: always (work)",
 		"code":        "dispatch: code (entry, exit)",
 		"plan":        "dispatch: code (work)",
-		"development": "dispatch: code (work)",
-		"tdd":         "dispatch: code (work)",
-		"review":      "dispatch: code (work)",
+		"code-bar":    "dispatch: code (work)",
 
 		"independent-review": "dispatch: type=review-task (work, exit)",
 		"research":           "dispatch: research (work)",
