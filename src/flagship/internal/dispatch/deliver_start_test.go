@@ -32,9 +32,8 @@ func noBackoff(t *testing.T) {
 }
 
 // A pane split a moment ago is not yet at a shell prompt, and herdr starts an
-// agent nowhere else — so a delivery that follows a split loses a race that a
-// person copying the printed line loses too. The start is asked again until the
-// pane is ready.
+// agent nowhere else — so a delivery that follows a split is refused until the
+// pane is ready. The start is asked again until it takes.
 func TestStartAgentRetriesWhileThePaneIsNotYetAShell(t *testing.T) {
 	noBackoff(t)
 

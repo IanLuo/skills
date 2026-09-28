@@ -815,6 +815,29 @@ work:
 	}
 }
 
+// The standing resolution has a second caller, and it prefixes the refusal
+// itself for the same reason Prepare does: `fs kb prompt` prints "fs kb prompt: "
+// and nothing else, so an unwrapped error reaches the cap naming no command at
+// all. It is the caller's prefix and not the error's, which is why the dispatch
+// path — which reaches standingRealization without passing through here — carries
+// the prefix once rather than twice.
+func TestSessionTagsRefusalCarriesTheDispatchPrefix(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", "name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: standing\n")
+	f.writePlaybook(t, "probe-stand", "name: probe-stand\nengine: other\nwork:\n  - say: standing\n")
+
+	_, err := dispatch.SessionTags(f.kc)
+	if err == nil {
+		t.Fatal("two standing declarations that disagree must refuse")
+	}
+	if !strings.HasPrefix(err.Error(), "dispatch: ") {
+		t.Errorf("refusal %q must name the command that refused", err.Error())
+	}
+	if n := strings.Count(err.Error(), "dispatch: "); n != 1 {
+		t.Errorf("refusal %q carries %d `dispatch: ` prefixes, want 1", err.Error(), n)
+	}
+}
+
 // Every refusal Prepare returns is one `dispatch: ` prefix and one reason. The
 // realization refusals are decided several calls down from the errResp that
 // answers with them, so a prefix written at both ends reads as two errors in the

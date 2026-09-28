@@ -588,8 +588,8 @@ work:
 	}
 }
 
-// The executed half of the start command: the arguments the plan resolved reach
-// herdr's argv, not only the line nextCommand renders for a human to copy.
+// The arguments the plan resolved reach herdr's argv — the only rendering of the
+// start command, so what is asserted here is what herdr is given.
 func TestDeliverStartsTheAgentWithTheResolvedArgs(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)
@@ -881,10 +881,10 @@ func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
 }
 
 // A pane split a moment ago is not yet a shell, and herdr starts an agent
-// nowhere else: the delivery that follows a split loses the same race a person
-// copying the printed line loses. The start is asked again until the pane is
-// ready, and every ask names the same agent — a retry that renamed would be the
-// collision the name exists to prevent.
+// nowhere else: the delivery that follows a split is refused until the pane is
+// ready. The start is asked again until it takes, and every ask names the same
+// agent — a retry that renamed would be the collision the name exists to
+// prevent.
 func TestDeliverRetriesAStartRefusedByAPaneThatIsNotYetAShell(t *testing.T) {
 	root := t.TempDir()
 	f := newFixture(t, root)

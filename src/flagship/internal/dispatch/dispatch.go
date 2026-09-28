@@ -58,10 +58,16 @@ func IsCapScope(scope string) bool { return scope == capScope }
 // playbook with a `cap:` section tagged `engine=herdr` loads only because a
 // standing playbook declares that engine. It is the same resolution a dispatch
 // uses, so the prompt cannot drift from what a dispatch would run.
+//
+// The refusal carries the `dispatch: ` prefix because this is a second caller of
+// the standing resolution: `fs kb prompt` prints its own name and the error, so
+// a bare error reaches the cap naming no command at all. The prefix belongs to
+// each caller rather than to the error, since `Prepare` reaches
+// standingRealization directly and would otherwise carry it twice.
 func SessionTags(kc *knowledge.Center) (map[string]any, error) {
 	standing, err := standingRealization(kc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dispatch: %w", err)
 	}
 	tags := map[string]any{}
 	if standing.engine != "" {
