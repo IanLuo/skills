@@ -75,6 +75,24 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
+## Project tracking — `fs` (flagship)
+
+When a managed project exists (`fs project list` returns results), `fs` is the
+single source of truth for tasks, decisions, and knowledge — not `TaskCreate`.
+
+- **Session start:** run `fs project list`. If the current repo matches a
+  managed project, **load the flagship skill** (`/flagship`) immediately — the
+  playbook has the full workflow, CLI reference, and event model rules. Then run
+  `fs status --project <name>` before doing anything else.
+- **Task tracking:** use `fs task add/update`, not `TaskCreate`/`TaskUpdate`.
+  `TaskCreate` is for ephemeral in-conversation checklists only when no managed
+  project applies.
+- **Decisions & knowledge:** record as you go with `--decision` and
+  `fs task knowledge`.
+- **Playbooks:** `fs status` auto-includes all playbooks in its response —
+  match the `trigger` field to the task type before starting. Prerequisite
+  playbooks gate the task; procedure playbooks define the workflow.
+
 ## House rules (maintained by ianluo)
 
 - **Commit authorship.** When committing, do NOT add the agent as an author or

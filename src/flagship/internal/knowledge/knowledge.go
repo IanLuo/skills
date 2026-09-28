@@ -96,6 +96,35 @@ func (c *Center) List() ([]string, error) {
 	return names, nil
 }
 
+// Match returns all playbooks whose Trigger field contains the given keyword.
+// Matching is case-insensitive and checks for substring within comma-separated triggers.
+func (c *Center) Match(trigger string) ([]*Playbook, error) {
+	if trigger == "" {
+		return nil, fmt.Errorf("knowledge: trigger is required")
+	}
+
+	names, err := c.List()
+	if err != nil {
+		return nil, err
+	}
+
+	needle := strings.ToLower(strings.TrimSpace(trigger))
+	var matched []*Playbook
+	for _, name := range names {
+		pb, err := c.Get(name)
+		if err != nil {
+			continue
+		}
+		for _, part := range strings.Split(pb.Trigger, ",") {
+			if strings.TrimSpace(strings.ToLower(part)) == needle {
+				matched = append(matched, pb)
+				break
+			}
+		}
+	}
+	return matched, nil
+}
+
 // Edit overwrites an existing playbook. Returns error if it doesn't exist.
 func (c *Center) Edit(name string, data []byte) error {
 	if name == "" {

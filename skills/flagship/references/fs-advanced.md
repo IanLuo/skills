@@ -125,7 +125,7 @@ fs kb remove dev-task-prerequisites
 
 ## Project registry
 
-The global project registry at `~/.fs/registry.db` tracks all known projects.
+The project registry lives in `~/.fs/flagship.db` (same database as the event store).
 
 ### Schema
 
@@ -142,7 +142,7 @@ The global project registry at `~/.fs/registry.db` tracks all known projects.
 - **Activity tracking** — every command that uses `--project` (status, query, task add, etc.) updates `last_activity` for that project. This keeps the registry sorted by recency.
 - **Listing** — `fs project list` returns all registered projects ordered by `last_activity` descending (most recently used first).
 - **Lookup** — `fs project get NAME` returns a single project's registry entry (name, root_path, created_at, last_activity).
-- **No manual edits** — the registry is managed exclusively by `fs` commands. Never write to `~/.fs/registry.db` directly.
+- **No manual edits** — the registry is managed exclusively by `fs` commands. Never write to `~/.fs/flagship.db` directly.
 
 ### Commands
 
@@ -158,19 +158,16 @@ fs project get myapp
 
 ## Multi-project workflows
 
-Each project has its own `.fs/store.db`. The `--project` flag selects which store to operate on.
+All projects share one database at `~/.fs/flagship.db`. The `--project` flag filters by project ID. Cross-project search works from any directory.
 
 ```bash
-# List projects (by checking for .fs/store.db in known paths)
-# Note: fs doesn't have a global project index — track projects manually
-
-# Work across projects
+# Work across projects from anywhere
 fs status --project frontend
 fs status --project backend
 fs query "shared API contract" --project backend
 ```
 
-The knowledge center (`~/.fs/kb/`) is global — playbooks apply across all projects.
+The knowledge center (`~/.fs/kb/`) is also global — playbooks apply across all projects.
 
 ## Store integrity and WAL
 

@@ -1,6 +1,6 @@
 ---
 name: flagship
-description: 'Manage projects, tasks, decisions, and knowledge via the flagship (fs) CLI — the persistent memory layer for agent orchestration. Use when the user says "track this project", "create a project", "add a task", "what''s the status", "what tasks are active", "what decisions were made", "record this decision", "resume work on project X", "pick up where I left off", "check prerequisites", "fs", "flagship", or any project/task tracking request. Do NOT use for writing code (dev-task), writing specs (specs), spawning agents (herdr), or research (librarian).'
+description: 'Manage projects, tasks, decisions, and knowledge via the flagship (fs) CLI — the persistent memory layer for agent orchestration. Use when the user says "track this project", "create a project", "add a task", "what''s the status", "what tasks are active", "what decisions were made", "record this decision", "resume work on project X", "pick up where I left off", "check prerequisites", "what should I work on", "what''s left to do", "mark this done", "update the task", "project status", "show tasks", "list projects", "fs", "flagship", or any project/task/decision tracking request. ALSO load this skill at session start when `fs project list` shows a managed project matching the current repo — read state before working. Do NOT use for writing code (dev-task), writing specs (specs), spawning agents (herdr), or research (librarian).'
 metadata:
   audience: personal
   domain: agent-orchestration
@@ -29,17 +29,35 @@ If the binary doesn't exist, the skill can't function — run the build first.
 
 ```bash
 fs project list                          # discover all managed projects
-fs status --project <name>               # current task tree
+fs status --project <name>               # task tree + all playbooks
 fs query "<topic>" --project <name>     # relevant decisions/knowledge
-fs kb get <playbook-name>               # applicable procedures
 ```
 
-In a fresh session, `fs project list` is always the first command — it shows all known projects ordered by last activity. Then drill into the relevant project with `fs status`.
+In a fresh session, `fs project list` is always the first command — it shows all known projects ordered by last activity. Then drill into the relevant project with `fs status`, which also returns all playbooks.
+
+## Playbook loading
+
+Playbooks are **auto-loaded with `fs status`** — the response includes a `playbooks`
+array containing every playbook from the knowledge center, with their type, trigger,
+and steps. No separate `fs kb match` call is needed.
+
+After reading the status response, apply the playbooks:
+
+- **Prerequisite** playbooks (`type: prerequisite`) gate the task — verify each step
+  exists before proceeding; block the task if anything is missing
+- **Procedure** playbooks (`type: procedure`) define the workflow — follow steps in order
+- **Convention** playbooks (`type: convention`) define rules — apply them throughout
+
+Match the `trigger` field to the task type you're about to start (e.g. `dev-task`,
+`deploy`, `coordinator`). This is not optional. The playbooks are the codified
+workflow. Skipping them means flying blind.
+
+For manual lookup, `fs kb match <trigger>` is still available.
 
 ## Workflow
 
-1. **Discover** — `fs project list` to find managed projects, then `fs status` for the relevant one
-2. **Check prerequisites** — `fs kb get <task-type>-prerequisites` for required docs/steps
+1. **Discover** — `fs project list` to find managed projects, then `fs status` for the relevant one (playbooks are included automatically)
+2. **Apply playbooks** — match the `trigger` field to your task type; follow prerequisite → procedure → convention order
 3. **Pick or create task** — find an existing pending task or `fs task add`
 4. **Mark active** — `fs task update <id> --status active`
 5. **Work** — use other skills as appropriate (dev-task, specs, etc.)
@@ -58,7 +76,7 @@ fs project list                                  # all known projects (ordered b
 fs project get NAME                              # single project lookup
 ```
 
-`--root` defaults to git repo root or cwd. `--name` derives from directory if omitted. All projects are registered in the global registry at `~/.fs/registry.db`.
+`--root` defaults to git repo root or cwd. `--name` derives from directory if omitted. All projects are registered in `~/.fs/flagship.db`.
 
 ### Tasks
 
@@ -99,6 +117,7 @@ fs log [--project ID] [--node NODE_ID] [--type TYPE]
 fs kb add --name NAME --file PATH     # add YAML playbook
 fs kb get NAME                         # read a playbook
 fs kb list                             # list all
+fs kb match TRIGGER                    # find playbooks by trigger
 fs kb edit --name NAME --file PATH     # update
 fs kb remove NAME                      # delete
 ```
@@ -119,7 +138,7 @@ steps:
 
 These are non-negotiable:
 
-1. **Never write to `.fs/store.db` directly** — only use `fs` commands
+1. **Never write to `~/.fs/flagship.db` directly** — only use `fs` commands
 2. **Events are immutable** — no undo; correct with compensating events (update status back, edit goal again)
 3. **Always record decisions** — when making a choice, use the `--decision` flag on `fs task update`
 4. **Always record knowledge** — when learning something useful, use `fs task knowledge`
@@ -151,10 +170,11 @@ Before starting a task type that has a prerequisite playbook:
 ## Data locations
 
 ```
-~/.fs/registry.db              # Global project registry (all known projects)
+~/.fs/flagship.db              # Single database: project registry + event store
 ~/.fs/kb/                       # Knowledge center (global, YAML playbooks)
-<project_root>/.fs/store.db    # Event store (per-project, SQLite + WAL)
 ```
+
+All projects share one database. Cross-project search works out of the box.
 
 ## Example session
 

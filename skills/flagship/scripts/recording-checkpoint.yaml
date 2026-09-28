@@ -1,0 +1,44 @@
+name: recording-checkpoint
+type: convention
+trigger: dev-task, coordinator, delegate
+description: >
+  Enforce event recording at workflow transitions. Active tasks must have
+  at least one decision or knowledge event before completion. fs status
+  warnings surface gaps — treat them as blockers.
+
+rules:
+  - id: check-warnings-first
+    when: session start, after fs status
+    action: >
+      Read the warnings array from fs status output. If bare_active_task
+      warnings exist, record decisions/knowledge for those tasks before
+      starting new work.
+
+  - id: before-done
+    when: about to mark a task done
+    action: >
+      Run: fs log --node <id> --type decision-recorded
+      and:  fs log --node <id> --type knowledge-added
+      If both return empty, record at minimum a decision summarizing the
+      outcome before marking done.
+
+  - id: before-delegate
+    when: after planning subtasks, before spawning workers
+    action: >
+      Record the decomposition rationale as a decision on the parent task.
+      Future sessions reading fs status will see WHY the work was split
+      this way.
+
+  - id: after-debug
+    when: after resolving a bug or investigation
+    action: >
+      Record what was learned as knowledge on the active task, even if it
+      seems obvious. Future sessions don't have your debugging context.
+      Include: what was tried, what failed, what worked, and why.
+
+  - id: after-decision
+    when: after choosing between alternatives
+    action: >
+      Any time you pick approach A over approach B, record it as a
+      decision. Include what was considered and why the choice was made.
+      This is the most commonly lost event type.

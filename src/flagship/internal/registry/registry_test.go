@@ -164,6 +164,237 @@ func TestUpdateActivityNonexistent(t *testing.T) {
 	}
 }
 
+func TestBusyTimeout(t *testing.T) {
+	r := open(t)
+	var timeout int
+	row := r.DB().QueryRow("PRAGMA busy_timeout")
+	if err := row.Scan(&timeout); err != nil {
+		t.Fatalf("PRAGMA busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("expected busy_timeout=5000, got %d", timeout)
+	}
+}
+
+// --- Agent Registry Tests ---
+
+func TestRegisterAndGetAgent(t *testing.T) {
+	r := open(t)
+	a := registry.Agent{
+		Name:      "impl-auth",
+		Role:      "worker",
+		PaneID:    "w1:p5",
+		Workspace: "w1",
+		Project:   "myapp",
+		Playbook:  "worker-playbook",
+	}
+	if err := r.RegisterAgent(a); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+
+	got, err := r.GetAgent("impl-auth")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if got.Name != "impl-auth" || got.Role != "worker" || got.PaneID != "w1:p5" {
+		t.Errorf("unexpected agent: %+v", got)
+	}
+	if got.Status != "active" {
+		t.Errorf("expected active status, got %s", got.Status)
+	}
+	if got.LastSeen == "" || got.CreatedAt == "" {
+		t.Error("timestamps should be set")
+	}
+}
+
+func TestGetAgentNotFound(t *testing.T) {
+	r := open(t)
+	_, err := r.GetAgent("nonexistent")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestGetAgentByPane(t *testing.T) {
+	r := open(t)
+	r.RegisterAgent(registry.Agent{Name: "worker1", Role: "worker", PaneID: "w1:p3", Project: "p"})
+
+	got, err := r.GetAgentByPane("w1:p3")
+	if err != nil {
+		t.Fatalf("GetAgentByPane: %v", err)
+	}
+	if got.Name != "worker1" {
+		t.Errorf("expected worker1, got %s", got.Name)
+	}
+}
+
+func TestGetAgentByPaneNotFound(t *testing.T) {
+	r := open(t)
+	_, err := r.GetAgentByPane("w1:p99")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListAgents(t *testing.T) {
+	r := open(t)
+	r.RegisterAgent(registry.Agent{Name: "captain", Role: "captain", PaneID: "w1:p1", Project: "myapp"})
+	r.RegisterAgent(registry.Agent{Name: "worker1", Role: "worker", PaneID: "w1:p2", Project: "myapp"})
+	r.RegisterAgent(registry.Agent{Name: "worker2", Role: "worker", PaneID: "w1:p3", Project: "other"})
+
+	// All agents.
+	all, err := r.ListAgents(registry.AgentFilter{})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("expected 3, got %d", len(all))
+	}
+
+	// Filter by role.
+	workers, _ := r.ListAgents(registry.AgentFilter{Role: "worker"})
+	if len(workers) != 2 {
+		t.Errorf("expected 2 workers, got %d", len(workers))
+	}
+
+	// Filter by project.
+	myapp, _ := r.ListAgents(registry.AgentFilter{Project: "myapp"})
+	if len(myapp) != 2 {
+		t.Errorf("expected 2 in myapp, got %d", len(myapp))
+	}
+}
+
+func TestSingleCaptainEnforcement(t *testing.T) {
+	r := open(t)
+	// First captain succeeds.
+	err := r.RegisterAgent(registry.Agent{Name: "captain", Role: "captain", PaneID: "w1:p1", Project: "myapp"})
+	if err != nil {
+		t.Fatalf("first captain: %v", err)
+	}
+
+	// Second captain for same project fails.
+	err = r.RegisterAgent(registry.Agent{Name: "captain2", Role: "captain", PaneID: "w1:p2", Project: "myapp"})
+	if err == nil {
+		t.Fatal("expected error for second captain")
+	}
+
+	// Re-registering the same captain (name) succeeds (upsert).
+	err = r.RegisterAgent(registry.Agent{Name: "captain", Role: "captain", PaneID: "w1:p9", Project: "myapp"})
+	if err != nil {
+		t.Fatalf("re-register same captain: %v", err)
+	}
+
+	// Captain for different project succeeds.
+	err = r.RegisterAgent(registry.Agent{Name: "captain-other", Role: "captain", PaneID: "w1:p3", Project: "other"})
+	if err != nil {
+		t.Fatalf("captain for other project: %v", err)
+	}
+
+	// Dead captain allows replacement.
+	r.UpdateAgent("captain", "dead", "")
+	err = r.RegisterAgent(registry.Agent{Name: "captain-new", Role: "captain", PaneID: "w1:p4", Project: "myapp"})
+	if err != nil {
+		t.Fatalf("captain after dead: %v", err)
+	}
+}
+
+func TestTouchAgent(t *testing.T) {
+	r := open(t)
+	r.RegisterAgent(registry.Agent{Name: "w", Role: "worker", PaneID: "w1:p1", Project: "p"})
+
+	a1, _ := r.GetAgent("w")
+	time.Sleep(10 * time.Millisecond)
+	r.TouchAgent("w1:p1")
+	a2, _ := r.GetAgent("w")
+
+	if a2.LastSeen <= a1.LastSeen {
+		t.Errorf("last_seen not updated: %s vs %s", a1.LastSeen, a2.LastSeen)
+	}
+}
+
+func TestTouchAgentNoOp(t *testing.T) {
+	r := open(t)
+	// Should not error — no-op.
+	r.TouchAgent("nonexistent")
+}
+
+func TestHeartbeatAgent(t *testing.T) {
+	r := open(t)
+	r.RegisterAgent(registry.Agent{Name: "w", Role: "worker", PaneID: "w1:p1", Project: "p"})
+
+	if err := r.HeartbeatAgent("w"); err != nil {
+		t.Fatalf("HeartbeatAgent: %v", err)
+	}
+
+	// Nonexistent agent errors.
+	if err := r.HeartbeatAgent("nope"); err == nil {
+		t.Fatal("expected error for nonexistent agent")
+	}
+}
+
+func TestUpdateAgent(t *testing.T) {
+	r := open(t)
+	r.RegisterAgent(registry.Agent{Name: "w", Role: "worker", PaneID: "w1:p1", Project: "p"})
+
+	if err := r.UpdateAgent("w", "idle", ""); err != nil {
+		t.Fatalf("UpdateAgent: %v", err)
+	}
+	a, _ := r.GetAgent("w")
+	if a.Status != "idle" {
+		t.Errorf("expected idle, got %s", a.Status)
+	}
+
+	// Invalid status.
+	if err := r.UpdateAgent("w", "invalid", ""); err == nil {
+		t.Fatal("expected error for invalid status")
+	}
+
+	// Not found.
+	if err := r.UpdateAgent("nope", "dead", ""); err == nil {
+		t.Fatal("expected error for nonexistent agent")
+	}
+}
+
+func TestDeregisterAgent(t *testing.T) {
+	r := open(t)
+	r.RegisterAgent(registry.Agent{Name: "w", Role: "worker", PaneID: "w1:p1", Project: "p"})
+
+	if err := r.DeregisterAgent("w"); err != nil {
+		t.Fatalf("DeregisterAgent: %v", err)
+	}
+	_, err := r.GetAgent("w")
+	if err == nil {
+		t.Fatal("expected not found after deregister")
+	}
+
+	// Double deregister errors.
+	if err := r.DeregisterAgent("w"); err == nil {
+		t.Fatal("expected error for already deregistered")
+	}
+}
+
+func TestRegisterAgentValidation(t *testing.T) {
+	r := open(t)
+
+	// Missing name.
+	err := r.RegisterAgent(registry.Agent{Role: "worker", PaneID: "p1"})
+	if err == nil {
+		t.Fatal("expected error for missing name")
+	}
+
+	// Invalid role.
+	err = r.RegisterAgent(registry.Agent{Name: "x", Role: "boss", PaneID: "p1"})
+	if err == nil {
+		t.Fatal("expected error for invalid role")
+	}
+
+	// Missing pane.
+	err = r.RegisterAgent(registry.Agent{Name: "x", Role: "worker"})
+	if err == nil {
+		t.Fatal("expected error for missing pane")
+	}
+}
+
 func TestListOrderByLastActivity(t *testing.T) {
 	r := open(t)
 

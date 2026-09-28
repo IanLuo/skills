@@ -41,11 +41,13 @@ func getFS(t *testing.T) string {
 	return fsBin
 }
 
-// runFS runs the fs binary in a directory.
+// runFS runs the fs binary in a directory with HOME isolated to avoid polluting
+// the real ~/.fs/flagship.db.
 func runFS(t *testing.T, bin, dir string, args ...string) (map[string]any, int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+dir)
 	out, err := cmd.Output()
 	exitCode := 0
 	if err != nil {
@@ -73,6 +75,7 @@ func TestLogsGoToStderrNotStdout(t *testing.T) {
 
 	cmd := exec.Command(bin, "project", "create", "--name", "logtest", "--root", dir)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HOME="+dir)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -120,8 +123,8 @@ func TestCLIProjectCreate(t *testing.T) {
 	if resp["ok"] != true {
 		t.Fatalf("not ok: %v", resp["error"])
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".fs", "store.db")); err != nil {
-		t.Fatalf("store.db not created: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, ".fs", "flagship.db")); err != nil {
+		t.Fatalf("flagship.db not created: %v", err)
 	}
 }
 
@@ -162,6 +165,99 @@ func TestCLITaskUpdateAndStatus(t *testing.T) {
 	task := tasks[0].(map[string]any)
 	if task["status"] != "active" {
 		t.Errorf("status: %v", task["status"])
+	}
+}
+
+func TestCLIStatusIncludesPlaybooks(t *testing.T) {
+	// fs status should auto-include all playbooks from ~/.fs/kb/.
+	bin := getFS(t)
+	dir := t.TempDir()
+	homDir := t.TempDir()
+
+	runWithHome := func(args ...string) (map[string]any, int) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "HOME="+homDir)
+		out, err := cmd.Output()
+		exitCode := 0
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				exitCode = ee.ExitCode()
+				if len(out) == 0 {
+					out = ee.Stderr
+				}
+			} else {
+				t.Fatalf("exec: %v", err)
+			}
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(out, &resp); err != nil {
+			t.Fatalf("unmarshal %q: %v", string(out), err)
+		}
+		return resp, exitCode
+	}
+
+	// Create project.
+	runWithHome("project", "create", "--name", "p", "--root", dir)
+
+	// Status with no playbooks — playbooks key should be absent or nil.
+	resp, code := runWithHome("status", "--project", "p")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	if pbs, ok := data["playbooks"]; ok && pbs != nil {
+		if arr, ok := pbs.([]any); ok && len(arr) != 0 {
+			t.Errorf("expected no playbooks, got %v", pbs)
+		}
+	}
+
+	// Add two playbooks.
+	kbDir := filepath.Join(homDir, ".fs", "kb")
+	os.MkdirAll(kbDir, 0o755)
+	pb1 := `name: dev-prereqs
+type: prerequisite
+trigger: dev-task
+steps:
+  - check spec
+  - check arch
+`
+	pb2 := `name: deploy-proc
+type: procedure
+trigger: deploy
+steps:
+  - run tests
+  - push image
+`
+	os.WriteFile(filepath.Join(kbDir, "dev-prereqs.yaml"), []byte(pb1), 0o644)
+	os.WriteFile(filepath.Join(kbDir, "deploy-proc.yaml"), []byte(pb2), 0o644)
+
+	// Status should now include both playbooks.
+	resp, code = runWithHome("status", "--project", "p")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	data = resp["data"].(map[string]any)
+	pbs := data["playbooks"].([]any)
+	if len(pbs) != 2 {
+		t.Fatalf("expected 2 playbooks, got %d", len(pbs))
+	}
+
+	// Verify playbook fields are present.
+	names := map[string]bool{}
+	for _, raw := range pbs {
+		pb := raw.(map[string]any)
+		names[pb["name"].(string)] = true
+		if pb["trigger"] == nil || pb["trigger"] == "" {
+			t.Errorf("playbook %v missing trigger", pb["name"])
+		}
+		if pb["steps"] == nil {
+			t.Errorf("playbook %v missing steps", pb["name"])
+		}
+	}
+	if !names["dev-prereqs"] || !names["deploy-proc"] {
+		t.Errorf("missing expected playbook names: %v", names)
 	}
 }
 

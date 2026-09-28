@@ -12,3 +12,6 @@ scratch/
 
 # Generated agent artifacts (regenerable — not source)
 .agents/artifacts/
+
+# flagship runtime event store (local, not versioned)
+.fs/

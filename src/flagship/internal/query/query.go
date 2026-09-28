@@ -17,6 +17,7 @@ type Node struct {
 	Goal      string   `json:"goal"`
 	Status    string   `json:"status"`
 	ParentID  string   `json:"parent_id,omitempty"`
+	Assignee  string   `json:"assignee,omitempty"`
 	Children  []*Node  `json:"children,omitempty"`
 	Decisions []string `json:"decisions,omitempty"`
 	Knowledge []string `json:"knowledge,omitempty"`
@@ -109,9 +110,12 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				NewValue string `json:"new_value"`
 			}
 			_ = json.Unmarshal(evt.Payload, &p)
-			if p.Field == "goal" {
-				node := tree.ensureNode(nid)
+			node := tree.ensureNode(nid)
+			switch p.Field {
+			case "goal":
 				node.Goal = p.NewValue
+			case "assignee":
+				node.Assignee = p.NewValue
 			}
 
 		default:

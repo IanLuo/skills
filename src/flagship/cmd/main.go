@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/flagship-dev/flagship/internal/capabilities"
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/registry"
@@ -38,6 +39,12 @@ func main() {
 		logCmd(os.Args[2:])
 	case "kb":
 		kbCmd(os.Args[2:])
+	case "resolve":
+		resolveCmd(os.Args[2:])
+	case "agent":
+		agentCmd(os.Args[2:])
+	case "migrate":
+		migrateCmd(os.Args[2:])
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -60,47 +67,83 @@ Commands:
   task block NODE_ID --reason REASON            Block a task
   task unblock NODE_ID                          Unblock a task
   task knowledge NODE_ID --summary TEXT         Add knowledge to a task
-  status [--project PROJECT_ID]                 Show project status
+  status [--project PROJECT_ID] [--assignee A]  Show project status
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
   kb add --name NAME --file PATH                Add a playbook
   kb get NAME                                   Get a playbook
   kb list                                       List playbooks
+  kb match TRIGGER                              Find playbooks by trigger
   kb edit --name NAME --file PATH               Edit a playbook
-  kb remove NAME                                Remove a playbook`)
+  kb remove NAME                                Remove a playbook
+  resolve <cap>.<op> [--key val ...]             Resolve capability to concrete command
+  resolve <cap>                                  Get capability metadata (detail-playbook, ops)
+  resolve --check                                Validate capabilities config
+  resolve --init                                 Write default capabilities config
+  agent register --name N --role R --pane P      Register an agent
+  agent get NAME | --self                        Get agent info
+  agent list [--role R] [--project P] [--status S] List agents
+  agent heartbeat NAME                           Touch last_seen
+  agent update NAME [--status S] [--project P]   Update agent
+  agent deregister NAME                          Remove agent registration
+  migrate PATH [PATH...]                        Import events from old per-project store.db files`)
 }
 
-// handler opens the store and returns a command handler.
-// Store location: <project_root>/.fs/store.db (SYSTEM-DESIGN R4).
-func handler() (*command.Handler, string) {
-	projectRoot := command.DetectProjectRoot()
-	if projectRoot == "" {
-		// Fallback to cwd
-		var err error
-		projectRoot, err = os.Getwd()
-		if err != nil {
-			fatal("cannot determine project root: " + err.Error())
-		}
-	}
-
-	dbDir := filepath.Join(projectRoot, ".fs")
-	if err := os.MkdirAll(dbDir, 0o755); err != nil {
-		fatal("cannot create .fs directory: " + err.Error())
-	}
-
-	dbPath := filepath.Join(dbDir, "store.db")
+// handler opens the global event store at ~/.fs/flagship.db.
+// All projects share one store — cross-project search works out of the box.
+// Opportunistic last_seen touch for the calling agent (DESIGN-roles §2.5).
+func handler() *command.Handler {
+	dbPath := globalDBPath()
 	h, err := command.NewHandler(dbPath)
 	if err != nil {
 		fatal(err.Error())
 	}
-
-	// Inject structured logger (ARCHITECTURE R4: JSON to stderr).
 	h.SetLogger(logger)
-
-	// Auto-capture git HEAD (ARCHITECTURE R4).
 	h.SetCommitSHA(command.DetectCommitSHA())
 
-	return h, projectRoot
+	// Opportunistic last_seen touch (best-effort, per DESIGN-roles §2.5).
+	// Reads raw $HERDR_PANE_ID directly — NOT via capabilities.yaml (§10.2).
+	paneID := os.Getenv("HERDR_PANE_ID")
+	if paneID == "" {
+		paneID = os.Getenv("TMUX_PANE") // fallback chain
+	}
+	if paneID != "" {
+		reg := openRegistry()
+		reg.TouchAgent(paneID)
+		reg.Close()
+	}
+
+	return h
+}
+
+// globalDBPath returns ~/.fs/flagship.db, creating ~/.fs/ if needed.
+func globalDBPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal("cannot determine home directory: " + err.Error())
+	}
+	dir := filepath.Join(home, ".fs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal("cannot create ~/.fs directory: " + err.Error())
+	}
+	return filepath.Join(dir, "flagship.db")
+}
+
+// detectProjectID returns the project name from --project flag or derives it
+// from the git root directory name.
+func detectProjectID(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	root := command.DetectProjectRoot()
+	if root == "" {
+		var err error
+		root, err = os.Getwd()
+		if err != nil {
+			fatal("cannot determine project root: " + err.Error())
+		}
+	}
+	return filepath.Base(root)
 }
 
 func projectCmd(args []string) {
@@ -133,20 +176,26 @@ func projectCreate(args []string) {
 	name := flagVal(args, "--name", "")
 	root := flagVal(args, "--root", "")
 
-	h, projectRoot := handler()
-	defer h.Close()
-
 	if root == "" {
-		root = projectRoot
+		r := command.DetectProjectRoot()
+		if r == "" {
+			var err error
+			r, err = os.Getwd()
+			if err != nil {
+				fatal("cannot determine project root: " + err.Error())
+			}
+		}
+		root = r
 	}
 	if name == "" {
-		// Default to directory name.
 		name = filepath.Base(root)
 	}
 
+	h := handler()
+	defer h.Close()
+
 	resp := h.ProjectCreate(name, root)
 	if resp.OK {
-		// Register in the global registry.
 		reg := openRegistry()
 		defer reg.Close()
 		if err := reg.Register(name, root); err != nil {
@@ -195,7 +244,9 @@ Subcommands:
   edit NODE_ID --goal GOAL                 Edit task metadata
   block NODE_ID --reason REASON            Block a task
   unblock NODE_ID                          Unblock a task
-  knowledge NODE_ID --summary TEXT         Add knowledge to a task`)
+  knowledge NODE_ID --summary TEXT         Add knowledge to a task
+  assign NODE_ID --to AGENT [--project P]  Assign task to agent
+  unassign NODE_ID [--project P]           Unassign task`)
 		if len(args) < 1 {
 			os.Exit(2)
 		}
@@ -214,6 +265,10 @@ Subcommands:
 		taskUnblock(args[1:])
 	case "knowledge":
 		taskKnowledge(args[1:])
+	case "assign":
+		taskAssign(args[1:])
+	case "unassign":
+		taskUnassign(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "fs task: unknown subcommand %q\n", args[0])
 		os.Exit(2)
@@ -223,14 +278,11 @@ Subcommands:
 func taskAdd(args []string) {
 	goal := flagVal(args, "--goal", "")
 	parent := flagVal(args, "--parent", "")
-	projectID := flagVal(args, "--project", "")
+	projectID := detectProjectID(flagVal(args, "--project", ""))
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
 
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 	if goal == "" {
 		fatal("--goal is required")
 	}
@@ -255,14 +307,10 @@ func taskUpdate(args []string) {
 	rest := args[1:]
 	status := flagVal(rest, "--status", "")
 	decision := flagVal(rest, "--decision", "")
-	projectID := flagVal(rest, "--project", "")
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskUpdate(projectID, nodeID, status, decision, nil)
 	if resp.OK {
@@ -278,14 +326,10 @@ func taskEdit(args []string) {
 	nodeID := args[0]
 	rest := args[1:]
 	goal := flagVal(rest, "--goal", "")
-	projectID := flagVal(rest, "--project", "")
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskEdit(projectID, nodeID, goal, nil)
 	if resp.OK {
@@ -301,14 +345,10 @@ func taskBlock(args []string) {
 	nodeID := args[0]
 	rest := args[1:]
 	reason := flagVal(rest, "--reason", "")
-	projectID := flagVal(rest, "--project", "")
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskBlock(projectID, nodeID, reason)
 	if resp.OK {
@@ -323,14 +363,10 @@ func taskUnblock(args []string) {
 	}
 	nodeID := args[0]
 	rest := args[1:]
-	projectID := flagVal(rest, "--project", "")
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.TaskUnblock(projectID, nodeID)
 	if resp.OK {
@@ -346,14 +382,10 @@ func taskKnowledge(args []string) {
 	nodeID := args[0]
 	rest := args[1:]
 	summary := flagVal(rest, "--summary", "")
-	projectID := flagVal(rest, "--project", "")
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	resp := h.KnowledgeAdd(projectID, nodeID, summary)
 	if resp.OK {
@@ -362,18 +394,81 @@ func taskKnowledge(args []string) {
 	output(resp)
 }
 
-func statusCmd(args []string) {
-	projectID := flagVal(args, "--project", "")
+func taskAssign(args []string) {
+	if len(args) < 1 {
+		fatal("fs task assign: NODE_ID required")
+	}
+	nodeID := args[0]
+	rest := args[1:]
+	agentName := flagVal(rest, "--to", "")
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
 
-	h, projectRoot := handler()
+	if agentName == "" {
+		fatal("--to is required")
+	}
+
+	// Validate agent exists (FINDING-14: validate in main.go, keep command.go store-only).
+	reg := openRegistry()
+	if _, err := reg.GetAgent(agentName); err != nil {
+		reg.Close()
+		output(command.Response{OK: false, Error: fmt.Sprintf("agent %q not found in registry", agentName)})
+		return
+	}
+	reg.Close()
+
+	h := handler()
 	defer h.Close()
 
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
+	resp := h.TaskAssign(projectID, nodeID, agentName)
+	if resp.OK {
+		updateActivity(projectID)
+	}
+	output(resp)
+}
+
+func taskUnassign(args []string) {
+	if len(args) < 1 {
+		fatal("fs task unassign: NODE_ID required")
+	}
+	nodeID := args[0]
+	rest := args[1:]
+	projectID := detectProjectID(flagVal(rest, "--project", ""))
+
+	h := handler()
+	defer h.Close()
+
+	resp := h.TaskUnassign(projectID, nodeID)
+	if resp.OK {
+		updateActivity(projectID)
+	}
+	output(resp)
+}
+
+func statusCmd(args []string) {
+	projectID := detectProjectID(flagVal(args, "--project", ""))
+	assignee := flagVal(args, "--assignee", "")
+
+	h := handler()
+	defer h.Close()
+	h.SetKBDir(kbDir())
+
+	// Provide git root so Status can detect gaps between commits and events.
+	if root := command.DetectProjectRoot(); root != "" {
+		h.SetProjectRoot(root)
+	}
+
+	// Set engine name for engine_scope filtering (DESIGN-capabilities §11 Q5).
+	if cfg, err := capabilities.Load(capabilities.DefaultConfigPath()); err == nil {
+		h.SetEngineName(cfg.EngineName())
 	}
 
 	updateActivity(projectID)
-	resp := h.Status(projectID)
+	var resp command.Response
+	if assignee != "" {
+		resp = h.Status(projectID, command.StatusOpts{Assignee: assignee})
+	} else {
+		resp = h.Status(projectID)
+	}
 	output(resp)
 }
 
@@ -385,6 +480,7 @@ Subcommands:
   add --name NAME --file PATH   Add a playbook
   get NAME                      Get a playbook
   list                          List playbooks
+  match TRIGGER                 Find playbooks by trigger
   edit --name NAME --file PATH  Edit a playbook
   remove NAME                   Remove a playbook`)
 		if len(args) < 1 {
@@ -399,6 +495,8 @@ Subcommands:
 		kbGet(args[1:])
 	case "list":
 		kbList(args[1:])
+	case "match":
+		kbMatch(args[1:])
 	case "edit":
 		kbEdit(args[1:])
 	case "remove":
@@ -469,6 +567,25 @@ func kbList(_ []string) {
 	output(command.Response{OK: true, Data: map[string]any{"playbooks": names}})
 }
 
+func kbMatch(args []string) {
+	if len(args) < 1 {
+		fatal("fs kb match: TRIGGER required")
+	}
+	trigger := args[0]
+
+	kc, err := knowledge.Open(kbDir())
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	matched, err := kc.Match(trigger)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]any{"trigger": trigger, "playbooks": matched}})
+}
+
 func kbEdit(args []string) {
 	name := flagVal(args, "--name", "")
 	filePath := flagVal(args, "--file", "")
@@ -524,17 +641,9 @@ func kbDir() string {
 	return filepath.Join(home, ".fs", "kb")
 }
 
-// registryPath returns the path to the global registry database.
+// registryPath returns the path to the global database (same as event store).
 func registryPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fatal("cannot determine home directory: " + err.Error())
-	}
-	dir := filepath.Join(home, ".fs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fatal("cannot create ~/.fs directory: " + err.Error())
-	}
-	return filepath.Join(dir, "registry.db")
+	return globalDBPath()
 }
 
 // openRegistry opens the global project registry.
@@ -557,7 +666,7 @@ func updateActivity(projectID string) {
 }
 
 func queryCmd(args []string) {
-	projectID := flagVal(args, "--project", "")
+	projectID := detectProjectID(flagVal(args, "--project", ""))
 
 	// First positional arg (not a flag or flag value) is the search term.
 	searchTerm := ""
@@ -574,12 +683,8 @@ func queryCmd(args []string) {
 		fatal("search term is required: fs query SEARCH_TERM [--project ID]")
 	}
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	updateActivity(projectID)
 	resp := h.Query(projectID, searchTerm)
@@ -587,16 +692,12 @@ func queryCmd(args []string) {
 }
 
 func logCmd(args []string) {
-	projectID := flagVal(args, "--project", "")
+	projectID := detectProjectID(flagVal(args, "--project", ""))
 	nodeIDStr := flagVal(args, "--node", "")
 	eventTypeStr := flagVal(args, "--type", "")
 
-	h, projectRoot := handler()
+	h := handler()
 	defer h.Close()
-
-	if projectID == "" {
-		projectID = filepath.Base(projectRoot)
-	}
 
 	var nodeID *string
 	if nodeIDStr != "" {
@@ -637,6 +738,290 @@ func flagVal(args []string, flag, def string) string {
 // isHelp returns true if the arg is a help flag.
 func isHelp(arg string) bool {
 	return arg == "--help" || arg == "-h" || arg == "help"
+}
+
+func migrateCmd(args []string) {
+	if len(args) == 0 || isHelp(args[0]) {
+		fmt.Fprintln(os.Stderr, `Usage: fs migrate PATH [PATH...]
+
+Import events from old per-project .fs/store.db files into the
+unified ~/.fs/flagship.db. Duplicates (same event ID) are skipped.
+
+Example:
+  fs migrate /path/to/project1/.fs/store.db /path/to/project2/.fs/store.db`)
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+
+	// Collect all positional args as source paths.
+	var paths []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "--") {
+			paths = append(paths, a)
+		}
+	}
+
+	h := handler()
+	defer h.Close()
+
+	resp := h.Migrate(paths)
+	output(resp)
+}
+
+func agentCmd(args []string) {
+	if len(args) < 1 || isHelp(args[0]) {
+		fmt.Fprintln(os.Stderr, `Usage: fs agent <subcommand>
+
+Subcommands:
+  register --name N --role R --pane P [--workspace W] [--project P] [--playbook PB]
+  get NAME | --self
+  list [--role R] [--project P] [--status S]
+  heartbeat NAME
+  update NAME [--status S] [--project P]
+  deregister NAME`)
+		if len(args) < 1 {
+			os.Exit(2)
+		}
+		return
+	}
+	switch args[0] {
+	case "register":
+		agentRegister(args[1:])
+	case "get":
+		agentGet(args[1:])
+	case "list":
+		agentList(args[1:])
+	case "heartbeat":
+		agentHeartbeat(args[1:])
+	case "update":
+		agentUpdate(args[1:])
+	case "deregister":
+		agentDeregister(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "fs agent: unknown subcommand %q\n", args[0])
+		os.Exit(2)
+	}
+}
+
+func agentRegister(args []string) {
+	name := flagVal(args, "--name", "")
+	role := flagVal(args, "--role", "")
+	paneID := flagVal(args, "--pane", "")
+	workspace := flagVal(args, "--workspace", "")
+	project := flagVal(args, "--project", "")
+	playbook := flagVal(args, "--playbook", "")
+
+	if name == "" {
+		fatal("--name is required")
+	}
+	if role == "" {
+		fatal("--role is required")
+	}
+	if paneID == "" {
+		fatal("--pane is required")
+	}
+
+	reg := openRegistry()
+	defer reg.Close()
+
+	a := registry.Agent{
+		Name:      name,
+		Role:      role,
+		PaneID:    paneID,
+		Workspace: workspace,
+		Project:   project,
+		Playbook:  playbook,
+	}
+	if err := reg.RegisterAgent(a); err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "registered"}})
+}
+
+func agentGet(args []string) {
+	if len(args) < 1 {
+		fatal("fs agent get: NAME or --self required")
+	}
+
+	reg := openRegistry()
+	defer reg.Close()
+
+	// --self: identity discovery from $HERDR_PANE_ID (raw, per §10.2).
+	if args[0] == "--self" {
+		paneID := os.Getenv("HERDR_PANE_ID")
+		if paneID == "" {
+			paneID = os.Getenv("TMUX_PANE")
+		}
+		if paneID == "" {
+			output(command.Response{OK: false, Error: "no pane ID found in environment (HERDR_PANE_ID or TMUX_PANE)"})
+			return
+		}
+		a, err := reg.GetAgentByPane(paneID)
+		if err != nil {
+			output(command.Response{OK: false, Error: err.Error()})
+			return
+		}
+		output(command.Response{OK: true, Data: a})
+		return
+	}
+
+	name := args[0]
+	a, err := reg.GetAgent(name)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: a})
+}
+
+func agentList(args []string) {
+	reg := openRegistry()
+	defer reg.Close()
+
+	f := registry.AgentFilter{
+		Role:    flagVal(args, "--role", ""),
+		Project: flagVal(args, "--project", ""),
+		Status:  flagVal(args, "--status", ""),
+	}
+	agents, err := reg.ListAgents(f)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]any{"agents": agents}})
+}
+
+func agentHeartbeat(args []string) {
+	if len(args) < 1 {
+		fatal("fs agent heartbeat: NAME required")
+	}
+	name := args[0]
+
+	reg := openRegistry()
+	defer reg.Close()
+
+	if err := reg.HeartbeatAgent(name); err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "heartbeat"}})
+}
+
+func agentUpdate(args []string) {
+	if len(args) < 1 {
+		fatal("fs agent update: NAME required")
+	}
+	name := args[0]
+	rest := args[1:]
+	status := flagVal(rest, "--status", "")
+	project := flagVal(rest, "--project", "")
+
+	reg := openRegistry()
+	defer reg.Close()
+
+	if err := reg.UpdateAgent(name, status, project); err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "updated"}})
+}
+
+func agentDeregister(args []string) {
+	if len(args) < 1 {
+		fatal("fs agent deregister: NAME required")
+	}
+	name := args[0]
+
+	reg := openRegistry()
+	defer reg.Close()
+
+	if err := reg.DeregisterAgent(name); err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "deregistered"}})
+}
+
+func resolveCmd(args []string) {
+	if len(args) == 0 || isHelp(args[0]) {
+		fmt.Fprintln(os.Stderr, `Usage: fs resolve <capability>.<operation> [--key value ...]
+       fs resolve <capability>             Get capability metadata (detail-playbook, ops)
+       fs resolve --check                  Validate capabilities config
+       fs resolve --init                   Write default capabilities config`)
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+
+	configPath := capabilities.DefaultConfigPath()
+
+	// --init: write default config.
+	if args[0] == "--init" {
+		if _, err := os.Stat(configPath); err == nil {
+			output(command.Response{OK: false, Error: "capabilities config already exists at " + configPath})
+			return
+		}
+		if err := capabilities.WriteDefaultConfig(configPath); err != nil {
+			output(command.Response{OK: false, Error: err.Error()})
+			return
+		}
+		output(command.Response{OK: true, Data: map[string]string{"path": configPath, "action": "created"}})
+		return
+	}
+
+	cfg, err := capabilities.Load(configPath)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+
+	// --check: validate config.
+	if args[0] == "--check" {
+		names, err := cfg.Check()
+		if err != nil {
+			output(command.Response{OK: false, Error: err.Error()})
+			return
+		}
+		output(command.Response{OK: true, Data: map[string]any{"capabilities": names}})
+		return
+	}
+
+	// Parse <capability>[.<operation>]
+	capOp := args[0]
+	dotIdx := strings.Index(capOp, ".")
+	if dotIdx < 0 {
+		// No dot — return capability metadata (name, detail-playbook, ops).
+		meta, err := cfg.GetCapability(capOp)
+		if err != nil {
+			output(command.Response{OK: false, Error: err.Error()})
+			return
+		}
+		output(command.Response{OK: true, Data: meta})
+		return
+	}
+	capName := capOp[:dotIdx]
+	opName := capOp[dotIdx+1:]
+
+	// Collect --key value pairs.
+	kv := make(map[string]string)
+	for i := 1; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "--") && i+1 < len(args) {
+			key := strings.TrimPrefix(args[i], "--")
+			kv[key] = args[i+1]
+			i++
+		}
+	}
+
+	result, err := cfg.Resolve(capName, opName, kv)
+	if err != nil {
+		output(command.Response{OK: false, Error: err.Error()})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]string{"command": result}})
 }
 
 func fatal(msg string) {

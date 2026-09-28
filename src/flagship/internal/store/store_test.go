@@ -420,6 +420,79 @@ func TestOpenIntegrityCheckRejectsCorrupt(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
+func TestReplayReturnsEmptySliceNotNil(t *testing.T) {
+	// Replay must return [] not nil for JSON serialization ("events":[] not "events":null).
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	events, err := s.Replay("nonexistent", nil)
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if events == nil {
+		t.Fatal("Replay returned nil slice; expected empty slice for JSON []")
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events, got %d", len(events))
+	}
+	// Verify JSON output.
+	b, _ := json.Marshal(events)
+	if string(b) != "[]" {
+		t.Errorf("JSON: got %s, want []", string(b))
+	}
+}
+
+func TestSearchReturnsEmptySliceNotNil(t *testing.T) {
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Seed one event so FTS table isn't stale.
+	s.Append(store.Event{Type: store.ProjectCreated, ProjectID: "p", Payload: json.RawMessage(`{"name":"p","root_path":"/p"}`)})
+
+	events, err := s.Search("p", "nonexistentterm")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if events == nil {
+		t.Fatal("Search returned nil slice; expected empty slice for JSON []")
+	}
+	b, _ := json.Marshal(events)
+	if string(b) != "[]" {
+		t.Errorf("JSON: got %s, want []", string(b))
+	}
+}
+
+func TestFTS5SelfHealingOnStaleFTS(t *testing.T) {
+	// Simulates migration scenario: events exist but FTS rows are missing.
+	// Search() should detect the stale FTS and rebuild before querying.
+	s, err := store.Open(tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	s.Append(store.Event{Type: store.ProjectCreated, ProjectID: "p", Payload: json.RawMessage(`{"name":"p","root_path":"/p"}`)})
+	s.Append(store.Event{Type: store.TaskCreated, ProjectID: "p", NodeID: strPtr("t1"), Payload: json.RawMessage(`{"goal":"implement authentication with JWT"}`)})
+
+	// Delete FTS rows to simulate stale index (e.g. after migration without FTS inserts).
+	_ = s.ExecDirect("DELETE FROM events_fts")
+
+	// Search should detect stale FTS, rebuild, and return results.
+	results, err := s.Search("p", "auth")
+	if err != nil {
+		t.Fatalf("Search with stale FTS: %v", err)
+	}
+	if len(results) < 1 {
+		t.Errorf("expected at least 1 result after stale-FTS rebuild, got %d", len(results))
+	}
+}
+
 func TestAppendBatchAtomic(t *testing.T) {
 	s, err := store.Open(tempDB(t))
 	if err != nil {

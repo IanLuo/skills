@@ -293,9 +293,16 @@ func (s *Store) Replay(projectID string, filter *ReplayFilter) ([]Event, error) 
 
 // Search performs FTS5 prefix search on event payloads within a project.
 // Each term is treated as a prefix to improve recall (e.g. "auth" matches "authentication").
-// If the FTS5 table is corrupt or missing, it auto-rebuilds from events and retries
-// (SYSTEM-DESIGN R2: FTS5 index is disposable, self-heals).
+// If the FTS5 table is corrupt, missing, or stale (fewer rows than events), it
+// auto-rebuilds from events and retries (SYSTEM-DESIGN R2: FTS5 index is
+// disposable, self-heals).
 func (s *Store) Search(projectID, query string) ([]Event, error) {
+	if s.ftsStale() {
+		if err := s.rebuildFTS(); err != nil {
+			return nil, fmt.Errorf("store: fts rebuild failed: %w", err)
+		}
+	}
+
 	results, err := s.searchFTS(projectID, query)
 	if err == nil {
 		return results, nil
@@ -327,6 +334,18 @@ func (s *Store) searchFTS(projectID, query string) ([]Event, error) {
 	defer rows.Close()
 
 	return scanEvents(rows)
+}
+
+// ftsStale returns true if the FTS index has fewer rows than the events table.
+func (s *Store) ftsStale() bool {
+	var evtCount, ftsCount int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM events").Scan(&evtCount); err != nil {
+		return true
+	}
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM events_fts").Scan(&ftsCount); err != nil {
+		return true
+	}
+	return ftsCount < evtCount
 }
 
 // rebuildFTS drops and recreates the FTS5 index from the events table.
@@ -401,7 +420,7 @@ func validate(evt Event) error {
 }
 
 func scanEvents(rows *sql.Rows) ([]Event, error) {
-	var events []Event
+	events := []Event{}
 	for rows.Next() {
 		var (
 			e   Event

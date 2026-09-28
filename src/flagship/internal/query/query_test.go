@@ -405,6 +405,42 @@ func TestSummaryWithHierarchy(t *testing.T) {
 	}
 }
 
+func TestAssigneeFromMetadataChanged(t *testing.T) {
+	s := openStore(t)
+	seedProject(t, s, "proj")
+	seedTask(t, s, "proj", "t1", "do work", nil)
+
+	// Assign via metadata-changed event.
+	payload, _ := json.Marshal(map[string]string{
+		"field": "assignee", "old_value": "", "new_value": "worker1",
+	})
+	s.Append(store.Event{
+		Type: store.MetadataChanged, ProjectID: "proj",
+		NodeID: strPtr("t1"), Payload: payload,
+	})
+
+	e := query.NewEngine(s)
+	tree, _ := e.DeriveTree("proj")
+	node := tree.Nodes["t1"]
+	if node.Assignee != "worker1" {
+		t.Errorf("expected worker1, got %q", node.Assignee)
+	}
+
+	// Unassign.
+	payload2, _ := json.Marshal(map[string]string{
+		"field": "assignee", "old_value": "worker1", "new_value": "",
+	})
+	s.Append(store.Event{
+		Type: store.MetadataChanged, ProjectID: "proj",
+		NodeID: strPtr("t1"), Payload: payload2,
+	})
+
+	tree2, _ := e.DeriveTree("proj")
+	if tree2.Nodes["t1"].Assignee != "" {
+		t.Errorf("expected empty after unassign, got %q", tree2.Nodes["t1"].Assignee)
+	}
+}
+
 func TestSummaryWithKnowledge(t *testing.T) {
 	s := openStore(t)
 	seedProject(t, s, "proj")

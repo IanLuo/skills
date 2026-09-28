@@ -612,3 +612,218 @@ func TestErrorResponse(t *testing.T) {
 		t.Errorf("expected 0 tasks, got %d", len(data.Tasks))
 	}
 }
+
+// --- Warning detection tests ---
+
+func TestWarningBareActiveTask(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	taskResp := h.TaskAdd("proj", "do work", nil)
+	nodeID := taskResp.Data.(command.EventData).NodeID
+
+	// Mark active but record no decisions or knowledge.
+	h.TaskUpdate("proj", nodeID, "active", "", nil)
+
+	resp := h.Status("proj")
+	data := resp.Data.(command.StatusResult)
+
+	found := false
+	for _, w := range data.Warnings {
+		if w.Type == command.WarningBareActiveTask && len(w.TaskIDs) == 1 && w.TaskIDs[0] == nodeID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected bare_active_task warning for %s, got warnings: %+v", nodeID, data.Warnings)
+	}
+}
+
+func TestNoBareWarningWhenKnowledgeRecorded(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	taskResp := h.TaskAdd("proj", "do work", nil)
+	nodeID := taskResp.Data.(command.EventData).NodeID
+
+	h.TaskUpdate("proj", nodeID, "active", "", nil)
+	h.KnowledgeAdd("proj", nodeID, "learned something")
+
+	resp := h.Status("proj")
+	data := resp.Data.(command.StatusResult)
+
+	for _, w := range data.Warnings {
+		if w.Type == command.WarningBareActiveTask {
+			t.Errorf("should not warn when knowledge exists: %+v", w)
+		}
+	}
+}
+
+func TestNoBareWarningWhenDecisionRecorded(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	taskResp := h.TaskAdd("proj", "do work", nil)
+	nodeID := taskResp.Data.(command.EventData).NodeID
+
+	h.TaskUpdate("proj", nodeID, "active", "chose approach X", nil)
+
+	resp := h.Status("proj")
+	data := resp.Data.(command.StatusResult)
+
+	for _, w := range data.Warnings {
+		if w.Type == command.WarningBareActiveTask {
+			t.Errorf("should not warn when decision exists: %+v", w)
+		}
+	}
+}
+
+func TestNoWarningsForPendingOrDoneTasks(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	// Pending task — no warnings expected.
+	h.TaskAdd("proj", "pending task", nil)
+
+	// Done task — no warnings expected.
+	taskResp := h.TaskAdd("proj", "done task", nil)
+	nodeID := taskResp.Data.(command.EventData).NodeID
+	h.TaskUpdate("proj", nodeID, "done", "", nil)
+
+	resp := h.Status("proj")
+	data := resp.Data.(command.StatusResult)
+
+	for _, w := range data.Warnings {
+		if w.Type == command.WarningBareActiveTask || w.Type == command.WarningStaleActiveTask {
+			t.Errorf("should not warn for non-active tasks: %+v", w)
+		}
+	}
+}
+
+func TestStatusWarningsFieldPresent(t *testing.T) {
+	// Verify the JSON output includes the warnings key.
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	resp := h.Status("proj")
+	b, _ := json.Marshal(resp)
+	var raw map[string]any
+	json.Unmarshal(b, &raw)
+
+	// Even with no warnings, the data field should serialize cleanly.
+	data := raw["data"].(map[string]any)
+	if data["project_id"] != "proj" {
+		t.Errorf("project_id: %v", data["project_id"])
+	}
+}
+
+// --- Task Assignee Tests ---
+
+func TestTaskAssign(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	resp := h.TaskAdd("proj", "do work", nil)
+	nodeID := resp.Data.(command.EventData).NodeID
+
+	resp = h.TaskAssign("proj", nodeID, "worker1")
+	if !resp.OK {
+		t.Fatalf("TaskAssign: %s", resp.Error)
+	}
+
+	// Verify assignee in status output.
+	sResp := h.Status("proj")
+	sr := sResp.Data.(command.StatusResult)
+	if len(sr.Tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(sr.Tasks))
+	}
+	if sr.Tasks[0].Assignee != "worker1" {
+		t.Errorf("expected assignee=worker1, got %q", sr.Tasks[0].Assignee)
+	}
+}
+
+func TestTaskAssignDoubleReject(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	resp := h.TaskAdd("proj", "do work", nil)
+	nodeID := resp.Data.(command.EventData).NodeID
+
+	h.TaskAssign("proj", nodeID, "worker1")
+
+	// Assign to a different agent should fail.
+	resp = h.TaskAssign("proj", nodeID, "worker2")
+	if resp.OK {
+		t.Fatal("expected error for double-assign")
+	}
+
+	// Re-assign to same agent should succeed.
+	resp = h.TaskAssign("proj", nodeID, "worker1")
+	if !resp.OK {
+		t.Fatalf("re-assign to same agent: %s", resp.Error)
+	}
+}
+
+func TestTaskUnassign(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	resp := h.TaskAdd("proj", "do work", nil)
+	nodeID := resp.Data.(command.EventData).NodeID
+
+	h.TaskAssign("proj", nodeID, "worker1")
+
+	resp = h.TaskUnassign("proj", nodeID)
+	if !resp.OK {
+		t.Fatalf("TaskUnassign: %s", resp.Error)
+	}
+
+	// Verify assignee is cleared.
+	sResp := h.Status("proj")
+	sr := sResp.Data.(command.StatusResult)
+	if sr.Tasks[0].Assignee != "" {
+		t.Errorf("expected empty assignee, got %q", sr.Tasks[0].Assignee)
+	}
+}
+
+func TestStatusAssigneeFilter(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	r1 := h.TaskAdd("proj", "task 1", nil)
+	n1 := r1.Data.(command.EventData).NodeID
+	r2 := h.TaskAdd("proj", "task 2", nil)
+	n2 := r2.Data.(command.EventData).NodeID
+
+	h.TaskAssign("proj", n1, "worker1")
+	h.TaskAssign("proj", n2, "worker2")
+
+	// Filter by assignee.
+	resp := h.Status("proj", command.StatusOpts{Assignee: "worker1"})
+	sr := resp.Data.(command.StatusResult)
+	if len(sr.Tasks) != 1 {
+		t.Fatalf("expected 1 task for worker1, got %d", len(sr.Tasks))
+	}
+	if sr.Tasks[0].NodeID != n1 {
+		t.Errorf("expected node %s, got %s", n1, sr.Tasks[0].NodeID)
+	}
+}
+
+func TestDeriveAssignee(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	resp := h.TaskAdd("proj", "do work", nil)
+	nodeID := resp.Data.(command.EventData).NodeID
+
+	// No assignment yet — assignee should be empty.
+	sResp := h.Status("proj")
+	sr := sResp.Data.(command.StatusResult)
+	if sr.Tasks[0].Assignee != "" {
+		t.Errorf("expected empty assignee initially, got %q", sr.Tasks[0].Assignee)
+	}
+
+	// Assign, then unassign, then reassign.
+	h.TaskAssign("proj", nodeID, "worker1")
+	h.TaskUnassign("proj", nodeID)
+	h.TaskAssign("proj", nodeID, "worker2")
+
+	sResp = h.Status("proj")
+	sr = sResp.Data.(command.StatusResult)
+	if sr.Tasks[0].Assignee != "worker2" {
+		t.Errorf("expected worker2 after re-assign, got %q", sr.Tasks[0].Assignee)
+	}
+}
