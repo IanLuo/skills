@@ -98,8 +98,11 @@ Commands that take a scope (`status`, `query`, `log`, `task *`) resolve it from 
 # Add (top-level or subtask). --kind names what the node is: work (default), dispatch, or gap.
 # --found-by PROJECT:NODE records what a gap was found by. --check names a shell
 # command that would show the node's claim is over — a gap's defect, as a block's
-# condition — and applies to a gap as much as to a block.
-fs task add --goal "Implement auth" [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--check "SHELL COMMAND"] [--project ID]
+# condition — and applies to a gap as much as to a block. --severity is a gap's
+# weight, and only a gap's: severe (destroys work, or makes a gate pass what it
+# should refuse), defect (costs work, destroys nothing), prose (a wrong or stale
+# doc, comment, name or message). Omitted, a gap is unweighed.
+fs task add --goal "Implement auth" [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--check "SHELL COMMAND"] [--severity severe|defect|prose] [--project ID]
 
 # Show one task's derived state; exit 1 when no such node exists, or when --kind names a different kind
 fs task get NODE_ID [--project ID] [--kind work|dispatch|gap]
@@ -107,8 +110,15 @@ fs task get NODE_ID [--project ID] [--kind work|dispatch|gap]
 # Update status (pending → active → done | blocked)
 fs task update NODE_ID --status STATUS [--decision TEXT] [--project ID]
 
-# Edit goal, or its structural kind, or both
-fs task edit NODE_ID [--goal "New goal text"] [--kind work|dispatch|gap] [--project ID]
+# Edit goal, or its structural kind, or its weight, or any of them
+fs task edit NODE_ID [--goal "New goal text"] [--kind work|dispatch|gap] [--severity severe|defect|prose] [--project ID]
+
+# Fold one gap into another: the same defect seen twice becomes one entry. The
+# absorbed node is marked done with a decision naming the survivor, and the
+# survivor's record gains the absorbed id, so either node read alone tells you
+# the fold happened. Neither side may already be done, which is what keeps a
+# fold a fold and not a chain.
+fs task merge NODE_ID --into SURVIVOR [--reason "why they are one"] [--project ID]
 
 # Block / unblock. --check names a shell command that would show the condition is
 # over, re-run by every reader that renders a status.
@@ -287,10 +297,15 @@ fs dispatch --deliver --project P --type T --goal "Implement auth" [--cards CARD
 fs batch BATCH_NODE
 
 # Was this dispatch's change reviewed? Exit 0 iff a done dispatch carries
-# reviews: <this node>; exit 1 saying which it found — nothing names it, or one
-# does and is not done yet. A node that does not exist, and one that is not a
-# dispatch, are refused as themselves rather than as the same absence. This is
-# what code's exit gate runs, as "$FS_BIN" reviews.
+# reviews: <this node> and names the revision it read, which the tree this node
+# works in still stands at; exit 1 saying which of six facts it found — nothing
+# names it, one does and is not done yet, a node that does not exist, one that is
+# not a dispatch, a done review that names no revision (every review closed
+# before the field existed is there, and it is refused rather than read as a
+# review of the current revision), and a done review whose revision the tree has
+# moved past. --without-review "<why>" is the way past either of the last two,
+# and records the reason on the node. This is what code's exit gate runs, as
+# "$FS_BIN" reviews.
 fs reviews CAP_NODE
 
 # Close out a dispatch: run the exit phase of the plan it recorded, then close
@@ -459,7 +474,10 @@ fs status [--project ID]
 # registry, so it works after a registry wipe and includes the implicit cap scope
 fs unfinished
 
-# Every kind=gap node — the backlog — open ones first, with found_by
+# Every kind=gap node — the backlog. The header counts what the list is showing
+# (total, open, done, and open by severity); the rows follow open-before-done,
+# then heaviest first, and unweighed gaps last — unset makes no claim about
+# weight, so ranking it among the levels would be one the field never made.
 fs gaps
 
 # Full-text search across all event payloads (FTS5)
@@ -493,7 +511,7 @@ These are non-negotiable:
 | Type | Produced by | Payload |
 |---|---|---|
 | `project-created` | `project create` | `{name, root_path}` |
-| `task-created` | `task add` | `{goal, kind, found_by}` |
+| `task-created` | `task add` | `{goal, kind, found_by, check, severity}` |
 | `status-changed` | `task update/block/unblock` | `{from, to}` |
 | `decision-recorded` | `task update --decision` | `{summary}` |
 | `knowledge-added` | `task knowledge` | `{summary}` |

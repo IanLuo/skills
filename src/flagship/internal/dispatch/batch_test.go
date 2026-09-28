@@ -15,7 +15,7 @@ import (
 // shape — a batch, its members, their integrations — without a live herdr.
 func mustAdd(t *testing.T, h *command.Handler, project, goal string, kind query.Kind, integrates string, parent *string) string {
 	t.Helper()
-	resp := h.TaskAddKind(project, goal, kind, "", integrates, "", "", parent)
+	resp := h.TaskAddKind(project, goal, kind, "", integrates, "", "", "", parent)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind %s: %s", goal, resp.Error)
 	}

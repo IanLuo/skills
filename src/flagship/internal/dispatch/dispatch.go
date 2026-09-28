@@ -351,8 +351,13 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 
 	// Gate: a dispatch the cap prepared but never delivered is still open work.
 	// Refuse to pile another one on top of it unless the cap says to proceed.
-	// --allow-unresolved is this gate's only override: --confirm is about a
-	// failing check and must not pass this one.
+	// --allow-unresolved is not this gate's only way past, though it is the one
+	// the refusal below names. --confirm is about a failing check and must not
+	// pass this one; --fixes is the other, and it is not an override but a
+	// declaration — it subtracts the dispatches the round exists to repair (see
+	// declaredSubjects), so the gate never reads them as work piled on top.
+	// A round that repairs an open dispatch says so with --fixes rather than
+	// waving through every open one.
 	//
 	// What the gate subtracts is the set of nodes this dispatch declares a
 	// relation to — see declaredSubjects. Those are the dispatches it is about
@@ -1676,7 +1681,7 @@ func recordCapNode(h *command.Handler, taskType, goal, project, integrates, revi
 	if parent != "" {
 		parentPtr = &parent
 	}
-	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, reviews, "", parentPtr)
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), kind, "", integrates, reviews, "", "", parentPtr)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}

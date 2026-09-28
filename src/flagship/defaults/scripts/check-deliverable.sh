@@ -138,7 +138,7 @@ while IFS= read -r card; do
 
   paths="$(declaredPaths "$file")"
   if [ -z "$paths" ]; then
-    echo "check-deliverable: the card $card declares no files — add a '## Files' section listing every path this card will touch" >&2
+    echo "check-deliverable: the card $card declares no files, so there is nothing to measure this change against. The '## Files' section belongs on the card before the work starts, which is why a close is the wrong end to be told about it; the repair now is to add the section naming the paths the change actually reached — read from the diff, not from what the card meant to say — and close again. A fan-out's cards carry it too, where check-parallel.sh asks for it at entry rather than here" >&2
     exit 1
   fi
 

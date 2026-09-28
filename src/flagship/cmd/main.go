@@ -144,18 +144,26 @@ Commands:
   project get NAME                             Get project info
   task add --goal GOAL [--parent NODE_ID]       Add a task; --kind names what it
      [--check "SHELL COMMAND"]                  is (work, dispatch, gap — work
-                                                by default), --found-by
+     [--severity LEVEL]                         by default), --found-by
                                                 PROJECT:NODE records what a gap
-                                                was found by, and --check names
-                                                a shell command that would show
-                                                the node's claim is over
+                                                was found by, --check names a
+                                                shell command that would show
+                                                the node's claim is over, and
+                                                --severity sets a gap's weight
+                                                (severe, defect, prose)
   task get NODE_ID [--project P] [--kind KIND]  Show one task's derived state;
                                                 exit 1 when no such node exists,
                                                 or when --kind names a different
                                                 kind
   task update NODE_ID --status STATUS [--decision TEXT]  Update task
   task edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata: its goal,
-                                                its structural kind, or both
+     [--severity LEVEL]                         its structural kind, a gap's
+                                                weight, or any combination
+  task merge NODE_ID --into SURVIVOR            Fold a node into another: the
+     [--reason TEXT]                            absorbed node is done and names
+                                                what took it in, the survivor
+                                                names what it took in; neither
+                                                may be done
   task block NODE_ID --reason REASON            Block a task; --check names a
                                                 shell command that would show
                                                 the condition is over, re-run by
@@ -166,7 +174,9 @@ Commands:
   unfinished                                   Every task not done, across every
                                                 scope, grouped by kind
   gaps                                         Every kind=gap node — the backlog —
-                                                open ones first, with found_by
+                                                header first, then open ones
+                                                before done, heaviest first, with
+                                                found_by and severity
   pending                                      Every dispatch not closed out, with
                                                 what the cap should do about each:
                                                 ready, blocked, running, unknown,
@@ -508,19 +518,27 @@ func taskCmd(args []string) {
 
 Subcommands:
   add --goal GOAL [--parent NODE_ID] [--kind KIND] [--found-by PROJECT:NODE]
-      [--check "SHELL COMMAND"]
+      [--check "SHELL COMMAND"] [--severity LEVEL]
                                            Add a task; --kind is work (default),
                                            dispatch or gap; --found-by names
                                            the node a gap was found by; --check
                                            names a shell command that would
                                            show the node's claim is over, re-run
-                                           by every reader that renders a status
+                                           by every reader that renders a status;
+                                           --severity sets a gap's weight —
+                                           severe, defect or prose
   get NODE_ID [--project PROJECT_ID] [--kind KIND]
                                            Show one task's derived state; exit
                                            1 when no such node exists, or when
                                            --kind names a different kind
   update NODE_ID --status STATUS [--decision TEXT]  Update task
-  edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata
+  edit NODE_ID [--goal GOAL] [--kind KIND] [--severity LEVEL]
+                                           Edit task metadata
+  merge NODE_ID --into SURVIVOR [--reason TEXT]
+                                           Fold a node into another: the
+                                           absorbed node is done and names what
+                                           took it in, the survivor names what
+                                           it took in. Neither may be done
   block NODE_ID --reason REASON [--check "SHELL COMMAND"]
                                            Block a task; --check names a shell
                                            command that would show the
@@ -546,6 +564,9 @@ Subcommands:
 	case "edit":
 		checkArgs("task edit", args[1:])
 		taskEdit(args[1:])
+	case "merge":
+		checkArgs("task merge", args[1:])
+		taskMerge(args[1:])
 	case "block":
 		checkArgs("task block", args[1:])
 		taskBlock(args[1:])
@@ -568,6 +589,7 @@ func taskAdd(args []string) {
 	kind := query.Kind(flagVal(args, "--kind", ""))
 	foundBy := flagVal(args, "--found-by", "")
 	check := flagVal(args, "--check", "")
+	severity := query.Severity(flagVal(args, "--severity", ""))
 
 	h, projectID := handler(projectID)
 	defer h.Close()
@@ -578,7 +600,8 @@ func taskAdd(args []string) {
 	}
 
 	// An absent --kind means the default. TaskAddKind refuses anything that is
-	// not a kind, so a typo cannot be stored as one.
+	// not a kind, and refuses --severity on anything that is not a gap, so
+	// neither a typo nor a misplaced weight can be stored.
 	if kind == "" {
 		kind = query.KindWork
 	}
@@ -588,7 +611,7 @@ func taskAdd(args []string) {
 		parentPtr = &parent
 	}
 
-	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", "", check, parentPtr)
+	resp := h.TaskAddKind(projectID, goal, kind, foundBy, "", "", check, severity, parentPtr)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -683,7 +706,35 @@ func taskEdit(args []string) {
 	defer h.Close()
 	guardCoordinating(h, projectID)
 
-	resp := h.TaskEdit(projectID, nodeID, goal, query.Kind(flagVal(args, "--kind", "")), nil)
+	resp := h.TaskEdit(projectID, nodeID, goal,
+		query.Kind(flagVal(args, "--kind", "")),
+		query.Severity(flagVal(args, "--severity", "")), nil)
+	if resp.OK {
+		updateActivity(projectID)
+	}
+	output(resp)
+}
+
+// taskMerge folds one node into another — two gaps about one defect, or two
+// nodes that are one thing. Both halves of the record are written by the
+// handler; this is the argument shape and the guard.
+func taskMerge(args []string) {
+	pos := positionals("task merge", args)
+	if len(pos) < 1 {
+		fatal("fs task merge: NODE_ID required")
+	}
+	nodeID := pos[0]
+	into := flagVal(args, "--into", "")
+	reason := flagVal(args, "--reason", "")
+	projectID := flagVal(args, "--project", "")
+
+	projectID, nodeID = nodeArg(projectID, nodeID)
+
+	h, projectID := handler(projectID)
+	defer h.Close()
+	guardCoordinating(h, projectID)
+
+	resp := h.TaskMerge(projectID, nodeID, into, reason, nil)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -1142,9 +1193,10 @@ func unfinishedCmd() {
 	output(h.Unfinished(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
-// gapsCmd lists every kind=gap node across every scope, open ones first, with
-// the node that found it — the backlog, read from the store rather than
-// remembered. It is a read: it writes nothing.
+// gapsCmd lists every kind=gap node across every scope, open ones first and the
+// heaviest of those first, with the node that found it and its weight, behind a
+// header counting what is being shown — the backlog, read from the store rather
+// than remembered. It is a read: it writes nothing.
 //
 // A gap's recorded check is re-run here the same way every reader that renders
 // a status re-runs it, in the gap's own project root, so a claim the check has

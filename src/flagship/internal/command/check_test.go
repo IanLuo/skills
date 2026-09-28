@@ -21,7 +21,7 @@ import (
 func TestAGapCheckAddressingFSBinReadsAsExpired(t *testing.T) {
 	h := setup(t)
 	check := `[ -x "$FS_BIN" ]`
-	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, "", nil).
 		Data.(command.EventData).NodeID
 
 	want := "pending (claim no longer holds — " + check + " exited 0)"
@@ -89,7 +89,7 @@ func TestRunShellKeepsAnFSBinTheCallerNamed(t *testing.T) {
 func TestACheckThatDoesNotFinishReadsAsItsOwnState(t *testing.T) {
 	h := setup(t)
 	check := "sleep 30"
-	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, "", nil).
 		Data.(command.EventData).NodeID
 
 	want := "pending [check did not finish — " + check + " exceeded " + command.CheckTimeout.String() + "]"
@@ -114,11 +114,11 @@ func TestACheckThatDoesNotFinishReadsAsItsOwnState(t *testing.T) {
 // expiry.
 func TestATimedOutReadingIsBracketedAndAnExpiredClaimIsNot(t *testing.T) {
 	h := setup(t)
-	over := h.TaskAddKind("proj", "the widget is fixed", query.KindGap, "", "", "", "true", nil).
+	over := h.TaskAddKind("proj", "the widget is fixed", query.KindGap, "", "", "", "true", "", nil).
 		Data.(command.EventData).NodeID
 
 	check := "sleep 30"
-	parked := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "", nil).
+	parked := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "", "", nil).
 		Data.(command.EventData).NodeID
 	if resp := h.TaskBlockWithCheck("proj", parked, "waiting on the widget", check); !resp.OK {
 		t.Fatalf("block: %s", resp.Error)
@@ -143,7 +143,7 @@ func TestATimedOutReadingIsBracketedAndAnExpiredClaimIsNot(t *testing.T) {
 // anything new: a check that exits non-zero has answered, and the claim holds.
 func TestACheckThatFailsQuicklyStillHolds(t *testing.T) {
 	h := setup(t)
-	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "exit 1", nil).
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "exit 1", "", nil).
 		Data.(command.EventData).NodeID
 
 	for _, task := range h.StatusIn("proj", t.TempDir()).Data.(command.StatusResult).Tasks {

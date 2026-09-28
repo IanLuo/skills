@@ -104,7 +104,7 @@ func TestPendingReRunsACreatedNodeCheck(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	marker := filepath.Join(t.TempDir(), "marker")
 	check := "test -f " + marker
-	added := f.h.TaskAddKind("cap", "dispatch dev-task: sample", query.KindDispatch, "", "", "", check, nil)
+	added := f.h.TaskAddKind("cap", "dispatch dev-task: sample", query.KindDispatch, "", "", "", check, "", nil)
 	if !added.OK {
 		t.Fatalf("task add: %s", added.Error)
 	}
@@ -257,7 +257,7 @@ func TestPendingSeesADispatchWhoseGoalWasEdited(t *testing.T) {
 	recordDeliveryAs(t, f, capNode, agent, workerID)
 
 	// Rewrite the goal so the prose no longer says "dispatch ..." at all.
-	if resp := f.h.TaskEdit("cap", capNode, "reworded entirely", "", nil); !resp.OK {
+	if resp := f.h.TaskEdit("cap", capNode, "reworded entirely", "", "", nil); !resp.OK {
 		t.Fatalf("task edit: %s", resp.Error)
 	}
 

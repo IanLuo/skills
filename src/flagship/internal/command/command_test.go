@@ -202,7 +202,7 @@ func TestWritersRefuseAnUnknownNode(t *testing.T) {
 			return h.TaskUpdate("proj", "t-doesnotexist", "done", "probe", nil)
 		}},
 		{"task edit", func(h *command.Handler) command.Response {
-			return h.TaskEdit("proj", "t-doesnotexist", "reworded", "", nil)
+			return h.TaskEdit("proj", "t-doesnotexist", "reworded", "", "", nil)
 		}},
 		{"task block", func(h *command.Handler) command.Response {
 			return h.TaskBlock("proj", "t-doesnotexist", "waiting")
@@ -423,7 +423,7 @@ func TestTaskEdit(t *testing.T) {
 	taskResp := h.TaskAdd("proj", "original goal", nil)
 	nodeID := taskResp.Data.(command.EventData).NodeID
 
-	resp := h.TaskEdit("proj", nodeID, "revised goal", "", nil)
+	resp := h.TaskEdit("proj", nodeID, "revised goal", "", "", nil)
 	if !resp.OK {
 		t.Fatalf("not OK: %s", resp.Error)
 	}
@@ -455,7 +455,7 @@ func TestTaskAddKindWithFoundBy(t *testing.T) {
 	finder := h.TaskAdd("other", "the node that noticed", nil)
 	foundBy := "other:" + finder.Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, foundBy, "", "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, foundBy, "", "", "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}
@@ -478,7 +478,7 @@ func TestTaskAddRefusesAFoundByThatNamesNoNode(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 	h.ProjectCreate("other", "/tmp/other")
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:t-nothing", "", "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:t-nothing", "", "", "", "", nil)
 	if resp.OK {
 		t.Fatal("a found_by naming no node must be refused")
 	}
@@ -500,7 +500,7 @@ func TestTaskAddRefusesAFoundByInTheWrongScope(t *testing.T) {
 	finder := h.TaskAdd("other", "the node that noticed", nil)
 	node := finder.Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:"+node, "", "", "", nil)
+	resp := h.TaskAddKind("proj", "the teardown is untested", query.KindGap, "proj:"+node, "", "", "", "", nil)
 	if resp.OK {
 		t.Fatal("a found_by naming a node in another project must be refused")
 	}
@@ -513,7 +513,7 @@ func TestTaskAddRefusesAnUnknownKind(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", "", "", "", nil)
+	resp := h.TaskAddKind("proj", "something", query.Kind("gapp"), "", "", "", "", "", nil)
 	if resp.OK {
 		t.Fatal("an unknown kind must be refused at write time, not stored")
 	}
@@ -527,7 +527,7 @@ func TestTaskAddRefusesAMalformedFoundBy(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 
 	for _, ref := range []string{"skills", "skills:", ":t-1", "skills:t-1:extra"} {
-		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, "", "", "", nil)
+		resp := h.TaskAddKind("proj", "something", query.KindGap, ref, "", "", "", "", nil)
 		if resp.OK {
 			t.Errorf("found_by %q must be refused", ref)
 			continue
@@ -546,7 +546,7 @@ func TestTaskEditKind(t *testing.T) {
 	taskResp := h.TaskAdd("proj", "backlog: something noticed", nil)
 	nodeID := taskResp.Data.(command.EventData).NodeID
 
-	resp := h.TaskEdit("proj", nodeID, "", query.KindGap, nil)
+	resp := h.TaskEdit("proj", nodeID, "", query.KindGap, "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskEdit: %s", resp.Error)
 	}
@@ -565,7 +565,7 @@ func TestTaskEditRefusesAnUnknownKind(t *testing.T) {
 	h.ProjectCreate("proj", "/tmp/proj")
 	nodeID := h.TaskAdd("proj", "a task", nil).Data.(command.EventData).NodeID
 
-	resp := h.TaskEdit("proj", nodeID, "", query.Kind("gapp"), nil)
+	resp := h.TaskEdit("proj", nodeID, "", query.Kind("gapp"), "", nil)
 	if resp.OK {
 		t.Fatal("an unknown kind must be refused")
 	}
@@ -576,10 +576,10 @@ func TestUnfinishedGroupsByKind(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 	h.TaskAdd("proj", "ordinary work", nil)
-	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", "", "", "", nil)
+	h.TaskAddKind("proj", "a dispatch", query.KindDispatch, "", "", "", "", "", nil)
 	finder := h.TaskAdd("proj", "the node that noticed", nil).Data.(command.EventData).NodeID
 	h.TaskUpdate("proj", finder, "done", "noticed and filed", nil)
-	h.TaskAddKind("proj", "a gap", query.KindGap, "proj:"+finder, "", "", "", nil)
+	h.TaskAddKind("proj", "a gap", query.KindGap, "proj:"+finder, "", "", "", "", nil)
 
 	resp := h.Unfinished(nil)
 	if !resp.OK {
@@ -607,14 +607,14 @@ func TestGapsListsOpenFirstAcrossScopes(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
 
-	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", "", "", "", nil).Data.(command.EventData).NodeID
+	doneGap := h.TaskAddKind("proj", "a gap already resolved", query.KindGap, "", "", "", "", "", nil).Data.(command.EventData).NodeID
 	if resp := h.TaskUpdate("proj", doneGap, "done", "fixed", nil); !resp.OK {
 		t.Fatalf("TaskUpdate: %s", resp.Error)
 	}
 	finder := h.TaskAdd("proj", "the node that noticed", nil).Data.(command.EventData).NodeID
 	h.TaskUpdate("proj", finder, "done", "noticed and filed", nil)
-	h.TaskAddKind("proj", "an open gap", query.KindGap, "proj:"+finder, "", "", "", nil)
-	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", "", "", "", nil)
+	h.TaskAddKind("proj", "an open gap", query.KindGap, "proj:"+finder, "", "", "", "", nil)
+	h.TaskAddKind("other", "a gap in another scope", query.KindGap, "", "", "", "", "", nil)
 	h.TaskAdd("proj", "ordinary work", nil)
 
 	resp := h.Gaps(nil)
@@ -704,7 +704,7 @@ func TestStatusReflectsEdit(t *testing.T) {
 	taskResp := h.TaskAdd("proj", "original", nil)
 	nodeID := taskResp.Data.(command.EventData).NodeID
 
-	h.TaskEdit("proj", nodeID, "revised", "", nil)
+	h.TaskEdit("proj", nodeID, "revised", "", "", nil)
 
 	resp := h.Status("proj")
 	data := resp.Data.(command.StatusResult)
@@ -1188,7 +1188,7 @@ func TestABlockWithoutItsOwnCheckIsNotReadThroughTheNodes(t *testing.T) {
 	h.ProjectCreate("proj", root)
 	// The node's own claim is over — the marker is there — so a reader that runs
 	// it under the block has something to say. It must not say it.
-	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, "", nil).
 		Data.(command.EventData).NodeID
 	if resp := h.TaskBlock("proj", nodeID, "waiting on a person"); !resp.OK {
 		t.Fatalf("block: %s", resp.Error)
@@ -1284,12 +1284,12 @@ func TestGapsReRunsARecordedClaimCheck(t *testing.T) {
 	check := "test -f " + marker
 
 	h.ProjectCreate("proj", root)
-	finder := h.TaskAddKind("proj", "the node that found it", query.KindWork, "", "", "", "", nil).
+	finder := h.TaskAddKind("proj", "the node that found it", query.KindWork, "", "", "", "", "", nil).
 		Data.(command.EventData).NodeID
 	foundBy := "proj:" + finder
-	checked := h.TaskAddKind("proj", "the widget is broken", query.KindGap, foundBy, "", "", check, nil).
+	checked := h.TaskAddKind("proj", "the widget is broken", query.KindGap, foundBy, "", "", check, "", nil).
 		Data.(command.EventData).NodeID
-	prose := h.TaskAddKind("proj", "the widget is ugly", query.KindGap, "", "", "", "", nil).
+	prose := h.TaskAddKind("proj", "the widget is ugly", query.KindGap, "", "", "", "", "", nil).
 		Data.(command.EventData).NodeID
 
 	rootOf := func(scope string) string {
@@ -1346,7 +1346,7 @@ func TestStatusUnfinishedAndGapsAgreeOnAnExpiredClaim(t *testing.T) {
 	check := "test -f " + marker
 
 	h.ProjectCreate("proj", root)
-	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, nil).
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", check, "", nil).
 		Data.(command.EventData).NodeID
 	if err := os.WriteFile(marker, []byte("here"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1395,7 +1395,7 @@ func TestACheckWrittenBackwardsReadsAsExpired(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", t.TempDir())
 	// `true` exits 0 whatever the world says.
-	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "true", nil).
+	nodeID := h.TaskAddKind("proj", "the widget is broken", query.KindGap, "", "", "", "true", "", nil).
 		Data.(command.EventData).NodeID
 
 	resp := h.Gaps(func(string) string { return "" })
@@ -1631,10 +1631,10 @@ func TestStatusRunsABlockCheckInTheProjectRoot(t *testing.T) {
 // the goal text.
 func TestTaskAddKindRecordsTheIntegratesLink(t *testing.T) {
 	h := setup(t)
-	member := h.TaskAddKind("cap", "dispatch parallel: member", query.KindDispatch, "", "", "", "", nil).
+	member := h.TaskAddKind("cap", "dispatch parallel: member", query.KindDispatch, "", "", "", "", "", nil).
 		Data.(command.EventData).NodeID
 
-	resp := h.TaskAddKind("cap", "dispatch integrate: merge member", query.KindDispatch, "", member, "", "", nil)
+	resp := h.TaskAddKind("cap", "dispatch integrate: merge member", query.KindDispatch, "", member, "", "", "", nil)
 	if !resp.OK {
 		t.Fatalf("TaskAddKind: %s", resp.Error)
 	}
@@ -1671,7 +1671,7 @@ func TestTaskAddKindRecordsTheIntegratesLink(t *testing.T) {
 func TestTaskAddKindRefusesAMalformedIntegratesLink(t *testing.T) {
 	h := setup(t)
 	for _, ref := range []string{"cap:t-1", "t-1 t-2", " ", "t-1\t"} {
-		resp := h.TaskAddKind("cap", "dispatch integrate: x", query.KindDispatch, "", ref, "", "", nil)
+		resp := h.TaskAddKind("cap", "dispatch integrate: x", query.KindDispatch, "", ref, "", "", "", nil)
 		if resp.OK {
 			t.Errorf("integrates %q must be refused", ref)
 			continue

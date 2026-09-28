@@ -38,8 +38,8 @@ var cmdSpecs = map[string]cmdSpec{
 	"project get":  {usage: "Usage: fs project get NAME", positionals: 1},
 
 	"task add": {
-		usage: "Usage: fs task add --goal GOAL [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--check \"SHELL COMMAND\"] [--project PROJECT_ID]",
-		flags: map[string]bool{"--goal": true, "--parent": true, "--kind": true, "--found-by": true, "--check": true, "--project": true},
+		usage: "Usage: fs task add --goal GOAL [--parent NODE_ID] [--kind work|dispatch|gap] [--found-by PROJECT:NODE] [--check \"SHELL COMMAND\"] [--severity severe|defect|prose] [--project PROJECT_ID]",
+		flags: map[string]bool{"--goal": true, "--parent": true, "--kind": true, "--found-by": true, "--check": true, "--severity": true, "--project": true},
 	},
 	"task update": {
 		usage:       "Usage: fs task update NODE_ID --status STATUS [--decision TEXT] [--project PROJECT_ID]",
@@ -54,8 +54,14 @@ var cmdSpecs = map[string]cmdSpec{
 		address:     true,
 	},
 	"task edit": {
-		usage:       "Usage: fs task edit NODE_ID [--goal GOAL] [--kind work|dispatch|gap] [--project PROJECT_ID]",
-		flags:       map[string]bool{"--goal": true, "--kind": true, "--project": true},
+		usage:       "Usage: fs task edit NODE_ID [--goal GOAL] [--kind work|dispatch|gap] [--severity severe|defect|prose] [--project PROJECT_ID]",
+		flags:       map[string]bool{"--goal": true, "--kind": true, "--severity": true, "--project": true},
+		positionals: 1,
+		address:     true,
+	},
+	"task merge": {
+		usage:       "Usage: fs task merge NODE_ID --into SURVIVOR [--reason TEXT] [--project PROJECT_ID]",
+		flags:       map[string]bool{"--into": true, "--reason": true, "--project": true},
 		positionals: 1,
 		address:     true,
 	},

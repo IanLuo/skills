@@ -43,6 +43,60 @@ func ValidKind(k Kind) bool {
 	return false
 }
 
+// Severity is a gap's weight: what its defect costs, as a field rather than as
+// a word inside the goal. It exists so a backlog can be sorted and counted
+// instead of read end to end, which is the only triage a claim in prose allows.
+type Severity string
+
+const (
+	// SeverityUnset is a gap nobody has weighed. It is the zero value and it is
+	// deliberately not a level: a reader that defaulted it to the lightest one
+	// would be deciding by omission.
+	SeverityUnset Severity = ""
+	// SeveritySevere is a destructive or false-passing defect: it loses work, or
+	// it makes a gate pass what it should refuse.
+	SeveritySevere Severity = "severe"
+	// SeverityDefect is a defect that costs work and destroys nothing.
+	SeverityDefect Severity = "defect"
+	// SeverityProse is a doc, comment, name or message that is wrong or stale.
+	SeverityProse Severity = "prose"
+)
+
+// ValidSeverity reports whether s names a level. The empty string is not a
+// level: absence means unset, and callers resolve it rather than storing it.
+func ValidSeverity(s Severity) bool {
+	switch s {
+	case SeveritySevere, SeverityDefect, SeverityProse:
+		return true
+	}
+	return false
+}
+
+// SeverityRank orders the levels heaviest first, and unset below all of them.
+// Unset last is the point rather than an accident: it makes no claim about
+// weight, so ranking it among the levels would be a claim the field never made.
+func SeverityRank(s Severity) int {
+	switch s {
+	case SeveritySevere:
+		return 3
+	case SeverityDefect:
+		return 2
+	case SeverityProse:
+		return 1
+	}
+	return 0
+}
+
+// Label is how a severity reads to a person: the level, or the word "unset" for
+// a gap nobody has weighed. It is a render and never a stored value — an unset
+// gap stores nothing, so no reader can count it as the lightest level.
+func (s Severity) Label() string {
+	if s == SeverityUnset {
+		return "unset"
+	}
+	return string(s)
+}
+
 // Node represents a single task in the project tree.
 type Node struct {
 	NodeID    string   `json:"node_id"`
@@ -81,6 +135,16 @@ type Node struct {
 	// the member it precedes — and it is what lets a close ask whether its own
 	// change was reviewed before it closes.
 	Reviews string `json:"reviews,omitempty"`
+
+	// Severity is a gap's weight, set when it was created or edited later.
+	// Empty for a gap nobody has weighed, and for every node that is not a gap:
+	// a node that is dispatched rather than triaged is not in a backlog.
+	Severity Severity `json:"severity,omitempty"`
+
+	// Absorbed names the nodes this one has taken in by a merge, in the order
+	// they were folded in. It is the survivor's half of the record, and it is
+	// what lets a reader of this node alone see that two nodes became one.
+	Absorbed []string `json:"absorbed,omitempty"`
 }
 
 // Tree is the derived project state.
@@ -136,6 +200,7 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				Integrates string `json:"integrates"`
 				Reviews    string `json:"reviews"`
 				Check      string `json:"check"`
+				Severity   string `json:"severity"`
 			}
 			_ = json.Unmarshal(evt.Payload, &p)
 			parentID := ""
@@ -150,6 +215,7 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 				Integrates: p.Integrates,
 				Reviews:    p.Reviews,
 				Check:      p.Check,
+				Severity:   parseSeverity(p.Severity),
 				Status:     "pending",
 				ParentID:   parentID,
 			}
@@ -199,6 +265,12 @@ func BuildTree(projectID string, events []store.Event) *Tree {
 			case "kind":
 				node := tree.ensureNode(nid)
 				node.Kind = parseKind(p.NewValue)
+			case "severity":
+				node := tree.ensureNode(nid)
+				node.Severity = parseSeverity(p.NewValue)
+			case "absorbed":
+				node := tree.ensureNode(nid)
+				node.Absorbed = splitAbsorbed(p.NewValue)
 			}
 
 		default:
@@ -281,6 +353,31 @@ func parseKind(raw string) Kind {
 		return k
 	}
 	return KindWork
+}
+
+// parseSeverity reads a severity from an event payload, defaulting to unset
+// when it is absent or unrecognised: an unknown severity is not a fourth level,
+// it is a gap nobody has weighed, which is the state that asks to be looked at.
+func parseSeverity(raw string) Severity {
+	if s := Severity(raw); ValidSeverity(s) {
+		return s
+	}
+	return SeverityUnset
+}
+
+// splitAbsorbed reads the absorbed list a metadata-changed event carries: node
+// ids joined by commas, in the order they were folded in. A node id cannot
+// contain a comma, so the encoding round-trips, and the event states the whole
+// list rather than a step of it — the same last-write-wins shape goal and kind
+// use, so replay needs no accumulation.
+func splitAbsorbed(joined string) []string {
+	var ids []string
+	for _, id := range strings.Split(joined, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // legacyDispatchGoal reports whether a goal was written by fs dispatch before

@@ -44,6 +44,14 @@ type UpdateResult struct {
 	Events []EventData `json:"events"`
 }
 
+// MergeResult is the data payload for fs task merge: the node that was absorbed
+// and the node that took it in, both by node id in the same project.
+type MergeResult struct {
+	Absorbed string      `json:"absorbed"`
+	Into     string      `json:"into"`
+	Events   []EventData `json:"events"`
+}
+
 // DeliveryRecord is the payload of a delivery-recorded event: the structural
 // binding of a cap dispatch node to the pane, the tab that pane sits in, and the
 // agent carrying its brief, and to the node created for the worker in the target
@@ -108,6 +116,14 @@ type TaskInfo struct {
 	// kind of link, opposite direction, and never the same value: a dispatch may
 	// carry either, both, or neither.
 	Reviews string `json:"reviews,omitempty"`
+	// Severity is a gap's weight, empty when nobody has weighed it. This is the
+	// stored level and not fs gaps's label: the label and the counts belong to
+	// the backlog list, and this is one node's derived state.
+	Severity string `json:"severity,omitempty"`
+	// Absorbed names the nodes this one has taken in by a merge, in the order
+	// they were folded in. It is what lets a reader of the survivor alone see
+	// that two nodes became one.
+	Absorbed []string `json:"absorbed,omitempty"`
 }
 
 // StatusResult is the data payload for fs status.
@@ -141,13 +157,59 @@ type UnfinishedNode struct {
 }
 
 // GapNode is one kind=gap node: something noticed and not dispatched, with
-// found_by naming the node that noticed it when one was recorded.
+// found_by naming the node that noticed it when one was recorded, and severity
+// its weight. Severity is rendered and never omitted, so a gap nobody has
+// weighed reads as the word "unset" rather than as an empty string a reader
+// would have to guess at, or as the lightest level it is not.
 type GapNode struct {
 	ProjectID string `json:"project_id"`
 	NodeID    string `json:"node_id"`
 	Status    string `json:"status"`
 	Goal      string `json:"goal"`
 	FoundBy   string `json:"found_by,omitempty"`
+	Severity  string `json:"severity"`
+
+	// level is the same weight unrendered, for the sort — a declared level has
+	// a rank and the word "unset" does not, so the sort reads this rather than
+	// converting the label back into a level.
+	level query.Severity
+}
+
+// GapCounts is the header fs gaps prints before the list: what the reader is
+// looking at, so nobody has to check 181 nodes by hand to find out whether any
+// of them is still open.
+type GapCounts struct {
+	Total int `json:"total"`
+	Open  int `json:"open"`
+	Done  int `json:"done"`
+	// OpenBySeverity is the half a cap acts on: the weight of the backlog. All
+	// four levels are named whatever their counts are, so a zero reads as a
+	// zero rather than as a level that has gone missing.
+	OpenBySeverity SeverityCounts `json:"open_by_severity"`
+}
+
+// SeverityCounts is a count per level, in the order a cap triages in, with the
+// unweighed backlog last.
+type SeverityCounts struct {
+	Severe int `json:"severe"`
+	Defect int `json:"defect"`
+	Prose  int `json:"prose"`
+	Unset  int `json:"unset"`
+}
+
+// add counts one gap's weight. Anything that is not a declared level is the
+// unweighed backlog, which is the same reading parseSeverity gives it.
+func (c *SeverityCounts) add(s query.Severity) {
+	switch s {
+	case query.SeveritySevere:
+		c.Severe++
+	case query.SeverityDefect:
+		c.Defect++
+	case query.SeverityProse:
+		c.Prose++
+	default:
+		c.Unset++
+	}
 }
 
 // Handler executes commands against a store.
@@ -216,16 +278,16 @@ func (h *Handler) ProjectCreate(name, rootPath string) Response {
 
 // TaskAdd appends a task-created event of the default kind, work. AC2.
 func (h *Handler) TaskAdd(projectID, goal string, parentNodeID *string) Response {
-	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", "", "", parentNodeID)
+	return h.TaskAddKind(projectID, goal, query.KindWork, "", "", "", "", "", parentNodeID)
 }
 
 // TaskAddKind appends a task-created event carrying its structural kind — and,
-// for a gap, the node that noticed it; for an integration, the member it
-// integrates; for a review, the dispatch whose change it reads; and, when one
-// was given, the check that would show its claim is over. It is the write side
-// of the kind the dispatch gates and fs gaps read, and of the two links the
-// member's exit gate and a dispatch's close each read.
-func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates, reviews, check string, parentNodeID *string) Response {
+// for a gap, the node that noticed it and its weight; for an integration, the
+// member it integrates; for a review, the dispatch whose change it reads; and,
+// when one was given, the check that would show its claim is over. It is the
+// write side of the kind the dispatch gates and fs gaps read, and of the two
+// links the member's exit gate and a dispatch's close each read.
+func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, integrates, reviews, check string, severity query.Severity, parentNodeID *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -234,6 +296,17 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	}
 	if !query.ValidKind(kind) {
 		return errResp(fmt.Sprintf("invalid kind: %q (valid: work, dispatch, gap)", kind))
+	}
+	// A severity is a backlog's weight. A node that is dispatched rather than
+	// triaged has no backlog to be weighed out of, so it is refused here rather
+	// than stored to be counted by nobody.
+	if severity != "" {
+		if kind != query.KindGap {
+			return errResp(fmt.Sprintf("severity is a gap's weight and this node is a %s node", kind))
+		}
+		if !query.ValidSeverity(severity) {
+			return errResp(fmt.Sprintf("invalid severity: %q (valid: severe, defect, prose)", severity))
+		}
 	}
 	if foundBy != "" {
 		if err := validNodeRef(foundBy); err != nil {
@@ -294,6 +367,9 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	}
 	if check != "" {
 		payload["check"] = check
+	}
+	if severity != "" {
+		payload["severity"] = string(severity)
 	}
 	data, _ := json.Marshal(payload)
 
@@ -928,8 +1004,8 @@ func (h *Handler) DispatchFor(scope, workerProject, workerNode string) (Delivery
 }
 
 // TaskEdit appends a metadata-changed event for each field it is given: the
-// goal, the kind, or both. AC11.
-func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind, commitSHA *string) Response {
+// goal, the kind, the severity, or any combination. AC11.
+func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind, newSeverity query.Severity, commitSHA *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
 	}
@@ -972,12 +1048,136 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 		events = append(events, data)
 	}
 
+	// An empty severity means "leave it alone", like the goal and the kind. A
+	// node that is not a gap has no weight to set, for the same reason fs task
+	// add refuses one.
+	if newSeverity != "" {
+		if !query.ValidSeverity(newSeverity) {
+			return errResp(fmt.Sprintf("invalid severity: %q (valid: severe, defect, prose)", newSeverity))
+		}
+		if h.deriveKind(projectID, nodeID) != query.KindGap {
+			return errResp(fmt.Sprintf("severity is a gap's weight and node %s is not a gap", nodeID))
+		}
+		data, err := h.appendMetadata(projectID, nodeID, "severity",
+			string(h.deriveSeverity(projectID, nodeID)), string(newSeverity), sha)
+		if err != nil {
+			h.logger.Error("store append failed", "command", "task-edit", "error", err)
+			return errResp(err.Error())
+		}
+		events = append(events, data)
+	}
+
 	if len(events) == 0 {
-		return errResp("nothing to edit: provide --goal and/or --kind")
+		return errResp("nothing to edit: provide --goal, --kind and/or --severity")
 	}
 
 	h.logger.Info("command executed", "command", "task-edit", "project", projectID, "node_id", nodeID, "events", len(events))
 	return okResp(UpdateResult{Events: events})
+}
+
+// TaskMerge folds one node into another, and it is compensating events rather
+// than a deletion: events are immutable, so a merge is written as a statement
+// about both nodes. The absorbed node is marked done with a decision naming
+// what took it in, and the survivor's own record gains the absorbed id — so a
+// reader of the survivor alone can see that two nodes became one.
+//
+// Neither node may be done, and that one rule is the whole of the policing: an
+// absorbed node is done by the act of being absorbed, so refusing a done
+// survivor is what stops a fold becoming a chain (A into B, B into C), and
+// refusing a done absorbed node stops one gap being folded in twice.
+func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *string) Response {
+	if projectID == "" {
+		return errResp("project_id is required")
+	}
+	if nodeID == "" {
+		return errResp("node_id is required")
+	}
+	if into == "" {
+		return errResp("--into is required: fs task merge NODE_ID --into SURVIVOR")
+	}
+
+	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	into, err = h.resolveWriteNode(projectID, into)
+	if err != nil {
+		return errResp(err.Error())
+	}
+	if nodeID == into {
+		return errResp(fmt.Sprintf("node %s cannot absorb itself", nodeID))
+	}
+	for _, node := range []struct{ id, role string }{{nodeID, "absorbed"}, {into, "survivor"}} {
+		if h.deriveStatus(projectID, node.id) == "done" {
+			return errResp(fmt.Sprintf(
+				"the %s node %s is done; a merge folds open nodes, and a done one was closed or already absorbed",
+				node.role, node.id))
+		}
+	}
+
+	sha := h.commitSHA
+	if commitSHA != nil {
+		sha = commitSHA
+	}
+
+	summary := fmt.Sprintf("merged into %s:%s", projectID, into)
+	if reason != "" {
+		summary += " — " + reason
+	}
+
+	var events []EventData
+
+	// The absorbed node first: which node took it in, then that it is over.
+	payload, _ := json.Marshal(map[string]string{"summary": summary})
+	id, err := h.store.Append(store.Event{
+		Type:      store.DecisionRecorded,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		CommitSHA: sha,
+		Payload:   payload,
+	})
+	if err != nil {
+		h.logger.Error("store append failed", "command", "task-merge", "error", err)
+		return errResp(err.Error())
+	}
+	events = append(events, EventData{
+		EventID: id, EventType: store.DecisionRecorded, NodeID: nodeID, CommitSHA: sha,
+	})
+
+	from := h.deriveStatus(projectID, nodeID)
+	payload, _ = json.Marshal(map[string]string{"from": from, "to": "done"})
+	id, err = h.store.Append(store.Event{
+		Type:      store.StatusChanged,
+		ProjectID: projectID,
+		NodeID:    &nodeID,
+		CommitSHA: sha,
+		Payload:   payload,
+	})
+	if err != nil {
+		h.logger.Error("store append failed", "command", "task-merge", "error", err)
+		return errResp(err.Error())
+	}
+	events = append(events, EventData{
+		EventID: id, EventType: store.StatusChanged, NodeID: nodeID, CommitSHA: sha,
+	})
+
+	// Then the survivor's half: the absorbed list as it now stands, stated in
+	// full, so replay needs no accumulation.
+	prior := h.deriveAbsorbed(projectID, into)
+	absorbed := make([]string, 0, len(prior)+1)
+	absorbed = append(absorbed, prior...)
+	absorbed = append(absorbed, nodeID)
+	data, err := h.appendMetadata(projectID, into, "absorbed",
+		strings.Join(prior, ","), strings.Join(absorbed, ","), sha)
+	if err != nil {
+		h.logger.Error("store append failed", "command", "task-merge", "error", err)
+		return errResp(err.Error())
+	}
+	events = append(events, data)
+
+	h.logger.Info("command executed", "command", "task-merge",
+		"project", projectID, "node_id", nodeID, "into", into, "events", len(events))
+	return okResp(MergeResult{Absorbed: nodeID, Into: into, Events: events})
 }
 
 // appendMetadata appends one metadata-changed event and returns its envelope
@@ -1056,6 +1256,8 @@ func collectTasks(node *query.Node, out *[]TaskInfo) {
 		Check:        node.Check,
 		Integrates:   node.Integrates,
 		Reviews:      node.Reviews,
+		Severity:     string(node.Severity),
+		Absorbed:     node.Absorbed,
 	})
 	for _, child := range node.Children {
 		collectTasks(child, out)
@@ -1106,10 +1308,13 @@ func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 	return okResp(map[string]any{"unfinished": grouped})
 }
 
-// Gaps lists every kind=gap node across every scope, open ones first, so a cap
-// reads its backlog in one place instead of remembering it. A gap that has been
-// dispatched or resolved is done and sorts after the open ones; it is not
-// dropped, so the record of what was noticed survives.
+// Gaps lists every kind=gap node across every scope, open ones first and the
+// heaviest of those first, so a cap reads its backlog in one place instead of
+// remembering it. A gap that has been dispatched or resolved is done and sorts
+// after the open ones; it is not dropped, so the record of what was noticed
+// survives — which is exactly why the payload opens with a header counting what
+// is being shown, rather than leaving a reader to grep the list to find out
+// whether any of it is still open.
 //
 // rootOf resolves a scope to the directory a recorded check runs in — the
 // project root — the same way every reader that renders a status resolves it,
@@ -1127,6 +1332,7 @@ func (h *Handler) Gaps(rootOf func(scope string) string) Response {
 	}
 
 	gaps := []GapNode{}
+	counts := GapCounts{}
 	for _, scope := range scopes {
 		nodes, err := h.nodesIn(scope)
 		if err != nil {
@@ -1141,22 +1347,37 @@ func (h *Handler) Gaps(rootOf func(scope string) string) Response {
 			if node.Kind != query.KindGap {
 				continue
 			}
+			status := reportedStatus(node.Status, node.BlockCheck, node.Check, dir)
 			gaps = append(gaps, GapNode{
 				ProjectID: scope,
 				NodeID:    node.NodeID,
-				Status:    reportedStatus(node.Status, node.BlockCheck, node.Check, dir),
+				Status:    status,
 				Goal:      node.Goal,
 				FoundBy:   node.FoundBy,
+				Severity:  node.Severity.Label(),
+				level:     node.Severity,
 			})
+			counts.Total++
+			if status == "done" {
+				counts.Done++
+				continue
+			}
+			counts.Open++
+			counts.OpenBySeverity.add(node.Severity)
 		}
 	}
 
-	// Open first, then scope, then node id: deterministic, and the things a cap
-	// still has to act on are at the top.
+	// Open first, then heaviest first, then scope, then node id: deterministic,
+	// and what a cap still has to act on is at the top in the order it would
+	// act on it.
 	sort.SliceStable(gaps, func(i, j int) bool {
 		iOpen, jOpen := gaps[i].Status != "done", gaps[j].Status != "done"
 		if iOpen != jOpen {
 			return iOpen
+		}
+		iRank, jRank := query.SeverityRank(gaps[i].level), query.SeverityRank(gaps[j].level)
+		if iRank != jRank {
+			return iRank > jRank
 		}
 		if gaps[i].ProjectID != gaps[j].ProjectID {
 			return gaps[i].ProjectID < gaps[j].ProjectID
@@ -1164,8 +1385,11 @@ func (h *Handler) Gaps(rootOf func(scope string) string) Response {
 		return gaps[i].NodeID < gaps[j].NodeID
 	})
 
-	h.logger.Info("command executed", "command", "gaps", "scopes", len(scopes), "gaps", len(gaps))
-	return okResp(map[string]any{"gaps": gaps})
+	h.logger.Info("command executed", "command", "gaps", "scopes", len(scopes), "gaps", len(gaps),
+		"open", counts.Open, "done", counts.Done)
+	// counts before gaps is the header position: encoding/json emits map keys in
+	// sorted order, and the counts are what a reader should meet first.
+	return okResp(map[string]any{"counts": counts, "gaps": gaps})
 }
 
 // OpenGaps counts the kind=gap nodes that are not done, across every scope.
@@ -1267,6 +1491,32 @@ func (h *Handler) deriveKind(projectID, nodeID string) query.Kind {
 		return node.Kind
 	}
 	return query.KindWork
+}
+
+// deriveSeverity replays events to find the current severity of a node, unset
+// when it has none — the same derivation fs gaps renders and sorts on.
+func (h *Handler) deriveSeverity(projectID, nodeID string) query.Severity {
+	events, err := h.store.Replay(projectID, nil)
+	if err != nil {
+		return query.SeverityUnset
+	}
+	if node, ok := query.BuildTree(projectID, events).Nodes[nodeID]; ok {
+		return node.Severity
+	}
+	return query.SeverityUnset
+}
+
+// deriveAbsorbed replays events to find the nodes a node has taken in by a
+// merge, in the order they were folded in.
+func (h *Handler) deriveAbsorbed(projectID, nodeID string) []string {
+	events, err := h.store.Replay(projectID, nil)
+	if err != nil {
+		return nil
+	}
+	if node, ok := query.BuildTree(projectID, events).Nodes[nodeID]; ok {
+		return node.Absorbed
+	}
+	return nil
 }
 
 // deriveGoal replays events to find the current goal of a node.

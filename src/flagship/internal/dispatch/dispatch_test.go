@@ -483,7 +483,7 @@ func TestPrepareRefusesForADispatchWhoseGoalWasEdited(t *testing.T) {
 		t.Fatalf("first dispatch: %s", first.Error)
 	}
 	firstID := first.Data.(*dispatch.Brief).CapNodeID
-	if resp := f.h.TaskEdit("cap", firstID, "no longer says dispatch", "", nil); !resp.OK {
+	if resp := f.h.TaskEdit("cap", firstID, "no longer says dispatch", "", "", nil); !resp.OK {
 		t.Fatalf("task edit: %s", resp.Error)
 	}
 

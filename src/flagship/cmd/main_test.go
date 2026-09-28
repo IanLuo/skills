@@ -3689,3 +3689,115 @@ func TestCLIStatusReRunsABlockCheckInTheProjectRoot(t *testing.T) {
 	writeFileIn(t, root, "marker", "")
 	assertStatus("blocked (condition no longer holds — test -f marker exited 0)")
 }
+
+// The triage surface end to end: a weight set at add and at edit, a merge that
+// records both sides, a gaps header that says what the list is showing, and the
+// refusals the invariants rest on. The logic is covered at the command layer;
+// this is the flag surface, which nothing else exercises — a misspelled flag or
+// a wrong arity in args.go builds cleanly and fails only here.
+func TestCLITriageSurface(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	runFS(t, bin, dir, "project", "create", "--name", "p", "--root", dir)
+
+	survivor := addGap(t, bin, dir, "severe", "the teardown deletes the wrong branch")
+	absorbed := addGap(t, bin, dir, "prose", "the teardown names a branch that is not the delivery's")
+
+	// A weight belongs to a backlog entry, and a misspelling is not a level: a
+	// severity that defaults on a typo is a triage that decided by omission.
+	if _, code := runFS(t, bin, dir, "task", "add", "--severity", "severe", "--goal", "ordinary work", "--project", "p"); code == 0 {
+		t.Error("task add accepted --severity on a work node; work is not in a backlog")
+	}
+	if _, code := runFS(t, bin, dir, "task", "add", "--kind", "gap", "--severity", "critical", "--goal", "a gap", "--project", "p"); code == 0 {
+		t.Error("task add accepted an unknown severity")
+	}
+
+	// fs gaps says what it is showing, and puts the heaviest first.
+	gaps, code := runFS(t, bin, dir, "gaps")
+	if code != 0 {
+		t.Fatalf("gaps exit %d: %v", code, gaps["error"])
+	}
+	data := gaps["data"].(map[string]any)
+	counts := data["counts"].(map[string]any)
+	if counts["total"] != float64(2) || counts["open"] != float64(2) || counts["done"] != float64(0) {
+		t.Errorf("counts = %v, want total 2, open 2, done 0", counts)
+	}
+	bySeverity := counts["open_by_severity"].(map[string]any)
+	if bySeverity["severe"] != float64(1) || bySeverity["defect"] != float64(0) ||
+		bySeverity["prose"] != float64(1) || bySeverity["unset"] != float64(0) {
+		t.Errorf("open_by_severity = %v, want severe 1, prose 1 and nothing else", bySeverity)
+	}
+	list := data["gaps"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("gaps = %v, want the two gap nodes", list)
+	}
+	if first := list[0].(map[string]any); first["node_id"] != survivor || first["severity"] != "severe" {
+		t.Errorf("first gap = %v, want the severe one first", first)
+	}
+
+	// A weight can be set later, which is what triage is: the gap is read first.
+	late := addGap(t, bin, dir, "", "a gap nobody weighed")
+	if _, code := runFS(t, bin, dir, "task", "edit", late, "--severity", "defect", "--project", "p"); code != 0 {
+		t.Fatalf("task edit --severity exit %d", code)
+	}
+	weighed, _ := runFS(t, bin, dir, "task", "get", late, "--project", "p")
+	if got := weighed["data"].(map[string]any)["severity"]; got != "defect" {
+		t.Errorf("severity after edit = %v, want defect", got)
+	}
+	if _, code := runFS(t, bin, dir, "task", "edit", late, "--severity", "critical", "--project", "p"); code == 0 {
+		t.Error("task edit accepted an unknown severity")
+	}
+
+	// A merge is recorded on both nodes, so either one read alone tells the story.
+	if _, code := runFS(t, bin, dir, "task", "merge", absorbed, "--into", survivor, "--reason", "one defect, two sightings", "--project", "p"); code != 0 {
+		t.Fatalf("task merge exit %d", code)
+	}
+	kept := getTask(t, bin, dir, survivor)
+	if got := kept["absorbed"].([]any); len(got) != 1 || got[0] != absorbed {
+		t.Errorf("survivor absorbed = %v, want [%s] read from the survivor alone", got, absorbed)
+	}
+	if kept["status"] != "pending" {
+		t.Errorf("survivor status = %v, want it still open and still the backlog entry", kept["status"])
+	}
+	taken := getTask(t, bin, dir, absorbed)
+	if taken["status"] != "done" {
+		t.Errorf("absorbed status = %v, want done", taken["status"])
+	}
+	if decisions := fmt.Sprint(taken["decisions"]); !strings.Contains(decisions, survivor) {
+		t.Errorf("absorbed decisions = %v, want one naming %s", taken["decisions"], survivor)
+	}
+
+	// An absorbed node is done, and nothing merges into a done node: that is
+	// what keeps a fold a fold rather than a chain.
+	if _, code := runFS(t, bin, dir, "task", "merge", survivor, "--into", absorbed, "--project", "p"); code == 0 {
+		t.Error("merged into an absorbed node")
+	}
+	if _, code := runFS(t, bin, dir, "task", "merge", survivor, "--into", survivor, "--project", "p"); code == 0 {
+		t.Error("a node absorbed itself")
+	}
+}
+
+// addGap adds a kind=gap node and returns its id. An empty severity is a gap
+// nobody has weighed, which is a state and not a default.
+func addGap(t *testing.T, bin, dir, severity, goal string) string {
+	t.Helper()
+	args := []string{"task", "add", "--kind", "gap", "--goal", goal, "--project", "p"}
+	if severity != "" {
+		args = append(args, "--severity", severity)
+	}
+	resp, code := runFS(t, bin, dir, args...)
+	if code != 0 {
+		t.Fatalf("gap add exit %d: %v", code, resp["error"])
+	}
+	return resp["data"].(map[string]any)["node_id"].(string)
+}
+
+// getTask reads one node's derived state as fs task get returns it.
+func getTask(t *testing.T, bin, dir, node string) map[string]any {
+	t.Helper()
+	resp, code := runFS(t, bin, dir, "task", "get", node, "--project", "p")
+	if code != 0 {
+		t.Fatalf("task get %s exit %d: %v", node, code, resp["error"])
+	}
+	return resp["data"].(map[string]any)
+}
