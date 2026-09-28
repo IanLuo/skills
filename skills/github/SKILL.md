@@ -30,7 +30,11 @@ bash skills/credentials/scripts/create.sh github \
 
 ```bash
 bash skills/credentials/scripts/run.sh github 'YOUR_COMMAND_HERE'
+# Returns: exit_code=0  output=/tmp/cred-run-XXXXXX  bytes=...
+# Then: read the output file to see results
 ```
+
+`run.sh` writes command output to a temp file (with credentials scrubbed) and returns the file path. **Use the `read` tool on that path to see results.**
 
 **Variables available in commands:**
 - `$GITHUB_TOKEN` - Your PAT
@@ -41,6 +45,7 @@ bash skills/credentials/scripts/run.sh github 'YOUR_COMMAND_HERE'
 bash skills/credentials/scripts/run.sh github \
   'curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
    https://api.github.com/user | jq .'
+# Read the output file path from the result
 ```
 
 That's everything you need to know!
