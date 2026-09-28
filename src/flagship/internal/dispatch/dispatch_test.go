@@ -758,6 +758,8 @@ entry:
 
 // `applies_when` is optional, and an absent one is a silence rather than a
 // contradiction: a playbook that declares no terms loads for every dispatch.
+// Alone in a plan, though, it is a plan nothing selected — the missing-protocol
+// case below.
 func TestPrepareSelectsAPlaybookWithNoAppliesWhen(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "worker", `name: worker
@@ -766,18 +768,130 @@ agent: pi
 work:
   - say: note your work on the node you were given
 `)
+	f.writePlaybook(t, "code-entry", `name: code-entry
+applies_when: code
+entry:
+  - check: true
+`)
 
 	resp := f.prepare(devReq("sample"))
 	if !resp.OK {
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
 	brief := resp.Data.(*dispatch.Brief)
-	if len(brief.Plan) != 1 || brief.Plan[0].Name != "worker" {
-		t.Fatalf("plan = %+v, want the playbook that declares no applies_when", brief.Plan)
+	if len(brief.Plan) != 2 || brief.Plan[0].Name != "code-entry" || brief.Plan[1].Name != "worker" {
+		t.Fatalf("plan = %+v, want the playbook that declares no applies_when beside the selected one", brief.Plan)
 	}
 	// That the worker is shown it is asserted in lifecycle_test.go, off the
 	// prompt Deliver sends, and in the internal
 	// TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps.
+}
+
+// The missing-protocol signal, which did not exist: `worker` has no
+// applies_when, so it matches every dispatch and no type could ever "match no
+// playbook". It reproduced here as `fs dispatch --type review-task` resolving
+// plan [worker] and proceeding with the standing obligations and no reviewer
+// protocol — the exact defect the review-lifecycle change existed to fix,
+// reported by its own first real use as a success.
+//
+// The rule: a plan whose playbooks are ALL standing is a plan with no protocol,
+// and it refuses naming the type. Standing is the mechanism's own word — a
+// playbook whose applies_when is empty matches everything and is the default
+// (playbook-mechanism.md: "A playbook whose applies_when is empty matches
+// everything and is therefore the *standing* declaration"). The spec already
+// names this plan as the signal that selection is broken ("its plan holds
+// nothing but the standing `worker` playbook while its tags should have matched
+// more"), and the user's decision is that the signal refuses rather than
+// reports.
+func TestPrepareRefusesATypeWithNoProtocol(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+engine: herdr
+agent: pi
+work:
+  - say: note your work on the node you were given
+`)
+
+	for _, taskType := range []string{"design-task", "init-context", "no-such-type"} {
+		resp := f.prepare(dispatch.PrepareRequest{Project: "skills", TaskType: taskType, Goal: "do it"})
+		if resp.OK {
+			t.Fatalf("Prepare(%s) prepared a brief; want the missing-protocol refusal", taskType)
+		}
+		for _, want := range []string{`"` + taskType + `"`, "worker", "no protocol", "--tag", "--also"} {
+			if !strings.Contains(resp.Error, want) {
+				t.Errorf("refusal for %s must mention %q: %s", taskType, want, resp.Error)
+			}
+		}
+		if n := strings.Count(resp.Error, "dispatch: "); n != 1 {
+			t.Errorf("refusal %q carries %d `dispatch: ` prefixes, want 1", resp.Error, n)
+		}
+	}
+
+	// A configuration error is not this one, and the more specific refusal is
+	// the one that fires: an engine fs cannot dispatch with is reported by the
+	// realization, not as a missing protocol.
+	f.writePlaybook(t, "worker", `name: worker
+engine: other
+agent: pi
+work:
+  - say: note your node
+`)
+	resp := f.prepare(dispatch.PrepareRequest{Project: "skills", TaskType: "design-task", Goal: "do it"})
+	if resp.OK {
+		t.Fatal("a declared engine fs cannot dispatch with must refuse")
+	}
+	if !strings.Contains(resp.Error, "herdr") || strings.Contains(resp.Error, "no protocol") {
+		t.Errorf("the realization refusal must fire first, got %s", resp.Error)
+	}
+
+	// The refusal is a configuration refusal, and like every other one it leaves
+	// nothing behind to gate the next dispatch.
+	nodes, err := f.h.UnfinishedIn("cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 0 {
+		t.Errorf("cap scope has %d nodes after the refusals, want 0", len(nodes))
+	}
+}
+
+// The other half of the rule, and the reason it is about the plan rather than
+// about the type string: `--tag code` is how this repo dispatches ordinary code
+// work, and no playbook anywhere declares `applies_when: type=dev-task`. A rule
+// that demanded the type appear in some applies_when would refuse the repo's
+// normal dispatch; a rule about the plan does not.
+func TestPrepareProceedsWhenATagSelectedAProtocol(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "worker", `name: worker
+engine: herdr
+agent: pi
+work:
+  - say: note your node
+`)
+	f.writePlaybook(t, "code-entry", `name: code-entry
+applies_when: code
+entry:
+  - check: true
+`)
+
+	// The same type and the same playbooks as the refusal above; only the tag
+	// differs.
+	first := f.prepare(devReq("sample"))
+	if !first.OK {
+		t.Fatalf("--tag code must select a protocol for a type no playbook names: %s", first.Error)
+	}
+	if resp := f.h.TaskUpdate("cap", first.Data.(*dispatch.Brief).CapNodeID, "done", "test cleanup", nil); !resp.OK {
+		t.Fatalf("resolving the first dispatch: %s", resp.Error)
+	}
+
+	// --also is the deliberate widening, and it counts as a protocol too: it is
+	// the escape hatch a type with no playbook of its own needs.
+	also := dispatch.PrepareRequest{
+		Project: "skills", TaskType: "design-task", Goal: "do it", Also: []string{"code-entry"},
+	}
+	if resp := f.prepare(also); !resp.OK {
+		t.Fatalf("--also must force a protocol into the plan: %s", resp.Error)
+	}
 }
 
 // Two situation-specific declarations that disagree refuse, naming both
@@ -1307,6 +1421,96 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnItsBatchSiblings(t *testing.T)
 	}
 	if strings.Contains(resp.Error, memberOne) {
 		t.Errorf("refusal %q must not name the exempt sibling %s", resp.Error, memberOne)
+	}
+}
+
+// A blocking review finding is fixed while the change it was found in is still
+// open, so the fix round has to be dispatchable without --allow-unresolved:
+// the dispatches it repairs are its subjects, not open work piled on top of it.
+//
+// The exemption is the flag, and it is repeatable because the ordinary fix round
+// answers two: the change it repairs and the review whose finding it fixes. The
+// same dispatch without --fixes — even one whose goal names the open nodes — is
+// refused.
+func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheOnesItFixes(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
+
+	work := addCapKindNode(t, f, "dispatch dev-task: the change", query.KindDispatch)
+	review := addCapKindNode(t, f, "dispatch review: read the change", query.KindDispatch)
+
+	fix := func(goal string, fixes ...string) dispatch.PrepareRequest {
+		return dispatch.PrepareRequest{
+			Project: "skills", TaskType: "dev-task", Goal: goal,
+			Tags: []string{"code"}, Fixes: fixes,
+		}
+	}
+
+	// Naming only one of the two open dispatches is not enough: the other is
+	// still open work, and the refusal names it.
+	resp := f.prepare(fix("fix the review finding in "+work, work))
+	if resp.OK {
+		t.Fatal("an open dispatch the fix round does not name must still trip the gate")
+	}
+	if !strings.Contains(resp.Error, review) || !strings.Contains(resp.Error, "--allow-unresolved") {
+		t.Errorf("refusal %q must name the open review %s and the override", resp.Error, review)
+	}
+
+	// Naming both is what the protocol does, and it needs no override.
+	resp = f.prepare(fix("fix what the review found", work, review))
+	if !resp.OK {
+		t.Fatalf("--fixes must exempt the dispatches it names: %s", resp.Error)
+	}
+
+	// The relation is recorded on the fix round's own node, so a reader sees
+	// which dispatches the fix answers.
+	round := resp.Data.(*dispatch.Brief).CapNodeID
+	if decisions := capDecisions(t, f, round); !slices.Contains(decisions,
+		"fixes "+work+", "+review+": this dispatch repairs what they found, and is dispatched while they are open for that reason") {
+		t.Errorf("the fix round records %v, want the links to %s and %s", decisions, work, review)
+	}
+
+	// And the flag is the declaration: a goal that merely names the open nodes
+	// grants nothing.
+	resp = f.prepare(fix("fix the review finding in " + work))
+	if resp.OK {
+		t.Fatal("a node id in the goal text must not exempt anything")
+	}
+	for _, want := range []string{work, review, "--allow-unresolved"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// A fix round names a dispatch, not any node at all: the same two refusals
+// --integrates and --reviews make, made the same way.
+func TestPrepareRefusesAFixOfANodeThatIsNotADispatch(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
+
+	gap := addCapKindNode(t, f, "a gap, never dispatched", query.KindGap)
+
+	resp := f.prepare(dispatch.PrepareRequest{
+		Project: "skills", TaskType: "dev-task", Goal: "fix it", Tags: []string{"code"}, Fixes: []string{gap},
+	})
+	if resp.OK {
+		t.Fatal("--fixes naming a gap node must be refused")
+	}
+	for _, want := range []string{gap, "not a dispatch node", "--fixes"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
+	}
+
+	resp = f.prepare(dispatch.PrepareRequest{
+		Project: "skills", TaskType: "dev-task", Goal: "fix it", Tags: []string{"code"}, Fixes: []string{"t-00000000"},
+	})
+	if resp.OK {
+		t.Fatal("--fixes naming no node must be refused")
+	}
+	if !strings.Contains(resp.Error, "t-00000000") {
+		t.Errorf("refusal %q must name the node", resp.Error)
 	}
 }
 

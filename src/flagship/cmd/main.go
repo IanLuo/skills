@@ -242,6 +242,13 @@ Commands:
                                                different link from --integrates,
                                                recorded the same way, and what fs
                                                reviews answers from;
+                                               --fixes names a cap node this
+                                               dispatch repairs, which is open
+                                               while the fix is made: naming it
+                                               is what keeps an open dispatch
+                                               from refusing the fix round, and
+                                               it says so on the fix round's own
+                                               node. Repeatable;
                                                --batch names the batch node this
                                                dispatch is a member of (its cap
                                                node is the batch's child);
@@ -1318,6 +1325,7 @@ func dispatchCmd(args []string) {
 	worktreeNew := hasFlag(args, "--worktree-new")
 	integrates := flagVal(args, "--integrates", "")
 	reviews := flagVal(args, "--reviews", "")
+	fixes := multiFlag(args, "--fixes")
 	batch := flagVal(args, "--batch", "")
 	cards := cardsFlag(args)
 	confirm := hasFlag(args, "--confirm")
@@ -1357,6 +1365,7 @@ func dispatchCmd(args []string) {
 		Cards:           cards,
 		Integrates:      integrates,
 		Reviews:         reviews,
+		Fixes:           fixes,
 		Batch:           batch,
 		Tags:            multiFlag(args, "--tag"),
 		Also:            multiFlag(args, "--also"),
@@ -1530,20 +1539,29 @@ func integratedCmd(args []string) {
 	output(dispatch.Integrated(h, args[0]))
 }
 
-// reviewsCmd answers a close's question: was this dispatch's change reviewed? It
-// exits 0 printing the done review dispatch that names this node, or 1 naming
-// what it found instead. It is the read side of the exit gate `code` runs, and
-// like fs integrated it needs no registered project — the cap's scope is where
-// the answer lives, and the check that runs it stands in a worktree.
+// reviewsCmd answers a close's question: was this dispatch's change reviewed —
+// at the revision it stands at? It exits 0 printing the done review dispatch
+// that names this node and the revision it read, or 1 naming what it found
+// instead. It is the read side of the exit gate `code` runs.
+//
+// It reads the registry, unlike fs integrated, and for one question: a review
+// records a revision, and the gate compares it against the revision the
+// dispatch's tree stands at now. That tree is the worktree the delivery record
+// names, or — for a dispatch that worked in the project itself — the project's
+// registered root, which is what the registry is asked for. The cap's own scope
+// still needs no registered project; the dispatch's does.
 func reviewsCmd(args []string) {
 	if len(args) < 1 {
 		fatal("fs reviews: CAP_NODE required")
 	}
 
+	reg := openRegistry()
+	defer reg.Close()
+
 	h := openHandler("")
 	defer h.Close()
 
-	output(dispatch.Reviews(h, args[0]))
+	output(dispatch.Reviews(h, reg, args[0]))
 }
 
 // batchCmd answers a batch's question: is every member integrated? It is the

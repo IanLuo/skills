@@ -45,8 +45,39 @@ exit:
   # checkout nobody can look at any more.
   - ask: is the worker's node complete enough that nothing important died with its transcript
 
-  # The review gate, and it sits here — after the ask, before the teardown —
-  # because of what a refusal has to leave standing.
+  # The deliverable check: did the work reach the repository?
+  #
+  # The failure it answers: a card asked for "The commit sha" as evidence, the
+  # worker's node named one that no longer existed, and this close passed anyway
+  # — 15 changed files sat uncommitted in the working tree while HEAD had not
+  # moved. A card is a request, not a gate, so the gate asks what git can answer
+  # and nothing more: HEAD has moved past the revision the project stood at when
+  # this dispatch was prepared ($FS_BASE, read off the dispatch's own
+  # task-created event, which the store has carried immutably for every dispatch
+  # ever prepared), and the paths the dispatch's cards declare ($FS_CARDS, read
+  # back from the plan it recorded) are committed rather than left in the tree.
+  # Whether the code WORKS is not checkable here and is not claimed.
+  #
+  # Not a clean-tree check, deliberately: this repo's tree is routinely dirty
+  # with another agent's work, so the repo-wide version of this would refuse
+  # closes that are fine and be switched off within the day. The scope is the
+  # card's own declaration.
+  #
+  # It runs BEFORE the review gate, and that order is the point rather than an
+  # accident. Committing after a review moves HEAD past the revision that review
+  # read, so a close that reviewed first and then faced this would need a second
+  # review to satisfy a gate it met by doing what the check told it to do. The
+  # cheap remedy is discovered first; the expensive one is asked for once, on the
+  # revision that will actually be closed.
+  #
+  # It stands down — at 0, saying why — where there is no question to ask: a
+  # tree that is not a git repository, and a dispatch prepared before a revision
+  # was recorded for its project. Both are missing inputs rather than uncommitted
+  # work, and refusing them would be a gate the cap cannot pass.
+  - check: "$FS_BIN" script check-deliverable.sh "$FS_BASE" "$FS_CARDS"
+
+  # The review gate, and it sits here — after the ask and the deliverable check,
+  # before the teardown — because of what a refusal has to leave standing.
   #
   # The defect this closes is a sequencing one, and no close-time check could
   # have caught it before: `independent-review` already refuses to close until

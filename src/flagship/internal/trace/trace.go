@@ -76,6 +76,22 @@ type Plan struct {
 	Engine    string         `json:"engine,omitempty"`
 	Agent     string         `json:"agent,omitempty"`
 	AgentArgs []string       `json:"agent_args,omitempty"`
+	// Reads is the revision this dispatch reads: for a review, the commit of the
+	// reviewed dispatch's tree at the moment the review was prepared. It is what
+	// lets the review gate tell a review of this change from a review of an
+	// earlier state of it, and it is recorded here — on the review's own plan —
+	// because the review is the thing that made the claim. Empty for every
+	// dispatch that reads no change of its own, and for every review prepared
+	// before this field existed.
+	Reads string `json:"reads,omitempty"`
+	// Cards are the cards the dispatch named (`--cards`), in the order they were
+	// given. They are recorded because the exit gate needs them and the flag
+	// reaches nobody there: a card declares the paths the deliverable touches,
+	// and the gate that asks whether the deliverable reached the repository is
+	// run at close, long after the command line is gone. Empty for a dispatch
+	// that named none, and for every dispatch prepared before this field —
+	// where the gate's commit half still runs and its card half stands down.
+	Cards []string `json:"cards,omitempty"`
 }
 
 // Line is one JSONL record. A plan line carries Tags and Plan; a step line

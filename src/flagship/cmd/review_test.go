@@ -48,6 +48,23 @@ func deliverWork(t *testing.T, bin, root string, env []string) (capNode, workerR
 	return capNode, workerRef
 }
 
+// commitWork commits the change a delivered dispatch made, in the project root
+// the dispatch worked in.
+//
+// A real dev-task's work reaches the repository, and `code`'s deliverable check
+// is what asks whether it did: it refuses a close where HEAD has not moved past
+// the revision the dispatch was prepared at. A fixture that left the work in the
+// tree would have these tests measuring that refusal instead of the review gate
+// they are about. It is called before the review is dispatched, which is also the
+// honest order — a review reads the revision that will be closed.
+func commitWork(t *testing.T, root string) {
+	t.Helper()
+	writeFileIn(t, root, "work.txt", "the work\n")
+	goGit(t, root, "add", "work.txt")
+	goGit(t, root, "-c", "user.email=fs@test.invalid", "-c", "user.name=fs test",
+		"commit", "-q", "-m", "the work")
+}
+
 // prepareWork runs a code work dispatch without --deliver: the plan is recorded
 // and the cap node exists, but no pane was opened and no delivery was written.
 // It is the shape fs pending calls unlinked and tells the cap to close with
@@ -136,16 +153,20 @@ func TestCLIDispatchReviewsRefusesANonDispatchNodeAndAMissingOne(t *testing.T) {
 // rather than a parse of the goal.
 func TestCLIDispatchRecordsTheReviewsLink(t *testing.T) {
 	bin := getFS(t)
-	root := t.TempDir()
+	// A real repository and a delivered subject, because a review names the
+	// revision it read: the link is only half the claim, and a review of a node
+	// with no tree could make neither half. The work is delivered, not closed.
+	root := scratchGitRepo(t)
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	env := reviewEnv(t)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 
 	// The work is still open when its review is dispatched — that is the order
 	// the gate is about — and no override is needed to say so: the dispatch a
 	// review names is what the review is about, not other open work it would
 	// otherwise be piling on top of.
-	work := capNodeOf(t, bin, root, "dispatch dev-task: the change", "dispatch")
-	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "review-task", "--goal", "review the change", "--reviews", work)
+	work, _ := deliverWork(t, bin, root, env)
+	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "review-task", "--goal", "review the change", "--reviews", work)
 	if code != 0 {
 		t.Fatalf("dispatch --reviews exit %d: %v", code, resp["error"])
 	}
@@ -266,12 +287,15 @@ func TestCLIReviewGateRefusesACloseWithNoReview(t *testing.T) {
 // `code`, and the review is closed with --confirm and nothing else.
 func TestCLIReviewGatePassesWhenADoneReviewNamesTheChange(t *testing.T) {
 	bin := getFS(t)
-	root := t.TempDir()
+	// A real repository: this dispatch works in the project itself rather than a
+	// worktree, so the revision a review names is the project root's.
+	root := scratchGitRepo(t)
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	env := reviewEnv(t)
 
 	work, workWorker := deliverWork(t, bin, root, env)
 	finishWorker(t, bin, root, workWorker)
+	commitWork(t, root)
 
 	// The review is dispatched while the work is still open, which is the whole
 	// point of the ordering — and it needs no override, because the dispatch it
@@ -341,7 +365,7 @@ func TestCLIReviewGatePassesWhenADoneReviewNamesTheChange(t *testing.T) {
 // refuse instead, and the refusal says which of the two it found.
 func TestCLIWithoutReviewRefusesWhenNoGateWouldStandDown(t *testing.T) {
 	bin := getFS(t)
-	root := t.TempDir()
+	root := scratchGitRepo(t)
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	env := reviewEnv(t)
 

@@ -105,7 +105,7 @@ var cmdSpecs = map[string]cmdSpec{
 	"kb prompt": {usage: "Usage: fs kb prompt [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
 
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--batch BATCH_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--fixes CAP_NODE]... [--batch BATCH_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
 
 The plan is the playbooks whose applies_when the dispatch's tags satisfy,
 ordered by the order they declare and then by name. The tags are
@@ -166,11 +166,24 @@ record rather than from a goal string.
 
 --reviews names the cap node whose change this dispatch reviews. It must exist
 in the cap scope and be a dispatch node, and the link is recorded on this
-dispatch's own task-created payload. It is not --integrates: an integration names
+dispatch's own task-created payload, together with the revision the review reads:
+the reviewed dispatch's tree as it stands when the review is prepared. A review
+that cannot name a revision is refused, and fs reviews accepts a done review only
+while the change still stands at the revision it read — a review that names none
+does not satisfy the gate at all. It is not --integrates: an integration names
 what it merges and lands after it, a review names what it reads and runs before
 the dispatch it is about closes. A dispatch may carry either, both, or neither.
 fs reviews <CAP_NODE> is the read side — the check a close runs to ask whether
 its change was reviewed.
+
+--fixes names the cap nodes this dispatch repairs. Repeatable, because a fix
+round answers more than one dispatch in the ordinary case: the change it repairs
+and the review whose finding it fixes are both open while the fix is made. Each
+must exist in the cap scope and be a dispatch node, and the link is recorded as a
+decision on this dispatch's own node. Those dispatches are open by construction,
+so naming them is what stops the unresolved-dispatch gate from reading them as
+open work piled on top of the fix. Without the flag they are open work like any
+other and the round needs --allow-unresolved.
 
 --batch names the batch node this dispatch is a member of. It must be a
 kind: batch node; the member's cap node is recorded as the batch's child
@@ -183,7 +196,7 @@ teardown removes them with no new flags.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
 			"--cards": true, "--integrates": true, "--reviews": true,
-			"--batch": true,
+			"--fixes": true, "--batch": true,
 			"--tag": true, "--also": true, "--without": true,
 			"--confirm": false, "--allow-unresolved": false,
 			"--deliver": false, "--worktree": true, "--worktree-new": false,
@@ -227,7 +240,12 @@ what the delivery opened:
   FS_TYPE           the task type
   FS_NODE           the cap node being closed
   FS_WORKER         the worker's node as "<project>:<node>"; empty without one
-  FS_CARDS          empty — a close has no batch — but present, not missing
+  FS_CARDS          the --cards the dispatch named, comma-separated, read back
+                    from its recorded plan; empty when it named none, but
+                    present, not missing
+  FS_BASE           the revision the project stood at when the dispatch was
+                    prepared; empty for a project that was not a repository
+                    then, which is what the deliverable check stands down on
   FS_INTEGRATES     the member this integration merges; empty when it merges none
   FS_WITHOUT_REVIEW the --without-review reason, empty when the flag was not
                     given; a step that gates on a review stands down on a

@@ -35,6 +35,7 @@ import (
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
+	"github.com/flagship-dev/flagship/internal/store"
 	"github.com/flagship-dev/flagship/internal/trace"
 )
 
@@ -219,12 +220,12 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// own the exit phase. It is read from the store, not from the trace, so a
 	// trace that has been damaged is a trace the gate can refuse on rather than
 	// an exit phase nobody can find.
-	plan, err := recordedPlan(h, req.NodeID)
+	recorded, err := recordedPlan(h, req.NodeID)
 	if err != nil {
 		if !req.Abandoned {
 			return errResp("close: " + err.Error())
 		}
-		plan = nil
+		recorded = trace.Plan{}
 	}
 
 	// The trace gate's first pass runs before any exit step, because the
@@ -234,7 +235,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// and so does a refusal here — the teardown below is only ever reached by a
 	// close that is going to succeed.
 	if !req.Abandoned {
-		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan, req.Confirm, true); err != nil {
+		if err := gateEntry(h, kc, lg, delivery, req.NodeID, recorded.Plan, req.Confirm, true); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -264,7 +265,11 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// actions run whatever its scope turns out to be.
 	var run exitRun
 	if delivered {
-		run, err = runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, req.WithoutReview, plan, req.Confirm, req.Abandoned)
+		base, err := baseRevision(h, req.NodeID)
+		if err != nil {
+			return errResp("close: " + err.Error())
+		}
+		run, err = runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, req.WithoutReview, base, recorded.Cards, recorded.Plan, req.Confirm, req.Abandoned)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -293,7 +298,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 	// by-product of it: a close that leaves the exit phase unrecorded would leave
 	// a trace that reads as a dispatch which was never closed.
 	if !req.Abandoned {
-		if err := gateExit(kc, lg, req.NodeID, plan, true); err != nil {
+		if err := gateExit(kc, lg, req.NodeID, recorded.Plan, true); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -364,12 +369,16 @@ func closeBatch(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *kno
 	result := CloseResult{NodeID: req.NodeID, Trace: lg.Path(project, req.NodeID)}
 
 	if !req.Abandoned {
-		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan, req.Confirm, false); err != nil {
+		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan.Plan, req.Confirm, false); err != nil {
 			return errResp(err.Error())
 		}
 	}
 
-	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, "", "", "", plan, req.Confirm, req.Abandoned)
+	base, err := baseRevision(h, req.NodeID)
+	if err != nil {
+		return errResp("close: " + err.Error())
+	}
+	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, "", "", "", base, plan.Cards, plan.Plan, req.Confirm, req.Abandoned)
 	if err != nil {
 		return errResp(err.Error())
 	}
@@ -382,7 +391,7 @@ func closeBatch(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *kno
 	}
 
 	if !req.Abandoned {
-		if err := gateExit(kc, lg, req.NodeID, plan, false); err != nil {
+		if err := gateExit(kc, lg, req.NodeID, plan.Plan, false); err != nil {
 			return errResp(err.Error())
 		}
 	}
@@ -418,20 +427,58 @@ func batchProject(lg *trace.Log, nodeID string) (string, error) {
 // dispatch with no plan was never prepared by a binary that gated on one, and
 // close says so instead of gating on an empty set: an exit phase nobody can find
 // is not the same dispatch as one that declared no exit phase.
-func recordedPlan(h *command.Handler, nodeID string) ([]trace.PlanEntry, error) {
+//
+// The whole record is returned, not just its playbooks: the cards a dispatch
+// named are part of what the exit gate is handed (trace.Plan.Cards), and a
+// caller that could only see the plan entries would have to read the payload a
+// second time to find them.
+func recordedPlan(h *command.Handler, nodeID string) (trace.Plan, error) {
 	payload, ok, err := h.PlanFor(capScope, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("read the recorded plan: %v", err)
+		return trace.Plan{}, fmt.Errorf("read the recorded plan: %v", err)
 	}
 	if !ok {
-		return nil, fmt.Errorf(
+		return trace.Plan{}, fmt.Errorf(
 			"no plan is recorded for %s — it was not prepared by a dispatch that records one, so there is nothing to gate the close against", nodeID)
 	}
 	var plan trace.Plan
 	if err := json.Unmarshal(payload, &plan); err != nil {
-		return nil, fmt.Errorf("read the recorded plan: %v", err)
+		return trace.Plan{}, fmt.Errorf("read the recorded plan: %v", err)
 	}
-	return plan.Plan, nil
+	return plan, nil
+}
+
+// baseRevision reads the revision the dispatch's project stood at when the
+// dispatch was prepared: the commit_sha the store recorded on the cap node's own
+// task-created event.
+//
+// It is read rather than recorded on the plan because the store already records
+// it, immutably, for every dispatch that ever existed — every event carries the
+// SHA of the project it is about (ARCHITECTURE R4) — so the revision a change
+// began at needs no field of its own, and no dispatch is left without one by an
+// upgrade. A dispatch prepared a year ago and one prepared a minute ago are
+// measured against the same fact.
+//
+// Empty means the project was not a git repository when the dispatch was
+// prepared, or its HEAD was unborn. Those are the two cases where there is no
+// revision to be had, and the deliverable check stands down on them rather than
+// refusing: a missing input is not a change that failed to reach the repository.
+func baseRevision(h *command.Handler, nodeID string) (string, error) {
+	created := store.TaskCreated
+	resp := h.Log(capScope, &nodeID, &created)
+	if !resp.OK {
+		return "", fmt.Errorf("read the revision %s was prepared at: %s", nodeID, resp.Error)
+	}
+	result, ok := resp.Data.(command.LogResult)
+	if !ok {
+		return "", fmt.Errorf("read the revision %s was prepared at: the log carried no events", nodeID)
+	}
+	for _, event := range result.Events {
+		if event.CommitSHA != nil && *event.CommitSHA != "" {
+			return *event.CommitSHA, nil
+		}
+	}
+	return "", nil
 }
 
 // abandonedDecision is the durable record of an abandoned close, written after
@@ -781,7 +828,7 @@ type exitRun struct {
 // is a decision about the work, not a licence to leak the tree it ran in — and
 // one that fails is a warning, never a refusal, for the same reason: a stuck
 // teardown must not keep a node open.
-func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
+func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview, base string, cards []string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
 	steps, err := flatten(kc, plan, knowledge.MomentExit)
 	if err != nil {
 		return exitRun{}, fmt.Errorf("close: %v", err)
@@ -846,16 +893,17 @@ func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trac
 	// about the dispatch it is gating: which project and task type it was, which
 	// cap node is closing, which worker's node it rested on, which member it
 	// integrates, and — for an action that has to remove a tree — the pane and
-	// the worktree the delivery opened. FS_CARDS is exported empty — a close has
-	// no batch to offer — and stays present rather than missing, so a step can
-	// tell "this dispatch named no cards" from "this step has no env". FS_BATCH
-	// is the batch node when this dispatch is a member of one, empty otherwise:
-	// it is the marker code's teardown defers on, so a member's tree is owned by
-	// the batch, not the member. FS_WITHOUT_REVIEW is the same shape of marker
-	// for the review gate: code's exit check reads it and stands down when the
-	// cap has given a reason, so the one skip that gate has is a visible line in
-	// a playbook rather than a name fs matches on in Go.
-	env := exitEnv(delivery, capNodeID, integrates, batch, withoutReview)
+	// the worktree the delivery opened. FS_CARDS is what the dispatch named with
+	// --cards, read back from its own plan; it stays present rather than missing
+	// when it named none, so a step can tell "this dispatch named no cards" from
+	// "this step has no env". FS_BATCH is the batch node when this dispatch is a
+	// member of one, empty otherwise: it is the marker code's teardown defers on,
+	// so a member's tree is owned by the batch, not the member.
+	// FS_WITHOUT_REVIEW is the same shape of marker for the review gate: code's
+	// exit check reads it and stands down when the cap has given a reason, so the
+	// one skip that gate has is a visible line in a playbook rather than a name fs
+	// matches on in Go.
+	env := exitEnv(delivery, capNodeID, integrates, batch, withoutReview, base, cards)
 
 	var run exitRun
 	checks, asks, says := 0, 0, 0
@@ -1046,10 +1094,19 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 }
 
 // exitEnv is the closing dispatch's own inputs, exposed to every exit step as
-// FS_*. It is deliberately narrower than the entry gate's env: a close has no
-// --goal and no --cards to offer, so it exports FS_CARDS empty rather than
-// inventing a value nobody supplied. FS_INTEGRATES is the member this
-// integration merges, empty for a dispatch that merges nothing.
+// FS_*. It is narrower than the entry gate's env: a close has no --goal to
+// offer, because the goal was the entry gate's. FS_CARDS is the same value the
+// entry gate saw, read back from the dispatch's recorded plan rather than
+// invented here — a card declares the paths the deliverable touches, and the
+// gate that asks whether the deliverable reached the repository runs here, long
+// after the command line that named the cards is gone. FS_INTEGRATES is the
+// member this integration merges, empty for a dispatch that merges nothing.
+//
+// FS_BASE is the revision the project stood at when the dispatch was prepared:
+// what a change is measured against by the deliverable check, read off the cap
+// node's own task-created event (see baseRevision). It is empty for a project
+// that was not a repository then, and the step that reads it stands down on an
+// empty value rather than refusing a close it cannot measure.
 //
 // FS_PANE, FS_WORKTREE, and FS_WORKTREE_PATH name what the delivery opened. They
 // are what lets a declared action be about this dispatch's own tree — removing
@@ -1080,7 +1137,7 @@ func exitNote(names []string, checks, actions, asks, says int, worktree string, 
 // step itself has to be able to see that the cap took responsibility for
 // closing without a review. Empty means "no reason was given", and the step
 // must treat it as unset — the same rule FS_CARDS and FS_BATCH are held to.
-func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview string) []string {
+func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview, base string, cards []string) []string {
 	worker := ""
 	if delivery.Project != "" && delivery.Node != "" {
 		worker = delivery.Project + ":" + delivery.Node
@@ -1090,7 +1147,8 @@ func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, with
 		"FS_TYPE=" + delivery.Type,
 		"FS_NODE=" + capNodeID,
 		"FS_WORKER=" + worker,
-		"FS_CARDS=",
+		"FS_CARDS=" + strings.Join(cards, ","),
+		"FS_BASE=" + base,
 		"FS_INTEGRATES=" + integrates,
 		"FS_PANE=" + delivery.PaneID,
 		"FS_WORKTREE=" + delivery.Worktree,

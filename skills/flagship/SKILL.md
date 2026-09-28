@@ -399,7 +399,8 @@ Exit steps get the closing dispatch's own inputs in their environment:
 | `FS_TYPE` | the task type |
 | `FS_NODE` | the cap node being closed |
 | `FS_WORKER` | the worker's node as `<project>:<node>`; empty without one |
-| `FS_CARDS` | empty — a close has no batch — but present, not missing |
+| `FS_CARDS` | the `--cards` the dispatch named, comma-separated, read back from its recorded plan; empty when it named none, but present, not missing |
+| `FS_BASE` | the revision the project stood at when the dispatch was prepared, read off the cap node's own task-created event; empty for a project that was not a repository then. It is what `check-deliverable.sh` measures a change against |
 | `FS_INTEGRATES` | the member this integration merges; empty when it merges none |
 | `FS_WITHOUT_REVIEW` | the `--without-review` reason; empty when the flag was not given. A step that gates on a review stands down on a non-empty value, and on empty must run its check |
 | `FS_PANE` | the pane the delivery opened |

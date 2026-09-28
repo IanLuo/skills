@@ -149,10 +149,13 @@ comma-separated, empty when none was given, and never unset), `FS_INTEGRATES`
 what `batch.yaml` uses:
 `check: "$FS_BIN" script check-parallel.sh $FS_CARDS`. `fs close`'s exit steps
 get a different set: `FS_PROJECT`, `FS_TYPE`, `FS_NODE`, `FS_WORKER`,
-`FS_CARDS` (empty), `FS_INTEGRATES`, `FS_PANE`, `FS_WORKTREE`,
-`FS_WORKTREE_PATH`, `FS_BRANCH` (the branch the delivery created its worktree
-on, empty when this delivery created none), `FS_BATCH`, `FS_WITHOUT_REVIEW`,
-`FS_BIN`.
+`FS_CARDS` (what the dispatch named with `--cards`, read back from its recorded
+plan, empty when it named none), `FS_BASE` (the revision the project stood at
+when the dispatch was prepared, read off the cap node's own task-created event,
+empty when it was not a repository then), `FS_INTEGRATES`, `FS_PANE`,
+`FS_WORKTREE`, `FS_WORKTREE_PATH`, `FS_BRANCH` (the branch the delivery created
+its worktree on, empty when this delivery created none), `FS_BATCH`,
+`FS_WITHOUT_REVIEW`, `FS_BIN`.
 
 A shipped playbook is run in every project, so a step it declares may name an
 `fs` subcommand, a generic POSIX tool, or a script the binary ships — through

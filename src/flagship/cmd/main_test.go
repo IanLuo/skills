@@ -1608,6 +1608,7 @@ work:
 }
 
 const dispatchPlaybook = `name: code-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -1841,12 +1842,11 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// A dispatch on a home nobody has written to resolves its realization out of
-// the binary: the shipped worker playbook declares the standing engine and
-// agent, so it is live without being written to disk first. The refusal for a
-// dispatch nothing declares a realization for is still there — the plan a
-// binary with no worker resolves is one — and it is covered where a plan can be
-// built without the shipped set, in the dispatch package.
+// A dispatch whose protocol lives only in HOME's KB still resolves its
+// realization out of the binary: the shipped worker playbook declares the
+// standing engine and agent, so it is live without being written to disk first.
+// (The dispatch names a tag, because a dispatch that selects no protocol at all
+// is refused — see TestCLIDispatchRefusesATypeWithNoProtocol.)
 func TestCLIDispatchResolvesTheRealizationOutOfTheBinary(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
@@ -1859,7 +1859,8 @@ entry:
   - check: test -f AGENTS.md
 `)
 
-	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "no-such-type", "--goal", "x")
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "what", "--tag", "code",
+		"--goal", "x", "--confirm")
 	if code != 0 {
 		t.Fatalf("a dispatch must resolve the shipped worker's realization, exit %d: %v", code, resp)
 	}
@@ -1878,6 +1879,39 @@ entry:
 	// Nothing was written: the realization came out of the binary.
 	if _, err := os.Stat(filepath.Join(home, ".fs", "kb", "worker.yaml")); !os.IsNotExist(err) {
 		t.Errorf("the dispatch materialised the shipped worker: %v", err)
+	}
+}
+
+// A dispatch that selects no protocol is refused, from the shipped set as much
+// as from HOME's KB: design-task and init-context name types no playbook
+// declares, so the only thing that matched was the standing worker — a plan
+// with no entry, work or exit steps for that type — and running it would be the
+// silent degradation the refusal exists to stop. The refusal names the type it
+// could not place. A dispatch that does select a protocol still proceeds.
+func TestCLIDispatchRefusesATypeWithNoProtocol(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	for _, taskType := range []string{"design-task", "init-context"} {
+		resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", taskType, "--goal", "x")
+		if code != 1 {
+			t.Fatalf("dispatch --type %s exit %d, want 1: %v", taskType, code, resp)
+		}
+		errMsg, _ := resp["error"].(string)
+		for _, want := range []string{`"` + taskType + `"`, "worker", "no protocol"} {
+			if !strings.Contains(errMsg, want) {
+				t.Errorf("refusal for %s = %q, want it to mention %q", taskType, errMsg, want)
+			}
+		}
+	}
+
+	// The plan the refusal reports is the standing declaration alone, which is
+	// the whole reason it refuses.
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--tag", "code",
+		"--goal", "x", "--confirm")
+	if code != 0 {
+		t.Fatalf("a dispatch that selects code's protocol must proceed, exit %d: %v", code, resp)
 	}
 }
 
@@ -2025,6 +2059,7 @@ func TestCLIDispatchFailsFastThenConfirm(t *testing.T) {
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeWorkerPlaybook(t)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, fmt.Sprintf(`name: code-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2091,6 +2126,7 @@ func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), codeEntryPb, `name: code-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2150,6 +2186,7 @@ entry:
 // without a live terminal. Pane state lives in $HERDR_TEST_STATE.
 
 const herdrTestPlaybook = `name: code-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2159,6 +2196,7 @@ entry:
 // noCheckPlaybook has no check step, so dispatch needs nothing from PATH. Used
 // to reach --deliver with herdr deliberately missing.
 const noCheckPlaybook = `name: code-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2814,6 +2852,7 @@ func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2855,6 +2894,7 @@ func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *test
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2890,6 +2930,7 @@ func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -2945,6 +2986,7 @@ func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -3392,6 +3434,7 @@ func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
+applies_when: type=integrate
 engine: herdr
 agent: pi
 entry:
@@ -3527,6 +3570,7 @@ func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -3569,6 +3613,7 @@ entry:
 	// Now integrate it the dispatched way, per member: an integration dispatch
 	// names it, is closed done, and the member's gate passes.
 	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
+applies_when: type=integrate
 entry:
   - check: true
 exit:

@@ -189,6 +189,13 @@ type PrepareRequest struct {
 	// cap node is the batch's child, and the tag `member` is derived from it.
 	Batch string
 
+	// Fixes names the cap-scope dispatch nodes this one repairs (--fixes), and it
+	// is repeatable because a fix round usually answers more than one: the change
+	// it repairs and the review whose finding it fixes are both open while the
+	// fix is made. This is the declaration that keeps the unresolved-dispatch
+	// gate from reading them as open work piled on top of the fix.
+	Fixes []string
+
 	Confirm         bool
 	AllowUnresolved bool
 }
@@ -254,6 +261,11 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 		return errResp("dispatch: " + err.Error())
 	}
 
+	fixes, err := fixedDispatches(h, req.Fixes)
+	if err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+
 	proj, err := reg.Get(req.Project)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
@@ -310,6 +322,33 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	}
 	tags[engineTag] = real.engine
 
+	// The missing-protocol refusal, and it comes after the realization for a
+	// reason: a broken configuration is a more specific thing to be told than
+	// "this type has no protocol", and a plan whose engine is not herdr would
+	// otherwise be reported as the wrong defect.
+	if err := missingProtocol(plan, req.TaskType); err != nil {
+		return errResp("dispatch: " + err.Error())
+	}
+
+	// A review names the change it reads with --reviews, and it names the
+	// revision it read it at here: the reviewed dispatch's tree, as it stands at
+	// this moment. Recorded rather than derived, because the tree moves after
+	// this — the whole point is to compare the two later — and recorded at
+	// preparation, because that is when the claim is made.
+	//
+	// A review that cannot name a revision is refused rather than prepared with
+	// an empty one: the close gate refuses a review that names none (see
+	// Reviews), so preparing one would be handing the cap a review that can
+	// never satisfy the gate it exists for.
+	reads := ""
+	if reviewed != "" {
+		rev, _, err := revisionOf(h, reg, reviewed)
+		if err != nil {
+			return errResp(fmt.Sprintf("dispatch: --reviews %s: %v", req.Reviews, err))
+		}
+		reads = rev
+	}
+
 	// Gate: a dispatch the cap prepared but never delivered is still open work.
 	// Refuse to pile another one on top of it unless the cap says to proceed.
 	// --allow-unresolved is this gate's only override: --confirm is about a
@@ -329,7 +368,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	// the relations are read from the command line and never searched for in the
 	// dispatch's own text. --allow-unresolved stays what it was for everything
 	// else.
-	subjects, err := declaredSubjects(h, member, reviewed, batch)
+	subjects, err := declaredSubjects(h, member, reviewed, fixes, batch)
 	if err != nil {
 		return errResp("dispatch: " + err.Error())
 	}
@@ -354,6 +393,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 	recorded := trace.Plan{
 		Plan: planEntries(plan), Tags: tags,
 		Engine: real.engine, Agent: real.agent, AgentArgs: real.args,
+		Reads: reads, Cards: req.Cards,
 	}
 	if err := recordPlan(h, lg, nodeID, req.Project, recorded); err != nil {
 		return errResp("dispatch: " + refuseEntry(h, nodeID, err.Error()))
@@ -367,6 +407,18 @@ func Prepare(h *command.Handler, reg *registry.Registry, kc *knowledge.Center, l
 
 	brief := buildBrief(run, plan, proj, req, nodeID, real)
 	brief.NextCommand = nextCommand(brief)
+
+	// A fix round records what it repairs, on its own node: it is dispatched
+	// while that dispatch is still open, so without the record a reader sees an
+	// open dispatch and a fix beside it and cannot tell which one answers which.
+	// The link is a decision rather than a field on the task-created payload,
+	// because the payload's shape is the store's and events are immutable —
+	// this is a claim about why the dispatch exists, which is what decisions are.
+	if len(fixes) > 0 {
+		if err := recordDecision(h, nodeID, "fixes "+strings.Join(fixes, ", ")+": this dispatch repairs what they found, and is dispatched while they are open for that reason"); err != nil {
+			return errResp(fmt.Sprintf("dispatch: %v", err))
+		}
+	}
 
 	// Each override is recorded by the flag that granted it, on the node it
 	// granted it for.
@@ -739,6 +791,46 @@ func reviewedDispatch(h *command.Handler, reviews string) (string, error) {
 	return reviewed, nil
 }
 
+// fixedDispatches resolves every --fixes value to the bare id of the cap-scope
+// dispatch node it names. The flag is repeatable, because a fix round answers
+// more than one dispatch in the ordinary case: the change it repairs and the
+// review whose finding it fixes are both open while the fix is made, and a rule
+// that let the round name only one of them would still send the cap to
+// --allow-unresolved for the other.
+//
+// It answers the ordering the review protocol cannot: the dispatch a fix round
+// repairs is open by construction — a blocking review finding is fixed while
+// the change it was found in is still open — so the fix round has to be able to
+// name them as the subjects they are, rather than carry --allow-unresolved and
+// be indistinguishable from a dispatch piling onto open work. The flag is what
+// makes that distinction; the gate reads the relations and subtracts them (see
+// declaredSubjects).
+//
+// It refuses the same two things --integrates and --reviews refuse, asked the
+// same way and for the same reason: the relation is written into an immutable
+// event, so a link that names nothing, or names the wrong kind of node, could
+// never be corrected.
+func fixedDispatches(h *command.Handler, fixes []string) ([]string, error) {
+	fixed := make([]string, 0, len(fixes))
+	for _, ref := range fixes {
+		id, err := bareNodeID(ref)
+		if err != nil {
+			return nil, err
+		}
+		node, err := capNode(h, id)
+		if err != nil {
+			return nil, fmt.Errorf("--fixes %s: %v", ref, err)
+		}
+		if node.Kind != query.KindDispatch {
+			return nil, fmt.Errorf(
+				"--fixes %s names a %q node, not a %s node — a fix round repairs a dispatch node's change",
+				ref, node.Kind, query.KindDispatch)
+		}
+		fixed = append(fixed, id)
+	}
+	return fixed, nil
+}
+
 // bareNodeID strips an optional "<scope>:" qualifier from a node reference. A
 // node id is "t-<hex>" — a colon never appears in one — so a qualified id is
 // unambiguously qualified. Only capScope is accepted: a member, and the
@@ -818,7 +910,23 @@ type IntegratedResult struct {
 // itself and an accepted one is a sentence, so no check could decide that from
 // the store; asking a second question here would be a gate reporting compliance
 // it never tested. This asks the one thing the record can answer.
-func Reviews(h *command.Handler, node string) command.Response {
+//
+// It asks that one thing about a revision, because "was it reviewed" without
+// "at which revision" is not a question a change can be measured against: a
+// review that closed before the last three commits satisfies the bare version
+// of it for code that review never read, which is the failure this gate was
+// written after. So a review records the revision it read (trace.Plan.Reads,
+// stamped by Prepare from the reviewed dispatch's own tree) and this compares
+// it against the revision that tree stands at now.
+//
+// The rule for a review that names no revision — every review closed before
+// this field existed — is that it does NOT satisfy the gate. Accepting it would
+// be reinterpreting it as a review of the current revision, which is the claim
+// it never made and the one thing the card says not to do silently. The
+// sanctioned way past is --without-review "<why>", which waives the gate and
+// records the reason on the node: a skip the cap owns, rather than a pass the
+// store cannot justify.
+func Reviews(h *command.Handler, reg *registry.Registry, node string) command.Response {
 	ref, err := bareNodeID(node)
 	if err != nil {
 		return errResp("reviews: " + err.Error())
@@ -854,15 +962,53 @@ func Reviews(h *command.Handler, node string) command.Response {
 	// A review that exists but has not finished is named as such: "not reviewed"
 	// and "reviewed, still open" are different facts, and a close that read the
 	// second as the first would send the cap to dispatch a review it already has.
+	//
+	// A done review is not accepted here and there: the subject's revision is
+	// read once, and only if some review is done. An unreviewed dispatch must be
+	// told it is unreviewed — not that its tree could not be read, which is a
+	// question this gate only has because a review answered the first one.
 	open := ""
+	stale, nameless := "", ""
+	now, tree := "", ""
 	for _, task := range result.Tasks {
 		if task.Reviews != ref || task.Kind != query.KindDispatch {
 			continue
 		}
-		if task.Status == "done" {
-			return command.Response{OK: true, Data: ReviewsResult{Node: ref, ReviewedBy: task.NodeID}}
+		if task.Status != "done" {
+			open = task.NodeID
+			continue
 		}
-		open = task.NodeID
+		reads, err := reviewReads(h, task.NodeID)
+		if err != nil {
+			return errResp("reviews: " + err.Error())
+		}
+		if reads == "" {
+			nameless = task.NodeID
+			continue
+		}
+		if now == "" {
+			rev, footing, err := revisionOf(h, reg, ref)
+			if err != nil {
+				return errResp("reviews: " + err.Error())
+			}
+			now, tree = rev, footing
+		}
+		if reads == now {
+			return command.Response{OK: true, Data: ReviewsResult{
+				Node: ref, ReviewedBy: task.NodeID, Reads: reads,
+			}}
+		}
+		stale = fmt.Sprintf("%s read %s, and %s now stands at %s", task.NodeID, reads, tree, now)
+	}
+	if stale != "" {
+		return errResp(fmt.Sprintf(
+			"reviews: %s is not reviewed at the revision it stands at — the done review %s, so the work has moved past what that review read; review the change again with `fs dispatch --project <project> --type review-task --goal \"...\" --reviews %s`, and close only once that dispatch is done",
+			ref, stale, ref))
+	}
+	if nameless != "" {
+		return errResp(fmt.Sprintf(
+			"reviews: %s is not reviewed at the revision it stands at — the done review %s names no revision, so fs cannot tell a review of this change from a review of an earlier state of it, and it is not accepted as either; review the change again with `fs dispatch --project <project> --type review-task --goal \"...\" --reviews %s`, or close with --without-review \"<why>\" to waive this gate and record the reason",
+			ref, nameless, ref))
 	}
 	if open != "" {
 		return errResp(fmt.Sprintf(
@@ -874,11 +1020,137 @@ func Reviews(h *command.Handler, node string) command.Response {
 		ref, ref))
 }
 
+// reviewReads reads the revision a review dispatch recorded that it read, or ""
+// when it recorded none — a review prepared before the field existed, or one
+// whose plan is not on the record at all.
+//
+// The plan is where the claim lives, because the review is what made it: the
+// link `reviews: <node>` says which change, and this says which state of it.
+func reviewReads(h *command.Handler, reviewNode string) (string, error) {
+	payload, ok, err := h.PlanFor(capScope, reviewNode)
+	if err != nil {
+		return "", fmt.Errorf("read the plan of review %s: %v", reviewNode, err)
+	}
+	if !ok {
+		return "", nil
+	}
+	var plan trace.Plan
+	if err := json.Unmarshal(payload, &plan); err != nil {
+		return "", fmt.Errorf("read the plan of review %s: %v", reviewNode, err)
+	}
+	return plan.Reads, nil
+}
+
+// revisionOf reads the revision a cap-scope dispatch's tree stands at now, and
+// the tree it read it from, which every refusal names: a comparison is only as
+// good as the footing it was made on.
+func revisionOf(h *command.Handler, reg *registry.Registry, node string) (string, string, error) {
+	tree, err := dispatchTree(h, reg, node)
+	if err != nil {
+		return "", "", err
+	}
+	sha := command.DetectCommitSHAIn(tree)
+	if sha == nil {
+		return "", tree, fmt.Errorf(
+			"fs cannot read a revision from %s, the tree %s works in: it is not a git repository with a commit, so there is no revision for a review to name or to be measured against",
+			tree, node)
+	}
+	return *sha, tree, nil
+}
+
+// dispatchTree resolves the tree a cap-scope dispatch's change lives in: the
+// worktree its delivery record names, or the root of the project it was made
+// into when the record names no worktree — a dispatch that worked in the project
+// itself.
+//
+// A worktree the record names and that is no longer there is refused, not
+// resolved around. The record is immutable, so a missing checkout means the tree
+// is gone, and comparing some other tree's revision instead would answer a
+// question nobody asked and report it as the review's footing. This is the one
+// place it deliberately differs from checkDir, whose checks are about the state
+// of a tree and any tree will do; a revision is about one particular change.
+func dispatchTree(h *command.Handler, reg *registry.Registry, node string) (string, error) {
+	d, ok, err := h.DeliveryFor(capScope, node)
+	if err != nil {
+		return "", fmt.Errorf("read the delivery record for %s: %v", node, err)
+	}
+	if !ok {
+		return "", fmt.Errorf(
+			"%s has no delivery record, so there is no tree to read a revision from — a dispatch that was never delivered has no change to review",
+			node)
+	}
+	if d.WorktreePath != "" {
+		if fi, err := os.Stat(d.WorktreePath); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf(
+				"the worktree %s recorded for %s is gone, so the tree this reads is gone with it — a review cannot name a revision of a checkout that is no longer there",
+				d.WorktreePath, node)
+		}
+		return d.WorktreePath, nil
+	}
+	proj, err := reg.Get(d.Project)
+	if err != nil {
+		return "", fmt.Errorf("resolve the project %s, which %s was dispatched into: %v", d.Project, node, err)
+	}
+	if proj.RootPath == "" {
+		return "", fmt.Errorf("project %s has no registered root, so there is no tree to read a revision from", proj.Name)
+	}
+	return proj.RootPath, nil
+}
+
 // ReviewsResult is the data payload of fs reviews: which dispatch was asked
-// about, and the done review dispatch that reads it.
+// about, the done review dispatch that reads it, and the revision that review
+// read — the acceptance is worth as much as the revision it was made at.
 type ReviewsResult struct {
 	Node       string `json:"node"`
 	ReviewedBy string `json:"reviewed_by"`
+	Reads      string `json:"reads,omitempty"`
+}
+
+// missingProtocol is the missing-protocol signal, and it is the rule that makes
+// a type with no protocol refuse rather than run a degraded plan.
+//
+// The distinction it rests on is the mechanism's own: a playbook whose
+// applies_when is empty matches every dispatch and is therefore the standing
+// declaration — the default — while a playbook with terms is situation-specific
+// and is in the plan because this dispatch's tags satisfied them. So a plan
+// whose playbooks are ALL standing is a plan nothing selected: the tags matched
+// the default and nothing else, and what the dispatch would run is the standing
+// obligations with no protocol for its own type.
+//
+// It is about the PLAN and never about the type string, and the difference
+// matters: `--tag code` is how this repo dispatches ordinary code work, and no
+// playbook anywhere declares `applies_when: type=dev-task`. A rule that demanded
+// the type appear in some applies_when would refuse the repo's normal dispatch.
+// A rule about the plan accepts any selection the cap actually made, including
+// the deliberate widening --also names.
+//
+// This is the signal the spec already describes and nothing produced:
+// playbook-system.md says of the types no protocol is written for that
+// "dispatching those types still refuses — now visibly, as the missing-protocol
+// signal", and names the state as its off-switch — "its plan holds nothing but
+// the standing `worker` playbook while its tags should have matched more". The
+// mechanism could not report it while worker.yaml had no applies_when and so
+// matched every dispatch: no type could match no playbook, and the plan was
+// never empty. The user's decision (cap:t-4c9a3169, 2026-09-26) is that this
+// refuses rather than reports.
+func missingProtocol(plan []planned, taskType string) error {
+	var standing []string
+	for _, pb := range plan {
+		if len(pb.AppliesWhen) > 0 {
+			return nil
+		}
+		standing = append(standing, pb.Name)
+	}
+
+	// A plan with no playbooks at all is the same defect with nothing to name,
+	// and naming no playbook must not read as a plan that was fine.
+	resolved := "nothing"
+	if len(standing) > 0 {
+		resolved = strings.Join(standing, ", ")
+	}
+	return fmt.Errorf(
+		"no playbook declares a protocol for type %q: nothing matched this dispatch's tags, so the plan is the standing declaration alone (%s), which carries no entry, work or exit steps for this type. A dispatch with no protocol is refused rather than run against a degraded plan — write one (`applies_when: type=%s`), select a playbook that matches a tag you can declare with --tag <name>, or force one into the plan with --also <playbook>",
+		taskType, resolved, taskType)
 }
 
 // resolveCreates reads the node kind a dispatch leaves behind from its plan:
@@ -1033,26 +1305,28 @@ func Batch(h *command.Handler, batch string) command.Response {
 // cap-scope node ids this dispatch declares a relation to, read from the flags
 // fs already parses. Each relation says the named nodes are what this dispatch
 // is about rather than work it piles on top of — an integration's member, a
-// review's change, a member's siblings in a batch, which are by construction
-// running at the same time as it is.
+// review's change, the dispatch a fix round repairs, a member's siblings in a
+// batch, which are by construction running at the same time as it is.
 //
 // The flags are the declaration. A node id that merely appears in the dispatch's
 // goal text grants nothing, which is what keeps this an exemption the dispatch
 // states rather than one it can stumble into: every node named here was also
 // resolved and refused-if-absent before this ran (integrateMember,
-// reviewedDispatch, batchMember), so no dangling reference reaches the gate
-// through it.
+// reviewedDispatch, fixedDispatch, batchMember), so no dangling reference
+// reaches the gate through it.
 //
 // A relation fs does not parse is not an exemption, and a dispatch with no
-// relation declares nothing. That is how a fix round — which has no flag yet
-// (skills:t-500c6fc5) — still carries --allow-unresolved.
-func declaredSubjects(h *command.Handler, member, reviewed, batch string) (map[string]bool, error) {
+// relation declares nothing — such a dispatch still carries --allow-unresolved.
+func declaredSubjects(h *command.Handler, member, reviewed string, fixes []string, batch string) (map[string]bool, error) {
 	subjects := map[string]bool{}
 	if member != "" {
 		subjects[member] = true
 	}
 	if reviewed != "" {
 		subjects[reviewed] = true
+	}
+	for _, fixed := range fixes {
+		subjects[fixed] = true
 	}
 	if batch == "" {
 		return subjects, nil

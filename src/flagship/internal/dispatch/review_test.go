@@ -24,7 +24,9 @@ package dispatch_test
 // after the shipped protocols drifted.
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -158,5 +160,204 @@ func TestReviewExitGateRefusesUntilEveryFindingIsDispositioned(t *testing.T) {
 	})
 	if !resp.OK {
 		t.Fatalf("close refused a fully dispositioned review: %s", resp.Error)
+	}
+}
+
+// ---- the revision a review reads ------------------------------------------
+//
+// A gate that asks "was this change reviewed?" without asking "at which
+// revision?" is satisfied forever by a review that closed before the last three
+// commits: it says a review happened, not that it read the code being closed.
+// So a review records the revision it read, and the gate compares that against
+// the revision the change stands at now.
+
+const reviewEntry = `name: review-entry
+applies_when: type=review-task
+engine: herdr
+agent: pi
+entry:
+  - check: true
+`
+
+// gitRepo makes root a git repository with one commit and returns its revision:
+// a project root a revision can be read from.
+func gitRepo(t *testing.T, root string) string {
+	t.Helper()
+	gitIn(t, root, "init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(root, "seed.txt"), "seed\n")
+	gitIn(t, root, "add", "seed.txt")
+	return commitIn(t, root, "seed")
+}
+
+// commitIn commits whatever is staged and returns the new revision, so a test
+// can move a tree past the revision a review read.
+func commitIn(t *testing.T, root, message string) string {
+	t.Helper()
+	gitIn(t, root, "-c", "user.email=fs@test.invalid", "-c", "user.name=fs test", "commit", "-q", "-m", message)
+	return gitIn(t, root, "rev-parse", "HEAD")
+}
+
+// moveOn writes one file and commits it, returning the new revision.
+func moveOn(t *testing.T, root, name string) string {
+	t.Helper()
+	writeFile(t, filepath.Join(root, name), name+"\n")
+	gitIn(t, root, "add", name)
+	return commitIn(t, root, name)
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// reviewReadsOf reads the revision a review dispatch recorded that it read, out
+// of the plan it recorded — the same payload the gate reads.
+func reviewReadsOf(t *testing.T, f *fixture, review string) string {
+	t.Helper()
+	payload, ok, err := f.h.PlanFor("cap", review)
+	if err != nil || !ok {
+		t.Fatalf("PlanFor %s: ok=%v err=%v", review, ok, err)
+	}
+	var plan trace.Plan
+	if err := json.Unmarshal(payload, &plan); err != nil {
+		t.Fatalf("decode plan of %s: %v", review, err)
+	}
+	return plan.Reads
+}
+
+// workAndReview prepares a delivered work dispatch in a git repo and a review
+// that reads it, returning their nodes and the revision the review was made at.
+func workAndReview(t *testing.T, root string) (*fixture, string, string, string) {
+	t.Helper()
+	f := newFixture(t, root)
+	f.writePlaybook(t, "code-entry", passingEntry)
+	f.writePlaybook(t, "review-entry", reviewEntry)
+
+	work := runDispatch(t, f, devReq("the change")).CapNodeID
+	review := prepareOnly(t, f, dispatch.PrepareRequest{
+		Project: "skills", TaskType: "review-task", Goal: "review the change", Reviews: work,
+	}).CapNodeID
+	return f, work, review, reviewReadsOf(t, f, review)
+}
+
+// A review records the revision it read, taken from the reviewed dispatch's own
+// tree, and the gate accepts it while the change still stands there.
+func TestReviewRecordsTheRevisionItReadsAndTheGateAcceptsIt(t *testing.T) {
+	root := t.TempDir()
+	rev := gitRepo(t, root)
+	f, work, review, reads := workAndReview(t, root)
+
+	if reads != rev {
+		t.Errorf("the review recorded %s, want the revision it was prepared at, %s", reads, rev)
+	}
+	if resp := f.h.TaskUpdate("cap", review, "done", "the review is finished", nil); !resp.OK {
+		t.Fatal(resp.Error)
+	}
+
+	resp := dispatch.Reviews(f.h, f.reg, work)
+	if !resp.OK {
+		t.Fatalf("Reviews refused a review of the revision the work stands at: %s", resp.Error)
+	}
+	result := resp.Data.(dispatch.ReviewsResult)
+	if result.ReviewedBy != review || result.Reads != rev {
+		t.Errorf("result = %+v, want review %s at %s", result, review, rev)
+	}
+}
+
+// The defect: a review of an earlier state of the change satisfies the gate
+// forever. Once the work moves past the revision a review read, the review is
+// no longer an answer — and a fresh review of the revision it stands at now is.
+func TestReviewsRefusesAReviewTheWorkHasMovedPast(t *testing.T) {
+	root := t.TempDir()
+	gitRepo(t, root)
+	f, work, review, reads := workAndReview(t, root)
+	if resp := f.h.TaskUpdate("cap", review, "done", "the review is finished", nil); !resp.OK {
+		t.Fatal(resp.Error)
+	}
+
+	moved := moveOn(t, root, "later.txt")
+
+	resp := dispatch.Reviews(f.h, f.reg, work)
+	if resp.OK {
+		t.Fatalf("Reviews accepted a review of %s while the work stands at %s", reads, moved)
+	}
+	for _, want := range []string{review, reads, moved, "--reviews " + work} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
+	}
+
+	// Re-reviewing at the revision the work stands at now is the way past, and
+	// it is accepted with no override.
+	again := prepareOnly(t, f, dispatch.PrepareRequest{
+		Project: "skills", TaskType: "review-task", Goal: "review the change again", Reviews: work,
+	}).CapNodeID
+	if got := reviewReadsOf(t, f, again); got != moved {
+		t.Errorf("the second review recorded %s, want %s", got, moved)
+	}
+	if resp := f.h.TaskUpdate("cap", again, "done", "the second review is finished", nil); !resp.OK {
+		t.Fatal(resp.Error)
+	}
+	if resp := dispatch.Reviews(f.h, f.reg, work); !resp.OK {
+		t.Fatalf("Reviews refused a review of the revision the work stands at: %s", resp.Error)
+	}
+}
+
+// A review that names no revision — every review closed before the field
+// existed — is not accepted as a review of the current revision. Silent
+// reinterpretation is the one thing the rule may not do, so it refuses and
+// names both the re-review and the waiver that records a skip.
+func TestReviewsRefusesAReviewThatNamesNoRevision(t *testing.T) {
+	root := t.TempDir()
+	gitRepo(t, root)
+	f := newFixture(t, root)
+	f.writePlaybook(t, "code-entry", passingEntry)
+
+	work := runDispatch(t, f, devReq("the change")).CapNodeID
+	old := addReviewNode(t, f, work)
+	if resp := f.h.TaskUpdate("cap", old, "done", "the review is finished", nil); !resp.OK {
+		t.Fatal(resp.Error)
+	}
+
+	resp := dispatch.Reviews(f.h, f.reg, work)
+	if resp.OK {
+		t.Fatal("Reviews accepted a done review that names no revision")
+	}
+	for _, want := range []string{old, "names no revision", "--without-review"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
+// A review of a tree fs cannot read a revision from is refused at preparation,
+// not prepared with an empty revision: a review that names none can never
+// satisfy the gate it exists for, and handing the cap one would be a promise the
+// close is certain to break.
+func TestPrepareRefusesAReviewOfATreeWithNoRevision(t *testing.T) {
+	root := t.TempDir() // a project root that is not a git repository
+	f := newFixture(t, root)
+	f.writePlaybook(t, "code-entry", passingEntry)
+	f.writePlaybook(t, "review-entry", reviewEntry)
+
+	work := prepareOnly(t, f, devReq("the change")).CapNodeID
+	recordDelivery(t, f, work, "w1:p1", "w-1")
+
+	resp := f.prepare(dispatch.PrepareRequest{
+		Project: "skills", TaskType: "review-task", Goal: "review the change", Reviews: work,
+	})
+	if resp.OK {
+		t.Fatal("a review with no revision to name must be refused")
+	}
+	for _, want := range []string{"--reviews " + work, "no revision"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal %q must mention %q", resp.Error, want)
+		}
 	}
 }

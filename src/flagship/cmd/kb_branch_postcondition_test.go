@@ -499,6 +499,7 @@ func batchWithWorktreeMembers(t *testing.T, goals ...string) (bin, root, batch s
 	root = scratchGitRepo(t)
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
+applies_when: type=dev-task
 engine: herdr
 agent: pi
 entry:
@@ -508,6 +509,7 @@ entry:
 	// here only to make the fan-out read as complete, so it is cut down to a
 	// close that simply succeeds.
 	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
+applies_when: type=integrate
 engine: herdr
 agent: pi
 entry:

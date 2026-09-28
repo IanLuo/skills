@@ -765,26 +765,50 @@ func TestShippedGatesAreScopedToTheirOwnDispatch(t *testing.T) {
 			t.Errorf("code's exit postcondition %q does not defer on FS_BATCH — a member's tree and branch are the batch's to remove", body)
 		}
 	}
-	// One pre-teardown check, and it is about this dispatch's own record rather
-	// than about the state of the repo: a clean tree and a merged branch are
-	// checks a close cannot make true, because the repo is routinely dirty with
-	// another agent's work. The review gate is the one question of that shape
-	// that CAN be answered — the cap dispatches a review, and the refusal names
-	// the command that does it — so it is admitted here, and the rule the old
-	// assertion was protecting is kept by asserting the shape rather than the
-	// count.
+	// The pre-teardown checks, and the rule is that each is about this dispatch's
+	// own record rather than about the state of the repo: a clean tree and a
+	// merged branch are checks a close cannot make true, because the repo is
+	// routinely dirty with another agent's work. Two questions of that shape CAN
+	// be answered, and each is admitted here by asserting its shape:
+	//
+	//   - the review gate, which asks whether a review of $FS_NODE finished, and
+	//     whose --without-review guard makes the skip visible rather than
+	//     impossible;
+	//   - the deliverable check, which asks git whether HEAD moved past the
+	//     revision this dispatch was prepared at and whether the paths its cards
+	//     declare are committed — this dispatch's own base and its own cards, read
+	//     out of the record, not the state of the tree.
+	//
+	// The count assertion this replaces ("one pre-teardown check, and it is the
+	// review gate") was a proxy for that rule and could not survive a second
+	// honest check. A body that is neither shape, or one that reaches for the
+	// repo instead, still fails here.
 	pre := preconditionsOf(dev)
-	if len(pre) != 1 || !strings.Contains(pre[0], `reviews "$FS_NODE"`) {
-		t.Errorf("code's exit pre-teardown checks = %v, want the review gate on $FS_NODE alone", pre)
-	}
+	gated, delivered := false, false
 	for _, body := range pre {
-		if !strings.Contains(body, "FS_WITHOUT_REVIEW") {
-			t.Errorf("code's exit check %q has no --without-review guard: a dispatch that needs no review would be unclosable", body)
+		switch {
+		case strings.Contains(body, `reviews "$FS_NODE"`):
+			gated = true
+			if !strings.Contains(body, "FS_WITHOUT_REVIEW") {
+				t.Errorf("code's review gate %q has no --without-review guard: a dispatch that needs no review would be unclosable", body)
+			}
+		case strings.Contains(body, "check-deliverable.sh"):
+			delivered = true
+			for _, want := range []string{"$FS_BASE", "$FS_CARDS"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("code's deliverable check %q does not pass %s: one that re-derived either would be asking about the repo rather than about this dispatch", body, want)
+				}
+			}
+		default:
+			t.Errorf("code's exit pre-teardown check %q is neither the review gate nor the deliverable check — a check a close cannot make true is a false gate", body)
 		}
 		for _, world := range []string{"git status", "merge-base"} {
 			if strings.Contains(body, world) {
 				t.Errorf("code's exit check %q asserts the state of the repo, which this close cannot make true", body)
 			}
 		}
+	}
+	if !gated || !delivered {
+		t.Errorf("code's exit pre-teardown checks = %v, want the deliverable check and the review gate (gated=%t delivered=%t)", pre, gated, delivered)
 	}
 }

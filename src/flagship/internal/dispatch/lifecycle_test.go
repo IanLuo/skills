@@ -329,6 +329,19 @@ func addIntegrationNode(t *testing.T, f *fixture, member string) string {
 	return added.Data.(command.EventData).NodeID
 }
 
+// addReviewNode records a review dispatch that names a work node, the way fs
+// dispatch --reviews does: one task-created event carrying the link. It carries
+// no plan, which is the review prepared before reviews recorded what they read —
+// the shape every review closed before this change has.
+func addReviewNode(t *testing.T, f *fixture, work string) string {
+	t.Helper()
+	added := f.h.TaskAddKind("cap", "dispatch review: read the change", query.KindDispatch, "", "", work, "", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	return added.Data.(command.EventData).NodeID
+}
+
 // recordDelivery appends the structural binding as Deliver does: the pane and
 // tab carrying the brief, the worker's node in the target project, and the task
 // type the exit gate is named after.
@@ -2508,8 +2521,9 @@ func TestCloseWithoutAWorktreeRunsActionsWithAnEmptyWorktreeEnv(t *testing.T) {
 // a proxy for it.
 //
 // printenv rather than echo is deliberate: it fails on an absent variable, so a
-// step passing proves the variable is set — and FS_CARDS, which a close has no
-// value for, must read as set-and-empty rather than missing.
+// step passing proves the variable is set — and FS_CARDS, which a dispatch that
+// named no cards has no value for, must read as set-and-empty rather than
+// missing.
 func TestCloseGivesExitChecksTheClosingDispatchEnv(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	exitGate(t, f, `  - check: test "$FS_PROJECT" = skills
@@ -2527,6 +2541,43 @@ func TestCloseGivesExitChecksTheClosingDispatchEnv(t *testing.T) {
 	}
 	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "6 checks passed") {
 		t.Errorf("exit note = %q, want every env check reported", note)
+	}
+}
+
+// The exit gate is also handed what the change is measured against: FS_BASE,
+// the revision the project stood at when the dispatch was prepared, and
+// FS_CARDS, the cards the dispatch named.
+//
+// Both are read back rather than passed along, because the gate they serve runs
+// at close, long after the command line is gone. FS_BASE comes off the cap
+// node's own task-created event — the store stamps the project's HEAD on every
+// event it writes — so a dispatch prepared by any binary that ever recorded one
+// has it, and no upgrade leaves an old dispatch unmeasurable. FS_CARDS comes off
+// the plan the dispatch recorded.
+func TestCloseGivesExitChecksTheBaseRevisionAndTheCards(t *testing.T) {
+	root := t.TempDir()
+	rev := gitRepo(t, root) // from review_test.go: a repository with one commit
+	f := newFixture(t, root)
+	// The store stamps every event with the project's HEAD, and the CLI is what
+	// puts it there (openHandler). The fixture builds a handler directly, so a
+	// test about that stamp sets it the way the CLI does.
+	f.h.SetCommitSHA(command.DetectCommitSHAIn(root))
+	card := filepath.Join(root, "card.md")
+	writeFile(t, card, "## Files\n\nsrc/a.go\n")
+	exitGate(t, f, `  - check: test "$FS_BASE" = `+rev+`
+  - check: test "$FS_CARDS" = `+card+`
+`)
+
+	req := devReq("sample")
+	req.Cards = []string{card}
+	brief := runDispatch(t, f, req)
+
+	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
+	if !resp.OK {
+		t.Fatalf("Close: %s", resp.Error)
+	}
+	if note := resp.Data.(dispatch.CloseResult).Cleanup; !strings.Contains(note, "2 checks passed") {
+		t.Errorf("exit note = %q, want both env checks reported", note)
 	}
 }
 
