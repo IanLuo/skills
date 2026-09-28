@@ -110,14 +110,18 @@ fs task get NODE_ID [--project ID] [--kind work|dispatch|gap]
 # Update status (pending → active → done | blocked)
 fs task update NODE_ID --status STATUS [--decision TEXT] [--project ID]
 
-# Edit goal, or its structural kind, or its weight, or any of them
+# Edit goal, or its structural kind, or its weight, or any of them. A kind that
+# leaves gap clears the weight with it — a severity is a gap's and only a gap's,
+# so the two move together.
 fs task edit NODE_ID [--goal "New goal text"] [--kind work|dispatch|gap] [--severity severe|defect|prose] [--project ID]
 
 # Fold one gap into another: the same defect seen twice becomes one entry. The
 # absorbed node is marked done with a decision naming the survivor, and the
 # survivor's record gains the absorbed id, so either node read alone tells you
-# the fold happened. Neither side may already be done, which is what keeps a
-# fold a fold and not a chain.
+# the fold happened. A fold is one hop, never a chain: neither side may already
+# be done, and a node that has itself absorbed another may not be absorbed — so
+# the survivor's absorbed list is the whole fold, and folding a third gap in
+# means folding it into that survivor, not folding the survivor onward.
 fs task merge NODE_ID --into SURVIVOR [--reason "why they are one"] [--project ID]
 
 # Block / unblock. --check names a shell command that would show the condition is

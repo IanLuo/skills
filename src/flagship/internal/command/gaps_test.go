@@ -160,6 +160,41 @@ func TestTaskEditRefusesSeverityOnANonGap(t *testing.T) {
 	}
 }
 
+// A weight is a gap's and only a gap's, on this path too. A kind edit away from
+// gap therefore takes the weight with it: the node's kind and its weight are
+// one decision, and a node that is not a gap has no weight to carry. Refusing
+// the edit instead would strand the node, because an empty --severity means
+// "leave it alone" — a gap that could not be re-kinded is a state no command
+// undoes. The clear is an event like any other edit, so the weight it dropped
+// is on the record, and setting the node back is two commands.
+func TestTaskEditKindAwayFromGapClearsTheSeverity(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	gap := gapOf(t, h, "proj", "a gap with a weight", query.SeveritySevere)
+	if resp := h.TaskEdit("proj", gap, "", query.KindWork, "", nil); !resp.OK {
+		t.Fatalf("TaskEdit: %s", resp.Error)
+	}
+	got := nodeInfo(t, h, "proj", gap)
+	if got.Kind != query.KindWork {
+		t.Errorf("kind = %q, want work", got.Kind)
+	}
+	if got.Severity != "" {
+		t.Errorf("a work node carries the weight %q; a severity is a gap's, and a node that is not a gap has none", got.Severity)
+	}
+
+	// Restorable in two commands: back to gap, then weighed again.
+	if resp := h.TaskEdit("proj", gap, "", query.KindGap, "", nil); !resp.OK {
+		t.Fatalf("TaskEdit: %s", resp.Error)
+	}
+	if resp := h.TaskEdit("proj", gap, "", "", query.SeverityProse, nil); !resp.OK {
+		t.Fatalf("TaskEdit: %s", resp.Error)
+	}
+	if got := nodeInfo(t, h, "proj", gap).Severity; got != "prose" {
+		t.Errorf("severity = %q, want the node to be weighable again once it is a gap", got)
+	}
+}
+
 // fs gaps prints the done ones and the open ones in one list, so the header has
 // to say what the reader is looking at — the cap has already had to check each
 // by hand to be sure none of them was open.
@@ -232,7 +267,9 @@ func TestTaskMergeRecordsBothSides(t *testing.T) {
 }
 
 // An absorbed node is done, and nothing merges into a done node: that is what
-// keeps the relation a fold and not a chain, without a third field to police.
+// stops one gap being folded in twice, and stops a node that was closed being
+// reopened by a merge. It is not what stops a chain — a survivor stays open —
+// which is the rule below it.
 func TestTaskMergeRefusesADoneNode(t *testing.T) {
 	h := setup(t)
 	h.ProjectCreate("proj", "/tmp/proj")
@@ -245,10 +282,39 @@ func TestTaskMergeRefusesADoneNode(t *testing.T) {
 	}
 
 	if resp := h.TaskMerge("proj", third, first, "into an absorbed node", nil); resp.OK {
-		t.Error("merged into an absorbed node; that is the A->B->C chain the done check exists to refuse")
+		t.Error("merged into an absorbed node; an absorbed node is done, and a fold folds open nodes")
 	}
 	if resp := h.TaskMerge("proj", first, third, "an already absorbed node", nil); resp.OK {
 		t.Error("merged a node that is already done")
+	}
+}
+
+// A fold is a fold and not a chain, and the done check alone does not make that
+// true: the survivor of a fold stays open, so it is exactly the node a second
+// merge would absorb — A into B, B into C — and the final survivor would then
+// name only B, leaving A reachable by reading B. Refusing to absorb a node that
+// has itself absorbed is what makes the survivor's list the whole fold, so a
+// reader of the final survivor sees every node that became one. The direction
+// triage needs is untouched: a fresh gap still folds into an existing survivor.
+func TestTaskMergeRefusesToAbsorbASurvivor(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+
+	first := gapOf(t, h, "proj", "a gap", "")
+	survivor := gapOf(t, h, "proj", "the same gap, seen again", "")
+	third := gapOf(t, h, "proj", "the same gap, once more", "")
+	if resp := h.TaskMerge("proj", first, survivor, "one defect, two sightings", nil); !resp.OK {
+		t.Fatalf("TaskMerge: %s", resp.Error)
+	}
+
+	if resp := h.TaskMerge("proj", survivor, third, "the whole fold, onto a third node", nil); resp.OK {
+		t.Error("a survivor was absorbed into a third node; that is the A into B, B into C chain, and the final survivor would show only part of the fold")
+	}
+	if resp := h.TaskMerge("proj", third, survivor, "same defect again", nil); !resp.OK {
+		t.Fatalf("TaskMerge: %s", resp.Error)
+	}
+	if got := nodeInfo(t, h, "proj", survivor).Absorbed; len(got) != 2 || got[0] != first || got[1] != third {
+		t.Errorf("survivor absorbed = %v, want the whole fold, in the order the nodes were folded in", got)
 	}
 }
 

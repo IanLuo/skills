@@ -3768,9 +3768,14 @@ func TestCLITriageSurface(t *testing.T) {
 	}
 
 	// An absorbed node is done, and nothing merges into a done node: that is
-	// what keeps a fold a fold rather than a chain.
+	// what stops a gap being folded in twice. What stops a chain is the rule
+	// below — a survivor stays open, so it is the node a second merge would
+	// absorb.
 	if _, code := runFS(t, bin, dir, "task", "merge", survivor, "--into", absorbed, "--project", "p"); code == 0 {
 		t.Error("merged into an absorbed node")
+	}
+	if _, code := runFS(t, bin, dir, "task", "merge", survivor, "--into", late, "--project", "p"); code == 0 {
+		t.Error("absorbed a node that survived an earlier fold; the fold would chain and the final survivor would show only part of it")
 	}
 	if _, code := runFS(t, bin, dir, "task", "merge", survivor, "--into", survivor, "--project", "p"); code == 0 {
 		t.Error("a node absorbed itself")

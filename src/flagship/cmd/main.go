@@ -158,12 +158,15 @@ Commands:
   task update NODE_ID --status STATUS [--decision TEXT]  Update task
   task edit NODE_ID [--goal GOAL] [--kind KIND] Edit task metadata: its goal,
      [--severity LEVEL]                         its structural kind, a gap's
-                                                weight, or any combination
+                                                weight, or any combination; a
+                                                kind that leaves gap clears the
+                                                weight with it
   task merge NODE_ID --into SURVIVOR            Fold a node into another: the
      [--reason TEXT]                            absorbed node is done and names
                                                 what took it in, the survivor
                                                 names what it took in; neither
-                                                may be done
+                                                may be done, and a node that has
+                                                absorbed one may not be absorbed
   task block NODE_ID --reason REASON            Block a task; --check names a
                                                 shell command that would show
                                                 the condition is over, re-run by
@@ -533,12 +536,15 @@ Subcommands:
                                            --kind names a different kind
   update NODE_ID --status STATUS [--decision TEXT]  Update task
   edit NODE_ID [--goal GOAL] [--kind KIND] [--severity LEVEL]
-                                           Edit task metadata
+                                           Edit task metadata; a kind that
+                                           leaves gap clears the weight with it
   merge NODE_ID --into SURVIVOR [--reason TEXT]
                                            Fold a node into another: the
                                            absorbed node is done and names what
                                            took it in, the survivor names what
-                                           it took in. Neither may be done
+                                           it took in. Neither may be done, and
+                                           a node that has absorbed one may not
+                                           be absorbed
   block NODE_ID --reason REASON [--check "SHELL COMMAND"]
                                            Block a task; --check names a shell
                                            command that would show the

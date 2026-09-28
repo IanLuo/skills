@@ -1046,6 +1046,25 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 			return errResp(err.Error())
 		}
 		events = append(events, data)
+
+		// A weight is a gap's and only a gap's, on this path as on every other:
+		// a kind that leaves gap takes the weight with it, so the node never
+		// carries one it is not entitled to and could not be told to drop.
+		// Refusing the edit instead would strand the node — an empty --severity
+		// means "leave it alone", so a node nothing can re-kind is a state no
+		// command undoes — while the clear is an event like any other edit: the
+		// weight it dropped is on the record, and setting it again is two
+		// commands.
+		if newKind != query.KindGap {
+			if prior := h.deriveSeverity(projectID, nodeID); prior != "" {
+				data, err := h.appendMetadata(projectID, nodeID, "severity", string(prior), "", sha)
+				if err != nil {
+					h.logger.Error("store append failed", "command", "task-edit", "error", err)
+					return errResp(err.Error())
+				}
+				events = append(events, data)
+			}
+		}
 	}
 
 	// An empty severity means "leave it alone", like the goal and the kind. A
@@ -1081,10 +1100,14 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 // what took it in, and the survivor's own record gains the absorbed id — so a
 // reader of the survivor alone can see that two nodes became one.
 //
-// Neither node may be done, and that one rule is the whole of the policing: an
-// absorbed node is done by the act of being absorbed, so refusing a done
-// survivor is what stops a fold becoming a chain (A into B, B into C), and
-// refusing a done absorbed node stops one gap being folded in twice.
+// Two rules keep a fold a fold and not a chain (A into B, B into C), and both
+// are about the survivor staying the whole fold: neither node may be done,
+// which stops a gap being folded in twice and stops a closed node being
+// reopened by a merge; and a node that has itself absorbed others may not be
+// absorbed. The second is the one that stops a chain, because the survivor of a
+// fold stays open and nothing else would refuse it — and what it buys is that
+// the survivor's absorbed list is every node that became one, so a reader of the
+// final survivor sees the whole fold instead of a link in it.
 func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
@@ -1113,6 +1136,15 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 				"the %s node %s is done; a merge folds open nodes, and a done one was closed or already absorbed",
 				node.role, node.id))
 		}
+	}
+	// The survivor of a fold stays open, so the done check above does not stop a
+	// chain: it is exactly the node a second merge would absorb. Refuse that
+	// here, so the final survivor's absorbed list is the whole fold and nothing
+	// can be reached only by reading a node that is itself already folded away.
+	if absorbed := h.deriveAbsorbed(projectID, nodeID); len(absorbed) > 0 {
+		return errResp(fmt.Sprintf(
+			"node %s survived an earlier fold; absorbing it would chain one fold into another and the survivor would name only part of it — merge %s --into %s instead",
+			nodeID, into, nodeID))
 	}
 
 	sha := h.commitSHA
