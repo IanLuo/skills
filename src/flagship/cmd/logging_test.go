@@ -195,6 +195,15 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		{"a project flag after a bare positional",
 			[]string{"task", "get", "t-nope", "--project", "skills"},
 			"skills", 1},
+		// The flag beats the address, because that is what the command did: nodeArg
+		// gives --project precedence and refuses a qualifier that contradicts it. A
+		// line that named the positional's project would contradict its own reason.
+		{"a project flag that beats the positional's address",
+			[]string{"task", "get", "skills:t-nope", "--project", "nosuchproject"},
+			"nosuchproject", 1},
+		{"a project flag that beats report's positional address",
+			[]string{"report", "skills:t-nope", "--line", "x", "--project", "nosuchproject"},
+			"nosuchproject", 1},
 		{"a project flag after a bare --worker",
 			[]string{"close", "--node", "t-nope", "--worker", "t-nope", "--decision", "d", "--confirm", "--project", "skills"},
 			"skills", 2},

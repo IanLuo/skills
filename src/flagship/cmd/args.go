@@ -125,6 +125,18 @@ so saying yes to one never waves the other through:
 An empty plan is legal and reported: a dispatch whose tags select nothing runs
 no protocol, which is visible in the brief and in the trace rather than silent.
 
+Without --deliver the dispatch is prepared only: the cap node and its plan are
+recorded, the entry checks run, and the brief is printed — nothing is started, so
+no pane is split, no worker node exists and no agent runs. The prepared node
+stays open, and the next dispatch into that scope refuses on it until it is
+delivered or closed; --allow-unresolved is what proceeds past that.
+
+--deliver carries the prepared brief the rest of the way, and it is the whole
+difference between a plan a cap can read and a worker doing the work: it opens
+the pane (or the --worktree-new workspace), creates the worker's node, starts an
+agent named "dispatch-<type>-<node>", prompts it with the brief, and records the
+delivery that close tears down.
+
 Every entry check step runs with this dispatch's own inputs in its environment,
 so a gate can ask about this dispatch and not only about the world:
 
@@ -425,6 +437,34 @@ func checkArgs(name string, args []string) {
 			i++ // consume the value; it is not a positional
 		}
 	}
+}
+
+// positionals returns a subcommand's positional arguments, in the order they
+// were written, counted the way checkArgs counts them: a flag's value is
+// consumed as a value, so `fs task get --project skills t-nope` names t-nope.
+//
+// A command reads its positionals from here rather than from args[0], which is
+// whatever the caller happened to write first — a flag, when the flags come
+// first. checkArgs accepts that order deliberately, so the two have to agree:
+// the walk is the same one, from the same spec.
+func positionals(name string, args []string) []string {
+	spec, ok := cmdSpecs[name]
+	if !ok {
+		fatal("fs: no argument spec for " + name)
+	}
+
+	var out []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			out = append(out, arg)
+			continue
+		}
+		if takesValue := spec.flags[arg]; takesValue && i+1 < len(args) {
+			i++ // consume the value; it is not a positional
+		}
+	}
+	return out
 }
 
 // usageError reports a usage mistake as the usual envelope with exit 2, keeping

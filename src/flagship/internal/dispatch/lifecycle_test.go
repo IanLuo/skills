@@ -613,6 +613,9 @@ work:
 	if want := []string{"--permission-mode", "auto"}; !slices.Equal(herdr.startArgs[0], want) {
 		t.Errorf("StartAgent args = %q, want %q", herdr.startArgs[0], want)
 	}
+	if want := "claude"; len(herdr.startKinds) != 1 || herdr.startKinds[0] != want {
+		t.Errorf("StartAgent kinds = %q, want the one the plan resolved: %q", herdr.startKinds, want)
+	}
 }
 
 func TestDeliverFailsLeavesNodePendingAndClosesTheWorkerPane(t *testing.T) {

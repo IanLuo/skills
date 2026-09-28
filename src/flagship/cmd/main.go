@@ -594,13 +594,13 @@ func taskAdd(args []string) {
 // shell. --kind is the filter the integrate entry gate names: an integration
 // integrates a member's dispatch node, so the node it was given must be one.
 func taskGet(args []string) {
-	if len(args) < 1 {
+	pos := positionals("task get", args)
+	if len(pos) < 1 {
 		fatal("fs task get: NODE_ID required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	projectID := flagVal(rest, "--project", "")
-	kind := query.Kind(flagVal(rest, "--kind", ""))
+	nodeID := pos[0]
+	projectID := flagVal(args, "--project", "")
+	kind := query.Kind(flagVal(args, "--kind", ""))
 
 	if kind != "" && !query.ValidKind(kind) {
 		fatal(fmt.Sprintf("fs task get: invalid kind %q (valid: work, dispatch, gap)", kind))
@@ -639,14 +639,14 @@ func taskGet(args []string) {
 }
 
 func taskUpdate(args []string) {
-	if len(args) < 1 {
+	pos := positionals("task update", args)
+	if len(pos) < 1 {
 		fatal("fs task update: NODE_ID required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	status := flagVal(rest, "--status", "")
-	decision := flagVal(rest, "--decision", "")
-	projectID := flagVal(rest, "--project", "")
+	nodeID := pos[0]
+	status := flagVal(args, "--status", "")
+	decision := flagVal(args, "--decision", "")
+	projectID := flagVal(args, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
 
@@ -662,13 +662,13 @@ func taskUpdate(args []string) {
 }
 
 func taskEdit(args []string) {
-	if len(args) < 1 {
+	pos := positionals("task edit", args)
+	if len(pos) < 1 {
 		fatal("fs task edit: NODE_ID required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	goal := flagVal(rest, "--goal", "")
-	projectID := flagVal(rest, "--project", "")
+	nodeID := pos[0]
+	goal := flagVal(args, "--goal", "")
+	projectID := flagVal(args, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
 
@@ -676,7 +676,7 @@ func taskEdit(args []string) {
 	defer h.Close()
 	guardCoordinating(h, projectID)
 
-	resp := h.TaskEdit(projectID, nodeID, goal, query.Kind(flagVal(rest, "--kind", "")), nil)
+	resp := h.TaskEdit(projectID, nodeID, goal, query.Kind(flagVal(args, "--kind", "")), nil)
 	if resp.OK {
 		updateActivity(projectID)
 	}
@@ -684,14 +684,14 @@ func taskEdit(args []string) {
 }
 
 func taskBlock(args []string) {
-	if len(args) < 1 {
+	pos := positionals("task block", args)
+	if len(pos) < 1 {
 		fatal("fs task block: NODE_ID required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	reason := flagVal(rest, "--reason", "")
-	check := flagVal(rest, "--check", "")
-	projectID := flagVal(rest, "--project", "")
+	nodeID := pos[0]
+	reason := flagVal(args, "--reason", "")
+	check := flagVal(args, "--check", "")
+	projectID := flagVal(args, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
 
@@ -707,12 +707,12 @@ func taskBlock(args []string) {
 }
 
 func taskUnblock(args []string) {
-	if len(args) < 1 {
+	pos := positionals("task unblock", args)
+	if len(pos) < 1 {
 		fatal("fs task unblock: NODE_ID required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	projectID := flagVal(rest, "--project", "")
+	nodeID := pos[0]
+	projectID := flagVal(args, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
 
@@ -728,13 +728,13 @@ func taskUnblock(args []string) {
 }
 
 func taskKnowledge(args []string) {
-	if len(args) < 1 {
+	pos := positionals("task knowledge", args)
+	if len(pos) < 1 {
 		fatal("fs task knowledge: NODE_ID required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	summary := flagVal(rest, "--summary", "")
-	projectID := flagVal(rest, "--project", "")
+	nodeID := pos[0]
+	summary := flagVal(args, "--summary", "")
+	projectID := flagVal(args, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
 
@@ -844,10 +844,11 @@ func kbAdd(args []string) {
 }
 
 func kbGet(args []string) {
-	if len(args) < 1 {
+	pos := positionals("kb get", args)
+	if len(pos) < 1 {
 		fatal("fs kb get: NAME required")
 	}
-	name := args[0]
+	name := pos[0]
 
 	kc := openKB(flagVal(args, "--project", ""))
 
@@ -902,10 +903,11 @@ func promptError(err error) {
 // kbDiff shows what a playbook on disk has that its shipped default does not,
 // and the other way around. An empty diff is a playbook that has not drifted.
 func kbDiff(args []string) {
-	if len(args) < 1 {
+	pos := positionals("kb diff", args)
+	if len(pos) < 1 {
 		fatal("fs kb diff: NAME required")
 	}
-	name := args[0]
+	name := pos[0]
 
 	kc := openKB(flagVal(args, "--project", ""))
 
@@ -923,10 +925,11 @@ func kbDiff(args []string) {
 // edited copy back. It refuses without --yes: resetting discards the user's
 // edits, which is not something to do by accident.
 func kbReset(args []string) {
-	if len(args) < 1 {
+	pos := positionals("kb reset", args)
+	if len(pos) < 1 {
 		fatal("fs kb reset: NAME required")
 	}
-	name := args[0]
+	name := pos[0]
 	if !hasFlag(args, "--yes") {
 		output(command.Response{OK: false, Error: fmt.Sprintf(
 			"fs kb reset: refusing to overwrite the playbook %q without --yes; run fs kb diff %s to see what would be discarded",
@@ -980,10 +983,11 @@ func kbEdit(args []string) {
 }
 
 func kbRemove(args []string) {
-	if len(args) < 1 {
+	pos := positionals("kb remove", args)
+	if len(pos) < 1 {
 		fatal("fs kb remove: NAME required")
 	}
-	name := args[0]
+	name := pos[0]
 
 	kc := openKB(flagVal(args, "--project", ""))
 
@@ -1230,12 +1234,12 @@ func capWhoCmd() {
 // notifies the live cap — in that order, in one command. The kind is the only
 // switch, and a boolean flag is how a kind is named.
 func reportCmd(args []string) {
-	if len(args) < 1 {
+	pos := positionals("report", args)
+	if len(pos) < 1 {
 		fatal("fs report: PROJECT:NODE required")
 	}
-	nodeID := args[0]
-	rest := args[1:]
-	projectID := flagVal(rest, "--project", "")
+	nodeID := pos[0]
+	projectID := flagVal(args, "--project", "")
 
 	projectID, nodeID = nodeArg(projectID, nodeID)
 
@@ -1245,8 +1249,8 @@ func reportCmd(args []string) {
 	output(dispatch.Report(h, dispatch.NewHerdrCLI(), dispatch.ReportRequest{
 		Project: projectID,
 		Node:    nodeID,
-		Kind:    reportKind(rest),
-		Line:    flagVal(rest, "--line", ""),
+		Kind:    reportKind(args),
+		Line:    flagVal(args, "--line", ""),
 	}))
 }
 
@@ -1445,10 +1449,11 @@ func traceLog() *trace.Log {
 // point: what `fs trace` reports as a deviation is exactly what would stop a
 // close, so a cap can see it coming instead of meeting it at the gate.
 func traceCmd(args []string) {
-	if len(args) < 1 {
+	pos := positionals("trace", args)
+	if len(pos) < 1 {
 		fatal("fs trace: NODE required")
 	}
-	node := args[0]
+	node := pos[0]
 
 	// The file is located from the node alone, so --project is not a selector.
 	// When it is given it is an assertion: a line whose `project` field disagrees
@@ -1602,6 +1607,11 @@ func projectOfAddress(address string) string {
 // splits, declared as `address` in that command's own spec (`task get P:N`,
 // `report P:N`, `tell P:N`).
 //
+// The flag beats the address, because that is the project the command resolved
+// by: nodeArg gives an explicit `--project` precedence and refuses a qualifier
+// that contradicts it, so a line naming the positional's project would
+// contradict the reason it sits beside.
+//
 // The arguments are walked the way checkArgs walks them, from the same spec: a
 // flag's value is consumed as a value, so one that merely reads like a flag names
 // nothing — `fs report P:N --line --project skills` names P, not `skills`. What
@@ -1625,15 +1635,14 @@ func invocationProject() string {
 		return ""
 	}
 	args := os.Args[1+len(strings.Fields(name)):]
-	positionals := 0
+	count := 0
+	address := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") {
-			positionals++
-			if positionals == 1 && spec.address {
-				if project := projectOfAddress(arg); project != "" {
-					return project
-				}
+			count++
+			if count == 1 && spec.address && address == "" {
+				address = projectOfAddress(arg)
 			}
 			continue
 		}
@@ -1657,7 +1666,7 @@ func invocationProject() string {
 			}
 		}
 	}
-	return ""
+	return address
 }
 
 // logRefusal records a refused command: a WARN line naming the command, the

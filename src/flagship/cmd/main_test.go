@@ -1151,6 +1151,28 @@ func TestCLIHelpSubcommands(t *testing.T) {
 	}
 }
 
+// The synopsis lists [--deliver], and a synopsis is not an explanation: the flag
+// is the whole difference between a dispatch a cap can read and a worker doing
+// the work, and leaving it off is the safe default — so the help has to say what
+// leaving it off does, not only that the flag exists.
+func TestCLIDispatchHelpExplainsDeliver(t *testing.T) {
+	bin := getFS(t)
+
+	_, stderr, code := rawFS(t, bin, t.TempDir(), t.TempDir(), "dispatch", "--help")
+	if code != 0 {
+		t.Fatalf("dispatch --help exit %d: %s", code, stderr)
+	}
+
+	// Everything after the synopsis line: the synopsis naming the flag is what the
+	// gap was found in, so the assertion has to look past it.
+	body := stderr[strings.Index(stderr, "\n"):]
+	for _, want := range []string{"--deliver", "prepared only", "agent"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dispatch --help must explain --deliver (%q missing):\n%s", want, stderr)
+		}
+	}
+}
+
 // rawFS runs the fs binary and returns stdout, stderr, and the exit code, for
 // probes whose output is not the JSON envelope (--help writes usage to stderr).
 func rawFS(t *testing.T, bin, dir, home string, args ...string) (string, string, int) {
@@ -1650,8 +1672,11 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 		t.Errorf("locked_docs = %v, want [docs/prd.md]", locked)
 	}
 
-	if cmd := data["next_command"].(string); !strings.Contains(cmd, "herdr agent prompt") {
-		t.Errorf("next_command missing the herdr prompt step: %q", cmd)
+	// A prepare-only run hands the brief over by naming the flag that delivers
+	// it; it prints no herdr line, because a line printed here names an agent
+	// that no delivery record can reach.
+	if cmd := data["next_command"].(string); !strings.Contains(cmd, "--deliver") || strings.Contains(cmd, "herdr ") {
+		t.Errorf("next_command must hand the brief over with --deliver and print no herdr line: %q", cmd)
 	}
 
 	// The cap node lives in the cap scope, and cap is not a registered project.
@@ -3431,6 +3456,49 @@ func TestCLITaskGetAnswersWithAnExitCode(t *testing.T) {
 	}
 	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "t-00000000") {
 		t.Errorf("refusal %q must name the node", errMsg)
+	}
+}
+
+// A flag may be written before the positional: checkArgs walks the whole
+// argument list and counts a flag's value as a value, never as a stray, so the
+// spec accepts the form. The command then has to read the same positional
+// checkArgs counted — it read args[0] instead, so the flag itself became the
+// node, and `fs task get --project cap t-abc` asked for a node named
+// "--project".
+func TestCLIReadsThePositionalTheSpecCounted(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+
+	member := capNodeOf(t, bin, root, "dispatch dev-task: member", "dispatch")
+
+	// The node is found when its flags come first, which is the whole point: it
+	// is one command either way, not two forms with one of them broken.
+	resp, code := runFS(t, bin, root, "task", "get", "--project", "cap", "--kind", "dispatch", member)
+	if code != 0 {
+		t.Fatalf("task get with its flags first exit %d: %v", code, resp["error"])
+	}
+	if got := resp["data"].(map[string]any)["node_id"]; got != member {
+		t.Errorf("task get with its flags first returned %v, want %s", got, member)
+	}
+
+	// And a name that does not exist is refused as the name it was, rather than
+	// as the flag that preceded it.
+	resp, code = runFS(t, bin, root, "kb", "get", "--project", "skills", "nosuchplaybook")
+	if code == 0 {
+		t.Fatalf("kb get for a missing playbook must exit non-zero, got %v", resp)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "nosuchplaybook") || strings.Contains(errMsg, "--project") {
+		t.Errorf("refusal %q must name the playbook, not the flag", errMsg)
+	}
+
+	resp, code = runFS(t, bin, root, "trace", "--project", "skills", "t-00000000")
+	if code == 0 {
+		t.Fatalf("trace for a node with no trace must exit non-zero, got %v", resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "t-00000000") {
+		t.Errorf("refusal %q must name the node, not the flag", errMsg)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -170,7 +171,12 @@ func Deliver(h *command.Handler, hc HerdrCLI, lg *trace.Log, brief *Brief) comma
 		return deliverErr(h, brief, worktreePath, err)
 	}
 
-	agent := workerAgent(brief.TaskType, workerID)
+	agent, err := workerAgent(brief.TaskType, workerID)
+	if err != nil {
+		abandonWorker(hc, brief.Worktree, paneID)
+		rollbackWorker(h, brief.Project, workerID, err.Error())
+		return deliverErr(h, brief, worktreePath, err)
+	}
 	if err := startAgent(hc, paneID, agent, brief.Agent, brief.AgentArgs); err != nil {
 		abandonWorker(hc, brief.Worktree, paneID)
 		rollbackWorker(h, brief.Project, workerID, fmt.Sprintf("start agent %s: %v", agent, err))
@@ -293,29 +299,66 @@ func createWorkerNode(h *command.Handler, brief *Brief) (string, error) {
 // was hit.
 const agentNameMax = 32
 
+// agentNameSyntax is that grammar, spelled the way herdr spells it. It is the
+// whole of the check: a name that matches is one herdr takes, and a name that
+// does not is one it refuses whatever fs thought of it.
+var agentNameSyntax = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// workerNodeWidth is how much of an agent name a worker's node costs. Every node
+// id is "t-" plus four random bytes rendered as hex — internal/command's
+// newNodeID — so ten characters, and it is what a task type has to leave room
+// for.
+const workerNodeWidth = len("t-") + 8
+
+// maxTaskType is the longest task type an agent name can carry: "dispatch-", the
+// "-" that joins the node and the node itself are spoken for before the type
+// gets any room.
+const maxTaskType = agentNameMax - len("dispatch-") - 1 - workerNodeWidth
+
+// validTaskType refuses a --type the agent name cannot carry, naming the
+// constraint it broke.
+//
+// It is asked at prepare rather than left to the builder at delivery because the
+// type is the one input of the name a cap chose, and a refusal before a node
+// exists or a pane is split is the difference between fs saying which limit was
+// hit and herdr answering invalid_agent_name, an error that names neither fs nor
+// the input. The builder checks the assembled name as well, because the node is
+// the other input and its width is not this function's to bound.
+func validTaskType(taskType string) error {
+	if len(taskType) > maxTaskType {
+		return fmt.Errorf(
+			"task type %q is %d characters; a worker's agent is named \"dispatch-<type>-<node>\", herdr caps a live agent name at %d, and the node costs %d of those, so a type may be at most %d characters",
+			taskType, len(taskType), agentNameMax, workerNodeWidth, maxTaskType)
+	}
+	if !agentNameSyntax.MatchString("dispatch-" + taskType) {
+		return fmt.Errorf(
+			"task type %q holds a character herdr's agent names do not: a live agent name matches [a-z][a-z0-9_-]{0,31}, and the type sits inside one, so it may hold only a-z, 0-9, '-' and '_'",
+			taskType)
+	}
+	return nil
+}
+
 // workerAgent names the agent that carries a dispatch's brief: the task type,
 // and the worker's node when there is one. Two dispatches of one type running
 // at once are two names, so herdr's record of one cannot be read as the other's.
-// With no node — the line nextCommand prints before anything is delivered — the
-// type stands alone.
 //
-// The type is shortened when the whole name would not fit herdr's limit, and the
-// node is never cut: the node is what makes the name unique, so a bound that
-// trimmed it would trade a refusal for a collision, which is the worse failure
-// and the quieter one. A type long enough to overflow is worth more shortened
-// than refused — the dispatch is otherwise perfectly deliverable, and the name is
-// a handle for a person reading `herdr agent list`, not a record: the type is on
-// the node, in the trace, and in the brief.
-func workerAgent(taskType, workerID string) string {
-	tail := ""
+// It is the one place the name is built and the one place the built name is
+// checked, and it refuses rather than trimming: a shortened type reads as a
+// different type, and the node is what makes the name unique, so a bound that
+// cut it would trade a refusal for a collision — the worse failure, and the
+// quieter one. Nothing here slices, so no input reaches a panic; a name herdr
+// would not take comes back as an error naming herdr's limit in fs's words.
+func workerAgent(taskType, workerID string) (string, error) {
+	name := "dispatch-" + taskType
 	if workerID != "" {
-		tail = "-" + workerID
+		name += "-" + workerID
 	}
-	head := "dispatch-" + taskType
-	if room := agentNameMax - len(tail); len(head) > room {
-		head = head[:room]
+	if len(name) > agentNameMax || !agentNameSyntax.MatchString(name) {
+		return "", fmt.Errorf(
+			"agent name %q cannot be carried: herdr caps a live agent name at %d characters matching [a-z][a-z0-9_-]{0,31}",
+			name, agentNameMax)
 	}
-	return head + tail
+	return name, nil
 }
 
 // agentStartAttempts bounds how many times a start is tried while herdr says the
@@ -457,17 +500,18 @@ func (herdrCLI) StartAgent(paneID, name, kind string, args []string) error {
 	return err
 }
 
-// agentStartArgs is the argv herdr is given to start one agent. It is the
-// executed half of the command nextCommand prints, and the two must not
-// disagree: a worker started correctly by `fs dispatch --deliver` and a
-// copy-pasted line that still stalls is a failure nothing reports, because both
-// are valid on their own.
+// agentStartArgs is the argv herdr is given to start one agent, and the only
+// emitter of that command: a printed line cannot be held to it, because the
+// agent is named after the node the delivery creates and no node exists before
+// the delivery runs. nextCommand used to print one anyway; it was retired rather
+// than kept in step, since a line started by hand names an agent no delivery
+// record can reach.
 //
 // The `--` separator goes last, after every option, because herdr's grammar is
 // `<NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]` — an
 // argument placed before `--pane` would be read as an agent argument and leave
-// the pane unset. It is emitted only when there are arguments, because that is
-// what nextCommand prints and a bare `--` is a different command.
+// the pane unset. It is emitted only when there are arguments: a bare `--` is a
+// different command from the same line without one.
 func agentStartArgs(name, kind, paneID string, args []string) []string {
 	argv := []string{"agent", "start", name, "--kind", kind, "--pane", paneID}
 	if len(args) > 0 {

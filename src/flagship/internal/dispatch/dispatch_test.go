@@ -294,20 +294,13 @@ func TestPrepareBriefCarriesThePlanAndEveryStep(t *testing.T) {
 	if len(brief.Notes) == 0 || !strings.Contains(strings.Join(brief.Notes, " "), "false positive") {
 		t.Errorf("notes must flag the known grep false positive, got %v", brief.Notes)
 	}
-	if !strings.Contains(brief.NextCommand, "herdr pane split") ||
-		!strings.Contains(brief.NextCommand, "herdr agent start") ||
-		!strings.Contains(brief.NextCommand, "herdr agent prompt") {
-		t.Errorf("next_command must be the herdr split/start/prompt line, got %q", brief.NextCommand)
-	}
-	for _, want := range []string{
-		"run the suite before you claim the work is done",
-		"- tdd",
-		"- code-entry (entry, order 10)",
-		"- code-work (work, order 20)",
-	} {
-		if !strings.Contains(brief.NextCommand, want) {
-			t.Errorf("the brief handed to the worker must carry %q, got %q", want, brief.NextCommand)
-		}
+	// next_command hands the brief over; it is not a herdr line, because a line
+	// printed before delivery names an agent no delivery record can reach. What
+	// the worker is actually sent is renderBrief, which the internal test
+	// TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps asserts, and which
+	// lifecycle_test.go reads off the prompt Deliver sends.
+	if !strings.Contains(brief.NextCommand, "--deliver") || strings.Contains(brief.NextCommand, "herdr ") {
+		t.Errorf("next_command must hand the brief over with --deliver and print no herdr line, got %q", brief.NextCommand)
 	}
 }
 
@@ -556,9 +549,8 @@ entry:
 	if item.Output != "reworded" {
 		t.Errorf("output = %q, want reworded", item.Output)
 	}
-	if !strings.Contains(brief.NextCommand, "reworded") {
-		t.Errorf("the brief handed to the worker must carry the check output, got %q", brief.NextCommand)
-	}
+	// That the worker is shown it is asserted in the internal
+	// TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps.
 }
 
 // A check runs with the dispatch's own inputs in its environment, named FS_*.
@@ -637,9 +629,8 @@ entry:
 	if len(brief.Context) != 1 || brief.Context[0] != "read AGENTS.md before editing" {
 		t.Errorf("context = %v, want the say body", brief.Context)
 	}
-	if !strings.Contains(brief.NextCommand, "read AGENTS.md before editing") {
-		t.Errorf("the brief handed to the worker must carry the say step, got %q", brief.NextCommand)
-	}
+	// That the worker is shown it is asserted in the internal
+	// TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps.
 }
 
 func TestPrepareCreatesCapNode(t *testing.T) {
@@ -784,9 +775,9 @@ work:
 	if len(brief.Plan) != 1 || brief.Plan[0].Name != "worker" {
 		t.Fatalf("plan = %+v, want the playbook that declares no applies_when", brief.Plan)
 	}
-	if !strings.Contains(brief.NextCommand, "note your work on the node you were given") {
-		t.Errorf("its say step must reach the worker, got %q", brief.NextCommand)
-	}
+	// That the worker is shown it is asserted in lifecycle_test.go, off the
+	// prompt Deliver sends, and in the internal
+	// TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps.
 }
 
 // Two situation-specific declarations that disagree refuse, naming both
@@ -821,6 +812,59 @@ work:
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
+	}
+}
+
+// Every refusal Prepare returns is one `dispatch: ` prefix and one reason. The
+// realization refusals are decided several calls down from the errResp that
+// answers with them, so a prefix written at both ends reads as two errors in the
+// one line a cap sees when a dispatch refuses.
+func TestPrepareRefusalsCarryOneDispatchPrefix(t *testing.T) {
+	cases := []struct {
+		name     string
+		playbook [][2]string // name, body
+	}{
+		{"no playbook declares the realization", [][2]string{
+			{"worker", "name: worker\napplies_when: never\nwork:\n  - say: standing\n"},
+			{"code-work", "name: code-work\napplies_when: code\nwork:\n  - say: work\n"},
+		}},
+		{"two situation-specific declarations disagree", [][2]string{
+			{"worker", "name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: standing\n"},
+			{"one", "name: one\napplies_when: code\nengine: other\nwork:\n  - say: one\n"},
+			{"two", "name: two\napplies_when: code\nengine: another\nwork:\n  - say: two\n"},
+		}},
+		{"a standing declaration conflicts with another", [][2]string{
+			{"worker", "name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: standing\n"},
+			{"worker-other", "name: worker-other\nengine: other\nwork:\n  - say: other\n"},
+		}},
+		{"two declarations of the node kind disagree", [][2]string{
+			{"worker", "name: worker\nengine: herdr\nagent: pi\nwork:\n  - say: standing\n"},
+			{"one", "name: one\napplies_when: code\ncreates: gap\nwork:\n  - say: one\n"},
+			{"two", "name: two\napplies_when: code\ncreates: dispatch\nwork:\n  - say: two\n"},
+		}},
+		{"an engine fs cannot dispatch with", [][2]string{
+			{"worker", "name: worker\nengine: other\nagent: pi\nwork:\n  - say: standing\n"},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, t.TempDir())
+			for _, pb := range tc.playbook {
+				f.writePlaybook(t, pb[0], pb[1])
+			}
+
+			resp := f.prepare(devReq("sample"))
+			if resp.OK {
+				t.Fatalf("this configuration must refuse, got a prepared brief")
+			}
+			if !strings.HasPrefix(resp.Error, "dispatch: ") {
+				t.Errorf("refusal %q must start with the command's own prefix", resp.Error)
+			}
+			if n := strings.Count(resp.Error, "dispatch: "); n != 1 {
+				t.Errorf("refusal %q carries %d `dispatch: ` prefixes, want 1", resp.Error, n)
+			}
+		})
 	}
 }
 
@@ -871,8 +915,8 @@ entry:
 	if brief.Engine != "herdr" || brief.Agent != "claude" {
 		t.Errorf("realization = %s/%s, want herdr/claude (situation-specific agent overrides standing)", brief.Engine, brief.Agent)
 	}
-	if !strings.Contains(brief.NextCommand, "--kind claude") {
-		t.Errorf("next_command must carry the resolved agent, got %q", brief.NextCommand)
+	if !strings.Contains(brief.NextCommand, "--deliver") {
+		t.Errorf("next_command must hand the brief over with --deliver, got %q", brief.NextCommand)
 	}
 
 	lines := traceOf(t, f, brief.CapNodeID)
@@ -1003,40 +1047,11 @@ work:
 	}
 }
 
-// The printed line is the executed line, and only one of the two is a code path.
-// The separator goes last, after every option, and only when there are
-// arguments: herdr's grammar reads an argument before `--pane` as an agent
-// argument and leaves the pane unset. Every argument is shell-quoted because it
-// has none of the shape guarantees `--kind` has.
-func TestNextCommandRendersTheSeparatorOnlyWhenThereAreArgs(t *testing.T) {
-	cases := []struct {
-		name     string
-		agentArg string
-		want     string
-	}{
-		{
-			name:     "with arguments",
-			agentArg: "agent_args: --permission-mode, auto, --settings=a b\n",
-			want:     `herdr agent start dispatch-dev-task --kind claude --pane "$P" -- '--permission-mode' 'auto' '--settings=a b' && `,
-		},
-		{
-			name: "without arguments",
-			want: `herdr agent start dispatch-dev-task --kind claude --pane "$P" && `,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t, t.TempDir())
-			f.writePlaybook(t, "worker", "name: worker\nengine: herdr\nagent: claude\n"+
-				tc.agentArg+"work:\n  - say: note your node\n")
-			brief := prepareOnly(t, f, devReq("sample"))
-
-			if !strings.Contains(brief.NextCommand, tc.want) {
-				t.Errorf("next_command must contain %q, got %q", tc.want, brief.NextCommand)
-			}
-		})
-	}
-}
+// The separator's place in the start command — last, after every option, and
+// only when there are arguments — is asserted at the argv herdr is actually
+// given, in lifecycle_test.go's TestDeliverStartsTheAgentWithTheResolvedArgs.
+// There is no second rendering of that command to assert it against: the
+// printed line named an agent no delivery record could reach, and is retired.
 
 // A playbook is held to the schema its phase declares before it can run half its
 // steps. This is a configuration error, not a gate: --confirm must not override

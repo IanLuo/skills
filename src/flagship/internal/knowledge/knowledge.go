@@ -1035,10 +1035,9 @@ func parsePlaybook(name string, data []byte) (*Playbook, error) {
 			// `--settings=a=1` and every token holding a space — most of what
 			// an agent's command line is made of. It is also the wrong
 			// protection: exec.Command passes an argv slice with no shell, so a
-			// term's content is inert, and the only place it matters is the
-			// printed line, where shellQuote is the guard. herdr is the encoder
-			// and refuses what it cannot encode. The two validators are
-			// different on purpose; unifying them would break arguments.
+			// term's content is inert — nothing else reads it, and herdr is the
+			// encoder that refuses what it cannot encode. The two validators
+			// are different on purpose; unifying them would break arguments.
 			pb.AgentArgs = splitTerms(val)
 			pb.declared[fieldAgentArgs] = true
 			emptyArgs = len(pb.AgentArgs) == 0
