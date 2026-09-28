@@ -36,6 +36,14 @@ work:
   # review found" pulls unrelated locked-doc defects into an unrelated dispatch,
   # and the review that found them reports the same rewrite as fixes.
   - say: classify every finding before you report it — against the change (the change's own acceptance criterion is false, or the change introduced the defect) or discovered by the change (a pre-existing defect the review happened to see). The test is the revert: a finding that survives reverting the change was not caused by it. Against-the-change findings block the dispatch under review; discovered ones never do
+  # The second axis on the same finding, and it is a label rather than a gate.
+  # Three comments saying "printed line" cost three dispositions and a fix round,
+  # the same as a destructive deletion, because the exit below treats every finding
+  # alike. The class is what makes that cost visible before the cap commits to it —
+  # and it must not block, because a misclassified finding is still a finding, and
+  # a gate over the label would refuse a review for labelling its own finding
+  # wrongly, which is worse than an unlabelled one.
+  - say: mark every finding `text | code | design` — text is a comment, a doc clause or a docstring, code is a change to what runs, and design is a change to what the locked docs decided. The class says what disposing of the finding costs, not how bad it is
   - say: report every discovered finding to the cap with `fs report <your project>:<your node> --question --line "<the finding, and where>"` and let the cap file it as the `kind: gap` node in the scope it belongs to — the backlog is where a defect outside this change belongs, and fixing it here is the scope creep the split exists to stop; the report is the obligation and the filing is not, because a gap node names the scope it belongs to, choosing that scope is a coordinating act, and a write into the cap's own scope is refused from your pane, which holds a delivery record
   # The reviewer's contract, and the cap's. Neither is a mechanism, because the
   # judgement is not mechanizable: "is this finding in scope for this change" is
@@ -66,4 +74,12 @@ exit:
   # `accepted` is a disposition, not a loophole: it is how a real finding that is
   # out of scope closes without a fix. It needs the reason on the record, because
   # "accepted" with nothing behind it is a finding dropped.
+  #
+  # What the cap triages on, and stated rather than gated. The class is the first
+  # thing it reads a finding with, because it decides whether the finding costs a
+  # sentence or a dispatch — so it belongs at the moment the cap pays that cost,
+  # which is here. It is deliberately not a `check:`: the ask below is the only
+  # condition this exit has, and a label that could refuse would leave a review
+  # that mislabelled a finding worse off than one that never labelled it.
+  - say: each finding carries its class — text, code or design — and that class is what the cap triages on, because it says what disposing of the finding costs. It is a label, not a condition: nothing here refuses a finding for its class, and a review that mislabels one has still reported it
   - ask: every finding is dispositioned — fixed and verified in this round, filed as a named `kind: gap` node, or accepted with a reason on this node; any that is not is named here
