@@ -13,10 +13,11 @@ order: 10
 # for want of a protocol. This file is the protocol for the name people already
 # try to dispatch.
 #
-# NOT review.yaml. That one is `applies_when: code` and is SELF-review: it hands
-# the worker that wrote the diff obligations about its own diff, and it loads
-# into every code plan. This one loads into a review dispatch, and its input is
-# somebody else's change. Two audiences, two moments — do not merge them.
+# NOT code-bar.yaml. That one is `applies_when: code`: it carries the code bar,
+# including the self-review steps that hand the worker which wrote the diff
+# obligations about its own diff, and it loads into every code plan. This one
+# loads into a review dispatch, and its input is somebody else's change. Two
+# audiences, two moments — do not merge them.
 #
 # The tag cannot exclude the other file. `applies_when` matches presence and
 # equality only, with no negation, so a dispatch tagged both `--type review-task`
