@@ -113,8 +113,8 @@ func TestLoadMissingConfig(t *testing.T) {
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "fs resolve --init") {
-		t.Errorf("error should mention --init: %v", err)
+	if !strings.Contains(err.Error(), "fs init") {
+		t.Errorf("error should mention 'fs init': %v", err)
 	}
 }
 
@@ -609,6 +609,55 @@ func TestMissingL2Playbook(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "L2 detail playbook not found") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// Test that the embedded skeleton is valid YAML and parses through the real loader.
+func TestSkeletonEmbedsAndParses(t *testing.T) {
+	data := capabilities.Skeleton()
+	if len(data) == 0 {
+		t.Fatal("Skeleton() returned empty data")
+	}
+
+	// Write to temp file and load through the real parser.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "capabilities.yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := capabilities.Load(path)
+	if err != nil {
+		t.Fatalf("Load skeleton: %v", err)
+	}
+	if cfg.Version != 1 {
+		t.Errorf("version: %d, want 1", cfg.Version)
+	}
+	if len(cfg.Capabilities) != 4 {
+		t.Errorf("capabilities count: %d, want 4", len(cfg.Capabilities))
+	}
+
+	// Verify all expected capabilities are present.
+	for _, name := range []string{"distribution-engine", "coding-agent", "scheduler", "signal"} {
+		if _, ok := cfg.Capabilities[name]; !ok {
+			t.Errorf("missing capability %q", name)
+		}
+	}
+
+	// Verify DefaultConfig() delegates to Skeleton().
+	defCfg := capabilities.DefaultConfig()
+	if string(defCfg) != string(data) {
+		t.Error("DefaultConfig() does not match Skeleton()")
+	}
+}
+
+// Test that Skeleton() returns a copy, not a reference to the internal slice.
+func TestSkeletonReturnsCopy(t *testing.T) {
+	a := capabilities.Skeleton()
+	b := capabilities.Skeleton()
+	a[0] = 'X' // mutate
+	if b[0] == 'X' {
+		t.Fatal("Skeleton() returned a shared slice, not a copy")
 	}
 }
 

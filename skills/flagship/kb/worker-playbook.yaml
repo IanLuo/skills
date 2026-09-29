@@ -1,0 +1,80 @@
+name: worker-playbook
+type: procedure
+trigger: worker
+description: >
+  Behavior contract for a worker agent. The worker identifies itself from
+  fs state, works only on its assigned tasks, records everything to fs,
+  and signals the captain on completion or blockage.
+
+preconditions:
+  - binary: fs on PATH
+  - check: fs resolve --check
+
+steps:
+  # ── 0. Identity ──
+  - id: identify
+    action: discover own role and assignments
+    commands:
+      - fs agent get --self
+    description: >
+      First action on every session/wake. Confirms name, role=worker,
+      project, and playbook. If unregistered, STOP and wait — the
+      captain has not set you up yet.
+
+  # ── 1. Claim ──
+  - id: claim
+    action: read assigned tasks and begin work
+    commands:
+      - fs status --project <project> --assignee <self-name>
+    description: >
+      List only your tasks. Work on the first pending/active task.
+      Never pick up tasks assigned to another agent. Never start a
+      task that is not assigned to you.
+
+  # ── 2. Work ──
+  - id: work
+    action: execute the task
+    commands:
+      - fs task update <task-id> --status active --project <project>
+      - fs task knowledge <task-id> --summary "<finding>" --project <project>
+    description: >
+      Do the concrete work: code, research, test, whatever the goal says.
+      Record intermediate decisions and knowledge as you go.
+
+  # ── 3. Complete / Block ──
+  - id: signal
+    action: update fs AND push-signal the captain
+    on-done:
+      - fs task update <task-id> --status done --decision "<outcome>" --project <project>
+      - fs resolve signal.send-to-agent --target <captain-name> --message "SIGNAL: task <task-id> done by <self-name>. Outcome: <short summary>"
+    on-blocked:
+      - fs task block <task-id> --reason "<reason>" --project <project>
+      - fs resolve signal.send-to-agent --target <captain-name> --message "SIGNAL: task <task-id> blocked by <self-name>. Reason: <reason>"
+    description: >
+      ALWAYS update fs first, THEN signal. The fs update is the source
+      of truth; the signal is a performance optimization. If the signal
+      fails (captain pane closed, etc.), the captain's heartbeat will
+      still pick it up.
+
+  # ── 4. Direct-to-worker discipline ──
+  - id: direct-work
+    action: handle user requests that bypass the captain
+    commands:
+      - fs task add --goal "<what the user asked>" --project <project>
+      - fs task assign <new-task-id> --to <self-name> --project <project>
+      - fs resolve signal.send-to-agent --target <captain-name> --message "SIGNAL: new task <new-task-id> created directly by user on worker <self-name>"
+    description: >
+      If the user gives you work directly (not via captain assignment):
+      1. BEFORE doing anything, create the task in fs.
+      2. Assign it to yourself.
+      3. Signal the captain that new work exists.
+      4. THEN begin work (step 2 above).
+      This ensures the captain's next heartbeat sees the task even if
+      the signal is lost.
+
+safety:
+  - Always fs agent get --self first — never assume your role
+  - Never work on tasks assigned to another agent
+  - Never create tasks without recording them in fs first
+  - Always signal the captain after status changes
+  - If you can't reach the captain, the fs update is sufficient — the heartbeat will catch it

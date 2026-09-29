@@ -71,13 +71,14 @@ Results are ranked by BM25 relevance. The LLM uses FTS5 as a candidate retriever
 
 ## Playbook YAML format
 
-Playbooks are YAML files stored at `~/.fs/kb/<name>.yaml`.
+Playbooks are YAML files versioned at `skills/flagship/kb/<name>.yaml`.
+`~/.fs/kb` is a symlink to that directory, so `fs kb` commands read/write
+through it and changes are git-tracked.
 
 ```yaml
 name: dev-task-prerequisites
 type: prerequisite          # prerequisite | procedure | convention | routing
 trigger: dev-task           # which task type or skill triggers this
-engine_scope: herdr         # optional — scope to a specific engine
 steps:
   - spec                    # each step is a required doc or action
   - system-design
@@ -167,7 +168,8 @@ fs status --project backend
 fs query "shared API contract" --project backend
 ```
 
-The knowledge center (`~/.fs/kb/`) is also global — playbooks apply across all projects.
+The knowledge center (`~/.fs/kb/` → `skills/flagship/kb/`) is also global — playbooks apply across all projects.
+Playbook edits land in the repo and should be committed like code.
 
 ## Store integrity and WAL
 

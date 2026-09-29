@@ -10,6 +10,7 @@
 package capabilities
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,15 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+//go:embed skeleton.yaml
+var skeletonData []byte
+
+// Skeleton returns the embedded default capabilities.yaml content.
+// This is the single source of truth — go:embed from skeleton.yaml.
+func Skeleton() []byte {
+	return append([]byte(nil), skeletonData...)
+}
 
 // Config is the top-level capabilities.yaml structure.
 type Config struct {
@@ -76,7 +86,7 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("capabilities config not found at %s — run 'fs resolve --init' to create a default", path)
+			return nil, fmt.Errorf("capabilities config not found at %s — run 'fs init' to bootstrap (or 'fs resolve --init')", path)
 		}
 		return nil, fmt.Errorf("capabilities: read %s: %w", path, err)
 	}
@@ -492,45 +502,10 @@ func collapseSpaces(s string) string {
 	return strings.Join(parts, " ")
 }
 
-// DefaultConfig returns the default capabilities.yaml content (L1 interface-only).
+// DefaultConfig returns the default capabilities.yaml content.
+// Delegates to the embedded skeleton (single source of truth).
 func DefaultConfig() []byte {
-	return []byte(`# ~/.fs/capabilities.yaml — INTERFACE / DECLARATION ONLY
-# Each capability declares: tool binding + detail-playbook pointer.
-# ALL implementation detail (operations, templates, flags, env-aliases,
-# env-check, preconditions) lives in the L2 detail-playbook.
-# Exception: capabilities with detail-playbook: "" keep operations inline.
-
-version: 1
-
-capabilities:
-
-  distribution-engine:
-    name: herdr
-    detail-playbook: herdr-procedure
-
-  coding-agent:
-    name: pi
-    detail-playbook: ""
-    kind-default: pi
-    kind-list:
-      - pi
-      - claude
-      - codex
-      - copilot
-
-  scheduler:
-    name: claude-cron
-    detail-playbook: ""
-    operations:
-      heartbeat-arm: >-
-        CronCreate interval={interval} prompt="{prompt}"
-      heartbeat-cancel: >-
-        CronCancel
-
-  signal:
-    name: herdr-prompt
-    detail-playbook: herdr-procedure
-`)
+	return Skeleton()
 }
 
 // WriteDefaultConfig writes the default config to path, creating parent dirs.

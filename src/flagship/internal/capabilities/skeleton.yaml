@@ -1,0 +1,71 @@
+# ~/.fs/capabilities.yaml — L1 Interface / Declaration
+#
+# Created by:  fs init
+# Purpose:     Declare which concrete tools back each abstract capability.
+#              Playbooks reference capabilities (e.g. distribution-engine.spawn-pane);
+#              this file binds them to real tools (e.g. herdr).
+#
+# Customization model:
+#   L1 (this file)  — capability name → tool binding + detail-playbook pointer.
+#   L2 (playbooks)  — ALL implementation detail: operations, command templates,
+#                      flags, env-aliases, env-check, preconditions.
+#                      Stored in ~/.fs/kb/<detail-playbook>.yaml.
+#
+#   To swap a tool:  edit the binding here (e.g. name: tmux) and write/update
+#                    the corresponding L2 detail playbook.
+#   To add ops:      edit the L2 detail playbook — this file stays unchanged.
+#
+# Exception: capabilities with detail-playbook: "" keep operations inline below.
+#
+# Schema version — increment when the shape of this file changes.
+
+version: 1
+
+capabilities:
+
+  # ── distribution-engine ──────────────────────────────────────────────
+  # The terminal/pane manager that spawns and controls agent panes.
+  # Default binding: herdr (https://github.com/anthropics/herdr).
+  # Operations (spawn-pane, start-agent, prompt-agent, …) live in the
+  # L2 detail playbook referenced below.
+  distribution-engine:
+    name: herdr
+    detail-playbook: herdr-procedure
+
+  # ── coding-agent ─────────────────────────────────────────────────────
+  # Value provider — declares which agent harness(es) are available.
+  # kind-default is auto-filled into {kind} placeholders when callers
+  # don't specify one.  kind-list enumerates all installed harnesses.
+  # No detail-playbook — this capability has no command operations.
+  coding-agent:
+    name: pi
+    detail-playbook: ""
+    kind-default: pi
+    kind-list:
+      - pi
+      - claude
+      - codex
+      - copilot
+
+  # ── scheduler ────────────────────────────────────────────────────────
+  # Heartbeat / periodic-wake mechanism.  Inline operations because the
+  # command templates are simple one-liners (no flags, no env-aliases).
+  # To switch to external cron, replace the operations block or point
+  # detail-playbook at a new L2 playbook.
+  scheduler:
+    name: claude-cron
+    detail-playbook: ""
+    operations:
+      heartbeat-arm: >-
+        CronCreate interval={interval} prompt="{prompt}"
+      heartbeat-cancel: >-
+        CronCancel
+
+  # ── signal ───────────────────────────────────────────────────────────
+  # Inter-agent messaging.  Shares the distribution-engine's L2 playbook
+  # because signal delivery is implemented via the same tool (herdr agent
+  # prompt).  If your signal mechanism differs from your distribution
+  # engine, point this at a separate L2 playbook.
+  signal:
+    name: herdr-prompt
+    detail-playbook: herdr-procedure

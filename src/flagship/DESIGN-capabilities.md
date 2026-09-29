@@ -80,7 +80,7 @@ inventory — no separate headline count is maintained.
 | `internal/engine/engine.go` | 27 | `// V1: herdr.` — doc comment | distribution-engine.identity |
 | `internal/engine/herdr/herdr.go` | 24 | `exec.Command("herdr", args...)` — herdr binary | distribution-engine.binary |
 | `internal/engine/herdr/herdr.go` | 86 | `Engine: "herdr"` — literal in AgentHandle | distribution-engine.identity |
-| `internal/knowledge/knowledge.go` | 21 | `EngineScope string` — field exists but unused in resolution | distribution-engine.scope |
+| `internal/knowledge/knowledge.go` | 21 | ~~`EngineScope string`~~ **REMOVED** — engine_scope superseded by L1 detail-playbook pointer | ~~distribution-engine.scope~~ |
 
 ### 1.3 Test Files (will need updating when deprecated code is removed)
 
@@ -88,7 +88,7 @@ inventory — no separate headline count is maintained.
 |---|---|
 | `internal/engine/herdr/herdr_test.go` | `engine.Engine`, `engine.SpawnConfig`, `herdr.Adapter`, herdr command assertions |
 | `orchestrator/orchestrator_test.go` | `orchestrator.RunTask` (11 test functions), `engine.Engine` (mock), `engine.SpawnConfig` |
-| `internal/knowledge/knowledge_test.go` | `engine_scope: herdr` in fixture playbooks |
+| `internal/knowledge/knowledge_test.go` | ~~`engine_scope: herdr`~~ **REMOVED** from fixtures; replaced with ignore-test |
 
 ### 1.4 DESIGN-roles.md
 
@@ -173,9 +173,9 @@ Unix signals, named pipes, a future `fs signal` command.
   It teaches agents how to use herdr (sequences, gotchas, lifecycle states,
   read-output workarounds). It stays concrete. When the engine changes, a
   different procedure playbook replaces it (e.g., `tmux-procedure.yaml`).
-  The `engine_scope` field on playbooks (`knowledge.go:21`) controls which
-  procedure loads. The L1 `detail-playbook` pointer links each capability
-  binding to its L2 playbook.
+  ~~The `engine_scope` field on playbooks~~ **SUPERSEDED.** The capability↔playbook
+  link is solely the L1 `detail-playbook` pointer in `capabilities.yaml`.
+  Playbooks no longer carry an engine_scope tag.
 - **`fs` commands** — `fs` is the coordination store, not a swappable capability.
   It's the single source of truth and doesn't get abstracted.
 - **File/code operations** — out of scope; those are agent-internal.
@@ -460,9 +460,9 @@ reduces error rate. `fs resolve` gives us:
    playbooks resolve through the same config, the same code path.
 3. **Fail-fast validation.** `fs resolve --check` at deploy time catches missing
    bindings, unknown capabilities, and malformed templates before any agent runs.
-4. **The `engine_scope` field already exists** (`knowledge.go:21`) but is unused.
-   The resolver activates it: when loading playbooks, `fs status` filters
-   procedures by `engine_scope == capabilities.distribution-engine.name`.
+4. ~~**The `engine_scope` field already exists**~~ **SUPERSEDED.** `engine_scope`
+   has been removed from `Playbook`. The capability↔playbook link is solely
+   the L1 `detail-playbook` pointer in `capabilities.yaml`.
 
 The Go work is modest (~150 LOC) and pays for itself immediately in reliability.
 
@@ -868,16 +868,20 @@ or crontab.
 
 ### 8.2 Migration Path
 
-1. **Deploy new `fs` binary** with `fs resolve` subcommand.
-2. **Write `~/.fs/capabilities.yaml`** with herdr+pi+claude-cron bindings
-   (the current behavior, now explicit).
-3. **Verify:** `fs resolve --check` → all green.
-4. **Update playbooks** one at a time. Each update replaces `herdr` literals
+1. **Deploy new `fs` binary** with `fs resolve` and `fs init` subcommands.
+2. **`fs init`** — materializes `~/.fs/capabilities.yaml` from the embedded
+   skeleton (herdr+pi+claude-cron bindings — the current behavior, now explicit).
+3. **Link the kb:** `ln -s <skills-repo>/skills/flagship/kb ~/.fs/kb` —
+   L2 detail playbooks live in-repo; the symlink makes them available to
+   `fs resolve`. Without this, capabilities that reference a `detail-playbook`
+   (e.g. `distribution-engine.*`) fail with “L2 detail playbook not found”.
+4. **Verify:** `fs resolve --check` → all green.
+5. **Update playbooks** one at a time. Each update replaces `herdr` literals
    with `fs resolve` calls. Old and new playbooks can coexist during migration
    (agents running old playbooks still work; they just use herdr directly).
-5. **Deprecate/remove orchestrator.go + engine package** (zero production
+6. **Deprecate/remove orchestrator.go + engine package** (zero production
    callers — §6.2). Test files need updating.
-6. **Done.** To switch engines, edit `capabilities.yaml` only.
+7. **Done.** To switch engines, edit `capabilities.yaml` only.
 
 ### 8.3 No New DB Table
 
@@ -1023,20 +1027,41 @@ abstraction — backward-compatible.
    session, the next resolve picks up the change. Is this acceptable?
    **Leaning: yes — the file is tiny and changes are rare.**
 
-4. **Per-project overrides.** The current design is one global config. Should a
+4. **Per-project overrides.** ~~The current design is one global config. Should a
    project be able to override capabilities (e.g., project X uses claude agents
-   while the global default is pi)? **Leaning: defer to v2. Per-project config
-   would be `<project-root>/.fs/capabilities.yaml` with merge semantics.**
+   while the global default is pi)?~~ **DEFERRED.** Global-only for now.
+   `fs init` bootstraps `~/.fs/capabilities.yaml` from the embedded skeleton.
+   Per-project config (`<project-root>/.fs/capabilities.yaml` with merge
+   semantics) deferred to v2.
 
-5. **`engine_scope` activation.** Activate `engine_scope` filtering in v1. The
-   `EngineScope` field on `Playbook` (`knowledge.go:21`) was designed for this.
-   `fs status`’s `loadAllPlaybooks()` filters procedures by
-   `engine_scope == capabilities.distribution-engine.name`. Small check, high
-   value.
+5. ~~**`engine_scope` activation.**~~ **SUPERSEDED.** `engine_scope` removed
+   entirely from `Playbook` struct and playbook YAML. The capability↔playbook
+   link is solely the L1 `detail-playbook` pointer in `capabilities.yaml`.
+   `loadAllPlaybooks()` returns all playbooks without engine filtering.
 
 6. ~~**Worker-playbook env var dependency.**~~ **CONFIRMED.** Write the worker
    playbook with `fs resolve` calls from the start (impl plan Step 9). Don’t
    create it with hard-coded herdr and immediately rewrite.
+
+---
+
+## 11.5 Skeleton + `fs init` Bootstrap (DECIDED)
+
+The default capabilities config is maintained as an annotated YAML file
+(`internal/capabilities/skeleton.yaml`) and embedded into the binary via
+`//go:embed`. This is the **single source of truth** — no runtime repo
+dependency, no separate default-config generator.
+
+**`fs init`** is the bootstrap command:
+- Ensures `~/.fs/` exists.
+- Writes `~/.fs/capabilities.yaml` from the embedded skeleton **only if the file
+  does not exist** (never overwrites).
+- `flagship.db` auto-creates via existing `Open` paths (no action needed).
+- Output: `{"ok":true, "data":{"created":[...], "existed":[...]}}`.
+- Idempotent: re-running reports "existed" for files already present.
+
+`fs resolve --init` is retained for backward compatibility but `fs init` is the
+primary bootstrap entry point.
 
 ---
 
@@ -1055,3 +1080,4 @@ abstraction — backward-compatible.
 | Reviewer playbook | `~/.fs/kb/reviewer-playbook.yaml` |
 | Herdr procedure | `~/.fs/kb/herdr-procedure.yaml` |
 | Capability config (to be created) | `~/.fs/capabilities.yaml` |
+| Skeleton (embedded source of truth) | `src/flagship/internal/capabilities/skeleton.yaml` |

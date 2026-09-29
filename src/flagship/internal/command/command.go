@@ -85,7 +85,7 @@ type Handler struct {
 	logger      *slog.Logger
 	kbDir       string
 	projectRoot string
-	engineName  string // bound distribution-engine name for engine_scope filtering
+
 }
 
 // NewHandler opens a store at path and returns a handler.
@@ -306,11 +306,6 @@ func (h *Handler) SetProjectRoot(dir string) {
 	h.projectRoot = dir
 }
 
-// SetEngineName sets the distribution-engine name for engine_scope filtering.
-func (h *Handler) SetEngineName(name string) {
-	h.engineName = name
-}
-
 // StatusOpts holds optional filters for Status.
 type StatusOpts struct {
 	Assignee string // filter tasks by assignee
@@ -362,9 +357,6 @@ func (h *Handler) Status(projectID string, opts ...StatusOpts) Response {
 }
 
 // loadAllPlaybooks reads every playbook from the knowledge center.
-// Filters procedure playbooks by engine_scope if an engine name is set
-// (DESIGN-capabilities §11 Q5). Non-procedure playbooks and playbooks
-// without an engine_scope are always included.
 func (h *Handler) loadAllPlaybooks() []*knowledge.Playbook {
 	kc, err := knowledge.Open(h.kbDir)
 	if err != nil {
@@ -382,13 +374,6 @@ func (h *Handler) loadAllPlaybooks() []*knowledge.Playbook {
 		if err != nil {
 			h.logger.Error("knowledge center get failed", "name", name, "error", err)
 			continue
-		}
-		// Engine-scope filtering: if a procedure playbook has engine_scope set,
-		// only include it if it matches the bound distribution-engine name.
-		if h.engineName != "" && pb.Type == "procedure" && pb.EngineScope != "" {
-			if pb.EngineScope != h.engineName {
-				continue
-			}
 		}
 		pbs = append(pbs, pb)
 	}

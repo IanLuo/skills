@@ -905,3 +905,166 @@ steps:
 		t.Errorf("expected exit 1 after remove, got %d", code)
 	}
 }
+
+func TestCLIInitCreatesCapabilities(t *testing.T) {
+	bin := getFS(t)
+	homeDir := t.TempDir()
+
+	runWithHome := func(args ...string) (map[string]any, int) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = homeDir
+		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		out, err := cmd.Output()
+		exitCode := 0
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				exitCode = ee.ExitCode()
+				if len(out) == 0 {
+					out = ee.Stderr
+				}
+			} else {
+				t.Fatalf("exec: %v", err)
+			}
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(out, &resp); err != nil {
+			t.Fatalf("unmarshal %q: %v", string(out), err)
+		}
+		return resp, exitCode
+	}
+
+	capPath := filepath.Join(homeDir, ".fs", "capabilities.yaml")
+
+	// First run: should create.
+	resp, code := runWithHome("init")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	if resp["ok"] != true {
+		t.Fatalf("not ok: %v", resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	created := data["created"].([]any)
+	if len(created) != 1 {
+		t.Fatalf("expected 1 created, got %v", created)
+	}
+	if created[0] != capPath {
+		t.Errorf("created[0] = %v, want %v", created[0], capPath)
+	}
+
+	// File should exist on disk.
+	if _, err := os.Stat(capPath); err != nil {
+		t.Fatalf("capabilities.yaml not created: %v", err)
+	}
+
+	// File content should contain expected markers.
+	content, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(content), "version: 1") {
+		t.Error("capabilities.yaml missing 'version: 1'")
+	}
+	if !strings.Contains(string(content), "distribution-engine") {
+		t.Error("capabilities.yaml missing 'distribution-engine'")
+	}
+}
+
+func TestCLIInitIdempotent(t *testing.T) {
+	bin := getFS(t)
+	homeDir := t.TempDir()
+
+	runWithHome := func(args ...string) (map[string]any, int) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = homeDir
+		cmd.Env = append(os.Environ(), "HOME="+homeDir)
+		out, err := cmd.Output()
+		exitCode := 0
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				exitCode = ee.ExitCode()
+				if len(out) == 0 {
+					out = ee.Stderr
+				}
+			} else {
+				t.Fatalf("exec: %v", err)
+			}
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(out, &resp); err != nil {
+			t.Fatalf("unmarshal %q: %v", string(out), err)
+		}
+		return resp, exitCode
+	}
+
+	capPath := filepath.Join(homeDir, ".fs", "capabilities.yaml")
+
+	// First run: creates.
+	runWithHome("init")
+
+	// Modify the file to prove it isn't overwritten.
+	os.WriteFile(capPath, []byte("# custom config\nversion: 99\ncapabilities:\n  custom:\n    name: custom\n    detail-playbook: \"\"\n"), 0o644)
+
+	// Second run: should report existed, NOT overwrite.
+	resp, code := runWithHome("init")
+	if code != 0 {
+		t.Fatalf("exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	existed := data["existed"].([]any)
+	foundCap := false
+	for _, e := range existed {
+		if e == capPath {
+			foundCap = true
+		}
+	}
+	if !foundCap {
+		t.Errorf("expected %s in existed, got %v", capPath, existed)
+	}
+
+	// Verify file was NOT overwritten.
+	content, _ := os.ReadFile(capPath)
+	if !strings.Contains(string(content), "version: 99") {
+		t.Error("capabilities.yaml was overwritten on second init")
+	}
+}
+
+func TestCLIInitDoesNotOverwrite(t *testing.T) {
+	// Explicitly verify: pre-existing file is never touched.
+	bin := getFS(t)
+	homeDir := t.TempDir()
+
+	// Pre-create the file.
+	fsDir := filepath.Join(homeDir, ".fs")
+	os.MkdirAll(fsDir, 0o755)
+	capPath := filepath.Join(fsDir, "capabilities.yaml")
+	customContent := []byte("# my custom config\nversion: 42\ncapabilities:\n  x:\n    name: x\n    detail-playbook: \"\"\n")
+	os.WriteFile(capPath, customContent, 0o644)
+
+	cmd := exec.Command(bin, "init")
+	cmd.Dir = homeDir
+	cmd.Env = append(os.Environ(), "HOME="+homeDir)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+
+	var resp map[string]any
+	json.Unmarshal(out, &resp)
+	data := resp["data"].(map[string]any)
+
+	// created should be empty.
+	if created, ok := data["created"]; ok && created != nil {
+		if arr, ok := created.([]any); ok && len(arr) > 0 {
+			t.Errorf("should not have created anything: %v", created)
+		}
+	}
+
+	// File content unchanged.
+	content, _ := os.ReadFile(capPath)
+	if string(content) != string(customContent) {
+		t.Error("pre-existing capabilities.yaml was modified")
+	}
+}

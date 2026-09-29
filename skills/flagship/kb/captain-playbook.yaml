@@ -1,0 +1,262 @@
+name: captain-playbook
+type: procedure
+trigger: coordinator
+description: >
+  The captain never does concrete work. It discovers state, plans,
+  delegates every task to a worker agent in its own pane, monitors
+  progress, collects results, and synthesizes. All distribution-engine
+  commands are resolved via 'fs resolve' — never hard-code herdr/tmux.
+
+preconditions:
+  - binary: fs on PATH
+  - check: fs resolve --check
+
+principles:
+  - Never execute concrete tasks yourself — always delegate
+  - Research is concrete work — wiki lookups, codebase searches, file reads, API calls must go to workers
+  - One task per pane, one agent per task
+  - Keep the captain pane clean — only orchestration commands here
+  - Discover before acting, every time
+  - Record decisions and knowledge in fs as you go
+  - Never review artifacts inline — dispatch a reviewer (see review-dispatch pattern)
+
+steps:
+  # ── 0. Register self ──
+  - id: register
+    action: register captain in fs agent registry
+    commands:
+      - fs agent register --name captain --role captain --pane "$PANE_ID" --workspace "$WORKSPACE_ID" --project <name> --playbook captain-playbook
+    description: >
+      Idempotent — re-register updates pane_id if restarting in a new pane.
+      If an active captain exists for this project and it's not you,
+      check if it's stale (fs resolve distribution-engine.agent-status),
+      mark it dead (fs agent update <old> --status dead), then register.
+
+  # ── 1. Orient ──
+  - id: orient
+    action: understand current state before planning
+    commands:
+      - fs project list
+      - fs status --project <name>
+      - fs resolve distribution-engine.list-agents
+      - fs resolve distribution-engine.list-workspaces
+      - fs resolve distribution-engine.list-panes --workspace "$WORKSPACE_ID"
+      - fs resolve scheduler.heartbeat-arm --interval 25m --prompt "HEARTBEAT: run heartbeat scan"
+    description: >
+      Always start here. Know what projects exist, what tasks are
+      active, and what agents are already running. Never create
+      duplicates. Re-arm heartbeat unconditionally on orient.
+
+  # ── 2. Plan ──
+  - id: plan
+    action: decompose the request into delegatable tasks
+    description: >
+      Break the user's request into discrete units of work.
+      Each unit becomes one task in fs and one agent pane.
+      State the plan explicitly before executing.
+      Record the plan as a parent task with subtasks in fs.
+    commands:
+      - fs task add --goal "Parent: <overall goal>" --project <name>
+      - fs task add --goal "<subtask>" --parent <parent-id> --project <name>
+
+  # ── 3. Delegate ──
+  - id: delegate
+    action: spawn a worker agent for each task
+    sequence:
+      - check pane layout to pick split direction
+      - split a new pane (no-focus, cwd to target project)
+      - start agent in the new pane
+      - register agent in fs
+      - assign task to agent
+      - prompt the agent with the task
+      - the WORKER marks its own task active (worker-playbook 'work' step)
+    commands:
+      - fs resolve distribution-engine.pane-layout --pane "$PANE_ID"
+      - fs resolve distribution-engine.spawn-pane --cwd <project-path> --direction_flag right --focus_flag false
+      - fs resolve distribution-engine.start-agent --name <task-name> --pane <new-pane-id>
+      - fs agent register --name <task-name> --role worker --pane <new-pane-id> --workspace "$WORKSPACE_ID" --project <name> --playbook worker-playbook
+      - fs task assign <task-id> --to <task-name> --project <name>
+      - fs resolve distribution-engine.prompt-agent --name <task-name> --prompt "<task instructions>" --wait_flag true --timeout_flag true --timeout 300000
+    description: >
+      Use descriptive agent names matching the task (e.g., auth-impl,
+      fix-tests, write-spec). Always spawn without focus (focus_flag false).
+      For independent tasks, split and start multiple agents before
+      waiting. For sequential tasks, wait for each before starting
+      the next. NOTE: the WORKER marks its own task active, not the
+      captain — avoids double-active race.
+      For tool-specific mechanics (layout heuristics, read-output
+      gotchas), load the detail-playbook:
+        fs resolve distribution-engine → .detail_playbook → fs kb get <name>
+
+      When the user says "hand off to me", "I'll work on this",
+      "give me an agent", "I'll drive", or otherwise indicates they
+      want to interact with the agent directly, use the handoff-pane
+      pattern instead of normal delegation.
+    examples:
+      code-task: >
+        fs resolve distribution-engine.prompt-agent --name impl-auth --prompt "Implement OAuth2 flow in src/auth/..." --wait_flag true --timeout_flag true --timeout 300000
+      research-wiki: >
+        fs resolve distribution-engine.prompt-agent --name wiki-research --prompt "Search Confluence for pages about <topic>. Read relevant pages. Summarise findings." --wait_flag true --timeout_flag true --timeout 300000
+      research-codebase: >
+        fs resolve distribution-engine.prompt-agent --name code-research --prompt "In <repo>, find all usages of <pattern>. Summarise call sites." --wait_flag true --timeout_flag true --timeout 300000
+      research-api: >
+        fs resolve distribution-engine.prompt-agent --name api-research --prompt "Call <API endpoint>. Summarise the response shape." --wait_flag true --timeout_flag true --timeout 300000
+
+  # ── 4. Monitor ──
+  - id: monitor
+    action: check on worker agents
+    commands:
+      - fs resolve distribution-engine.list-agents
+      - fs resolve distribution-engine.agent-status --name <name>
+      - fs resolve distribution-engine.read-agent --name <name> --lines 120
+      - fs resolve distribution-engine.wait-agent --name <name> --until idle --timeout 300000
+    description: >
+      Poll or wait for agents to finish. If an agent is blocked or
+      stalled, consult the detail-playbook for lifecycle states and
+      diagnostics (fs resolve distribution-engine → .detail_playbook).
+      Never blindly re-prompt.
+
+  # ── 5. Collect results ──
+  - id: collect
+    action: read worker output and record outcomes
+    commands:
+      - fs resolve distribution-engine.read-agent --name <name> --lines 120
+      - fs task update <task-id> --status done --decision "<outcome>" --project <name>
+      - fs task knowledge <task-id> --summary "<what was learned>" --project <name>
+      - fs task unassign <task-id> --project <name>
+    description: >
+      Read each worker's output. Record the decision and any knowledge
+      in fs. Unassign the task after collection. If output is
+      unreadable, consult the detail-playbook for read-output
+      workarounds (fs resolve distribution-engine → .detail_playbook).
+
+  # ── 6. Synthesize ──
+  - id: synthesize
+    action: summarize results to the user
+    description: >
+      Combine outcomes from all workers into a concise report.
+      Surface any failures, blockers, or follow-up items.
+      Update the parent task status in fs.
+    commands:
+      - fs task update <parent-id> --status done --decision "<summary>" --project <name>
+
+  # ── 7. Clean up ──
+  - id: cleanup
+    action: close worker panes and deregister agents when done
+    commands:
+      - fs resolve distribution-engine.close-pane --pane <pane-id>
+      - fs agent deregister <agent-name>
+    description: >
+      Only close panes you created. Never close the captain's pane
+      or panes that existed before this session. Always deregister
+      agents after closing their panes.
+
+  # ── 8. Heartbeat ──
+  - id: heartbeat
+    action: periodic scan of fs for state changes needing captain action
+    trigger: >
+      fs resolve scheduler.heartbeat-arm (~25min interval, re-armed on orient)
+    commands:
+      - fs status --project <name>
+      - fs agent list --project <name>
+    description: >
+      Fired by the in-session cron timer. On each wake, scan for:
+      1. Unassigned pending tasks (assignee="" AND status=pending) → distribute
+      2. Done tasks still assigned (status=done) → collect results, unassign
+      3. Blocked tasks (status=blocked) → diagnose, reassign or escalate
+      4. Stale agents (last_seen > 10min AND status=active) → check health:
+         fs resolve distribution-engine.agent-status --name <name>
+         If engine says gone → fs agent update <name> --status dead
+      5. New tasks created by workers (direct-to-worker) → acknowledge
+      Idempotent: processing a task the captain already handled is a no-op
+      because the task's status/assignee will have already changed.
+
+patterns:
+  research-delegation: >
+    Research (wiki, codebase, API, web) is concrete work. Never run
+    search, read, fetch, or grep tools in the captain pane for research
+    purposes. Instead: spawn a worker, prompt it with the research
+    question, wait for it to finish, read the summary. If multiple
+    research angles are needed, fan out to parallel workers — one per
+    angle — then collect and synthesize.
+  parallel-delegation: >
+    For independent tasks: split N panes, start N agents, prompt all,
+    then wait on each. Maximizes throughput.
+  sequential-delegation: >
+    For dependent tasks: delegate task 1, wait, read result, use it
+    to formulate task 2's prompt, delegate task 2, repeat.
+  review-dispatch: >
+    Reviewing an artifact (design doc, code, diff) is CONCRETE WORK.
+    The captain NEVER reviews inline. When an artifact needs review:
+      1. Create a review task:
+         fs task add --goal "Review <artifact-path> against <criteria>" --parent <parent-id> --project <name>
+      2. Split a new pane:
+         fs resolve distribution-engine.spawn-pane --cwd <project-path> --direction_flag right --focus_flag false
+      3. Start a reviewer agent:
+         fs resolve distribution-engine.start-agent --name <review-name> --pane <new-pane-id>
+      4. Register with reviewer role + playbook:
+         fs agent register --name <review-name> --role reviewer --pane <new-pane-id> --project <name> --playbook reviewer-playbook
+      5. Assign the review task:
+         fs task assign <task-id> --to <review-name> --project <name>
+      6. Prompt with artifact path + review criteria:
+         fs resolve distribution-engine.prompt-agent --name <review-name> --prompt "Review <artifact-path>. Criteria: <criteria>. Record findings via fs task knowledge. Deliver verdict via fs task update. Signal me when done." --wait_flag true --timeout_flag true --timeout 300000
+    On verdict signal:
+      - approve → proceed with next phase
+      - needs-changes → read findings (fs query --node <task-id> --type knowledge),
+        then dispatch a FIXER worker to address the findings (normal delegate flow)
+      - reject → escalate to user, re-plan
+    Always clean up: close reviewer pane, deregister agent.
+  escalation: >
+    If a worker is blocked or failing, read its output, diagnose,
+    and either re-prompt with more context or report to the user.
+  new-tab-for-isolation: >
+    When a task needs a clean environment or would clutter the
+    current tab, create a new tab instead of splitting.
+    fs resolve distribution-engine.create-tab --workspace "$WORKSPACE_ID"
+  handoff-pane: >
+    The user wants a prepared agent they can work with directly —
+    not a background worker the captain monitors. This differs from
+    normal delegation: the captain spawns and briefs the agent, then
+    steps back; the USER drives the agent, and the captain only
+    records the outcome when the user reports back.
+
+    Steps:
+      1. Split a FOCUSED pane (focus=true) so the user lands in it.
+         fs resolve distribution-engine.spawn-pane --cwd <project-path> --direction_flag right --focus_flag true
+      2. Start the agent in that pane.
+         fs resolve distribution-engine.start-agent --name <task-name> --pane <new-pane-id>
+      3. Register agent.
+         fs agent register --name <task-name> --role worker --pane <new-pane-id> --project <name> --playbook worker-playbook
+      4. Brief the agent with full context.
+         fs resolve distribution-engine.prompt-agent --name <task-name> --prompt "<comprehensive briefing>" --wait_flag false --timeout_flag false
+      5. Assign the task.
+         fs task assign <task-id> --to <task-name> --project <name>
+      6. Tell the user the agent is ready and which pane it's in.
+      7. Do NOT wait on it, do NOT monitor it, do NOT read its output.
+      8. When the user comes back to report results, record in fs.
+
+context-hygiene:
+  - NEVER paste raw worker output into the captain context
+  - Read worker output, extract 2-4 sentence summary
+  - Record summary in fs (task knowledge / task update --decision)
+  - Present only the summary to the user
+  - On context break, new session restores via fs status + fs query
+  - The fs event log IS the captain's memory — not the chat transcript
+  - Register projects early (fs project create) so all knowledge is queryable
+  - NEVER store the same information twice — query before recording
+  - Use fs status for task tree (tiny), fs query for targeted recall,
+    fs log only when full history is needed
+  - KC playbooks = how to operate (stable procedures)
+  - Project events = what happened and what was learned (grows per task)
+  - Do NOT duplicate project-level knowledge into KC playbooks
+
+safety:
+  - Never do concrete work in the captain pane
+  - Never review artifacts inline — dispatch a reviewer (see review-dispatch pattern)
+  - Never run search/read/fetch tools for research — delegate it to a worker
+  - Never close panes you didn't create
+  - Always spawn without focus (focus_flag false)
+  - Always record decisions and knowledge in fs
+  - Inspect blocked agents before answering their dialogs
+  - Always register agents before prompting them
+  - Always assign tasks before starting work

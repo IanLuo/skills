@@ -1,0 +1,211 @@
+name: herdr-procedure
+type: procedure
+trigger: herdr
+description: >
+  L2 tool-detail playbook for herdr (the distribution-engine + signal bindings).
+  Holds both machine-readable implementation (capability-impl) and human-readable
+  guidance (steps, gotchas, safety). This is the canonical reference loaded when
+  L3 role playbooks need tool-specific mechanics.
+  Cross-ref: capabilities.yaml distribution-engine.detail-playbook → this file.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MACHINE-READABLE IMPLEMENTATION — parsed by `fs resolve`
+# Do NOT duplicate command syntax below; this block is the single source of
+# truth for herdr command templates, flags, env-aliases, and preconditions.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+capability-impl:
+
+  distribution-engine:
+    env-check: 'test "${HERDR_ENV:-}" = 1'
+    preconditions:
+      - env: HERDR_ENV=1
+      - binary: herdr
+    env-aliases:
+      PANE_ID: HERDR_PANE_ID
+      WORKSPACE_ID: HERDR_WORKSPACE_ID
+      TAB_ID: HERDR_TAB_ID
+      ENGINE_ENV: HERDR_ENV
+    flags:
+      focus_flag:
+        "true": ""
+        "false": "--no-focus"
+      wait_flag:
+        "true": "--wait"
+        "false": ""
+      timeout_flag:
+        "true": "--timeout {timeout}"
+        "false": ""
+    operations:
+      spawn-pane: >-
+        herdr pane split --current --direction {direction}
+        --cwd {cwd} {focus_flag}
+      start-agent: >-
+        herdr agent start {name} --kind {kind} --pane {pane}
+      prompt-agent: >-
+        herdr agent prompt {name} "{prompt}" {wait_flag} {timeout_flag}
+      read-agent: >-
+        herdr agent read {name} --source recent-unwrapped --lines {lines}
+      wait-agent: >-
+        herdr agent wait {name} --until {until} --timeout {timeout}
+      agent-status: >-
+        herdr agent get {name}
+      list-agents: >-
+        herdr agent list
+      close-pane: >-
+        herdr pane close {pane}
+      pane-layout: >-
+        herdr pane layout --pane {pane}
+      list-panes: >-
+        herdr pane list --workspace {workspace}
+      list-workspaces: >-
+        herdr workspace list
+      create-tab: >-
+        herdr tab create --workspace {workspace}
+
+  signal:
+    operations:
+      send-to-agent: >-
+        herdr agent prompt {target} "{message}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT-FACING GUIDANCE — how and when to use herdr
+# For exact command syntax, use `fs resolve distribution-engine.<operation>`.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+steps:
+  # ── 1. Verify environment ──
+  - id: verify-env
+    action: confirm running inside herdr
+    description: >
+      Run the env-check from capability-impl before any herdr call.
+      If HERDR_ENV ≠ 1, stop — herdr commands will fail.
+
+  # ── 2. Discover current state ──
+  - id: discover
+    action: discover layout and agents
+    operations: [list-workspaces, list-panes, list-agents]
+    description: >
+      Always discover before acting. Read IDs from JSON responses,
+      never predict them. Use $HERDR_WORKSPACE_ID, $HERDR_TAB_ID,
+      $HERDR_PANE_ID for caller context.
+
+  # ── 3. Layout — split panes ──
+  - id: split-pane
+    action: create a sibling pane
+    operations: [pane-layout, spawn-pane]
+    description: >
+      Check layout first (pane-layout): split wide panes right, narrow
+      or tall panes down. Always pass --no-focus (focus=false) to keep
+      the caller in its pane — see gotchas.no-focus-rationale. Always
+      pass --cwd to preserve working directory. Read the new pane ID
+      from .result.pane.pane_id in the JSON response.
+
+  # ── 4. Workspaces and tabs ──
+  - id: workspace-tab
+    action: create workspace or tab when needed
+    operations: [create-tab]
+    description: >
+      Default to sibling pane in current tab. Only create workspace/tab
+      if the user explicitly requests it. workspace create returns
+      .result.workspace, .result.tab, .result.root_pane.
+      tab create returns .result.tab, .result.root_pane.
+
+  # ── 5. Start an agent ──
+  - id: start-agent
+    action: launch a coding agent in a shell pane
+    operations: [start-agent]
+    description: >
+      Requires an available shell pane (interactive prompt, no foreground
+      process). Name must match [a-z][a-z0-9_-]{0,31}, unique among live
+      agents. Returns after herdr detects the agent is ready (30s timeout).
+      Run `herdr agent` to see supported kinds (claude, codex, copilot, etc.).
+      Pass extra args after `--` if needed.
+
+  # ── 6. Prompt and wait ──
+  - id: prompt-agent
+    action: submit work to an agent and wait for completion
+    operations: [prompt-agent]
+    description: >
+      Use wait=true and timeout for synchronous dispatch. The wait blocks
+      until the agent settles to idle, done, or blocked.
+      Rejects with agent_blocked if agent is at an approval dialog.
+      Returns agent_prompt_stalled if no activity within 5s.
+      Timeout (ms) includes submission time.
+
+  # ── 7. Read results ──
+  - id: read-output
+    action: inspect agent or pane output
+    operations: [agent-status, read-agent]
+    description: >
+      Sources: visible (viewport), recent (with wraps), recent-unwrapped
+      (joined — best for logs), detection (plain-text bottom buffer).
+      If increasing --lines doesn't reveal more, the agent may be on the
+      alternate screen (e.g. a TUI). Workaround: prompt the agent to
+      write its output to a temp file, then read that file instead.
+      For non-agent panes, use `herdr pane read <pane-id>` directly.
+
+  # ── 8. Run commands (non-agent) ──
+  - id: run-command
+    action: run a shell command in another pane
+    operations: [spawn-pane]
+    description: >
+      Split a pane, then use `herdr pane run <pane-id> "command"` to
+      send a command + Enter atomically. Use `herdr pane wait-output
+      <pane-id> --match "expected" --timeout 120000` to wait for output
+      (--match for literal, --regex for Rust regex). Omitting --timeout
+      waits indefinitely. Read results with `herdr pane read`.
+
+  # ── 9. Agent lifecycle states ──
+  - id: lifecycle
+    action: understand and wait for agent states
+    operations: [wait-agent, agent-status]
+    states:
+      idle: ready for input (not yet completed a turn)
+      done: ready for input (completed a turn)
+      working: processing
+      blocked: approval or question dialog detected
+      unknown: agent present but unclassified
+    description: >
+      idle and done both mean ready for input.
+      blocked requires inspection before answering — read the dialog first.
+      unknown does not prove completion.
+
+  # ── 10. Coordinate across agents ──
+  - id: coordinate
+    action: cross-agent coordination pattern
+    operations: [wait-agent, read-agent]
+    description: >
+      Wait for one agent to finish, read its output, feed to another.
+      Each agent is targeted by its unique name or hosting pane ID.
+      IDs are scoped to one server — do not mix across machines.
+
+gotchas:
+  no-focus-rationale: >
+    --no-focus prevents herdr from switching terminal focus to the new
+    pane. Without it, the captain's pane loses focus on every split,
+    which breaks orchestration flow. Always pass --no-focus for
+    background work; only omit it for the handoff-pane pattern where
+    the user intentionally takes over.
+  alternate-screen: >
+    Some agents (or TUI tools they run) switch to the alternate screen
+    buffer. herdr agent read cannot see alternate-screen content.
+    Workaround: prompt the agent to write output to a temp file.
+  prompt-stalled: >
+    herdr agent prompt returns agent_prompt_stalled if no activity is
+    detected within 5s of prompt submission. This usually means the
+    agent is busy or its input buffer is full. Wait and retry.
+  agent-blocked: >
+    herdr agent prompt --wait rejects with agent_blocked if the agent
+    is at an approval dialog. Read the dialog first (agent read) before
+    answering or re-prompting.
+
+safety:
+  - Always use --no-focus for background work (see gotchas.no-focus-rationale)
+  - Always use --current or explicit pane ID, never rely on UI focus
+  - Parse IDs from JSON responses, never derive from sidebar order
+  - Never close workspaces/tabs/panes/sessions you didn't create
+  - Never run `herdr server stop` unless user explicitly asks
+  - Never kill the main herdr process
+  - Use --trust-repository only after user verification
+  - Check `herdr status` before relying on new server features

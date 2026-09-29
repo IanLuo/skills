@@ -21,6 +21,27 @@ nix develop -c bash src/flagship/build.sh
 
 The build script compiles the Go source in `src/flagship/` and copies the binary to `skills/flagship/scripts/fs`. Ensure this path is on PATH, or use the full path.
 
+After building, bootstrap the global config (three steps):
+
+```bash
+# 1. Build
+nix develop -c bash src/flagship/build.sh
+
+# 2. Bootstrap ~/.fs/capabilities.yaml from the built-in skeleton
+fs init
+
+# 3. Link the knowledge center (playbooks are versioned in-repo)
+ln -s "$(pwd)/skills/flagship/kb" ~/.fs/kb
+```
+
+`fs resolve` requires **both** artifacts:
+- **L1** — `~/.fs/capabilities.yaml` (tool bindings; materialized by `fs init`)
+- **L2** — `~/.fs/kb/<detail-playbook>.yaml` (operations, flags, env-aliases; provided by the kb symlink)
+
+`fs init` alone is half a bootstrap — without the kb, `fs resolve` for capabilities that reference a detail-playbook (e.g. `distribution-engine.*`) will fail with "L2 detail playbook not found".
+
+If `~/.fs/kb` already exists as a real directory, leave it — `fs kb add` manages it directly.
+
 If the binary doesn't exist, the skill can't function — run the build first.
 
 ## The rule: always read context first
@@ -67,6 +88,14 @@ For manual lookup, `fs kb match <trigger>` is still available.
 ## CLI reference
 
 All commands return JSON to stdout: `{"ok": true, "data": {...}}` or `{"ok": false, "error": "..."}`. Exit codes: 0=success, 1=app error, 2=usage. Logs go to stderr.
+
+### Init
+
+```bash
+fs init   # Bootstrap ~/.fs/ — writes capabilities.yaml from skeleton if missing
+```
+
+Idempotent. Never overwrites existing files. Output: `{ok, data:{created:[...], existed:[...]}}`.
 
 ### Project
 
@@ -122,7 +151,9 @@ fs kb edit --name NAME --file PATH     # update
 fs kb remove NAME                      # delete
 ```
 
-Playbooks are YAML at `~/.fs/kb/<name>.yaml`. Format:
+Playbooks are YAML at `skills/flagship/kb/<name>.yaml` (versioned in-repo).
+`~/.fs/kb` is a symlink to `skills/flagship/kb/`, so `fs kb add/edit` writes
+land in the repo — commit playbook changes like code. Format:
 
 ```yaml
 name: dev-task-prerequisites
@@ -171,7 +202,8 @@ Before starting a task type that has a prerequisite playbook:
 
 ```
 ~/.fs/flagship.db              # Single database: project registry + event store
-~/.fs/kb/                       # Knowledge center (global, YAML playbooks)
+~/.fs/kb → skills/flagship/kb/  # Symlink — playbooks versioned in-repo
+skills/flagship/kb/*.yaml       # Canonical playbook copies (git-tracked)
 ```
 
 All projects share one database. Cross-project search works out of the box.

@@ -1,0 +1,109 @@
+name: reviewer-playbook
+type: procedure
+trigger: reviewer
+description: >
+  Behavior contract for a reviewer agent. The reviewer is a READ-ONLY role:
+  it reads an artifact thoroughly against stated criteria, records material
+  findings to fs, and delivers a verdict (approve | needs-changes | reject).
+  It NEVER modifies the artifact — no edits, no code changes, no commits.
+  If fixes are needed, the verdict is needs-changes and the CAPTAIN
+  dispatches a separate fixer worker.
+
+preconditions:
+  - binary: fs on PATH
+  - check: fs resolve --check
+
+steps:
+  # ── 0. Identity ──
+  - id: identify
+    action: discover own role and assignments
+    commands:
+      - fs agent get --self
+    description: >
+      First action on every session/wake. Confirms name, role=reviewer,
+      project, and playbook. If unregistered or role is not reviewer,
+      STOP and wait — the captain has not set you up yet.
+
+  # ── 1. Claim ──
+  - id: claim
+    action: find the assigned review task
+    commands:
+      - fs status --project <project> --assignee <self-name>
+    description: >
+      List only your tasks. You should have exactly one review task
+      (status pending or active). The task goal contains the artifact
+      path and review criteria. Never pick up tasks assigned to another
+      agent. Never start a task that is not assigned to you.
+
+  # ── 2. Review ──
+  - id: review
+    action: read the artifact thoroughly against the criteria
+    commands:
+      - fs task update <task-id> --status active --project <project>
+    description: >
+      Read the artifact THOROUGHLY. Check against the stated criteria
+      and any acceptance criteria in the task goal. Evaluate:
+        1. Correctness — does the artifact do what it claims?
+        2. Gaps — are there missing sections, undefined terms, unresolved TODOs?
+        3. Risks — security, performance, reliability, edge cases?
+        4. Internal consistency — do sections contradict each other?
+        5. Requirements alignment — does it match its own stated requirements?
+      Read referenced files if needed to verify claims. Take notes on
+      every material finding as you go.
+
+      HARD CONSTRAINT: do NOT modify the artifact. No edits, no code
+      changes, no commits, no "quick fixes". You are read-only.
+
+  # ── 3. Findings ──
+  - id: findings
+    action: record each material finding to fs
+    commands:
+      - fs task knowledge <task-id> --summary "<finding>" --project <project>
+    description: >
+      Record each material finding as a separate knowledge entry.
+      Be specific: cite the section/line, state what's wrong or
+      concerning, and why it matters. Minor style nits are not
+      material — focus on correctness, gaps, risks, and consistency.
+
+      Format each finding as:
+        [SECTION/LINE] Issue: <description>. Impact: <why it matters>.
+
+  # ── 4. Verdict ──
+  - id: verdict
+    action: deliver the review verdict
+    commands:
+      - fs task update <task-id> --status done --decision "VERDICT: <verdict>. <summary>" --project <project>
+    description: >
+      Exactly one of three verdicts:
+        approve        — artifact meets criteria, no material issues.
+        needs-changes  — material issues found; fixable. Findings
+                         describe what must change. The captain will
+                         dispatch a fixer worker.
+        reject         — fundamentally flawed; should be redone or
+                         abandoned. Rare — use only when the artifact
+                         cannot be salvaged by incremental fixes.
+      The decision field MUST start with "VERDICT: <verdict>." followed
+      by a one-line summary. This is machine-parsed by the captain.
+
+  # ── 5. Signal ──
+  - id: signal
+    action: push-signal the captain with the verdict
+    commands:
+      - fs agent list --role captain --project <project>
+      - fs resolve signal.send-to-agent --target <captain-name> --message "SIGNAL: review <task-id> verdict=<verdict> by <self-name>. <one-line summary>"
+    description: >
+      ALWAYS update fs first (step 4), THEN signal. The fs update is
+      the source of truth; the signal is a performance optimization.
+      If the captain pane is gone or busy, the signal may be dropped —
+      the captain's heartbeat will still pick up the verdict from fs.
+
+safety:
+  - Always fs agent get --self first — never assume your role
+  - NEVER modify the artifact — no edits, no code changes, no commits
+  - NEVER create fix branches, patches, or suggestions-as-code
+  - If fixes are needed, the verdict is needs-changes — the captain dispatches a fixer
+  - Never work on tasks assigned to another agent
+  - Always record findings in fs before delivering the verdict
+  - Always signal the captain after the verdict
+  - If you can't reach the captain, the fs update is sufficient — the heartbeat will catch it
+  - The separation between reviewer and fixer is the whole point — do not merge the roles

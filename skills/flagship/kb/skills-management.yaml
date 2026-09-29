@@ -1,0 +1,61 @@
+name: skills-management
+type: procedure
+trigger: skill creation, skill update, new integration
+
+steps:
+  - id: check-existing
+    action: "ls ~/Documents/github/skills/skills/"
+    why: "Don't duplicate — check if a skill already exists for this integration"
+
+  - id: read-template
+    action: "read skills/skill-template/SKILL.md"
+    why: "Required frontmatter: name, description (trigger-oriented), metadata (audience, domain)"
+
+  - id: check-credentials
+    condition: "new skill needs authentication"
+    action: "read skills/credentials/SKILL.md"
+    why: "Credentials skill handles all auth — no scripts needed in integration skills"
+
+  - id: create-credentials
+    condition: "credential store doesn't exist yet for this service"
+    action: "bash skills/credentials/scripts/create.sh <service> <VAR1> <VAR2> ..."
+    why: "One-time interactive setup — prompts for secrets, stores in ~/.credentials/<service>.env"
+
+  - id: create-skill
+    action: "mkdir skills/<name> && write skills/<name>/SKILL.md"
+    reference:
+      - "skills/skill-template/SKILL.md — required frontmatter and sections"
+      - "skills/atlassian/SKILL.md — reference pattern for API integration skills"
+    why: "One folder, one SKILL.md. No README, no CHANGELOG."
+
+  - id: validate
+    action: "python3 skills/skill-man/scripts/validate.py"
+    expect: "✓ <name> in output"
+    why: "Validate is the source of truth for the spec — must pass before deploy"
+
+  - id: deploy
+    action: "bash bin/deploy-skills.sh --skill <name>"
+    verify: "bash bin/deploy-skills.sh --doctor"
+    why: "Symlinks skill into each detected agent's global skills dir — edits are live immediately"
+
+  - id: update-consumers
+    condition: "skill uses credentials"
+    action: "Add skill to 'Skills Using This Pattern' list in skills/credentials/SKILL.md"
+    why: "Keep cross-references current"
+
+  - id: register-playbook
+    condition: "this integration also needs a playbook"
+    action: "fs kb add --name <name> --file <path>.yaml"
+    why: "Playbooks live in fs kb for discovery across sessions"
+
+  - id: test-fresh
+    action: "Open a fresh agent session and invoke the skill by its triggers"
+    why: "Forward-test — watch it work from scratch, not just from the authoring session"
+
+conventions:
+  skill-location: "~/Documents/github/skills/skills/<name>/SKILL.md"
+  no-scripts-for-integrations: "credentials skill handles auth — integration skills have SKILL.md only"
+  api-pattern: "Follow atlassian skill for REST API integrations (setup, how-to-use, common ops, working rules, error handling)"
+  frontmatter: "Follow skill-template for required fields (name, description, metadata)"
+  validation: "skill-man scripts/validate.py is the spec gatekeeper"
+  deploy: "bin/deploy-skills.sh symlinks into agents — never copy, never overwrite nix-managed skills"

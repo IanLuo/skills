@@ -15,7 +15,6 @@ steps:
   - ensure locked spec exists
   - ensure architecture doc exists
   - verify test harness available
-engine_scope: herdr
 `
 
 const samplePlaybook2 = `name: code-review
@@ -71,9 +70,6 @@ func TestAddAndGet(t *testing.T) {
 	}
 	if pb.Steps[0] != "ensure locked spec exists" {
 		t.Errorf("step 0: %s", pb.Steps[0])
-	}
-	if pb.EngineScope != "herdr" {
-		t.Errorf("engine_scope: %s", pb.EngineScope)
 	}
 }
 
@@ -174,7 +170,6 @@ steps:
   - ensure architecture doc exists
   - verify test harness available
   - new step added
-engine_scope: herdr
 `
 	if err := kc.Edit("dev-task-prereqs", []byte(updated)); err != nil {
 		t.Fatalf("Edit: %v", err)
@@ -233,19 +228,28 @@ func TestRemoveNotFound(t *testing.T) {
 	}
 }
 
-func TestParsePlaybookWithoutEngineScope(t *testing.T) {
+func TestParsePlaybookIgnoresEngineScope(t *testing.T) {
 	kc, err := knowledge.Open(tempKB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	kc.Add("code-review", []byte(samplePlaybook2))
-	pb, _ := kc.Get("code-review")
-
-	if pb.EngineScope != "" {
-		t.Errorf("engine_scope should be empty, got %s", pb.EngineScope)
+	// engine_scope key in YAML is silently ignored (removed field).
+	withScope := `name: scoped
+type: procedure
+trigger: test
+steps:
+  - step one
+engine_scope: herdr
+`
+	if err := kc.Add("scoped", []byte(withScope)); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
-	if pb.Name != "code-review" {
+	pb, err := kc.Get("scoped")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if pb.Name != "scoped" {
 		t.Errorf("name: %s", pb.Name)
 	}
 }

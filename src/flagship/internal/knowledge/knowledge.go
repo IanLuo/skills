@@ -14,11 +14,10 @@ import (
 
 // Playbook is the structured config entity (SYSTEM-DESIGN R2).
 type Playbook struct {
-	Name        string   `json:"name" yaml:"name"`
-	Type        string   `json:"type" yaml:"type"`
-	Trigger     string   `json:"trigger" yaml:"trigger"`
-	Steps       []string `json:"steps" yaml:"steps"`
-	EngineScope string   `json:"engine_scope,omitempty" yaml:"engine_scope,omitempty"`
+	Name    string   `json:"name" yaml:"name"`
+	Type    string   `json:"type" yaml:"type"`
+	Trigger string   `json:"trigger" yaml:"trigger"`
+	Steps   []string `json:"steps" yaml:"steps"`
 }
 
 // Center manages playbook files on disk.
@@ -171,7 +170,6 @@ func (c *Center) path(name string) string {
 //	steps:
 //	  - step one
 //	  - step two
-//	engine_scope: value
 func parsePlaybook(data []byte) (*Playbook, error) {
 	pb := &Playbook{}
 	lines := strings.Split(string(data), "\n")
@@ -209,7 +207,9 @@ func parsePlaybook(data []byte) (*Playbook, error) {
 		case "steps":
 			inSteps = true
 		case "engine_scope":
-			pb.EngineScope = val
+			// Ignored — engine_scope was removed; capability↔playbook
+			// link is solely the L1 detail-playbook pointer in
+			// capabilities.yaml.
 		}
 	}
 

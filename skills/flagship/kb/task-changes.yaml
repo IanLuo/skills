@@ -1,0 +1,175 @@
+name: task-changes
+type: procedure
+trigger: task-changes
+description: >
+  Gather and display all code changes associated with a task across
+  multiple projects/repos. Produces a unified diff report showing what
+  changed, where, and why — covering uncommitted, staged, and committed
+  changes since the task started.
+
+preconditions:
+  - binary: git on PATH
+  - binary: fs on PATH
+  - data: task ID known (from fs status or user input)
+
+inputs:
+  task_id: the fs task node_id (e.g. t-c2d3df84)
+  project: >
+    optional — if omitted, discover all projects from fs events.
+    If given, scope to that project only.
+
+steps:
+  # ── 1. Identify scope ──
+  - id: identify-scope
+    action: determine which projects and timeframe the task covers
+    commands:
+      - fs log --project <project> | jq '.data.events[] | select(.node_id == "<task_id>")'
+      - fs project list
+    description: >
+      Query fs events for the task across ALL projects (iterate
+      fs project list). Collect:
+        - projects: every project_id that has events for this task
+        - start_time: timestamp of the first event (task-created or
+          first status-changed to active)
+        - start_sha: commit_sha from that first event (baseline)
+        - end_sha: commit_sha from the last event (if task is done)
+        - root_paths: map project_id → root_path from fs project list
+      A cross-project task will have events under multiple project_ids
+      (e.g. captain creates task in project A, worker records knowledge
+      in project B). Also check knowledge-added events — their summaries
+      may name other repos that were touched.
+    output:
+      projects: list of {project_id, root_path, start_sha, end_sha}
+      start_time: ISO timestamp
+
+  # ── 2. Gather changes per project ──
+  - id: gather
+    action: collect diffs from each project root
+    for_each: project in projects
+    commands:
+      # Uncommitted (working tree) changes
+      - git -C <root_path> diff --stat
+      - git -C <root_path> diff
+
+      # Staged changes
+      - git -C <root_path> diff --staged --stat
+      - git -C <root_path> diff --staged
+
+      # Committed changes since task started
+      - git -C <root_path> log --oneline --stat <start_sha>..HEAD
+      - git -C <root_path> log -p <start_sha>..HEAD
+    description: >
+      For each project, gather three layers of changes:
+
+      1. UNCOMMITTED — git diff (working tree vs index).
+         These are in-progress edits not yet staged.
+
+      2. STAGED — git diff --staged (index vs HEAD).
+         These are ready to commit but not yet committed.
+
+      3. COMMITTED — git log with patch since start_sha.
+         If start_sha is not available (task predates git tracking),
+         fall back to: git log --since="<start_time>" -p
+
+      If the project root doesn't exist or isn't a git repo, note it
+      and skip — the worker may have been in a worktree that was
+      cleaned up.
+
+      For each layer, capture both --stat (summary) and full diff.
+
+  # ── 3. Correlate with fs events ──
+  - id: correlate
+    action: map changes to task decisions and knowledge
+    commands:
+      - fs log --project <project> --node <task_id> --type decision-recorded
+      - fs log --project <project> --node <task_id> --type knowledge-added
+    description: >
+      For each commit SHA in the gathered log, check if an fs event
+      references that SHA (events have commit_sha field). This links
+      specific commits to the decision or knowledge that drove them.
+      Build a map: commit_sha → [decision_summary, knowledge_summary].
+
+  # ── 4. Display summary ──
+  - id: display-summary
+    action: present the unified change report
+    format: |
+      ## Task Changes: <task_id>
+      **Goal:** <task goal from task-created event>
+      **Status:** <current status>
+      **Period:** <start_time> → <end_time or "in progress">
+      **Projects:** <count> repos touched
+
+      ---
+
+      ### <project_id> (`<root_path>`)
+
+      #### Committed (<N> commits, +<added>/-<removed>)
+      | File | +/- | Commit | Decision |
+      |------|-----|--------|----------|
+      | src/auth/ping.rb | +42/-3 | 68f8f39 | imp_token re-injection |
+      | spec/ping_spec.rb | +87/-0 | 68f8f39 | — |
+
+      #### Staged (+<added>/-<removed>)
+      | File | +/- |
+      |------|-----|
+      | config/routes.rb | +2/-0 |
+
+      #### Uncommitted (+<added>/-<removed>)
+      | File | +/- |
+      |------|-----|
+      | lib/helpers.rb | +5/-1 |
+
+      ---
+      <repeat for each project>
+
+      ### Cross-Project Summary
+      - **Total files changed:** <N>
+      - **Total lines:** +<added>/-<removed>
+      - **Decisions recorded:** <N>
+      - **Knowledge entries:** <N>
+    description: >
+      Present summary first (tables with file names and line counts),
+      then offer to show full diffs per file on request. Highlight:
+        - Uncommitted changes with ⚠️ (not yet safe)
+        - Staged changes with 📋 (ready to commit)
+        - Committed changes with ✅
+      If a commit SHA matches an fs decision, show the decision
+      summary inline so the reader knows WHY that change was made.
+
+  # ── 5. Full diff on demand ──
+  - id: full-diff
+    action: show actual diff content for a specific file or project
+    description: >
+      After the summary, the user may ask "show me the diff for
+      src/auth/ping.rb" or "show all diffs for omniauth". Produce
+      the raw diff output for that scope. Use syntax-highlighted
+      fenced code blocks.
+
+edge_cases:
+  worktree-cleaned: >
+    If a task-agent worktree was already merged and deleted, the
+    committed changes live in the main branch. Use the start_sha and
+    end_sha from fs events to reconstruct the range even without the
+    worktree.
+  no-git-repo: >
+    If a project root isn't a git repo (e.g. documentation folder),
+    skip git commands and note "not a git repository" in the report.
+  no-start-sha: >
+    If fs events don't have a commit_sha (older events or manual
+    entries), fall back to --since with the task-created timestamp.
+  diverged-branches: >
+    If the project is on a different branch than when the task started,
+    use git merge-base to find the common ancestor and diff from there.
+  large-diffs: >
+    If total diff exceeds ~500 lines, show only --stat summary and
+    offer per-file drill-down. Don't flood the context.
+
+design_decision: >
+  This is a playbook procedure (captain/agent follows it), not an fs
+  CLI command. Rationale: the gather step requires iterating projects,
+  running git in each root, cross-referencing fs events, and formatting
+  output — orchestration logic that belongs in agent behavior, not a
+  binary. An fs CLI command (e.g. `fs task diff <id>`) could be added
+  later as a convenience wrapper that emits the raw data (project roots,
+  SHAs, timeframes), but the presentation and drill-down interaction
+  must remain agent-driven.

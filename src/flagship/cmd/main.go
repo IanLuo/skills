@@ -39,6 +39,8 @@ func main() {
 		logCmd(os.Args[2:])
 	case "kb":
 		kbCmd(os.Args[2:])
+	case "init":
+		initCmd(os.Args[2:])
 	case "resolve":
 		resolveCmd(os.Args[2:])
 	case "agent":
@@ -76,6 +78,7 @@ Commands:
   kb match TRIGGER                              Find playbooks by trigger
   kb edit --name NAME --file PATH               Edit a playbook
   kb remove NAME                                Remove a playbook
+  init                                           Bootstrap ~/.fs/ (capabilities.yaml, db)
   resolve <cap>.<op> [--key val ...]             Resolve capability to concrete command
   resolve <cap>                                  Get capability metadata (detail-playbook, ops)
   resolve --check                                Validate capabilities config
@@ -455,11 +458,6 @@ func statusCmd(args []string) {
 	// Provide git root so Status can detect gaps between commits and events.
 	if root := command.DetectProjectRoot(); root != "" {
 		h.SetProjectRoot(root)
-	}
-
-	// Set engine name for engine_scope filtering (DESIGN-capabilities §11 Q5).
-	if cfg, err := capabilities.Load(capabilities.DefaultConfigPath()); err == nil {
-		h.SetEngineName(cfg.EngineName())
 	}
 
 	updateActivity(projectID)
@@ -943,6 +941,59 @@ func agentDeregister(args []string) {
 		return
 	}
 	output(command.Response{OK: true, Data: map[string]string{"name": name, "action": "deregistered"}})
+}
+
+func initCmd(args []string) {
+	if len(args) > 0 && isHelp(args[0]) {
+		fmt.Fprintln(os.Stderr, `Usage: fs init
+
+Bootstrap ~/.fs/ directory:
+  - Creates ~/.fs/ if missing
+  - Writes ~/.fs/capabilities.yaml from the built-in skeleton (if missing)
+  - flagship.db is auto-created by other commands (no action needed here)
+
+Idempotent: existing files are never overwritten.`)
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal("cannot determine home directory: " + err.Error())
+	}
+	fsDir := filepath.Join(home, ".fs")
+	capPath := filepath.Join(fsDir, "capabilities.yaml")
+
+	var created []string
+	var existed []string
+
+	// Ensure ~/.fs/ exists.
+	if err := os.MkdirAll(fsDir, 0o755); err != nil {
+		fatal("cannot create ~/.fs directory: " + err.Error())
+	}
+
+	// Write capabilities.yaml from embedded skeleton — only if missing.
+	if _, err := os.Stat(capPath); err == nil {
+		existed = append(existed, capPath)
+	} else if os.IsNotExist(err) {
+		if writeErr := os.WriteFile(capPath, capabilities.Skeleton(), 0o644); writeErr != nil {
+			fatal("cannot write capabilities.yaml: " + writeErr.Error())
+		}
+		created = append(created, capPath)
+	} else {
+		fatal("cannot stat capabilities.yaml: " + err.Error())
+	}
+
+	// flagship.db auto-creates via existing Open paths — just report.
+	dbPath := filepath.Join(fsDir, "flagship.db")
+	if _, err := os.Stat(dbPath); err == nil {
+		existed = append(existed, dbPath)
+	}
+	// If it doesn't exist, that's fine — it'll be created on first use.
+
+	output(command.Response{OK: true, Data: map[string]any{
+		"created": created,
+		"existed": existed,
+	}})
 }
 
 func resolveCmd(args []string) {

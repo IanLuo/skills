@@ -1,0 +1,7 @@
+name: dev-task-prerequisites
+type: prerequisite
+trigger: dev-task
+steps:
+  - spec
+  - system-design
+  - architecture
