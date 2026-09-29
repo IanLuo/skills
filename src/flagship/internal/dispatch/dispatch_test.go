@@ -10,6 +10,7 @@ import (
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/engine"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
@@ -167,7 +168,7 @@ func (f *fixture) prepare(req dispatch.PrepareRequest) command.Response {
 }
 
 // close runs the close-out gate the same way.
-func (f *fixture) close(hc dispatch.HerdrCLI, req dispatch.CloseRequest) command.Response {
+func (f *fixture) close(hc engine.Engine, req dispatch.CloseRequest) command.Response {
 	return dispatch.Close(f.h, hc, f.reg, f.kc, f.lg, req)
 }
 

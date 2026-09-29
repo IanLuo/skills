@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/engine"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
 	"github.com/flagship-dev/flagship/internal/trace"
@@ -864,7 +864,7 @@ func TestDeliverRefusesAWorktreeWithoutARootPane(t *testing.T) {
 	f := newFixture(t, root)
 	capNode := addCapNode(t, f, "dispatch parallel: sample")
 
-	herdr := &fakeHerdr{rootPaneErr: fmt.Errorf("%w: herdr has no workspace wZZ", dispatch.ErrNoRootPane)}
+	herdr := &fakeHerdr{rootPaneErr: fmt.Errorf("%w: herdr has no workspace wZZ", engine.ErrNoRootPane)}
 	brief := &dispatch.Brief{
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
 		CapNodeID: capNode, Worktree: "wZZ",
@@ -903,10 +903,7 @@ func TestDeliverRetriesAStartRefusedByAPaneThatIsNotYetAShell(t *testing.T) {
 	f := newFixture(t, root)
 	nodeID := addCapNode(t, f, "dispatch dev-task: sample")
 
-	busy := &dispatch.HerdrError{
-		Code:    "agent_pane_busy",
-		Message: "agent target pane w1:p9 is not an available shell",
-	}
+	busy := fmt.Errorf("%w: agent target pane w1:p9 is not an available shell", engine.ErrPaneBusy)
 	herdr := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9", startErrs: []error{busy, busy}}
 	brief := &dispatch.Brief{Goal: "sample", Project: "skills", RootPath: root, TaskType: "dev-task", CapNodeID: nodeID}
 
@@ -978,7 +975,7 @@ func TestDeliverNamesTheWorktreeItMadeWhenTheDeliveryFails(t *testing.T) {
 
 	herdr := &fakeHerdr{
 		worktreeNewID: "wN", worktreeNewPath: "/checkouts/sample-wN",
-		rootPaneErr: fmt.Errorf("%w: workspace wN has 0 pane(s)", dispatch.ErrNoRootPane),
+		rootPaneErr: fmt.Errorf("%w: workspace wN has 0 pane(s)", engine.ErrNoRootPane),
 	}
 	brief := &dispatch.Brief{
 		Goal: "sample", Project: "skills", RootPath: root, TaskType: "parallel",
@@ -997,63 +994,6 @@ func TestDeliverNamesTheWorktreeItMadeWhenTheDeliveryFails(t *testing.T) {
 			t.Errorf("error %q must mention %q", resp.Error, want)
 		}
 	}
-}
-
-// herdr reports a pane's cwd as the process that owns it sees it and the
-// checkout as the workspace sees it, and one directory has more than one
-// spelling. A worktree dispatch must find its own pane anyway: a string compare
-// refuses the worker the very worktree it was dispatched into, and the error
-// blames the workspace for having no pane at the checkout it is sitting in.
-func TestWorktreeRootPaneMatchesACheckoutReachedByAnotherSpelling(t *testing.T) {
-	real := t.TempDir()
-	linked := filepath.Join(t.TempDir(), "checkout")
-	if err := os.Symlink(real, linked); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	fakeHerdrOnPath(t, map[string]string{
-		"workspace get": `{"result":{"workspace":{"worktree":{"checkout_path":"` + linked + `"}}}}`,
-		"pane list":     `{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1","cwd":"` + real + `","foreground_cwd":""}]}}`,
-	})
-
-	pane, tab, checkout, err := dispatch.NewHerdrCLI().WorktreeRootPane("w9")
-	if err != nil {
-		t.Fatalf("WorktreeRootPane: %v", err)
-	}
-	if pane != "w9:p1" || tab != "w9:t1" {
-		t.Errorf("pane=%q tab=%q, want the pane that sits at the checkout", pane, tab)
-	}
-	if checkout != linked {
-		t.Errorf("checkout = %q, want the workspace's own %q", checkout, linked)
-	}
-}
-
-// fakeHerdrOnPath puts a herdr on PATH answering each `herdr <verb> <noun>` with
-// canned output, so a test can drive the real herdrCLI — the argv it builds and
-// the JSON it parses — without a live terminal. Each answer is written to a file
-// and cat'd, so no JSON has to survive a shell.
-func fakeHerdrOnPath(t *testing.T, replies map[string]string) {
-	t.Helper()
-
-	dir := t.TempDir()
-	var script strings.Builder
-	script.WriteString("#!/bin/sh\ncase \"$1 $2\" in\n")
-	i := 0
-	for _, key := range slices.Sorted(maps.Keys(replies)) {
-		answer := filepath.Join(dir, fmt.Sprintf("answer-%d.json", i))
-		i++
-		if err := os.WriteFile(answer, []byte(replies[key]), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		fmt.Fprintf(&script, "  %q) cat %q ;;\n", key, answer)
-	}
-	script.WriteString("  *) echo \"fake herdr: unhandled $*\" >&2; exit 1 ;;\nesac\n")
-
-	binary := filepath.Join(dir, "herdr")
-	if err := os.WriteFile(binary, []byte(script.String()), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1694,7 +1634,7 @@ func TestCloseSucceedsWhenThePaneIsAlreadyGone(t *testing.T) {
 	writeGates(t, f)
 	brief := runDispatch(t, f, devReq("sample"))
 
-	resp := f.close(&fakeHerdr{closeErr: dispatch.ErrPaneGone}, dispatch.CloseRequest{
+	resp := f.close(&fakeHerdr{closeErr: engine.ErrPaneGone}, dispatch.CloseRequest{
 		NodeID: brief.CapNodeID, Decision: "verified",
 	})
 	if !resp.OK {
@@ -2080,7 +2020,7 @@ func TestCloseRunsExitChecksInTheRecordedPathWithoutAskingHerdr(t *testing.T) {
 	// herdr has forgotten the workspace entirely: the checks' footing must not
 	// depend on it. The recorded path is what the gate runs in.
 	herdr := &fakeHerdr{
-		checkoutErr: fmt.Errorf("%w: herdr has no workspace w7", dispatch.ErrNoWorktree),
+		checkoutErr: fmt.Errorf("%w: herdr has no workspace w7", engine.ErrNoWorktree),
 	}
 	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if !resp.OK {
@@ -2142,7 +2082,7 @@ func TestCloseRefusesWhenTheRecordedWorktreeCannotBeResolved(t *testing.T) {
 	workerID := addWorkerNode(t, f, "done")
 	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "wZZ", "")
 
-	herdr := &fakeHerdr{checkoutErr: fmt.Errorf("%w: herdr has no workspace wZZ", dispatch.ErrNoWorktree)}
+	herdr := &fakeHerdr{checkoutErr: fmt.Errorf("%w: herdr has no workspace wZZ", engine.ErrNoWorktree)}
 	resp := f.close(herdr, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
 	if resp.OK {
 		t.Fatal("an unresolvable worktree must refuse the close")

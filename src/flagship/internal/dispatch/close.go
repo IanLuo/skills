@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/engine"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
@@ -115,7 +116,7 @@ type CloseResult struct {
 // but no path, and lg is the trace both the gate and the record read. All are
 // needed only after the worker's node is known to be done, so a refusal never
 // reads any of them.
-func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
+func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
 	if req.NodeID == "" {
 		return errResp("--node is required: fs close --node <cap node> ...")
 	}
@@ -347,7 +348,7 @@ func Close(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledg
 // removes members' worktrees and branches, which are git state of the project —
 // so the project is recovered from the trace's plan line, the one structured
 // record of which project the batch was dispatched into.
-func closeBatch(h *command.Handler, hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
+func closeBatch(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
 	if req.Decision == "" {
 		return errResp("--decision is required: record the verdict this close-out rests on")
 	}
@@ -828,7 +829,7 @@ type exitRun struct {
 // is a decision about the work, not a licence to leak the tree it ran in — and
 // one that fails is a warning, never a refusal, for the same reason: a stuck
 // teardown must not keep a node open.
-func runExit(hc HerdrCLI, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview, base string, cards []string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
+func runExit(hc engine.Engine, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview, base string, cards []string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
 	steps, err := flatten(kc, plan, knowledge.MomentExit)
 	if err != nil {
 		return exitRun{}, fmt.Errorf("close: %v", err)
@@ -1189,7 +1190,7 @@ func withoutReviewDecision(reason string) string {
 // back to the project root. Refusing instead would make a retry — or a close
 // after a partial teardown — impossible, which is the failure this whole path is
 // meant to end.
-func checkDir(hc HerdrCLI, delivery command.DeliveryRecord, root string) (string, error) {
+func checkDir(hc engine.Engine, delivery command.DeliveryRecord, root string) (string, error) {
 	if delivery.Worktree == "" {
 		return root, nil
 	}
@@ -1226,8 +1227,8 @@ func checkDir(hc HerdrCLI, delivery command.DeliveryRecord, root string) (string
 // playbook that forgot to close one would leak a terminal with nothing left to
 // catch it. The worktree the dispatch ran in is the other case — its removal is
 // a git action, so it is declared by the exit playbook and run by runExit above.
-func tearDownPane(hc HerdrCLI, paneID string) string {
-	if err := hc.ClosePane(paneID); err != nil && !errors.Is(err, ErrPaneGone) {
+func tearDownPane(hc engine.Engine, paneID string) string {
+	if err := hc.ClosePane(paneID); err != nil && !errors.Is(err, engine.ErrPaneGone) {
 		return fmt.Sprintf("could not close pane %s: %v — close it by hand", paneID, err)
 	}
 	exists, err := hc.PaneExists(paneID)

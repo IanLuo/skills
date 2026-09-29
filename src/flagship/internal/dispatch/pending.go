@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/engine"
 )
 
 // The states fs pending reports for a dispatch the cap has not closed out.
@@ -107,7 +108,7 @@ type PendingResult struct {
 
 // Pending lists every dispatch in the cap's scope that is not done, with what
 // the cap should do about each. It appends no events and touches no pane.
-func Pending(h *command.Handler, hc HerdrCLI) command.Response {
+func Pending(h *command.Handler, hc engine.Engine) command.Response {
 	unresolved, err := unresolvedDispatches(h)
 	if err != nil {
 		return errResp(fmt.Sprintf("pending: %v", err))

@@ -14,6 +14,7 @@ import (
 	"github.com/flagship-dev/flagship"
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/engine/herdr"
 	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/logging"
 	"github.com/flagship-dev/flagship/internal/query"
@@ -1226,7 +1227,7 @@ func pendingCmd() {
 	h := openHandler("")
 	defer h.Close()
 
-	output(dispatch.Pending(h, dispatch.NewHerdrCLI()))
+	output(dispatch.Pending(h, herdr.New()))
 }
 
 // capCmd is fs cap: the claim that gives the scope an address, and the read
@@ -1272,7 +1273,7 @@ func capClaimCmd(args []string) {
 	defer h.Close()
 	guardCoordinating(h, "")
 
-	output(dispatch.Claim(h, dispatch.NewHerdrCLI(), dispatch.ClaimRequest{
+	output(dispatch.Claim(h, herdr.New(), dispatch.ClaimRequest{
 		PaneID:        os.Getenv("HERDR_PANE_ID"),
 		TabID:         os.Getenv("HERDR_TAB_ID"),
 		Reconstructed: flagVal(args, "--reconstructed", ""),
@@ -1285,7 +1286,7 @@ func capWhoCmd() {
 	h := openHandler("")
 	defer h.Close()
 
-	status, err := dispatch.CapStatusOf(h, dispatch.NewHerdrCLI())
+	status, err := dispatch.CapStatusOf(h, herdr.New())
 	if err != nil {
 		fatal("fs cap who: " + err.Error())
 	}
@@ -1311,7 +1312,7 @@ func reportCmd(args []string) {
 	h, projectID := handler(projectID)
 	defer h.Close()
 
-	output(dispatch.Report(h, dispatch.NewHerdrCLI(), dispatch.ReportRequest{
+	output(dispatch.Report(h, herdr.New(), dispatch.ReportRequest{
 		Project: projectID,
 		Node:    nodeID,
 		Kind:    reportKind(args),
@@ -1347,7 +1348,7 @@ func tellCmd(args []string) {
 	defer h.Close()
 	guardCoordinating(h, "")
 
-	output(dispatch.Tell(h, dispatch.NewHerdrCLI(), dispatch.TellRequest{
+	output(dispatch.Tell(h, herdr.New(), dispatch.TellRequest{
 		Project: projectID,
 		Node:    nodeID,
 		Text:    args[1],
@@ -1452,7 +1453,7 @@ func dispatchCmd(args []string) {
 		brief.Worktree = worktree
 		brief.WorktreeNew = worktreeNew
 		if deliver {
-			resp = dispatch.Deliver(h, dispatch.NewHerdrCLI(), traceLog(), brief)
+			resp = dispatch.Deliver(h, herdr.New(), traceLog(), brief)
 		}
 	}
 	output(resp)
@@ -1497,7 +1498,7 @@ func closeCmd(args []string) {
 	defer h.Close()
 	guardCoordinating(h, "")
 
-	output(dispatch.Close(h, dispatch.NewHerdrCLI(), reg, openKB(""), traceLog(), req))
+	output(dispatch.Close(h, herdr.New(), reg, openKB(""), traceLog(), req))
 }
 
 // traceLog is the trace store: one JSONL file per dispatch under

@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/engine"
 )
 
 // The states a claim can be in, as herdr answers for it. CapNone and CapDead
@@ -48,7 +49,7 @@ type CapStatus struct {
 
 // CapStatusOf reads the claim and asks herdr whether its address is still
 // there. It writes nothing and touches no pane.
-func CapStatusOf(h *command.Handler, hc HerdrCLI) (CapStatus, error) {
+func CapStatusOf(h *command.Handler, hc engine.Engine) (CapStatus, error) {
 	claim, claimed, err := h.CapFor(capScope)
 	if err != nil {
 		return CapStatus{}, err
@@ -96,7 +97,7 @@ type ClaimRequest struct {
 // there is nothing to refuse it. What cannot happen is a claim over a live
 // address, because that is two sessions coordinating at once with neither able
 // to tell.
-func Claim(h *command.Handler, hc HerdrCLI, req ClaimRequest) command.Response {
+func Claim(h *command.Handler, hc engine.Engine, req ClaimRequest) command.Response {
 	if req.PaneID == "" {
 		return errResp("cap claim: HERDR_PANE_ID is not set, and the cap is a pane herdr can route to")
 	}
@@ -208,7 +209,7 @@ type ReportResult struct {
 // The notification is never required. With no cap, with a dead one, or with a
 // herdr that refuses, the report is still written and the command still
 // succeeds, saying recorded, not notified.
-func Report(h *command.Handler, hc HerdrCLI, req ReportRequest) command.Response {
+func Report(h *command.Handler, hc engine.Engine, req ReportRequest) command.Response {
 	resp := h.ReportAdd(req.Project, req.Node, req.Kind, req.Line)
 	if !resp.OK {
 		return resp
@@ -226,7 +227,7 @@ func Report(h *command.Handler, hc HerdrCLI, req ReportRequest) command.Response
 // notify pushes a report at the live cap and says why when it could not. Every
 // failure here is a missed promptness, never a lost report: the caller has
 // already written it.
-func notify(h *command.Handler, hc HerdrCLI, req ReportRequest) (bool, string) {
+func notify(h *command.Handler, hc engine.Engine, req ReportRequest) (bool, string) {
 	if !command.ReportNotifies(req.Kind) {
 		return false, "recorded, not notified: a report with no kind does not interrupt the cap"
 	}
@@ -266,7 +267,7 @@ type TellRequest struct {
 // It records nothing: a reply is a message, and what the cap decided lands on
 // the node as a decision, where it outlives the delivery. So unlike a report,
 // a tell herdr refuses is a failure: there is nothing behind it.
-func Tell(h *command.Handler, hc HerdrCLI, req TellRequest) command.Response {
+func Tell(h *command.Handler, hc engine.Engine, req TellRequest) command.Response {
 	if req.Text == "" {
 		return errResp("fs tell: a reply needs text")
 	}

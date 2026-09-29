@@ -1,14 +1,19 @@
 package dispatch
 
-import "testing"
+import (
+	"errors"
+	"testing"
 
-// startHerdr is a HerdrCLI whose StartAgent answers err for its first `busy`
-// calls and succeeds after that — herdr refusing a pane that is not yet a shell,
+	"github.com/flagship-dev/flagship/internal/engine"
+)
+
+// startHerdr is an engine.Engine whose StartAgent answers err for its first
+// `busy` calls and succeeds after that — the pane that is not yet a shell,
 // with the refusal made deterministic. Only StartAgent is ever called: the
 // embedded interface is nil, so a retry that reached any other method would panic
 // the test rather than quietly pass it.
 type startHerdr struct {
-	HerdrCLI
+	engine.Engine
 	err   error
 	busy  int
 	calls int
@@ -31,13 +36,13 @@ func noBackoff(t *testing.T) {
 	t.Cleanup(func() { agentStartBackoff = previous })
 }
 
-// A pane split a moment ago is not yet at a shell prompt, and herdr starts an
-// agent nowhere else — so a delivery that follows a split is refused until the
-// pane is ready. The start is asked again until it takes.
+// A pane split a moment ago is not yet at a shell prompt, and the engine starts
+// an agent nowhere else — so a delivery that follows a split is refused until
+// the pane is ready. The start is asked again until it takes.
 func TestStartAgentRetriesWhileThePaneIsNotYetAShell(t *testing.T) {
 	noBackoff(t)
 
-	hc := &startHerdr{err: &HerdrError{Code: "agent_pane_busy"}, busy: 2}
+	hc := &startHerdr{err: engine.ErrPaneBusy, busy: 2}
 	if err := startAgent(hc, "w1:p9", "dispatch-dev-task", "claude", nil); err != nil {
 		t.Fatalf("startAgent: %v", err)
 	}
@@ -46,31 +51,32 @@ func TestStartAgentRetriesWhileThePaneIsNotYetAShell(t *testing.T) {
 	}
 }
 
-// The retry is bounded, and when it runs out it reports what herdr said rather
-// than a failure of its own: a pane that never becomes a shell is herdr's
-// answer to give, and it is the one a reader can act on.
-func TestStartAgentGivesUpAndReportsHerdrsOwnError(t *testing.T) {
+// The retry is bounded, and when it runs out it reports what the engine said
+// rather than a failure of its own: a pane that never becomes a shell is the
+// engine's answer to give, and it is the one a reader can act on.
+func TestStartAgentGivesUpAndReportsEnginesOwnError(t *testing.T) {
 	noBackoff(t)
 
-	hc := &startHerdr{err: &HerdrError{Code: "agent_pane_busy"}, busy: agentStartAttempts + 5}
+	hc := &startHerdr{err: engine.ErrPaneBusy, busy: agentStartAttempts + 5}
 	err := startAgent(hc, "w1:p9", "dispatch-dev-task", "claude", nil)
-	if herdrErrorCode(err) != "agent_pane_busy" {
-		t.Errorf("err = %v, want herdr's agent_pane_busy", err)
+	if !errors.Is(err, engine.ErrPaneBusy) {
+		t.Errorf("err = %v, want the engine's own ErrPaneBusy", err)
 	}
 	if hc.calls != agentStartAttempts {
 		t.Errorf("start attempts = %d, want the bound %d", hc.calls, agentStartAttempts)
 	}
 }
 
-// A name herdr will never accept is not a pane that is not ready yet. Asking
-// again would turn one refusal into twenty of the same, slower one.
+// A name the engine will never accept is not a pane that is not ready yet.
+// Asking again would turn one refusal into twenty of the same, slower one.
 func TestStartAgentDoesNotRetryWhatIsNotARace(t *testing.T) {
 	noBackoff(t)
 
-	hc := &startHerdr{err: &HerdrError{Code: "invalid_agent_name"}, busy: 1}
+	invalid := errors.New("the engine refused the name as ungrammatical")
+	hc := &startHerdr{err: invalid, busy: 1}
 	err := startAgent(hc, "w1:p9", "dispatch-dev-task-", "claude", nil)
-	if herdrErrorCode(err) != "invalid_agent_name" {
-		t.Errorf("err = %v, want herdr's invalid_agent_name", err)
+	if !errors.Is(err, invalid) {
+		t.Errorf("err = %v, want the engine's own refusal", err)
 	}
 	if hc.calls != 1 {
 		t.Errorf("start attempts = %d, want 1: an invalid name does not become valid", hc.calls)

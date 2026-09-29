@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -114,43 +113,5 @@ func TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("renderBrief must carry %q, got:\n%s", want, text)
 		}
-	}
-}
-
-// The argv herdr is given. It is the only emitter of the start command: the
-// printed line nextCommand used to carry could not name the agent this starts,
-// because the agent is named after the node the delivery creates and no node
-// exists before it runs, so the two were never one command and the line is
-// retired.
-//
-// This test is in the package rather than beside the external ones because
-// agentStartArgs is unexported: what a caller sees of it is the effect, and the
-// argv shape is the thing under test.
-func TestAgentStartArgsPutsTheSeparatorLastOnlyWhenThereAreArgs(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want []string
-	}{
-		{
-			name: "no arguments",
-			want: []string{"agent", "start", "dispatch-dev-task", "--kind", "claude", "--pane", "w1:p9"},
-		},
-		{
-			name: "arguments across the separator",
-			args: []string{"--permission-mode", "auto"},
-			want: []string{
-				"agent", "start", "dispatch-dev-task", "--kind", "claude", "--pane", "w1:p9",
-				"--", "--permission-mode", "auto",
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := agentStartArgs("dispatch-dev-task", "claude", "w1:p9", tc.args)
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("agentStartArgs = %q, want %q", got, tc.want)
-			}
-		})
 	}
 }
