@@ -287,7 +287,7 @@ func (r *Registry) ListAgents(f AgentFilter) ([]Agent, error) {
 		args = append(args, f.Role)
 	}
 	if f.Project != "" {
-		query += " AND project = ?"
+		query += " AND (project = ? OR project = '')"
 		args = append(args, f.Project)
 	}
 	if f.Status != "" {

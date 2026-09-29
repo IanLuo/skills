@@ -264,6 +264,41 @@ func TestListAgents(t *testing.T) {
 	}
 }
 
+func TestListAgentsGlobalProject(t *testing.T) {
+	r := open(t)
+	// Global agent (empty project) should match any project filter.
+	r.RegisterAgent(registry.Agent{Name: "captain", Role: "captain", PaneID: "w1:p1", Project: ""})
+	// Scoped worker only matches its own project.
+	r.RegisterAgent(registry.Agent{Name: "worker1", Role: "worker", PaneID: "w1:p2", Project: "skills"})
+
+	// (a) Global agent found via any project filter.
+	result, err := r.ListAgents(registry.AgentFilter{Project: "anything"})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(result) != 1 || result[0].Name != "captain" {
+		t.Errorf("expected global captain, got %v", result)
+	}
+
+	// (b) Scoped agent NOT found via different project.
+	result, _ = r.ListAgents(registry.AgentFilter{Project: "omniauth"})
+	if len(result) != 1 || result[0].Name != "captain" {
+		t.Errorf("expected only global captain for omniauth, got %v", result)
+	}
+
+	// (c) Scoped agent found via its own project (plus global).
+	result, _ = r.ListAgents(registry.AgentFilter{Project: "skills"})
+	if len(result) != 2 {
+		t.Errorf("expected captain+worker1 for skills, got %d: %v", len(result), result)
+	}
+
+	// (d) No project filter returns both.
+	result, _ = r.ListAgents(registry.AgentFilter{})
+	if len(result) != 2 {
+		t.Errorf("expected 2 agents with no filter, got %d", len(result))
+	}
+}
+
 func TestSingleCaptainEnforcement(t *testing.T) {
 	r := open(t)
 	// First captain succeeds.

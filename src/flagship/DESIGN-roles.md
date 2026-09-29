@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS agents (
     role        TEXT NOT NULL,         -- "captain" | "worker" | "reviewer"
     pane_id     TEXT NOT NULL,         -- herdr pane ID (e.g. "w1:p1")
     workspace   TEXT NOT NULL DEFAULT '',  -- herdr workspace ID
-    project     TEXT NOT NULL DEFAULT '',  -- project name this agent is working on
+    project     TEXT NOT NULL DEFAULT '',  -- project name; empty = global agent, matches any --project filter
     status      TEXT NOT NULL DEFAULT 'active',  -- "active" | "idle" | "dead"
     playbook    TEXT NOT NULL DEFAULT '',  -- bound playbook name (e.g. "captain-playbook", "worker-playbook")
     last_seen   TEXT NOT NULL,         -- RFC3339Nano timestamp, updated on every fs call
