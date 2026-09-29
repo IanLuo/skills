@@ -5,6 +5,7 @@ package command
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -45,7 +46,9 @@ type UpdateResult struct {
 }
 
 // MergeResult is the data payload for fs task merge: the node that was absorbed
-// and the node that took it in, both by node id in the same project.
+// and the node that took it in. Each is a full "<project>:<node>" address,
+// because a fold's two ends may be in two scopes and a bare id would not say
+// which — the same reason the tool prints addresses in its briefs and reports.
 type MergeResult struct {
 	Absorbed string      `json:"absorbed"`
 	Into     string      `json:"into"`
@@ -343,15 +346,31 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	// Existence is a task-created event, not tree membership: derived state
 	// materializes a node from any event written to it, so a conjured node (see
 	// nodeExists) would otherwise be an acceptable parent.
+	//
+	// --parent takes the address form, and the tree has no cross-scope edges: a
+	// parent is a node in the child's own scope, so a qualifier naming another is
+	// refused naming both rather than followed.
 	if parentNodeID != nil && *parentNodeID != "" {
-		exists, err := h.nodeExists(projectID, *parentNodeID)
+		scope, parentID, err := SplitAddress(projectID, *parentNodeID)
+		if err != nil {
+			return errResp(err.Error())
+		}
+		if scope != projectID {
+			return errResp(fmt.Sprintf(
+				"parent %s names project %s but the node is in project %s — a parent is a node in the child's own scope",
+				*parentNodeID, scope, projectID))
+		}
+		exists, err := h.nodeExists(projectID, parentID)
 		if err != nil {
 			h.logger.Error("store replay failed", "command", "task-add", "error", err)
 			return errResp(err.Error())
 		}
 		if !exists {
-			return errResp(fmt.Sprintf("parent %s does not exist in project %s", *parentNodeID, projectID))
+			return errResp(fmt.Sprintf("parent %s does not exist in project %s", parentID, projectID))
 		}
+		// The qualifier is an address, not part of the id: what is stored is the
+		// node, so a reader of the tree finds it.
+		parentNodeID = &parentID
 	}
 
 	nodeID := newNodeID()
@@ -489,35 +508,62 @@ func (h *Handler) foundByMissing(ref string) (string, error) {
 		ref, strings.Join(searched, ", ")), nil
 }
 
+// SplitAddress resolves a node reference into the scope it names and the bare
+// node id. It is the one resolver for the address form the tool prints
+// everywhere — every brief, every report line, every card — so that the form is
+// accepted wherever a node is named, rather than each path parsing it for
+// itself and some of them not at all.
+//
+// A node id is "t-<hex>", so a colon never appears in one: a reference carrying
+// a colon names its own scope, unambiguously, and a reference without one takes
+// defaultScope — the scope the caller would have used anyway.
+//
+// It locates, it does not judge. Whether the scope it returns may be used here
+// is the caller's question, and its answer is not the same everywhere: a write
+// must land in the scope the command resolved, a dispatch link must live in the
+// cap's scope, and task merge's two operands are the two ends of a fold and may
+// name two scopes by construction. Each path states its own judgement against
+// the scope this returns.
+func SplitAddress(defaultScope, ref string) (scope, id string, err error) {
+	if ref == "" {
+		return "", "", errors.New("a node is required")
+	}
+	scope, id, qualified := strings.Cut(ref, ":")
+	if !qualified {
+		return defaultScope, ref, nil
+	}
+	if id == "" {
+		return "", "", fmt.Errorf("%s names no node", ref)
+	}
+	return scope, id, nil
+}
+
 // resolveWriteNode resolves the node id a write names and confirms it exists in
 // projectID. A writer that appends an event for a node that was never created
 // conjures a work item with no task-created event: a status and decisions for
 // something that does not exist. Refusing here, before any append, is what makes
 // "a write lands on the node it names, or fails" true.
 //
-// A "<project>:<node>" id is qualified, never literal: a colon never appears in
-// a node id (they are "t-<hex>"), so reading one as qualified is safe. The
-// qualifier must name projectID — a different project is an accidental
-// cross-scope write, refused naming both.
+// The write targets one scope, so a qualifier naming a different one is refused
+// naming both: the caller named two scopes for one write, and which they meant
+// is not this layer's to guess.
 func (h *Handler) resolveWriteNode(projectID, nodeID string) (string, error) {
-	if prefix, rest, ok := strings.Cut(nodeID, ":"); ok {
-		if prefix != projectID {
-			return "", fmt.Errorf("id %q names project %s but the write targets project %s", nodeID, prefix, projectID)
-		}
-		if rest == "" {
-			return "", fmt.Errorf("id %q names no node", nodeID)
-		}
-		nodeID = rest
+	scope, id, err := SplitAddress(projectID, nodeID)
+	if err != nil {
+		return "", err
+	}
+	if scope != projectID {
+		return "", fmt.Errorf("id %q names project %s but the write targets project %s", nodeID, scope, projectID)
 	}
 
-	exists, err := h.nodeExists(projectID, nodeID)
+	exists, err := h.nodeExists(projectID, id)
 	if err != nil {
 		return "", err
 	}
 	if !exists {
-		return "", fmt.Errorf("node %s does not exist in project %s", nodeID, projectID)
+		return "", fmt.Errorf("node %s does not exist in project %s", id, projectID)
 	}
-	return nodeID, nil
+	return id, nil
 }
 
 // TaskUpdate appends status-changed and optionally decision-recorded events. AC4.
@@ -1097,8 +1143,24 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 // TaskMerge folds one node into another, and it is compensating events rather
 // than a deletion: events are immutable, so a merge is written as a statement
 // about both nodes. The absorbed node is marked done with a decision naming
-// what took it in, and the survivor's own record gains the absorbed id — so a
+// what took it in, and the survivor's own record gains the absorbed node — so a
 // reader of the survivor alone can see that two nodes became one.
+//
+// The two ends of a fold may be in two scopes, and that is the fold triage needs
+// most: every backlog family pairs a finding in the cap's scope with the same
+// finding noticed in the worker's, and a merge that could only name one scope
+// could not say the two are one defect. So each operand resolves by the address
+// it carries (SplitAddress), and projectID — the scope the command resolved — is
+// the default for an operand that carries none. Each half is then written into
+// its own scope: a statement about the absorbed node belongs where that node is
+// read, or the node is never marked done.
+//
+// The disagreement rule every other path applies is deliberately not applied
+// here. There, one scope is in hand and an address naming another is a
+// contradiction the caller stated twice; here there is no single scope for an
+// operand to disagree with, and refusing would refuse the case this path exists
+// for. What that costs is the one thing the rule bought: for these two operands
+// an explicit --project is a default, not an assertion.
 //
 // Two rules keep a fold a fold and not a chain (A into B, B into C), and both
 // are about the survivor staying the whole fold: neither node may be done,
@@ -1119,32 +1181,47 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		return errResp("--into is required: fs task merge NODE_ID --into SURVIVOR")
 	}
 
-	nodeID, err := h.resolveWriteNode(projectID, nodeID)
+	absorbedScope, absorbed, err := SplitAddress(projectID, nodeID)
 	if err != nil {
 		return errResp(err.Error())
 	}
-	into, err = h.resolveWriteNode(projectID, into)
+	survivorScope, survivor, err := SplitAddress(projectID, into)
 	if err != nil {
 		return errResp(err.Error())
 	}
-	if nodeID == into {
-		return errResp(fmt.Sprintf("node %s cannot absorb itself", nodeID))
+	// Two nodes with the same id in different scopes are two nodes, so the
+	// self-absorption check is about one node, not one id.
+	if absorbedScope == survivorScope && absorbed == survivor {
+		return errResp(fmt.Sprintf("node %s:%s cannot absorb itself", absorbedScope, absorbed))
 	}
-	for _, node := range []struct{ id, role string }{{nodeID, "absorbed"}, {into, "survivor"}} {
-		if h.deriveStatus(projectID, node.id) == "done" {
+
+	for _, node := range []struct{ scope, id, role string }{
+		{absorbedScope, absorbed, "absorbed"},
+		{survivorScope, survivor, "survivor"},
+	} {
+		exists, err := h.nodeExists(node.scope, node.id)
+		if err != nil {
+			h.logger.Error("store replay failed", "command", "task-merge", "error", err)
+			return errResp(err.Error())
+		}
+		if !exists {
+			return errResp(fmt.Sprintf("node %s:%s does not exist", node.scope, node.id))
+		}
+		if h.deriveStatus(node.scope, node.id) == "done" {
 			return errResp(fmt.Sprintf(
-				"the %s node %s is done; a merge folds open nodes, and a done one was closed or already absorbed",
-				node.role, node.id))
+				"the %s node %s:%s is done; a merge folds open nodes, and a done one was closed or already absorbed",
+				node.role, node.scope, node.id))
 		}
 	}
+
 	// The survivor of a fold stays open, so the done check above does not stop a
 	// chain: it is exactly the node a second merge would absorb. Refuse that
 	// here, so the final survivor's absorbed list is the whole fold and nothing
 	// can be reached only by reading a node that is itself already folded away.
-	if absorbed := h.deriveAbsorbed(projectID, nodeID); len(absorbed) > 0 {
+	if prior := h.deriveAbsorbed(absorbedScope, absorbed); len(prior) > 0 {
 		return errResp(fmt.Sprintf(
-			"node %s survived an earlier fold; absorbing it would chain one fold into another and the survivor would name only part of it — merge %s --into %s instead",
-			nodeID, into, nodeID))
+			"node %s:%s survived an earlier fold; absorbing it would chain one fold into another and the survivor would name only part of it — merge %s:%s --into %s:%s instead",
+			absorbedScope, absorbed, survivorScope, survivor, absorbedScope, absorbed))
 	}
 
 	sha := h.commitSHA
@@ -1152,19 +1229,20 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		sha = commitSHA
 	}
 
-	summary := fmt.Sprintf("merged into %s:%s", projectID, into)
+	summary := fmt.Sprintf("merged into %s:%s", survivorScope, survivor)
 	if reason != "" {
 		summary += " — " + reason
 	}
 
 	var events []EventData
 
-	// The absorbed node first: which node took it in, then that it is over.
+	// The absorbed node first, in its own scope: which node took it in, then that
+	// it is over.
 	payload, _ := json.Marshal(map[string]string{"summary": summary})
 	id, err := h.store.Append(store.Event{
 		Type:      store.DecisionRecorded,
-		ProjectID: projectID,
-		NodeID:    &nodeID,
+		ProjectID: absorbedScope,
+		NodeID:    &absorbed,
 		CommitSHA: sha,
 		Payload:   payload,
 	})
@@ -1173,15 +1251,15 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		return errResp(err.Error())
 	}
 	events = append(events, EventData{
-		EventID: id, EventType: store.DecisionRecorded, NodeID: nodeID, CommitSHA: sha,
+		EventID: id, EventType: store.DecisionRecorded, NodeID: absorbed, CommitSHA: sha,
 	})
 
-	from := h.deriveStatus(projectID, nodeID)
+	from := h.deriveStatus(absorbedScope, absorbed)
 	payload, _ = json.Marshal(map[string]string{"from": from, "to": "done"})
 	id, err = h.store.Append(store.Event{
 		Type:      store.StatusChanged,
-		ProjectID: projectID,
-		NodeID:    &nodeID,
+		ProjectID: absorbedScope,
+		NodeID:    &absorbed,
 		CommitSHA: sha,
 		Payload:   payload,
 	})
@@ -1190,17 +1268,17 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		return errResp(err.Error())
 	}
 	events = append(events, EventData{
-		EventID: id, EventType: store.StatusChanged, NodeID: nodeID, CommitSHA: sha,
+		EventID: id, EventType: store.StatusChanged, NodeID: absorbed, CommitSHA: sha,
 	})
 
 	// Then the survivor's half: the absorbed list as it now stands, stated in
 	// full, so replay needs no accumulation.
-	prior := h.deriveAbsorbed(projectID, into)
-	absorbed := make([]string, 0, len(prior)+1)
-	absorbed = append(absorbed, prior...)
-	absorbed = append(absorbed, nodeID)
-	data, err := h.appendMetadata(projectID, into, "absorbed",
-		strings.Join(prior, ","), strings.Join(absorbed, ","), sha)
+	prior := h.deriveAbsorbed(survivorScope, survivor)
+	absorbedList := make([]string, 0, len(prior)+1)
+	absorbedList = append(absorbedList, prior...)
+	absorbedList = append(absorbedList, absorbedRef(absorbedScope, survivorScope, absorbed))
+	data, err := h.appendMetadata(survivorScope, survivor, "absorbed",
+		strings.Join(prior, ","), strings.Join(absorbedList, ","), sha)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-merge", "error", err)
 		return errResp(err.Error())
@@ -1208,8 +1286,29 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 	events = append(events, data)
 
 	h.logger.Info("command executed", "command", "task-merge",
-		"project", projectID, "node_id", nodeID, "into", into, "events", len(events))
-	return okResp(MergeResult{Absorbed: nodeID, Into: into, Events: events})
+		"project", absorbedScope, "node_id", absorbed, "into", survivorScope+":"+survivor, "events", len(events))
+	return okResp(MergeResult{
+		Absorbed: absorbedScope + ":" + absorbed,
+		Into:     survivorScope + ":" + survivor,
+		Events:   events,
+	})
+}
+
+// absorbedRef is how the survivor's own record names an absorbed node: the bare
+// id when it lives in the survivor's scope, and the full address when it does
+// not. A bare id from another scope names nothing where it is read — the defect
+// this whole path exists to remove — while a bare id from the same scope is what
+// every fold before this one recorded, and it still resolves.
+//
+// It is the metadata field's rule only. MergeResult, which is reported and never
+// stored, carries addresses on both sides: nothing reads it back, so there is
+// nothing to stay compatible with, and a report of a cross-scope fold that named
+// two bare ids would be the ambiguity the fold just removed.
+func absorbedRef(absorbedScope, survivorScope, id string) string {
+	if absorbedScope == survivorScope {
+		return id
+	}
+	return absorbedScope + ":" + id
 }
 
 // appendMetadata appends one metadata-changed event and returns its envelope
@@ -1772,9 +1871,44 @@ type LogResult struct {
 }
 
 // Log replays events for a project with optional filters.
+//
+// --node takes the address form, and it is resolved here rather than handed to
+// the reader raw, which is where it used to go: "<project>:<node>" then matched
+// no node_id and the answer was zero events and exit 0 — a typo, a node from
+// another scope and a node with no history all read alike.
+//
+// An id that resolves to nothing refuses, for the same reason. The emptiness a
+// reader can act on is "this node has no events of the kind you asked for"; an
+// empty answer to a node that does not exist is a claim the store cannot
+// support, and it was the worse half of the defect because it is silent.
 func (h *Handler) Log(projectID string, nodeID *string, eventType *store.EventType) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
+	}
+
+	if nodeID != nil {
+		scope, id, err := SplitAddress(projectID, *nodeID)
+		if err != nil {
+			return errResp("log: " + err.Error())
+		}
+		if scope != projectID {
+			return errResp(fmt.Sprintf(
+				"log: --node %s names project %s but the log is of project %s", *nodeID, scope, projectID))
+		}
+		// The node's existence is asked without the --type filter. --type narrows
+		// which of a node's events to show; it never decides whether the node is
+		// one, and asking both at once would answer "no such node" for a node that
+		// simply has no event of that type — the exact distinction this check is
+		// here to make.
+		own, err := h.store.Replay(projectID, &store.ReplayFilter{NodeID: &id})
+		if err != nil {
+			h.logger.Error("store replay failed", "command", "log", "error", err)
+			return errResp(err.Error())
+		}
+		if len(own) == 0 {
+			return errResp(fmt.Sprintf("log: no node %s in project %s", id, projectID))
+		}
+		nodeID = &id
 	}
 
 	var filter *store.ReplayFilter

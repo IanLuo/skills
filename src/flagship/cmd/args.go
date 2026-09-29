@@ -60,7 +60,17 @@ var cmdSpecs = map[string]cmdSpec{
 		address:     true,
 	},
 	"task merge": {
-		usage:       "Usage: fs task merge NODE_ID --into SURVIVOR [--reason TEXT] [--project PROJECT_ID]",
+		usage: `Usage: fs task merge NODE_ID --into SURVIVOR [--reason TEXT] [--project PROJECT_ID]
+
+Each operand is a node address: a bare "t-<hex>" id, or "<project>:<node>". A
+bare id takes the scope the command resolved; a qualified one names its own. The
+two ends of a fold may therefore be in two scopes, which is what folding a
+finding filed in the cap's scope into the same finding noticed in the worker's
+needs — and each half is written into the scope of the node it is about.
+
+For these two operands --project is a default, not an assertion. There is no one
+scope for an address to disagree with, so a qualified operand is not refused for
+naming another; say which scope each end belongs to, and that is what is used.`,
 		flags:       map[string]bool{"--into": true, "--reason": true, "--project": true},
 		positionals: 1,
 		address:     true,
@@ -94,7 +104,18 @@ var cmdSpecs = map[string]cmdSpec{
 		positionals: 1,
 	},
 	"log": {
-		usage: "Usage: fs log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]",
+		usage: `Usage: fs log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]
+
+--node takes a node address: a bare "t-<hex>" id, or "<project>:<node>". The
+address supplies the scope when --project did not; an explicit --project beats
+the qualifier, and the two disagreeing is refused naming both rather than
+answered by either.
+
+An id that resolves to nothing is refused. An empty history and an id that is not
+a node are different facts, and answering both with no events is the one answer a
+reader cannot act on. --type narrows which of the node's events are shown; it
+never decides whether the node is one, so asking for a type it has none of is an
+empty list and not a refusal.`,
 		flags: map[string]bool{"--project": true, "--node": true, "--type": true},
 	},
 

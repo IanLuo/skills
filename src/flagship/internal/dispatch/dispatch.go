@@ -836,25 +836,27 @@ func fixedDispatches(h *command.Handler, fixes []string) ([]string, error) {
 	return fixed, nil
 }
 
-// bareNodeID strips an optional "<scope>:" qualifier from a node reference. A
-// node id is "t-<hex>" — a colon never appears in one — so a qualified id is
-// unambiguously qualified. Only capScope is accepted: a member, and the
-// dispatch a review reads, both live in the cap's own scope.
+// bareNodeID resolves a node reference that must live in the cap's own scope —
+// a member, the dispatch a review reads, a batch, one of a fix round's subjects
+// — to its bare id.
+//
+// The splitting is not this function's: command.SplitAddress is the one resolver
+// for the address form, and this is the cap-scope judgement over it. What the
+// judgement is for: these are links between the cap's own nodes, written into
+// immutable events, so a reference to another scope would record a relation to a
+// node this scope cannot read. It is refused naming both.
 func bareNodeID(ref string) (string, error) {
 	if ref == "" {
 		return "", errors.New("a member cap node is required")
 	}
-	scope, node, qualified := strings.Cut(ref, ":")
-	if qualified {
-		if scope != capScope {
-			return "", fmt.Errorf("%s names scope %s; a member lives in scope %s", ref, scope, capScope)
-		}
-		if node == "" {
-			return "", fmt.Errorf("%s names no node", ref)
-		}
-		return node, nil
+	scope, node, err := command.SplitAddress(capScope, ref)
+	if err != nil {
+		return "", err
 	}
-	return ref, nil
+	if scope != capScope {
+		return "", fmt.Errorf("%s names scope %s; a member lives in scope %s", ref, scope, capScope)
+	}
+	return node, nil
 }
 
 // Integrated answers the member's question: is there a done integration

@@ -327,9 +327,15 @@ func TestWritersResolveAQualifiedNodeInItsOwnProject(t *testing.T) {
 	if events := h.Log("proj", strPtr(nodeID), nil).Data.(command.LogResult).Events; len(events) != 2 {
 		t.Errorf("expected task-created + status-changed on %s, got %d events", nodeID, len(events))
 	}
-	// And no node named literally "proj:<node>" was conjured.
-	if events := h.Log("proj", strPtr("proj:"+nodeID), nil).Data.(command.LogResult).Events; len(events) != 0 {
-		t.Errorf("a node named %q was created", "proj:"+nodeID)
+	// And no node named literally "proj:<node>" was conjured. The question is
+	// asked of the tree and not of fs log --node, which cannot answer it: that
+	// path resolves the address now, so a phantom node and the real one would
+	// both be reported through it. What is being asked is whether a node exists
+	// whose id carries a colon, so that is what is asked.
+	for _, task := range h.Status("proj").Data.(command.StatusResult).Tasks {
+		if strings.Contains(task.NodeID, ":") {
+			t.Errorf("a node named %q was created", task.NodeID)
+		}
 	}
 }
 

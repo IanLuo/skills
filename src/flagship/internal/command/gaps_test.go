@@ -332,9 +332,19 @@ func TestTaskMergeRefusesItselfAndUnknownNodes(t *testing.T) {
 	if resp := h.TaskMerge("proj", gap, "t-nothing", "", nil); resp.OK {
 		t.Error("merged into a node that does not exist; the link would point at nothing forever")
 	}
-	if resp := h.TaskMerge("proj", gap, "other:"+other, "", nil); resp.OK {
-		t.Error("merged across scopes; a merge names two nodes in one project")
+	if resp := h.TaskMerge("proj", gap, "other:t-nothing", "", nil); resp.OK {
+		t.Error("merged into an id that names nothing in the scope its address names")
 	}
+	// A bare id takes the command's own scope, so another scope's node is simply
+	// not found there: the qualifier is what says which scope, and without one
+	// there is only the one the command resolved.
+	if resp := h.TaskMerge("proj", other, gap, "", nil); resp.OK {
+		t.Error("a bare id from another scope resolved; an unqualified reference takes the command's own scope")
+	}
+	// A fold across scopes is not in this list any more: it is the case triage
+	// needs — one defect filed in the cap's scope and noticed in the worker's —
+	// and it is asserted in address_test.go. What an address still has to be is
+	// real, and in the scope it names.
 	if resp := h.TaskMerge("proj", gap, "", "", nil); resp.OK {
 		t.Error("merged into nothing")
 	}

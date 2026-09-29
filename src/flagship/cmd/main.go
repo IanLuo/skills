@@ -167,7 +167,13 @@ Commands:
                                                 what took it in, the survivor
                                                 names what it took in; neither
                                                 may be done, and a node that has
-                                                absorbed one may not be absorbed
+                                                absorbed one may not be absorbed.
+                                                Both operands take the address
+                                                form and each is resolved in the
+                                                scope it names, so a fold may
+                                                span two scopes; --project is
+                                                only the default for an operand
+                                                that carries none
   task block NODE_ID --reason REASON            Block a task; --check names a
                                                 shell command that would show
                                                 the condition is over, re-run by
@@ -739,7 +745,17 @@ func taskMerge(args []string) {
 
 	h, projectID := handler(projectID)
 	defer h.Close()
+
+	// A fold's two ends may be in two scopes — that is the fold triage needs —
+	// so the guard is asked of every scope this merge will write in, not only
+	// the one it resolved. Otherwise a worker's pane could reach the cap's scope
+	// by naming it in --into, which is the write the guard exists to refuse.
 	guardCoordinating(h, projectID)
+	for _, ref := range []string{nodeID, into} {
+		if scope := projectOfAddress(ref); scope != "" {
+			guardCoordinating(h, scope)
+		}
+	}
 
 	resp := h.TaskMerge(projectID, nodeID, into, reason, nil)
 	if resp.OK {
@@ -1162,6 +1178,11 @@ func logCmd(args []string) {
 	projectID := flagVal(args, "--project", "")
 	nodeIDStr := flagVal(args, "--node", "")
 	eventTypeStr := flagVal(args, "--type", "")
+
+	// --node takes the address form, the way a positional does: the address
+	// supplies the scope when --project did not, and an explicit --project beats
+	// the qualifier and is refused by the command layer when the two disagree.
+	projectID, nodeIDStr = nodeArg(projectID, nodeIDStr)
 
 	h, projectID := handler(projectID)
 	defer h.Close()
