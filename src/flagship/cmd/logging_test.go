@@ -189,6 +189,12 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		{"a task update address",
 			[]string{"task", "update", "nosuchproject:t-nope", "--status", "done"},
 			"nosuchproject", 1},
+		// log's --node is an address the way a positional is — nodeArg splits it
+		// and the scope it names is the one the log is of — so the invocation named
+		// a project even though the address arrived in a flag.
+		{"log's --node address",
+			[]string{"log", "--node", "nosuchproject:t-nope"},
+			"nosuchproject", 1},
 		{"a flag value that reads like a flag",
 			[]string{"report", "nosuchproject:t-nope", "--line", "--project", "skills"},
 			"nosuchproject", 2},

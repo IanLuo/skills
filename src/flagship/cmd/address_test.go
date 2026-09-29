@@ -61,3 +61,36 @@ func TestLogNodeTakesTheAddressForm(t *testing.T) {
 		})
 	}
 }
+
+// An address with no node in it is refused on both paths, with one reason. The
+// qualifier made "cap:" look like an address, and the flag made it look like a
+// node — and the two readings landed in different places: the scope was read
+// whole and exited 0 when --project was absent, and refused when it was present.
+// A question nobody asked gets an answer either way, which is worse than the
+// empty read this form was made to remove; what it must not do is one of those
+// on one path and the other on another.
+func TestLogNodeWithNoNodeRefusesTheSameWayWithAndWithoutProject(t *testing.T) {
+	bin := getFS(t)
+
+	reasons := make([]string, 0, 2)
+	for _, args := range [][]string{
+		{"log", "--node", "cap:"},
+		{"log", "--project", "cap", "--node", "cap:"},
+	} {
+		// A working directory that resolves to no project: the scope can only come
+		// from the address, so a path that never reaches the resolver is caught
+		// rather than answered by whatever directory the test ran in.
+		stdout, stderr, code := runFSCapture(t, bin, t.TempDir(), testHome(t), nil, args...)
+		if code != 1 {
+			t.Fatalf("%v: exit %d, want 1 (refused):\n%s%s", args, code, stdout, stderr)
+		}
+		reason, _ := refusalLine(t, stderr)["reason"].(string)
+		if !strings.Contains(reason, "names no node") {
+			t.Errorf("%v: reason = %q, want it to say the address names no node", args, reason)
+		}
+		reasons = append(reasons, reason)
+	}
+	if reasons[0] != reasons[1] {
+		t.Errorf("one address, two answers: %q without --project, %q with", reasons[0], reasons[1])
+	}
+}

@@ -217,7 +217,11 @@ Commands:
   tell PROJECT:NODE "TEXT"                      The cap's reply, routed through
                                                 that dispatch's delivery record
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
-  log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events
+  log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events; --node
+                                                takes a node address — a bare
+                                                t-<hex> id, or <project>:<node>
+                                                — and the address supplies the
+                                                scope when --project did not
   kb add --name NAME --file PATH [--project P]  Add a playbook; --project P
                                                 writes it to that project's own
                                                 KB instead of the global one
@@ -1663,6 +1667,14 @@ func batchCmd(args []string) {
 // --project is the stronger statement, and the command layer refuses a qualifier
 // that contradicts it, naming both. A colon never appears in a node id (they are
 // "t-<hex>"), so reading one as a qualifier is safe.
+//
+// An address with no node in it is not split. Cutting "cap:" to ("cap", "")
+// would hand the command layer an empty node id, which every reader reads as
+// "no node was named" — so `fs log --node "cap:"` answered with the whole scope
+// while the same address beside an explicit --project refused: one address, two
+// answers. The scope the address named is still supplied, and the reference goes
+// on whole, so the one resolver sees it and refuses it the same way on both
+// paths.
 func nodeArg(projectID, nodeID string) (string, string) {
 	if projectID != "" {
 		return projectID, nodeID
@@ -1670,6 +1682,9 @@ func nodeArg(projectID, nodeID string) (string, string) {
 	project, node, ok := strings.Cut(nodeID, ":")
 	if !ok {
 		return projectID, nodeID
+	}
+	if node == "" {
+		return project, nodeID
 	}
 	return project, node
 }
@@ -1700,10 +1715,11 @@ func projectOfAddress(address string) string {
 }
 
 // invocationProject is the project the invocation named, for a refusal line: the
-// value of `--project`, the address `close --worker P:N` carries, or the first
-// positional of a command whose positional *is* an address — the one nodeArg
-// splits, declared as `address` in that command's own spec (`task get P:N`,
-// `report P:N`, `tell P:N`).
+// value of `--project`, the address a PROJECT:NODE value carries — `close
+// --worker P:N`, or `log --node P:N`, whose --node is an address the way a
+// positional is — or the first positional of a command whose positional *is* an
+// address — the one nodeArg splits, declared as `address` in that command's own
+// spec (`task get P:N`, `report P:N`, `tell P:N`).
 //
 // The flag beats the address, because that is the project the command resolved
 // by: nodeArg gives an explicit `--project` precedence and refuses a qualifier
@@ -1758,7 +1774,7 @@ func invocationProject() string {
 		switch flag {
 		case "--project":
 			return value
-		case "--worker":
+		case "--worker", "--node":
 			if project := projectOfAddress(value); project != "" {
 				return project
 			}
