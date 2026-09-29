@@ -1717,9 +1717,10 @@ func projectOfAddress(address string) string {
 // addressFlagAnywhere reports whether some subcommand declares flag an address —
 // whether the CLI gives that flag `PROJECT:NODE` meaning anywhere. It is what a
 // glued token is read by, since checkArgs refuses every `--flag=value` form as an
-// unknown flag and no command's own declaration ever applies to one. The gate is
-// this vocabulary rather than the token's shape alone, because a flag that is no
-// command's address is not one here either.
+// unknown flag and no command's own declaration ever applies to one — except
+// `--node`, which AC4 exempts and invocationProject gates on the command's own
+// declaration instead. The gate is this vocabulary rather than the token's shape
+// alone, because a flag that is no command's address is not one here either.
 func addressFlagAnywhere(flag string) bool {
 	for _, spec := range cmdSpecs {
 		if spec.addressFlags[flag] {
@@ -1771,7 +1772,12 @@ func addressFlagAnywhere(flag string) bool {
 // flag-shaped token carrying the name. The gate is the CLI's own vocabulary, the
 // flags some subcommand declares in `addressFlags`, and not the token's shape
 // alone: `--goal=fix: this` is flag-shaped too, and reading it as a name would be
-// the guessed project AC4 forbids where the caller named none.
+// the guessed project AC4 forbids where the caller named none. `--node` is the
+// one flag that vocabulary does not reach: AC4 exempts it in both forms (`:60`,
+// `:116`), because close's is an exact node id rather than an address and a glued
+// token is refused before any command could tell close's from log's, so this
+// command's declaration answers for the glued spelling exactly as it does for the
+// spaced one.
 func invocationProject() string {
 	name := strings.Replace(commandName(), "-", " ", 1)
 	spec, known := cmdSpecs[name]
@@ -1803,8 +1809,13 @@ func invocationProject() string {
 		}
 		// The spaced value is the command's to interpret, so its own declaration
 		// decides; the glued token is refused before any command resolves it, so
-		// the CLI's vocabulary decides instead.
-		addressToken := inline && addressFlagAnywhere(flag)
+		// the CLI's vocabulary decides instead — except `--node`, which AC4 exempts
+		// from that reading in both forms (`fs-logging.md:60`, `:116`): close's
+		// `--node` is an exact node id rather than an address so it does not split,
+		// and a glued token never reaches close to be told apart from log's, so
+		// this command's declaration answers for it instead — the rule the spaced
+		// form already takes, which is what makes one flag's two spellings agree.
+		addressToken := inline && addressFlagAnywhere(flag) && (flag != "--node" || addressFlag)
 		switch {
 		case flag == "--project":
 			return value

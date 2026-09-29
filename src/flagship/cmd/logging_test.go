@@ -240,6 +240,18 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		{"a glued --worker=P:N on a command that does not declare it",
 			[]string{"log", "--worker=nosuchproject:t-nope"},
 			"nosuchproject", 2},
+		// `--node` is the one flag AC4 exempts from that reading, in both forms:
+		// close's is an exact node id rather than an address so it does not split,
+		// and a glued token is refused before any command resolves it, so nothing
+		// there can tell close's --node from log's. The command's own declaration
+		// answers for it instead, which is the rule the spaced form already takes —
+		// so the two spellings of one flag on one command agree.
+		{"a glued --node=P:N on a command that does not declare it",
+			[]string{"close", "--node=nosuchproject:t-nope"},
+			"", 2},
+		{"a glued --node=P:N on a command that declares it",
+			[]string{"log", "--node=nosuchproject:t-nope"},
+			"nosuchproject", 2},
 	}
 
 	for _, tc := range cases {
