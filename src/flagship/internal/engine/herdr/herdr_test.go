@@ -49,9 +49,11 @@ func answers(t *testing.T, replies map[string]string) *recordingRunner {
 	}}
 }
 
-// herdrRefusal is the JSON envelope herdr writes when it refuses, so the
-// adapter's error mapping is driven by the bytes herdr actually emits and not
-// by a constructed Go value.
+// herdrRefusal builds the error the adapter maps a refusal to. It is a
+// CONSTRUCTED Go value, not the bytes herdr emits: these tests assert the
+// mapping from a code and a message, so they would pass against a herdr whose
+// envelope had changed shape. Driven by real bytes would be the stronger test
+// and is not what this does.
 func herdrRefusal(code, message string) (string, error) {
 	return "", &HerdrError{Code: code, Message: message}
 }
