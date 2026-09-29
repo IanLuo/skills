@@ -231,6 +231,15 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		{"a glued --worker=P:N",
 			[]string{"close", "--node", "t-nope", "--worker=nosuchproject:t-nope", "--decision", "d", "--confirm"},
 			"nosuchproject", 2},
+		// The glued token names P wherever it sits, whether or not the command
+		// declares the flag one: no command ever resolves a --flag=value form,
+		// so the command's own declaration cannot be what the refusal reads —
+		// the caller wrote a flag-shaped token carrying the name. Close's
+		// declaration still governs the *value* it is handed, which is the
+		// spaced "close's --node is a bare id" case above.
+		{"a glued --worker=P:N on a command that does not declare it",
+			[]string{"log", "--worker=nosuchproject:t-nope"},
+			"nosuchproject", 2},
 	}
 
 	for _, tc := range cases {

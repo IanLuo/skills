@@ -1714,6 +1714,21 @@ func projectOfAddress(address string) string {
 	return project
 }
 
+// addressFlagAnywhere reports whether some subcommand declares flag an address —
+// whether the CLI gives that flag `PROJECT:NODE` meaning anywhere. It is what a
+// glued token is read by, since checkArgs refuses every `--flag=value` form as an
+// unknown flag and no command's own declaration ever applies to one. The gate is
+// this vocabulary rather than the token's shape alone, because a flag that is no
+// command's address is not one here either.
+func addressFlagAnywhere(flag string) bool {
+	for _, spec := range cmdSpecs {
+		if spec.addressFlags[flag] {
+			return true
+		}
+	}
+	return false
+}
+
 // invocationProject is the project the invocation named, for a refusal line: the
 // value of `--project`, the address a PROJECT:NODE value carries — `close
 // --worker P:N`, or `log --node P:N` — or the first positional of a command
@@ -1723,7 +1738,9 @@ func projectOfAddress(address string) string {
 // positional as `address`, the flag as `addressFlags`, the one nodeArg splits.
 // A flag's value is an address only where its command declares it one, so
 // `close --node P:N` names no project — that --node is an exact id close
-// resolves in the cap scope, and the colon is part of the id.
+// resolves in the cap scope, and the colon is part of the id. That declaration
+// answers for the *value* a flag was handed, and the glued form is the other
+// question, answered in the last paragraph.
 //
 // The flag beats the address, because that is the project the command resolved
 // by: nodeArg gives an explicit `--project` precedence and refuses a qualifier
@@ -1746,6 +1763,15 @@ func projectOfAddress(address string) string {
 // checkArgs refuses the form outright: the token is flag-shaped and carries the
 // name, so it is the caller naming one, where a *value* that merely reads like a
 // flag is not.
+//
+// A glued address flag is that same question put to a different read: `--worker=P:N`
+// names P on log as readily as on close, because checkArgs refuses every
+// `--flag=value` form as an unknown flag and no command ever resolves one, so the
+// command's declaration is not what a refusal has to go on — the caller wrote a
+// flag-shaped token carrying the name. The gate is the CLI's own vocabulary, the
+// flags some subcommand declares in `addressFlags`, and not the token's shape
+// alone: `--goal=fix: this` is flag-shaped too, and reading it as a name would be
+// the guessed project AC4 forbids where the caller named none.
 func invocationProject() string {
 	name := strings.Replace(commandName(), "-", " ", 1)
 	spec, known := cmdSpecs[name]
@@ -1775,10 +1801,14 @@ func invocationProject() string {
 			}
 			value, i = args[i+1], i+1
 		}
+		// The spaced value is the command's to interpret, so its own declaration
+		// decides; the glued token is refused before any command resolves it, so
+		// the CLI's vocabulary decides instead.
+		addressToken := inline && addressFlagAnywhere(flag)
 		switch {
 		case flag == "--project":
 			return value
-		case addressFlag:
+		case addressFlag, addressToken:
 			if project := projectOfAddress(value); project != "" {
 				return project
 			}
