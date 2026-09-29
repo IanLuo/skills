@@ -1716,10 +1716,14 @@ func projectOfAddress(address string) string {
 
 // invocationProject is the project the invocation named, for a refusal line: the
 // value of `--project`, the address a PROJECT:NODE value carries — `close
-// --worker P:N`, or `log --node P:N`, whose --node is an address the way a
-// positional is — or the first positional of a command whose positional *is* an
-// address — the one nodeArg splits, declared as `address` in that command's own
-// spec (`task get P:N`, `report P:N`, `tell P:N`).
+// --worker P:N`, or `log --node P:N` — or the first positional of a command
+// whose positional *is* an address.
+//
+// Both address forms are declared in the command's own spec, per argument: the
+// positional as `address`, the flag as `addressFlags`, the one nodeArg splits.
+// A flag's value is an address only where its command declares it one, so
+// `close --node P:N` names no project — that --node is an exact id close
+// resolves in the cap scope, and the colon is part of the id.
 //
 // The flag beats the address, because that is the project the command resolved
 // by: nodeArg gives an explicit `--project` precedence and refuses a qualifier
@@ -1762,19 +1766,19 @@ func invocationProject() string {
 		}
 
 		flag, value, inline := strings.Cut(arg, "=")
-		namesProject := flag == "--project" || flag == "--worker"
+		addressFlag := spec.addressFlags[flag]
 		if !inline {
 			// A flag's value is not a flag: consume it the way checkArgs does,
 			// whether or not it is this one that names a project.
-			if takesValue := spec.flags[flag] || namesProject; !takesValue || i+1 >= len(args) {
+			if takesValue := spec.flags[flag] || flag == "--project" || addressFlag; !takesValue || i+1 >= len(args) {
 				continue
 			}
 			value, i = args[i+1], i+1
 		}
-		switch flag {
-		case "--project":
+		switch {
+		case flag == "--project":
 			return value
-		case "--worker", "--node":
+		case addressFlag:
 			if project := projectOfAddress(value); project != "" {
 				return project
 			}

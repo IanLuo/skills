@@ -195,6 +195,12 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		{"log's --node address",
 			[]string{"log", "--node", "nosuchproject:t-nope"},
 			"nosuchproject", 1},
+		// close's --node is not an address: close resolves it with capNode, always
+		// in the cap scope, so nothing is split and the invocation named no project.
+		// A line carrying one would name a project the command did not use.
+		{"close's --node is a bare id, not an address",
+			[]string{"close", "--node", "nosuchproject:t-nope", "--decision", "d", "--confirm"},
+			"", 1},
 		{"a flag value that reads like a flag",
 			[]string{"report", "nosuchproject:t-nope", "--line", "--project", "skills"},
 			"nosuchproject", 2},

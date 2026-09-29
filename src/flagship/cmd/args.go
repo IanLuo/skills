@@ -27,6 +27,17 @@ type cmdSpec struct {
 	// place a refusal can learn a project from a positional. It is declared here,
 	// beside the flags and the count, because it is part of the argument shape.
 	address bool
+	// addressFlags marks the flags on this subcommand whose *value* is a
+	// `PROJECT:NODE` address. The declaration is per command and per argument
+	// for the positionals, and it is per command and per argument here too: a
+	// flag is an address where the command declares it one and where it does
+	// not the value is whatever the command says it is. `log --node` is an
+	// address — the scope it names is the one the log is of — while `close
+	// --node` is an exact node id close resolves through capNode in the cap
+	// scope, so its colon is part of the id and names no project. Reading every
+	// `--node` as an address put `project` on close's refusal lines naming a
+	// scope the command never used.
+	addressFlags map[string]bool
 }
 
 var cmdSpecs = map[string]cmdSpec{
@@ -116,7 +127,8 @@ a node are different facts, and answering both with no events is the one answer 
 reader cannot act on. --type narrows which of the node's events are shown; it
 never decides whether the node is one, so asking for a type it has none of is an
 empty list and not a refusal.`,
-		flags: map[string]bool{"--project": true, "--node": true, "--type": true},
+		flags:        map[string]bool{"--project": true, "--node": true, "--type": true},
+		addressFlags: map[string]bool{"--node": true},
 	},
 
 	"kb add": {
@@ -294,6 +306,9 @@ project root, so an action that removes the worktree does not stand inside it.`,
 			"--confirm": false, "--abandoned": false, "--reason": true,
 			"--without-review": true,
 		},
+		// --worker names the worker node and is a PROJECT:NODE address; --node
+		// names the cap node and is an exact id, resolved in the cap scope.
+		addressFlags: map[string]bool{"--worker": true},
 	},
 	"script": {
 		usage: `Usage: fs script NAME [ARGS...]
