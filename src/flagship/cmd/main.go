@@ -1678,8 +1678,17 @@ func batchCmd(args []string) {
 // answers. The scope the address named is still supplied, and the reference goes
 // on whole, so the one resolver sees it and refuses it the same way on both
 // paths.
+//
+// An address with no project in it — `--node :t-x` — names a node and no scope,
+// and is not a second belief for the guard to weigh against --project. Only the
+// node half is addressed and the flag supplies the scope, exactly as it does for
+// a bare id; the blank half is dropped here, before the guard, so the guard is
+// never handed a project that is not a name.
 func nodeArg(projectID, nodeID string) (string, string) {
 	if projectID != "" {
+		if project, node, ok := strings.Cut(nodeID, ":"); ok && project == "" && node != "" {
+			nodeID = node
+		}
 		refuseProjectConflict(projectID, nodeID)
 		return projectID, nodeID
 	}

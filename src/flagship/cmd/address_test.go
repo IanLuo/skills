@@ -94,3 +94,61 @@ func TestLogNodeWithNoNodeRefusesTheSameWayWithAndWithoutProject(t *testing.T) {
 		t.Errorf("one address, two answers: %q without --project, %q with", reasons[0], reasons[1])
 	}
 }
+
+// An address whose project half is empty names a node and no scope — `--node
+// :t-x`. It is not a second belief about the scope for the conflict guard to
+// weigh against --project: the flag supplies the scope, and only the node half
+// is addressed, exactly as a bare id would be. Reading the blank qualifier as a
+// disagreement refused the invocation, and from a directory that resolves to no
+// project it refused with "no project is registered" to a caller who had just
+// passed --project — the worse half, because the refusal named the one thing the
+// caller had already supplied.
+func TestLogNodeAddressWithoutAProjectResolvesByTheFlag(t *testing.T) {
+	bin := getFS(t)
+	home := testHome(t)
+	dir := t.TempDir()
+
+	// A node in scope alpha, created without registering a project: the store is
+	// keyed by the scope its events carry, not by the registry.
+	resp, code := runFS(t, bin, dir, "task", "add", "--project", "alpha", "--goal", "x", "--kind", "work")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, resp)
+	}
+	node, _ := resp["data"].(map[string]any)["node_id"].(string)
+	if node == "" {
+		t.Fatalf("no node created in alpha: %v", resp)
+	}
+
+	// The flag names the scope the node is in, so the read resolves by it and
+	// returns the node's events rather than a refusal about a blank name.
+	resolved, code := runFS(t, bin, dir, "log", "--node", ":"+node, "--project", "alpha")
+	if code != 0 {
+		t.Fatalf("log --node :%s --project alpha exit %d, want 0 (resolved by the flag): %v",
+			node, code, resolved)
+	}
+	events, _ := resolved["data"].(map[string]any)["events"].([]any)
+	if len(events) == 0 {
+		t.Errorf("log resolved by the flag but read no events: %v", resolved)
+	}
+
+	// With --project naming a scope that does not hold the node, the answer is
+	// about the node — not "no project is registered" for a flag that was passed,
+	// and not a conflict over the blank project half.
+	stdout, stderr, code := runFSCapture(t, bin, t.TempDir(), home, nil,
+		"log", "--node", ":"+node, "--project", "bravo")
+	if code != 1 {
+		t.Fatalf("log from an unregistered cwd exit %d, want 1:\n%s%s", code, stdout, stderr)
+	}
+	reason, _ := refusalLine(t, stderr)["reason"].(string)
+	if strings.Contains(reason, "no project is registered") {
+		t.Errorf("a caller who passed --project was told to pass --project: %q", reason)
+	}
+	if strings.Contains(reason, "the address says") {
+		t.Errorf("an address naming no project was read as a conflict: %q", reason)
+	}
+	for _, want := range []string{node, "bravo"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("refusal %q does not name %q", reason, want)
+		}
+	}
+}
