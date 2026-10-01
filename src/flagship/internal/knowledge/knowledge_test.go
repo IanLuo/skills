@@ -167,6 +167,65 @@ func TestAddInvalidYAML(t *testing.T) {
 	}
 }
 
+func TestAddDryRunReportsAndWritesNothing(t *testing.T) {
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := kc.AddDryRun("code-entry", []byte(samplePlaybook))
+	if err != nil {
+		t.Fatalf("AddDryRun: %v", err)
+	}
+	if path != kbPath(fsRoot, "code-entry") {
+		t.Errorf("AddDryRun path = %q, want %q", path, kbPath(fsRoot, "code-entry"))
+	}
+	if _, err := os.Stat(kbPath(fsRoot, "code-entry")); !os.IsNotExist(err) {
+		t.Errorf("AddDryRun wrote the file (stat err = %v); it must not", err)
+	}
+
+	// The dry-run left nothing behind, so the real add still succeeds and is
+	// not a duplicate.
+	if err := kc.Add("code-entry", []byte(samplePlaybook)); err != nil {
+		t.Fatalf("Add after dry-run: %v", err)
+	}
+}
+
+func TestAddRefusesANameThatEscapesTheRoot(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"../escape", "../../escape", "a/b"} {
+		err := kc.Add(name, []byte("name: "+name+"\nwork:\n  - say: x\n"))
+		if err == nil {
+			t.Fatalf("Add(%q): expected a refusal for a name that escapes the root", name)
+		}
+		if !strings.Contains(err.Error(), "single path segment") {
+			t.Errorf("Add(%q) error %q must name the single-segment rule", name, err)
+		}
+	}
+}
+
+func TestAddRefusesANameThatIsNotALegalPlaybookName(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"<shipped>", "<x>foo"} {
+		err := kc.Add(name, []byte("name: "+name+"\nwork:\n  - say: x\n"))
+		if err == nil {
+			t.Fatalf("Add(%q): expected a refusal for an illegal playbook name", name)
+		}
+		if !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("Add(%q) error %q must name the reserved leading angle bracket", name, err)
+		}
+	}
+}
+
 func TestGetNotFound(t *testing.T) {
 	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {

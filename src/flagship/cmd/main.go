@@ -222,9 +222,11 @@ Commands:
                                                 t-<hex> id, or <project>:<node>
                                                 — and the address supplies the
                                                 scope when --project did not
-  kb add --name NAME --file PATH [--project P]  Add a playbook; --project P
-                                                writes it to that project's own
-                                                KB instead of the global one
+  kb add --name NAME --file PATH [--project P]  Add a playbook; --dry-run
+                                                parses and reports without
+                                                writing; --project P writes it
+                                                to that project's own KB
+                                                instead of the global one
   kb get NAME [--project P]                     Get a playbook
   kb list [--project P]                         List every playbook, the scope it
                                                 resolves from (shipped, global or
@@ -854,7 +856,8 @@ func kbCmd(args []string) {
 		fmt.Fprintln(os.Stderr, `Usage: fs kb <subcommand>
 
 Subcommands:
-  add --name NAME --file PATH   Add a playbook
+  add --name NAME --file PATH   Add a playbook (--dry-run reports without
+                                writing)
   get NAME                      Get a playbook
   list                          List playbooks and their state against the
                                 shipped defaults
@@ -920,6 +923,18 @@ func kbAdd(args []string) {
 	}
 
 	kc := openKB(flagVal(args, "--project", ""))
+
+	if hasFlag(args, "--dry-run") {
+		path, err := kc.AddDryRun(name, data)
+		if err != nil {
+			output(command.Response{OK: false, Error: err.Error()})
+			return
+		}
+		output(command.Response{OK: true, Data: map[string]string{
+			"name": name, "action": "would add", "scope": kc.Scope(), "path": path,
+		}})
+		return
+	}
 
 	if err := kc.Add(name, data); err != nil {
 		output(command.Response{OK: false, Error: err.Error()})

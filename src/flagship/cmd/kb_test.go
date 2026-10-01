@@ -165,6 +165,41 @@ func writeRaw(t *testing.T, path, content string) {
 	}
 }
 
+// fs kb add --dry-run parses and validates the playbook and reports the path
+// it would write, but writes nothing — so a doc-verification step has a safe
+// form that cannot contaminate the live global scope.
+func TestCLIKBAddDryRunWritesNothingAndReportsThePath(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	pbFile := writePlaybook(t, dir, "my-gate", "name: my-gate\nentry:\n  - check: test -f AGENTS.md\n")
+
+	resp, code := runFS(t, bin, dir, "kb", "add", "--name", "my-gate", "--file", pbFile, "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry-run exit %d: %v", code, resp["error"])
+	}
+	data := resp["data"].(map[string]any)
+	if data["action"] != "would add" {
+		t.Errorf("action = %v, want \"would add\"", data["action"])
+	}
+	if path, _ := data["path"].(string); path == "" {
+		t.Errorf("dry-run reported no path: %v", data)
+	}
+
+	home := testHome(t)
+	if _, err := os.Stat(filepath.Join(home, ".fs", "kb", "my-gate.yaml")); !os.IsNotExist(err) {
+		t.Errorf("dry-run wrote my-gate.yaml (stat err = %v)", err)
+	}
+
+	// Without the flag it still writes: --dry-run is an addition, not a change.
+	resp, code = runFS(t, bin, dir, "kb", "add", "--name", "my-gate", "--file", pbFile)
+	if code != 0 {
+		t.Fatalf("add exit %d: %v", code, resp["error"])
+	}
+	if _, err := os.Stat(filepath.Join(home, ".fs", "kb", "my-gate.yaml")); err != nil {
+		t.Errorf("add without --dry-run did not write my-gate.yaml: %v", err)
+	}
+}
+
 // fs kb list answers "what is actually running": every playbook the binary
 // ships is a playbook, and on a fresh home each one resolves out of the binary
 // with nothing written to disk. There is no install step between a new home and

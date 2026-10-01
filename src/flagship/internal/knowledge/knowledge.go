@@ -409,9 +409,11 @@ const (
 // downstream — lookup, the include walk, inherit, chain — still works on
 // strings.
 //
-// It cannot collide with a file: a candidate is an absolute path under the fs
-// root, so it never begins with a bare "<" segment. The angle brackets are there
-// to say which kind of identity a reader is looking at.
+// It cannot carry a file's name: validPlaybookName refuses a name that would
+// escape the KB directory or that begins with "<", so a file this package
+// writes is <root>/kb/<name>.yaml whose name never begins with the bare "<"
+// segment this marker uses. The angle brackets say which kind of identity a
+// reader is looking at.
 const shippedDir = "<shipped>"
 
 // shippedID is the identity of the shipped default named name.
@@ -557,30 +559,48 @@ func (c *Center) scopeOf(id string) string {
 // Add writes a new playbook file into the scope this center is bound to.
 // Returns error if it already exists there.
 func (c *Center) Add(name string, data []byte) error {
-	if name == "" {
-		return fmt.Errorf("knowledge: name is required")
-	}
-
-	pb, err := parsePlaybook(name, data)
+	path, err := c.prepareAdd(name, data)
 	if err != nil {
 		return err
-	}
-	if err := c.completeForWrite(name, pb); err != nil {
-		return err
-	}
-	if err := Validate(pb); err != nil {
-		return err
-	}
-
-	path := filepath.Join(c.writeDir(), name+".yaml")
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("knowledge: playbook %q already exists", name)
 	}
 
 	if err := os.MkdirAll(c.writeDir(), 0o755); err != nil {
 		return fmt.Errorf("knowledge: create dir %s: %w", c.writeDir(), err)
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// AddDryRun does everything Add does except write: it parses, completes and
+// validates the playbook, refuses a name that already exists, and reports the
+// path the write would land on. It is the safe form a doc-verification step
+// uses to prove an example parses without contaminating the live scope.
+func (c *Center) AddDryRun(name string, data []byte) (string, error) {
+	return c.prepareAdd(name, data)
+}
+
+// prepareAdd is the shared half of Add and AddDryRun: every refusal and the
+// path, up to the write itself.
+func (c *Center) prepareAdd(name string, data []byte) (string, error) {
+	if err := validPlaybookName(name); err != nil {
+		return "", err
+	}
+
+	pb, err := parsePlaybook(name, data)
+	if err != nil {
+		return "", err
+	}
+	if err := c.completeForWrite(name, pb); err != nil {
+		return "", err
+	}
+	if err := Validate(pb); err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(c.writeDir(), name+".yaml")
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("knowledge: playbook %q already exists", name)
+	}
+	return path, nil
 }
 
 // Get reads and resolves a playbook by name: project scope first, then global,
@@ -716,11 +736,32 @@ func playbookName(fileName string) string {
 	return ""
 }
 
+// validPlaybookName reports whether name is a legal playbook name, and is the
+// one place a name's shape is enforced — Add and Edit both refuse an illegal
+// name rather than joining it into a path. A playbook name is the stem of its
+// file, so it must be a single path segment that cannot escape the KB
+// directory, and it may not begin with the reserved "<" that marks a shipped
+// identity.
+func validPlaybookName(name string) error {
+	if name == "" {
+		return fmt.Errorf("knowledge: name is required")
+	}
+	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf(
+			"knowledge: playbook name %q is not a single path segment; a name may not contain a path separator or be . or ..", name)
+	}
+	if strings.HasPrefix(name, "<") {
+		return fmt.Errorf(
+			"knowledge: playbook name %q begins with the reserved \"<\"; the angle brackets mark a shipped identity, so a file may not use them", name)
+	}
+	return nil
+}
+
 // Edit overwrites an existing playbook in the scope this center is bound to.
 // Returns error if it doesn't exist there.
 func (c *Center) Edit(name string, data []byte) error {
-	if name == "" {
-		return fmt.Errorf("knowledge: name is required")
+	if err := validPlaybookName(name); err != nil {
+		return err
 	}
 
 	pb, err := parsePlaybook(name, data)

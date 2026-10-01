@@ -143,8 +143,8 @@ empty list and not a refusal.`,
 	},
 
 	"kb add": {
-		usage: "Usage: fs kb add --name NAME --file PATH [--project PROJECT_ID]",
-		flags: map[string]bool{"--name": true, "--file": true, "--project": true},
+		usage: "Usage: fs kb add --name NAME --file PATH [--dry-run] [--project PROJECT_ID]",
+		flags: map[string]bool{"--name": true, "--file": true, "--dry-run": false, "--project": true},
 	},
 	"kb get":    {usage: "Usage: fs kb get NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
 	"kb list":   {usage: "Usage: fs kb list [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
