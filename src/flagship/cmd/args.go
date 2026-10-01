@@ -38,6 +38,14 @@ type cmdSpec struct {
 	// `--node` as an address put `project` on close's refusal lines naming a
 	// scope the command never used.
 	addressFlags map[string]bool
+	// projectDefault marks a subcommand whose `--project` is a default scope for
+	// an operand that carries none, rather than an assertion about the one it
+	// does. It is the one declaration under which an address naming another
+	// scope is not the conflict nodeArg refuses: task merge's two operands are
+	// the ends of a fold and may name two scopes by construction — that is the
+	// case the command exists for — so a qualified operand disagreeing with
+	// --project is what it was asked to do, not a symptom.
+	projectDefault bool
 }
 
 var cmdSpecs = map[string]cmdSpec{
@@ -82,9 +90,10 @@ needs — and each half is written into the scope of the node it is about.
 For these two operands --project is a default, not an assertion. There is no one
 scope for an address to disagree with, so a qualified operand is not refused for
 naming another; say which scope each end belongs to, and that is what is used.`,
-		flags:       map[string]bool{"--into": true, "--reason": true, "--project": true},
-		positionals: 1,
-		address:     true,
+		flags:          map[string]bool{"--into": true, "--reason": true, "--project": true},
+		positionals:    1,
+		address:        true,
+		projectDefault: true,
 	},
 	"task block": {
 		usage:       "Usage: fs task block NODE_ID --reason REASON [--check \"SHELL COMMAND\"] [--project PROJECT_ID]",
@@ -118,9 +127,11 @@ naming another; say which scope each end belongs to, and that is what is used.`,
 		usage: `Usage: fs log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]
 
 --node takes a node address: a bare "t-<hex>" id, or "<project>:<node>". The
-address supplies the scope when --project did not; an explicit --project beats
-the qualifier, and the two disagreeing is refused naming both rather than
-answered by either.
+address supplies the scope when --project did not. Named both ways and the two
+disagreeing is a conflict rather than a precedence question — the node moved
+scope, or the project was renamed, so one of the two is stale — and it is
+refused: the refusal resolves the node in both scopes and says which half is the
+stale one.
 
 An id that resolves to nothing is refused. An empty history and an id that is not
 a node are different facts, and answering both with no events is the one answer a

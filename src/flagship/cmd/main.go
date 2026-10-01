@@ -1664,9 +1664,12 @@ func batchCmd(args []string) {
 
 // nodeArg splits a "<project>:<node>" node argument into the project it names
 // and the bare node id — but only when no --project was given: an explicit
-// --project is the stronger statement, and the command layer refuses a qualifier
-// that contradicts it, naming both. A colon never appears in a node id (they are
-// "t-<hex>"), so reading one as a qualifier is safe.
+// --project is the statement the command resolves by. A qualifier that names
+// another project is not answered by either, so it is refused here, in
+// refuseProjectConflict, before the command runs — it is a conflict between two
+// of the caller's beliefs, and the refusal says which one is stale. A colon
+// never appears in a node id (they are "t-<hex>"), so reading one as a
+// qualifier is safe.
 //
 // An address with no node in it is not split. Cutting "cap:" to ("cap", "")
 // would hand the command layer an empty node id, which every reader reads as
@@ -1677,6 +1680,7 @@ func batchCmd(args []string) {
 // paths.
 func nodeArg(projectID, nodeID string) (string, string) {
 	if projectID != "" {
+		refuseProjectConflict(projectID, nodeID)
 		return projectID, nodeID
 	}
 	project, node, ok := strings.Cut(nodeID, ":")
@@ -1687,6 +1691,62 @@ func nodeArg(projectID, nodeID string) (string, string) {
 		return project, nodeID
 	}
 	return project, node
+}
+
+// refuseProjectConflict refuses an invocation that named two projects and left
+// one of them stale. `--project P` and an address naming Q are two beliefs about
+// one node, and when they disagree the command is answered by neither — so it is
+// refused, and the refusal is diagnostic rather than merely ambiguous: the node
+// is resolved in both scopes and the message says where it actually is, so the
+// caller is told which belief is out of date instead of being left to work it
+// out. A refusal that said only "these conflict" would make the caller do that
+// work, and the two records it would reach for are the two it just gave.
+//
+// It is a no-op for an invocation that named one project, or two that agree, and
+// for a command whose --project is a default rather than an assertion — see
+// projectDefault. An address whose node half is empty (`cap:`) is left to the
+// command, which refuses it as naming no node.
+func refuseProjectConflict(projectID, nodeID string) {
+	cmd := strings.Replace(commandName(), "-", " ", 1)
+	spec, known := cmdSpecs[cmd]
+	if !known || spec.projectDefault {
+		return
+	}
+	addressProject, node, ok := strings.Cut(nodeID, ":")
+	if !ok || node == "" || addressProject == projectID {
+		return
+	}
+
+	here := scopeHoldsNode(addressProject, node)
+	there := scopeHoldsNode(projectID, node)
+	var why string
+	switch {
+	case here && there:
+		why = fmt.Sprintf("%s is in both, so neither half is the stale one", node)
+	case here:
+		why = fmt.Sprintf("%s is in %s, so --project is the stale half", node, addressProject)
+	case there:
+		why = fmt.Sprintf("%s is in %s, so the address is the stale half", node, projectID)
+	default:
+		why = fmt.Sprintf("%s is in neither, so the address names the wrong node", node)
+	}
+	output(command.Response{OK: false, Error: fmt.Sprintf(
+		"fs %s: the address says %s and --project says %s; %s", cmd, addressProject, projectID, why)})
+}
+
+// scopeHoldsNode reports whether a scope holds a node with this bare id. It is
+// Handler.NodeExists, not Handler.Status: Status re-runs every recorded block
+// and claim check to derive a status (check.go, reportedStatus), which is the
+// right thing for a reader that is about to show a claim and the wrong thing
+// here — a refusal must not run a shell, and this asks about the record rather
+// than about whether a claim still holds. Unreadable is reported as "does not
+// hold" so a scope that cannot be read is not mistaken for one that named the
+// node.
+func scopeHoldsNode(scope, node string) bool {
+	h, _ := handler(scope)
+	defer h.Close()
+	holds, err := h.NodeExists(scope, node)
+	return err == nil && holds
 }
 
 // commandName derives the command a log line belongs to, from the process args:
@@ -1743,10 +1803,12 @@ func addressFlagAnywhere(flag string) bool {
 // answers for the *value* a flag was handed, and the glued form is the other
 // question, answered in the last paragraph.
 //
-// The flag beats the address, because that is the project the command resolved
-// by: nodeArg gives an explicit `--project` precedence and refuses a qualifier
-// that contradicts it, so a line naming the positional's project would
-// contradict the reason it sits beside.
+// When the flag and the address name two projects that agree, or only one of
+// them names a project at all, that is the project the line carries. When they
+// disagree the command is refused as a conflict — one of the two beliefs is
+// stale, and the refusal resolves the node and says which — and the line names
+// neither: the caller named two, so carrying one would be the guess AC4 forbids
+// and would contradict the reason printed beside it.
 //
 // The arguments are walked the way checkArgs walks them, from the same spec: a
 // flag's value is consumed as a value, so one that merely reads like a flag names
@@ -1787,6 +1849,8 @@ func invocationProject() string {
 	args := os.Args[1+len(strings.Fields(name)):]
 	count := 0
 	address := ""
+	flagProject := ""
+	flagSeen := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") {
@@ -1818,12 +1882,20 @@ func invocationProject() string {
 		addressToken := inline && addressFlagAnywhere(flag) && (flag != "--node" || addressFlag)
 		switch {
 		case flag == "--project":
-			return value
+			if !flagSeen {
+				flagProject, flagSeen = value, true
+			}
 		case addressFlag, addressToken:
-			if project := projectOfAddress(value); project != "" {
-				return project
+			if address == "" {
+				address = projectOfAddress(value)
 			}
 		}
+	}
+	if flagSeen {
+		if flagProject != "" && address != "" && flagProject != address {
+			return ""
+		}
+		return flagProject
 	}
 	return address
 }

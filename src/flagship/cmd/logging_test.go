@@ -207,15 +207,19 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		{"a project flag after a bare positional",
 			[]string{"task", "get", "t-nope", "--project", "skills"},
 			"skills", 1},
-		// The flag beats the address, because that is what the command did: nodeArg
-		// gives --project precedence and refuses a qualifier that contradicts it. A
-		// line that named the positional's project would contradict its own reason.
-		{"a project flag that beats the positional's address",
+		// An invocation that names two projects in two places, and they disagree,
+		// is a conflict: one of the caller's beliefs is stale. It is refused, and
+		// the line names neither — the caller named two, so one would be a guess
+		// and would contradict the diagnostic reason printed beside it.
+		{"a --project that conflicts with the positional's address",
 			[]string{"task", "get", "skills:t-nope", "--project", "nosuchproject"},
-			"nosuchproject", 1},
-		{"a project flag that beats report's positional address",
+			"", 1},
+		{"a --project that conflicts with report's positional address",
 			[]string{"report", "skills:t-nope", "--line", "x", "--project", "nosuchproject"},
-			"nosuchproject", 1},
+			"", 1},
+		{"a --project that conflicts with log's --node address",
+			[]string{"log", "--node", "skills:t-nope", "--project", "nosuchproject"},
+			"", 1},
 		{"a project flag after a bare --worker",
 			[]string{"close", "--node", "t-nope", "--worker", "t-nope", "--decision", "d", "--confirm", "--project", "skills"},
 			"skills", 2},
@@ -273,6 +277,76 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 					project, present, tc.want, line)
 			}
 		})
+	}
+}
+
+// A conflict between two named projects is a symptom, not merely an ambiguity:
+// one of the caller's beliefs is stale — the node moved scope, or the project
+// was renamed. The refusal answers it by resolving the node in both scopes and
+// saying where it actually is, and the case where it is in neither reads
+// differently, because then it is the node that is wrong rather than a project.
+func TestCLIConflictingProjectsRefuseDiagnostically(t *testing.T) {
+	bin := getFS(t)
+	home := testHome(t)
+	dir := t.TempDir()
+
+	// A node in scope "alpha", created without registering a project: the store
+	// is keyed by the scope its events carry, not by the registry.
+	resp, code := runFS(t, bin, dir, "task", "add", "--project", "alpha", "--goal", "x", "--kind", "work")
+	if code != 0 {
+		t.Fatalf("task add exit %d: %v", code, resp)
+	}
+	node, _ := resp["data"].(map[string]any)["node_id"].(string)
+	if node == "" {
+		t.Fatalf("no node created in alpha: %v", resp)
+	}
+
+	message := func(args ...string) (string, int) {
+		t.Helper()
+		stdout, _, code := runFSCapture(t, bin, dir, home, nil, args...)
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("%v: stdout is not an envelope: %v\n%s", args, err, stdout)
+		}
+		msg, _ := envelope["error"].(string)
+		return msg, code
+	}
+
+	// The address holds the node, so --project is the stale half. The refusal
+	// names both scopes and says where the node is.
+	msg, code := message("log", "--node", "alpha:"+node, "--project", "bravo")
+	if code != 1 {
+		t.Fatalf("log conflict exit %d, want 1: %s", code, msg)
+	}
+	for _, want := range []string{"alpha", "bravo", node + " is in alpha", "--project is the stale half"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal %q does not contain %q", msg, want)
+		}
+	}
+
+	// In neither scope, the node itself is the wrong half, and it reads
+	// differently from the case above.
+	neither, code := message("log", "--node", "alpha:t-nope", "--project", "bravo")
+	if code != 1 {
+		t.Fatalf("log conflict exit %d, want 1: %s", code, neither)
+	}
+	if !strings.Contains(neither, "t-nope is in neither") {
+		t.Errorf("refusal %q does not say the node is in neither scope", neither)
+	}
+	if strings.Contains(neither, "is the stale half") {
+		t.Errorf("the neither case reads like the in-one case: %q", neither)
+	}
+
+	// The agreeing cases are untouched: the address alone carries its scope, and
+	// an explicit --project that agrees carries it too. Neither refuses.
+	for _, args := range [][]string{
+		{"log", "--node", "alpha:" + node},
+		{"log", "--node", "alpha:" + node, "--project", "alpha"},
+	} {
+		stdout, stderr, code := runFSCapture(t, bin, dir, home, nil, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d, want 0 (no refusal):\n%s%s", args, code, stdout, stderr)
+		}
 	}
 }
 

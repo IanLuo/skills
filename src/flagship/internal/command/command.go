@@ -345,7 +345,7 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 	// are immutable, so the mistake could never be corrected. Refuse it here.
 	// Existence is a task-created event, not tree membership: derived state
 	// materializes a node from any event written to it, so a conjured node (see
-	// nodeExists) would otherwise be an acceptable parent.
+	// NodeExists) would otherwise be an acceptable parent.
 	//
 	// --parent takes the address form, and the tree has no cross-scope edges: a
 	// parent is a node in the child's own scope, so a qualifier naming another is
@@ -360,7 +360,7 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 				"parent %s names project %s but the node is in project %s — a parent is a node in the child's own scope",
 				*parentNodeID, scope, projectID))
 		}
-		exists, err := h.nodeExists(projectID, parentID)
+		exists, err := h.NodeExists(projectID, parentID)
 		if err != nil {
 			h.logger.Error("store replay failed", "command", "task-add", "error", err)
 			return errResp(err.Error())
@@ -446,13 +446,13 @@ func validReviews(ref string) error {
 	return nil
 }
 
-// nodeExists reports whether a node was created in the project. The test is a
+// NodeExists reports whether a node was created in the project. The test is a
 // task-created event, not tree membership: derived state materializes a node
 // from any event that names it, so a node that only ever had a status or
 // decision written to it — the damage the old path left behind — is visible in
 // fs status while never having been created. A node whose task-created parent is
 // missing is an orphan, which is a node that exists.
-func (h *Handler) nodeExists(projectID, nodeID string) (bool, error) {
+func (h *Handler) NodeExists(projectID, nodeID string) (bool, error) {
 	filter := &store.ReplayFilter{
 		Types:  []store.EventType{store.TaskCreated},
 		NodeID: &nodeID,
@@ -476,7 +476,7 @@ func (h *Handler) nodeExists(projectID, nodeID string) (bool, error) {
 // distinguishable from a check that did not run.
 func (h *Handler) foundByMissing(ref string) (string, error) {
 	project, node, _ := strings.Cut(ref, ":")
-	exists, err := h.nodeExists(project, node)
+	exists, err := h.NodeExists(project, node)
 	if err != nil {
 		return "", err
 	}
@@ -493,7 +493,7 @@ func (h *Handler) foundByMissing(ref string) (string, error) {
 		if scope == project {
 			continue
 		}
-		exists, err := h.nodeExists(scope, node)
+		exists, err := h.NodeExists(scope, node)
 		if err != nil {
 			return "", err
 		}
@@ -556,7 +556,7 @@ func (h *Handler) resolveWriteNode(projectID, nodeID string) (string, error) {
 		return "", fmt.Errorf("id %q names project %s but the write targets project %s", nodeID, scope, projectID)
 	}
 
-	exists, err := h.nodeExists(projectID, id)
+	exists, err := h.NodeExists(projectID, id)
 	if err != nil {
 		return "", err
 	}
@@ -1199,7 +1199,7 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		{absorbedScope, absorbed, "absorbed"},
 		{survivorScope, survivor, "survivor"},
 	} {
-		exists, err := h.nodeExists(node.scope, node.id)
+		exists, err := h.NodeExists(node.scope, node.id)
 		if err != nil {
 			h.logger.Error("store replay failed", "command", "task-merge", "error", err)
 			return errResp(err.Error())
