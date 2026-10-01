@@ -98,10 +98,10 @@ def listing(path):
     return sorted(os.listdir(pathlib.Path(path).parent))
 
 
-def run(repo, *args):
+def run(repo, *args, bash_bin="bash"):
     """Run lock.sh with the throwaway repo as cwd, as the specs skill does."""
     e = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-    p = subprocess.run(["bash", str(SCRIPT), *args], cwd=repo,
+    p = subprocess.run([bash_bin, str(SCRIPT), *args], cwd=repo,
                        capture_output=True, text=True, env=e)
     return p.returncode, p.stdout + p.stderr, p.stderr
 
@@ -294,6 +294,22 @@ def main():
     check("and the doc is unwritten", digest(doc) == before_sha, "the doc was rewritten")
     shutil.rmtree(repo)
 
+    # 15b — the same read-only doc under /bin/bash (this machine's bash 3.2,
+    #      where set -e does not abort a failed compound redirect). The write
+    #      must be checked explicitly: exit non-zero, never print "locked",
+    #      and leave the doc byte-identical.
+    repo, doc = new_repo()
+    doc.chmod(0o444)
+    before_files, before_sha = listing(doc), digest(doc)
+    code, out, err = run(repo, DOC, "--type", "spec", "--force",
+                         "--upstream", "none", "--referrers", "none",
+                         bash_bin="/bin/bash")
+    check("a read-only doc under /bin/bash fails the write", code != 0, f"exit 0: {out}")
+    check("and never prints locked", "locked @" not in out, out)
+    check("and leaves nothing beside it", listing(doc) == before_files, listing(doc))
+    check("and the doc is unwritten", digest(doc) == before_sha, "the doc was rewritten")
+    shutil.rmtree(repo)
+
     # 16 — a missing parent directory: the stage cannot even be created, so
     #      nothing may be left behind either.
     repo, _ = new_repo()
@@ -317,6 +333,59 @@ def main():
     check("and the doc carries one marker", text.count(":locked:") == 1, text)
     check("and no trace of the lock it replaced", "design:locked" not in text, text)
     check("and the body survives", "# Design" in text, text)
+    shutil.rmtree(repo)
+
+    # 18 — a foreign marker below line 1: detection finds it anywhere, so
+    #      --force must strip that detected marker, not only a marker on line 1.
+    repo, doc7 = new_repo()
+    doc7.write_text("# Title\n\n<!-- design:locked:640b994 2026-09-28 -->\n\n# Design\n\nThe body.\n")
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc7.read_text()
+    check("--force over a marker below line 1 succeeds", code == 0, f"exit {code}: {out}")
+    check("and the doc carries one marker", text.count(":locked:") == 1, text)
+    check("and no trace of the lock it replaced", "design:locked" not in text, text)
+    check("and the title and body survive",
+          "# Title" in text and "# Design" in text and "The body." in text, text)
+    shutil.rmtree(repo)
+
+    # 19 — a fenced example that merely quotes the shape is prose, not a lock:
+    #      --force strips the marker it detected, not any line matching the shape.
+    repo, doc8 = new_repo()
+    doc8.write_text(
+        "# Title\n\n"
+        "<!-- design:locked:640b994 2026-09-28 -->\n\n"
+        "# Design\n\n"
+        "A lock marker looks like this:\n\n"
+        "```\n"
+        "<!-- design:locked:aaaa111 2026-01-01 -->\n"
+        "```\n"
+    )
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc8.read_text()
+    check("--force with a quoted example succeeds", code == 0, f"exit {code}: {out}")
+    check("and the quoted example survives", "<!-- design:locked:aaaa111 2026-01-01 -->" in text, text)
+    check("and the detected marker is the one stripped", "640b994" not in text, text)
+    check("and exactly one spec marker is written", text.count("specs:locked:") == 1, text)
+    shutil.rmtree(repo)
+
+    # 20 — a doc whose only marker-shaped line is a fenced example is unlocked
+    #      prose, not a lock: --force must not strip the quoted line.
+    repo, doc9 = new_repo()
+    doc9.write_text(
+        "# Title\n\n"
+        "A lock marker looks like this:\n\n"
+        "```\n"
+        "<!-- design:locked:aaaa111 2026-01-01 -->\n"
+        "```\n"
+    )
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc9.read_text()
+    check("--force over a quoted example alone succeeds", code == 0, f"exit {code}: {out}")
+    check("and the quoted example survives", "<!-- design:locked:aaaa111 2026-01-01 -->" in text, text)
+    check("and exactly one spec marker is written", text.count("specs:locked:") == 1, text)
     shutil.rmtree(repo)
 
     print()

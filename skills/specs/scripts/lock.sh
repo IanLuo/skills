@@ -92,13 +92,23 @@ fi
 # else that is a lock marker is either another regime's or its own shape missing
 # the `type=` it needs to read — and the write below is unconditional, so a
 # marker it does not recognise is one it would overwrite rather than rotate.
-# Anchored at the start of a line because that is where a marker is a marker: the
-# docs that quote the shape in prose (README.md, AGENTS.md, design-task/SKILL.md)
-# begin those lines with something else.
+# Anchored at the start of a line because that is where a marker is a marker. A
+# fenced code block is skipped: a doc that quotes the shape in prose, as an
+# example, is not carrying a lock.
 MARKER_SHAPE='^<!-- [A-Za-z][A-Za-z0-9_-]*:locked:'
 FOREIGN=""
+FOREIGN_N=""
 if [ "$ALREADY_LOCKED" -eq 0 ] && [ -f "$DOC" ]; then
-  FOREIGN="$(grep -m1 -E "$MARKER_SHAPE" "$DOC" || true)"
+  FOREIGN_MATCH="$(
+    awk -v shape="$MARKER_SHAPE" '
+      /^```/ { fenced = !fenced; next }
+      !fenced && $0 ~ shape { printf "%d:%s\n", NR, $0; exit }
+    ' "$DOC"
+  )"
+  if [ -n "$FOREIGN_MATCH" ]; then
+    FOREIGN_N="${FOREIGN_MATCH%%:*}"
+    FOREIGN="${FOREIGN_MATCH#*:}"
+  fi
 fi
 
 MISSING=""
@@ -198,11 +208,13 @@ trap 'rm -f "${DOC}.body"' EXIT
 # is any lock marker, not only this script's own shape: --force is the way past
 # the foreign-marker refusal above, and a doc that was told its lock would be
 # replaced must not come out carrying both the one it had and the new one. The
-# line stripped is line 1 — where both regimes write a marker — so a doc that
-# quotes the shape further down, as a fenced example, keeps it.
+# foreign marker is stripped on the line detection read it on (FOREIGN_N), not a
+# fixed line — so a doc that merely quotes the shape elsewhere, as a fenced
+# example, keeps it.
 if [ -f "$DOC" ]; then
-  awk -v marker_re="$MARKER_SHAPE" -v contract_hdr="$CONTRACT_HEADER" '
+  awk -v marker_re="$MARKER_SHAPE" -v contract_hdr="$CONTRACT_HEADER" -v foreign_n="${FOREIGN_N:-0}" '
     BEGIN { skip = 0; started = 0 }
+    foreign_n > 0 && NR == foreign_n { next }
     NR == 1 && $0 ~ marker_re { next }
     NR == 2 && $0 == "" { next }
     !started {
@@ -228,7 +240,7 @@ fi
     printf '\n'
     cat "${DOC}.body"
   fi
-} > "$DOC"
+} > "$DOC" || { printf 'lock: cannot write %s\n' "$DOC" >&2; exit 1; }
 
 rm -f "${DOC}.body"
 
