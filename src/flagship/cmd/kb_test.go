@@ -394,6 +394,57 @@ func TestCLIKBListNamesTheProjectScope(t *testing.T) {
 	}
 }
 
+// fs kb remove must refuse a name that would escape the KB directory, the way
+// add and edit do, rather than deleting whatever file the joined path points
+// at. The victim sits above the kb dir in the isolated home, exactly the shape
+// the round-fifteen repro planted.
+func TestCLIKBRemoveRefusesANameThatEscapesTheRoot(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	home := testHome(t)
+	fsDir := filepath.Join(home, ".fs")
+	if err := os.MkdirAll(fsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(fsDir, "victim.yaml")
+	writeRaw(t, victim, "not a playbook\n")
+
+	resp, code := runFS(t, bin, dir, "kb", "remove", "../victim")
+	if code != 1 {
+		t.Fatalf("kb remove ../victim exit = %d, want 1: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "single path segment") {
+		t.Errorf("error %q must name the single-segment rule", errMsg)
+	}
+	if got := readRaw(t, victim); got != "not a playbook\n" {
+		t.Errorf("victim file changed:\ngot  %q\nwant %q", got, "not a playbook\n")
+	}
+}
+
+// fs kb get must not return a planted file whose name is not a playbook name:
+// the reserved leading "<" marks a shipped identity, so a file named <shipped>
+// is not a playbook and must not resolve, and kb list must not name it.
+func TestCLIKBGetDoesNotReturnAPlantedIllegalName(t *testing.T) {
+	bin := getFS(t)
+	dir := t.TempDir()
+	writeKBPlaybook(t, testHome(t), "<shipped>", "name: <shipped>\nwork:\n  - say: planted\n")
+
+	resp, code := runFS(t, bin, dir, "kb", "get", "<shipped>")
+	if code != 1 {
+		t.Fatalf("kb get <shipped> exit = %d, want 1: %v", code, resp)
+	}
+	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "reserved") {
+		t.Errorf("error %q must name the reserved leading angle bracket", errMsg)
+	}
+	if _, ok := resp["data"]; ok {
+		t.Errorf("kb get <shipped> returned data, want none: %v", resp)
+	}
+
+	if listed := playbooksOf(t, runFSOK(t, bin, dir, "kb", "list")); listed["<shipped>"] != nil {
+		t.Errorf("kb list named the illegal playbook <shipped>: %v", listed["<shipped>"])
+	}
+}
+
 func TestCLIKBDiffAndReset(t *testing.T) {
 	bin := getFS(t)
 	dir := t.TempDir()

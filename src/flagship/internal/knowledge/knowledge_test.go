@@ -226,6 +226,68 @@ func TestAddRefusesANameThatIsNotALegalPlaybookName(t *testing.T) {
 	}
 }
 
+func TestGetRefusesANameThatIsNotALegalPlaybookName(t *testing.T) {
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A planted file whose stem is the reserved shipped marker, and a file
+	// planted above the KB directory. Neither name is a playbook name, so
+	// neither may be returned as a playbook.
+	planted := filepath.Join(fsRoot, "kb", "<shipped>.yaml")
+	if err := os.MkdirAll(filepath.Dir(planted), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planted, []byte("name: <shipped>\nwork:\n  - say: planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(fsRoot, "victim.yaml")
+	if err := os.WriteFile(outside, []byte("name: ../victim\nwork:\n  - say: outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, rule := range map[string]string{
+		"<shipped>": "reserved",
+		"../victim": "single path segment",
+	} {
+		pb, err := kc.Get(name)
+		if err == nil {
+			t.Fatalf("Get(%q): expected a refusal for a name that is not a playbook name", name)
+		}
+		if pb != nil {
+			t.Errorf("Get(%q) returned a playbook, want nil", name)
+		}
+		if !strings.Contains(err.Error(), rule) {
+			t.Errorf("Get(%q) error %q must name the %q rule", name, err, rule)
+		}
+	}
+}
+
+func TestListSkipsAFileWhoseNameIsNotALegalPlaybookName(t *testing.T) {
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	planted := filepath.Join(fsRoot, "kb", "<shipped>.yaml")
+	if err := os.WriteFile(planted, []byte("name: <shipped>\nwork:\n  - say: planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := kc.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, name := range names {
+		if name == "<shipped>" {
+			t.Errorf("List returned the illegal name <shipped>: %v", names)
+		}
+	}
+}
+
 func TestGetNotFound(t *testing.T) {
 	kc, err := knowledge.Open(tempFS(t), nil)
 	if err != nil {
@@ -325,6 +387,47 @@ func TestRemove(t *testing.T) {
 	names, _ := kc.List()
 	if len(names) != 0 {
 		t.Errorf("expected 0 after remove, got %d", len(names))
+	}
+}
+
+func TestRemoveRefusesANameThatEscapesTheRoot(t *testing.T) {
+	fsRoot := tempFS(t)
+	kc, err := knowledge.Open(fsRoot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	victim := filepath.Join(fsRoot, "victim.yaml")
+	if err := os.WriteFile(victim, []byte("not a playbook\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = kc.Remove("../victim")
+	if err == nil {
+		t.Fatalf("Remove(%q): expected a refusal for a name that escapes the root", "../victim")
+	}
+	if !strings.Contains(err.Error(), "single path segment") {
+		t.Errorf("Remove error %q must name the single-segment rule", err)
+	}
+	if _, statErr := os.Stat(victim); statErr != nil {
+		t.Errorf("victim file was deleted: %v", statErr)
+	}
+}
+
+func TestRemoveRefusesANameThatIsNotALegalPlaybookName(t *testing.T) {
+	kc, err := knowledge.Open(tempFS(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"<shipped>", "<x>foo"} {
+		err := kc.Remove(name)
+		if err == nil {
+			t.Fatalf("Remove(%q): expected a refusal for an illegal playbook name", name)
+		}
+		if !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("Remove(%q) error %q must name the reserved leading angle bracket", name, err)
+		}
 	}
 }
 

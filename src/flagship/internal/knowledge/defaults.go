@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -135,7 +134,10 @@ func (c *Center) Reset(name string) (string, error) {
 		return "", fmt.Errorf("knowledge: no shipped default named %q to reset to", name)
 	}
 
-	path := filepath.Join(c.writeDir(), name+".yaml")
+	path, err := playbookPath(c.writeDir(), name)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(c.writeDir(), 0o755); err != nil {
 		return "", fmt.Errorf("knowledge: create dir %s: %w", c.writeDir(), err)
 	}

@@ -443,13 +443,21 @@ func (c *Center) writeDir() string {
 // candidates lists where a lookup may read, in scope order: project first, then
 // global, then the shipped default. The last is an identity rather than a path —
 // see shippedID — and comes last because it has the weakest claim.
-func (c *Center) candidates(name string) []string {
+func (c *Center) candidates(name string) ([]string, error) {
 	var paths []string
 	if dir := c.ProjectDir(); dir != "" {
-		paths = append(paths, filepath.Join(dir, name+".yaml"))
+		path, err := playbookPath(dir, name)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
 	}
-	paths = append(paths, filepath.Join(c.GlobalDir(), name+".yaml"))
-	return append(paths, shippedID(name))
+	path, err := playbookPath(c.GlobalDir(), name)
+	if err != nil {
+		return nil, err
+	}
+	paths = append(paths, path)
+	return append(paths, shippedID(name)), nil
 }
 
 // shippedBody returns the shipped default named name and whether there is one.
@@ -532,7 +540,11 @@ func (c *Center) readID(name, id string) ([]byte, error) {
 // it — a copy that does not participate still has a path, and a reader asking
 // "is my copy stale?" needs it.
 func (c *Center) copyPath(name string) string {
-	for _, id := range c.candidates(name) {
+	ids, err := c.candidates(name)
+	if err != nil {
+		return ""
+	}
+	for _, id := range ids {
 		if isShipped(id) {
 			continue
 		}
@@ -581,7 +593,8 @@ func (c *Center) AddDryRun(name string, data []byte) (string, error) {
 // prepareAdd is the shared half of Add and AddDryRun: every refusal and the
 // path, up to the write itself.
 func (c *Center) prepareAdd(name string, data []byte) (string, error) {
-	if err := validPlaybookName(name); err != nil {
+	path, err := playbookPath(c.writeDir(), name)
+	if err != nil {
 		return "", err
 	}
 
@@ -596,7 +609,6 @@ func (c *Center) prepareAdd(name string, data []byte) (string, error) {
 		return "", err
 	}
 
-	path := filepath.Join(c.writeDir(), name+".yaml")
 	if _, err := os.Stat(path); err == nil {
 		return "", fmt.Errorf("knowledge: playbook %q already exists", name)
 	}
@@ -617,7 +629,11 @@ func (c *Center) Has(name string) bool {
 	if name == "" {
 		return false
 	}
-	for _, id := range c.candidates(name) {
+	ids, err := c.candidates(name)
+	if err != nil {
+		return false
+	}
+	for _, id := range ids {
 		if isShipped(id) {
 			if _, ok, _ := c.shippedBody(name); ok {
 				return true
@@ -730,18 +746,21 @@ func (c *Center) List() ([]string, error) {
 func playbookName(fileName string) string {
 	for _, ext := range []string{".yaml", ".yml"} {
 		if name, ok := strings.CutSuffix(fileName, ext); ok {
+			if validPlaybookName(name) != nil {
+				return ""
+			}
 			return name
 		}
 	}
 	return ""
 }
 
-// validPlaybookName reports whether name is a legal playbook name, and is the
-// one place a name's shape is enforced — Add and Edit both refuse an illegal
-// name rather than joining it into a path. A playbook name is the stem of its
-// file, so it must be a single path segment that cannot escape the KB
-// directory, and it may not begin with the reserved "<" that marks a shipped
-// identity.
+// validPlaybookName reports whether name is a legal playbook name. A playbook
+// name is the stem of its file, so it must be a single path segment that cannot
+// escape the KB directory, and it may not begin with the reserved "<" that
+// marks a shipped identity. It is the one definition of the rule, called from
+// the two places a name becomes a path or a path becomes a name: playbookPath
+// (every write and read join) and playbookName (the scan of what is on disk).
 func validPlaybookName(name string) error {
 	if name == "" {
 		return fmt.Errorf("knowledge: name is required")
@@ -757,10 +776,22 @@ func validPlaybookName(name string) error {
 	return nil
 }
 
+// playbookPath joins a name to a directory as its playbook file, refusing a
+// name that is not a legal playbook name first. It is the one place a name
+// becomes a file path: every write and every read candidate is built through
+// it, so no caller can join an illegal name into a path.
+func playbookPath(dir, name string) (string, error) {
+	if err := validPlaybookName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, name+".yaml"), nil
+}
+
 // Edit overwrites an existing playbook in the scope this center is bound to.
 // Returns error if it doesn't exist there.
 func (c *Center) Edit(name string, data []byte) error {
-	if err := validPlaybookName(name); err != nil {
+	path, err := playbookPath(c.writeDir(), name)
+	if err != nil {
 		return err
 	}
 
@@ -775,7 +806,6 @@ func (c *Center) Edit(name string, data []byte) error {
 		return err
 	}
 
-	path := filepath.Join(c.writeDir(), name+".yaml")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("knowledge: playbook %q not found", name)
 	}
@@ -791,16 +821,20 @@ func (c *Center) Edit(name string, data []byte) error {
 // the stack because it is not on disk yet, and the lookup below must see the
 // playbook beneath it rather than the one being written.
 func (c *Center) completeForWrite(name string, pb *Playbook) error {
-	return c.inherit(name, pb, []string{filepath.Join(c.writeDir(), name+".yaml")})
+	path, err := playbookPath(c.writeDir(), name)
+	if err != nil {
+		return err
+	}
+	return c.inherit(name, pb, []string{path})
 }
 
 // Remove deletes a playbook file from the scope this center is bound to.
 func (c *Center) Remove(name string) error {
-	if name == "" {
-		return fmt.Errorf("knowledge: name is required")
+	path, err := playbookPath(c.writeDir(), name)
+	if err != nil {
+		return err
 	}
 
-	path := filepath.Join(c.writeDir(), name+".yaml")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("knowledge: playbook %q not found", name)
 	}
@@ -845,8 +879,12 @@ func (c *Center) readFor(name string, stack []string) (string, []byte, error) {
 // resolves: a copy that merely restates the shipped default is present but does
 // not participate, so the default below it is what resolves.
 func (c *Center) lookup(name string, stack []string) (string, error) {
+	ids, err := c.candidates(name)
+	if err != nil {
+		return "", err
+	}
 	var seen []string
-	for _, id := range c.candidates(name) {
+	for _, id := range ids {
 		ok, err := c.resolves(name, id)
 		if err != nil {
 			return "", err
