@@ -94,14 +94,19 @@ fi
 # marker it does not recognise is one it would overwrite rather than rotate.
 # Anchored at the start of a line because that is where a marker is a marker. A
 # fenced code block is skipped: a doc that quotes the shape in prose, as an
-# example, is not carrying a lock.
+# example, is not carrying a lock. A fence is three or more backticks or three
+# or more tildes — CommonMark admits both — and only the character run that
+# opened a fence closes it, so a mixed fence closes nothing.
 MARKER_SHAPE='^<!-- [A-Za-z][A-Za-z0-9_-]*:locked:'
 FOREIGN=""
 FOREIGN_N=""
 if [ "$ALREADY_LOCKED" -eq 0 ] && [ -f "$DOC" ]; then
   FOREIGN_MATCH="$(
     awk -v shape="$MARKER_SHAPE" '
-      /^```/ { fenced = !fenced; next }
+      !fenced && /^```/ { fenced = "`"; next }
+      !fenced && /^~~~/ { fenced = "~"; next }
+      fenced == "`" && /^```/ { fenced = ""; next }
+      fenced == "~" && /^~~~/ { fenced = ""; next }
       !fenced && $0 ~ shape { printf "%d:%s\n", NR, $0; exit }
     ' "$DOC"
   )"

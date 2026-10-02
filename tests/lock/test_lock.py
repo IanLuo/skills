@@ -388,6 +388,65 @@ def main():
     check("and exactly one spec marker is written", text.count("specs:locked:") == 1, text)
     shutil.rmtree(repo)
 
+    # 21 — the fence that quotes the shape may be a tilde fence: CommonMark
+    #      admits both fence styles, so a ~~~-fenced quote is prose, not a
+    #      lock, and --force must not strip it.
+    repo, doc10 = new_repo()
+    doc10.write_text(
+        "# Title\n\n"
+        "A lock marker looks like this:\n\n"
+        "~~~\n"
+        "<!-- design:locked:aaaa111 2026-01-01 -->\n"
+        "~~~\n"
+    )
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc10.read_text()
+    check("--force over a tilde-quoted example alone succeeds", code == 0, f"exit {code}: {out}")
+    check("and the tilde-quoted example survives", "<!-- design:locked:aaaa111 2026-01-01 -->" in text, text)
+    check("and exactly one spec marker is written", text.count("specs:locked:") == 1, text)
+    shutil.rmtree(repo)
+
+    # 22 — a real foreign marker beside a tilde-fenced quote: detection still
+    #      finds the marker, and --force strips the marker, not the quote.
+    repo, doc11 = new_repo()
+    doc11.write_text(
+        "# Title\n\n"
+        "<!-- design:locked:640b994 2026-09-28 -->\n\n"
+        "# Design\n\n"
+        "A lock marker looks like this:\n\n"
+        "~~~\n"
+        "<!-- design:locked:aaaa111 2026-01-01 -->\n"
+        "~~~\n"
+    )
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc11.read_text()
+    check("--force with a tilde-quoted example succeeds", code == 0, f"exit {code}: {out}")
+    check("and the tilde-quoted example survives", "<!-- design:locked:aaaa111 2026-01-01 -->" in text, text)
+    check("and the detected marker is the one stripped", "640b994" not in text, text)
+    check("and exactly one spec marker is written", text.count("specs:locked:") == 1, text)
+    shutil.rmtree(repo)
+
+    # 23 — a mixed fence closes nothing: the character run that opens a fence
+    #      is the run that closes it, so a ~~~ line inside a ``` fence is
+    #      content, and a marker quoted after it is still fenced prose.
+    repo, doc12 = new_repo()
+    doc12.write_text(
+        "# Title\n\n"
+        "```\n"
+        "~~~\n"
+        "<!-- design:locked:aaaa111 2026-01-01 -->\n"
+        "```\n"
+    )
+    code, out, _ = run(repo, DOC, "--type", "spec", "--force",
+                       "--upstream", "none", "--referrers", "none")
+    text = doc12.read_text()
+    check("a mixed fence leaves the quote fenced", code == 0, f"exit {code}: {out}")
+    check("and the mixed-fenced quote survives", "<!-- design:locked:aaaa111 2026-01-01 -->" in text, text)
+    check("and exactly one spec marker is written", text.count("specs:locked:") == 1, text)
+    shutil.rmtree(repo)
+
     print()
     if FAILS:
         print(f"{len(FAILS)} failed, {PASS} passed")
