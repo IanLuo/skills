@@ -1,6 +1,6 @@
 ---
 name: specs
-description: Interactively elicit decisions as a decision tree — frontier rounds, each with a recommended answer — and LOCK them into a durable formal spec, system-design, or architecture doc. The spec is the complete requirements contract (problem, outcome, scope+flow, acceptance criteria, KPIs, NFRs, assumptions, data, rollback, security, verification — IEEE 29148 §9.6 shape). On re-entry, show the locked doc and re-elicit only what changed. The lock stamps a contract (upstream/referrers) at the top. Use for "write a spec", "spec this task before building", "lock the requirements", "what are the NFRs / assumptions / data requirements", "update the architecture doc", "what's our system design", "re-open the spec". Do NOT use for repo indexing (init-context), one-shot research, visual design (design-task), or doc-vs-code review (review-task).
+description: Interactively elicit decisions as a decision tree — frontier rounds, each with a recommended answer — and LOCK them into a durable formal spec, system-design, or architecture doc. The spec is the complete requirements contract (problem, outcome, scope+flow, acceptance criteria, KPIs, NFRs, assumptions, data, rollback, security, verification — IEEE 29148 §9.6 shape). On re-entry, show the locked doc and re-elicit only what changed. Many tasks at once → batch mode — settle what they share in one pass, then per-task rungs. The lock stamps a contract (upstream/referrers) at the top. Use for "write a spec", "spec this task before building", "lock the requirements", "what are the NFRs / assumptions / data requirements", "update the architecture doc", "what's our system design", "re-open the spec". Do NOT use for repo indexing (init-context), one-shot research, visual design (design-task), or doc-vs-code review (review-task).
 metadata:
   audience: personal
   domain: specification
@@ -33,6 +33,12 @@ If the doc already has a lock marker (re-entry): show the user the locked doc, s
 "locked at `<sha>` on `<date>`," and ask what changed. Re-elicit **only** the rungs
 whose answers the reported changes would alter. If nothing changed, stop.
 
+**Many tasks (a batch) → batch mode.** Grep `<!-- specs:locked:` first. Settle the
+rungs the tasks share — scope, NFRs, data assumptions — **once**, then elicit each
+task's private rungs. If an upstream doc already freezes the shared answers, cite it,
+never re-ask. If the batch shares scope/NFRs and no upstream exists, that is the
+signal to lock the upstream (architecture / system-design) before the task specs.
+
 ### 2. Elicit + draft, as a decision tree
 
 Read the ladder for the type. Its rungs are a **decision tree** — each rung has
@@ -45,8 +51,28 @@ order — each rung depends on the ones before it). Work the **frontier** in rou
   answer** (`➡️`) so the user can mostly say yes/no — they push back only where they
   disagree. Format:
   `❓ R<#> · <rung title>: <question, with concrete options> → ➡️ <your recommended answer>`
+- **Render each round with `annotate`, not chat.** Load the `annotate` skill and build
+  the round with `../annotate/scripts/build-artifact.py` — the artifact IS the question.
+  One element per rung with a stable `data-anchor`; recommendation included. The user
+  annotates the rungs on the page and pastes the feedback JSON; resolve each line back
+  to its rung before recomputing the frontier. Later rounds = new artifacts built with
+  `--prev`: each annotated rung carried as a `.ev.user` thread paired with your
+  `.ev.agent` answer, settled rungs retired explicitly. Plain chat questions are the
+  fallback only when annotate cannot run.
+- **Write the round to be read, not parsed.** Content in plain, controlled English —
+  the house style, about 80% of the way to ASD-STE100: short sentences, one idea each,
+  active voice, no idiom, no jargon. A rung is one line of context, one concrete
+  question with options, one `➡️` recommendation. Where structure helps, draw it — the
+  rung tree with the frontier marked, the contract graph — as inline SVG/CSS only
+  (annotate's page must stay self-contained on `file://`). Settled-vs-open is already
+  visual: use annotate's `data-status` pills, not prose.
+- **Batch: shared rungs once, task rungs per task.** In batch mode the shared rungs are
+  their own first round — one annotate page for the batch, not one per task. Lock them
+  where they belong (the upstream doc, or the first task's spec) before task rounds
+  start. Each task then gets its own page with only its private rungs; a shared rung
+  appears as a settled note whose answer cites the frozen doc — re-asking it is a fail.
 - Wait for answers, recompute the frontier (settled answers unblock downstream rungs),
-  ask the next round.
+  ask the next round — on a new annotate artifact.
 
 **Facts are your job, never the user's.** Before a rung that needs a fact from the
 environment (what the codebase already does, existing data, current behavior), dispatch
@@ -92,10 +118,21 @@ doc by grepping `<!-- specs:locked:` on disk.
   `none` or name locked docs that exist; `referrers` are confirmed with the user.
 - **Recommended answer on every rung.** Give `➡️ your recommendation` so the user can
   say yes/no — never an open-ended question without a position to push back on.
+- **Grill on the page.** Every frontier round is an `annotate` artifact, not a chat
+  message. Pasted feedback resolves back to its rung: "yes" or silence → settled with
+  the recommendation; a correction → re-elicit that rung. An annotated-but-unanswered
+  rung is unresolved — it blocks its downstream rungs like any other unsettled
+  prerequisite.
+- **Grill content is written to be read.** Controlled plain English, short sentences,
+  no jargon; diagrams as inline SVG where structure helps; `data-status` pills carry
+  the state. A reader gets the rung in one pass, not three.
 - **Facts are your job.** Dispatch a sub-agent (`delegate`/Explore) for anything
   lookup-able; never ask the user to recite their own codebase.
 - **Tree order, checklist completeness.** The frontier decides *when* a rung is asked;
   the checklist decides *that* all rungs are settled. Neither excuses skipping a rung.
+- **Once per batch, not per task.** Shared rungs are asked once and locked where they
+  belong; task rungs are asked per task. Re-asking a frozen answer — in another task or
+  another session — is the fail this rule exists to prevent.
 - Add only what a fresh agent can't derive — concrete frozen decisions, not recoverable
   boilerplate. Prefer pointers to existing docs over restating them.
 - **What this skill owns:** the elicitation ritual + the lock. **Not:** the index (init-context),
