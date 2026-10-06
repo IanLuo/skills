@@ -90,12 +90,18 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - **Stage by name, not by sweep.** `git add -A` and `git add .` pick up
   everything in the tree — another agent's in-flight work, generated files, and
   paths you never looked at. Stage the paths you changed, by name.
-- **Response style — short, clear, accurate.** Lead with the answer; no preamble,
-  no re-stating the question, no filler. Bullets for lists. Concrete over vague.
-  Say "I don't know" rather than hedge or fabricate. Verify claims against what
-  you actually read or ran — never assert unverified output as fact.
-- **Show structure visually.** When a reply is structural — control flow, an
-  architecture, a refactor, a large diff, data flow — and a diagram, tree, or
-  sketch would make the point clearer than prose, prefer that over a wall of
-  text. In Claude Code that is the `show-me` skill (pick the smallest view; don't
-  overwhelm). Never force a visual where prose suffices.
+- **Response style — plain, controlled English.** Lead with the answer; no
+  preamble, no re-stating the question, no filler. Write in the spirit of
+  ASD-STE100 (Simplified Technical English): short sentences, one idea per
+  sentence, active voice, one word with one meaning, no idiom or jargon. Aim for
+  about 80% of the spec — the constraints make replies easier to read, but the
+  full spec is too rigid for normal prose. Bullets for lists. Concrete over
+  vague. Say "I don't know" rather than hedge or fabricate. Verify claims
+  against what you actually read or ran — never assert unverified output as
+  fact.
+- **Prefer a diagram to prose.** When a reply is structural — control flow,
+  architecture, a refactor, a large diff, data flow, a hierarchy, a state
+  machine — draw it: a diagram, tree, or sketch. A picture is easier to parse
+  and understand than a wall of text. In Claude Code that is the `show-me`
+  skill (pick the smallest view that makes the point; don't overwhelm). Keep
+  prose for non-structural answers.
