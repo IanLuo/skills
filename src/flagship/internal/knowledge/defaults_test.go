@@ -422,12 +422,12 @@ func TestEveryShippedPlaybookIsUsed(t *testing.T) {
 	}
 
 	for name, usedBy := range map[string]string{
-		"cap":         "prompt: always",
-		"herdr":       "prompt: engine=herdr",
-		"worker":      "dispatch: always (work)",
-		"code":        "dispatch: code (entry, exit)",
-		"plan":        "dispatch: code (work)",
-		"code-bar":    "dispatch: code (work)",
+		"cap":      "prompt: always",
+		"herdr":    "prompt: engine=herdr",
+		"worker":   "dispatch: always (work)",
+		"code":     "dispatch: code (entry, exit)",
+		"plan":     "dispatch: code (work)",
+		"code-bar": "dispatch: code (work)",
 
 		"independent-review": "dispatch: type=review-task (work, exit)",
 		"research":           "dispatch: research (work)",
