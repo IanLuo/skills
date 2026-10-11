@@ -1,4 +1,4 @@
-<!-- specs:locked:0485212b 2026-10-10 type=spec -->
+<!-- specs:locked:ef930d50 2026-10-11 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): playbook-system.md, playbook-mechanism.md
