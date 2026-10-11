@@ -32,3 +32,8 @@ skills/canvas/assets/mermaid.min.js
 
 # nix build output symlink
 /result
+
+.agents/dispatch/*
+
+# the transient handoff dir (handoff skill): never show in git status
+.agents/context/
