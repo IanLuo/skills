@@ -144,6 +144,7 @@ SHIPPED = [
     "member",
     "integration",
     "spec",
+    "asset-3d",
 ]
 
 # allowedKinds in src/flagship/internal/knowledge/knowledge.go. `include` is

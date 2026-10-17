@@ -47,7 +47,7 @@ const (
 var shippedPlaybooks = []string{
 	capPlaybook, herdrPlaybook, "worker", codePb, "plan", "code-bar",
 	independentReviewPb, "research", batchPb, memberPb, integrationPb,
-	"spec",
+	"spec", "asset-3d",
 }
 
 // independentReviewPb is the playbook a `--type review-task` dispatch selects:
