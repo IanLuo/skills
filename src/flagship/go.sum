@@ -1,5 +1,5 @@
-github.com/IanLuo/memstore v0.0.0-20261007162223-9e51a69a12dd h1:4DVt0P6wNvTcdMeWDiqyncFxoo3jaj8ed/MGuNndCj0=
-github.com/IanLuo/memstore v0.0.0-20261007162223-9e51a69a12dd/go.mod h1:bnkhcD3wfYSfA9rQVj/3ZK7sPvHGmqMTO4IFKDb/VBg=
+github.com/IanLuo/memstore v0.0.0-20261017052623-7192bce91fa7 h1:ZNlxNErmUsiZESay0cR5dlZNjf4oJCZLqpNGWi4Zuaw=
+github.com/IanLuo/memstore v0.0.0-20261017052623-7192bce91fa7/go.mod h1:bnkhcD3wfYSfA9rQVj/3ZK7sPvHGmqMTO4IFKDb/VBg=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 h1:LMLX+LgTNWpfvCBdFebv6EsYotImrt/Ppc5cXIriCSo=

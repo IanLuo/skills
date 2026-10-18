@@ -3,7 +3,7 @@ module github.com/flagship-dev/flagship
 go 1.27
 
 require (
-	github.com/IanLuo/memstore v0.0.0-20261007162223-9e51a69a12dd
+	github.com/IanLuo/memstore v0.0.0-20261017052623-7192bce91fa7
 	modernc.org/sqlite v1.60.1
 )
 
