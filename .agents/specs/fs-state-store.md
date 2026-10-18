@@ -1,4 +1,4 @@
-<!-- specs:locked:225e321c 2026-10-18 type=spec -->
+<!-- specs:locked:73d8cf76 2026-10-18 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): cap-role.md
@@ -70,8 +70,10 @@ event store again.
   `kb` path) is slice 3. This slice seeds only the `fs:` scopes a switched read needs.
 - **Slice 4's decommissioning of `query.BuildTree`.** In this slice `BuildTree` stays, and stays the
   gate's oracle. A gate whose oracle is the code being replaced is the point of ordering slices 2 and 4.
-- **Any change to memstore itself.** fs re-vendors the pinned `7192bce`; it adds no verb, no column,
-  no schema version. Where a memstore surface forces a decision, Decisions D1/D3 record it.
+- **Any change to memstore itself.** fs re-vendors the pinned `7192bce` as **step 0 of the code
+  round**; this round writes no code, so the vendored copy stays stale here (A1). fs adds no verb,
+  no column, no schema version of its own. Where a memstore surface forces a decision, Decisions
+  D1/D3 record it.
 - **Any change to what the event store records.** Events, their types, their payloads and their
   ordering are frozen. The projection is derived from them, never the reverse.
 - Switching any read other than `pending`. `gaps`, `status`, `unfinished`, `task get` stay on the
@@ -127,15 +129,20 @@ Every criterion names the command that proves it. Go test commands run under `sr
   exits 1 (the live projection is empty, which is the first-run state) → `"$FS_BIN" state rebuild` →
   `"$FS_BIN" state verify` (exit 0) → `"$FS_BIN" pending` (exit 0).
 
-- **AC5 — every append projects, in the same step, without ever rolling back the event.** Every
-  `store.Append`/`AppendBatch` call site in `internal/command/command.go` (14 at the lock commit:
-  11 single, 3 batch) is wrapped by a projection step. A representative write set — `fs project
-  create`, `fs task add`, `fs task update`, `fs task edit`, `fs task block`, `fs task unblock`,
-  `fs task knowledge`, `fs task merge`, `fs report`, `fs cap claim`, `fs dispatch` — leaves
-  `fs state verify` clean. Proven by `go test ./internal/command -run
-  TestEveryAppendProjects -count=1` (static: no unwrapped call site) and `go test ./internal/dispatch
-  -run TestWriteSetStaysAtParity -count=1`. A projection failure must leave the event present and
-  the command's write result intact, proven by `go test ./internal/command -run
+- **AC5 — every append projects, in the same step, without ever rolling back the event.** The
+  append surface is the **14 event-store sites** at the lock commit — 11 `store.Append` and 3
+  `store.AppendBatch` call sites in `internal/command/command.go`. (The card's earlier *28* added the
+  14 `trace.Log.Append` sites in `internal/dispatch/{deliver,close,dispatch}.go`; those are the
+  **trace**, which stays and is not projected — D1 — so the event figure is 14.) Every site's fold
+  lives **in the append path**: `Append`/`AppendBatch` invoke it, a caller does not loop beside
+  them. **A batch folds every event it appends — N folds for N events, never one row for the
+  batch.** A representative write set — `fs project create`, `fs task add`, `fs task update`,
+  `fs task edit`, `fs task block`, `fs task unblock`, `fs task knowledge`, `fs task merge`,
+  `fs report`, `fs cap claim`, `fs dispatch` — leaves `fs state verify` clean. Proven by `go test
+  ./internal/command -run TestEveryAppendProjects -count=1` (static: no unwrapped call site, and
+  every batch site folds per event) and `go test ./internal/dispatch -run
+  TestWriteSetStaysAtParity -count=1`. A projection failure must leave the event present and the
+  command's write result intact, proven by `go test ./internal/command -run
   TestProjectionFailureKeepsEvent -count=1`.
 
 - **AC6 — scope safety is enforced, not intended.** A scratch memstore seeded with a non-`fs:` row
@@ -189,7 +196,14 @@ Every criterion names the command that proves it. Go test commands run under `sr
   event store, never lead it. A lag is detectable by the gate and repairable from the event store; a
   lead would be a fact with no event behind it, and is forbidden. A fold that fails reports the
   failure on stderr and in the running log, leaves the event in place, and does not report the
-  command's write as failed.
+  command's write as failed. **For a batch this is the whole story:** a batch of N events is one
+  atomic append (today's `AppendBatch`) followed by N folds invoked from inside that append path,
+  each fold atomic. A single transaction spanning both files is not available — neither file can
+  join the other's transaction through memstore's exported verbs, and SQLite does not make a
+  multi-file commit atomic under WAL, which both files use (A1). "The projection commits with the
+  batch" therefore means the batch's folds run inside the append step and no row is ever
+  half-written, **not** that the two files share one SQL commit; the projection can lag the batch as
+  a whole, and the gate and `fs state rebuild` are what make that visible and repairable.
 - **Immutability — the projection only puts, closes and links.** memstore's content is immutable, and
   its only lifecycle writer is `CloseMemory` (which writes `closed`); no verb changes a row's status
   to an arbitrary value, and adding one is out of scope. The projection therefore writes a new row
@@ -203,7 +217,8 @@ Every criterion names the command that proves it. Go test commands run under `sr
 - **Concurrency.** Two `fs` processes may append to the same scope. The fold of one event is one
   memstore write transaction, so a reader sees the event folded or not folded, never half; the gate
   compares a consistent snapshot of the projection against the event store's committed state. fs is
-  the only writer of `fs:` rows (A2).
+  the only writer of `fs:` rows (A2), and it is a **concurrent** writer to one shared file — which is
+  why the code round re-vendors at `7192bce` first (A1).
 - **Performance.** Per AC8. The gate costs one extra derivation of the read's store-derived answer
   while it exists; it is removed in slice 4, when `BuildTree` is decommissioned. If the projection
   alone is slower than the event store for this read, the read is not kept switched past the gate —
@@ -247,7 +262,14 @@ The card left seven questions; each is a frozen answer here.
   mapping as its own row carrying the payload in `Extra`; `plan-recorded` folds to nothing because no
   switched read asks it (`close`'s plan read stays on the event store). Cross-node effects a single
   event carries — a merge closes the absorbed node and links it to the survivor — are applied by that
-  event's fold.
+  event's fold. A folded row writes its provenance — `Origin="fs"`, `OriginId=<event id>`,
+  `Ref=<commit>`, `FsNode=<node>` — so the row names the event it came from instead of hiding that
+  identity in `Extra` (A1). That is also what makes the fold idempotent: `Put` refuses an existing
+  `(origin, origin_id)` with `ErrDuplicateOrigin`, so an event already folded is a no-op and a
+  rebuild cannot double-write a row. **A batch is not one fold.** `AppendBatch` appends N events,
+  and the batch's fold is N folds, one per event, never a single row summarising the batch; and the
+  fold is owned by the append path, so it runs inside the append step rather than in a caller's
+  loop beside it.
 - **D4 — rebuild and drift.** `fs state verify` re-folds every `fs:` scope from the event store into
   a scratch memstore file and compares each scope's derived state to the live projection with the
   same canonical comparison the gate uses; it writes nothing. On a difference it exits 1 naming the
@@ -274,11 +296,34 @@ The card left seven questions; each is a frozen answer here.
 
 | # | Assumption | Invalidated by | Then |
 |---|---|---|---|
-| A1 | fs re-vendors memstore at **`7192bce`** before any switch: `Put` writes the four provenance columns (`Origin`/`OriginId`/`Ref`/`FsNode`), a duplicate `(origin, origin_id)` is refused with `ErrDuplicateOrigin`, and `schema_version` 5 carries the partial unique index. **The vendored copy in fs's tree at this lock is stale — `9e51a69`, `schema_version` 4, `Put` hardcoding `native`/NULL — so the projection cannot identify rows until slice 2 re-vendors.** | the pin is not vendored, or a later memstore moves the columns | the re-vendor is slice 2's first step, not its last; the gate is not switched on until it lands |
+| A1 | fs re-vendors memstore at **`7192bce`** as **step 0 of the code round**; this spec round writes no code, so the vendored copy stays stale here. The pin is load-bearing and must land before the gate is switched on. | the code round's first commit does not re-vendor, or a later memstore moves the columns | the gate is not switched on; this spec's acceptance is measured against the code round that re-vendors |
+| A1b | **Collateral of A1: the driver moves under fs's own store.** memstore `7192bce` requires `modernc.org/sqlite` **v1.60.1**, against fs's **v1.59.0** today. | the bump regresses `internal/store`, `internal/query`, `internal/dispatch` or `cmd` beyond a focused fix | stop and report the failing test verbatim; do not work around the driver — the switch waits |
 | A2 | fs is the only writer of `fs:` rows in the user's `~/.memstore/memory.db`; every other scope is another writer's | a second writer touches an `fs:` scope | scope safety (D5) is broken at the source; partition the file or move fs to its own, and re-open this spec |
 | A3 | The event store is the order of record: `Replay` orders by event id ascending, and the fold follows that order, so a tie in a batch is broken by insertion order | an event type that must be ordered by something else is added | the fold and `BuildTree` must agree on the new order before the gate can pass |
 | A4 | The event store's contents and its readers do not change in this slice | a new event type a switched read must see | the fold's mapping extends first, then the read switches |
 | A5 | memstore's `Recent(scope, k)` answers "the rows of a scope" and is the only scope-listing verb | the read cannot get a complete scope without scanning the whole file | name the missing verb on the node; a memstore change is out of scope, so the read's design changes |
+
+**A1, in full — why `7192bce` and not the copy that is vendored now.** Slice 1 passes today on the
+vendored `9e51a69` because its seam is a library that calls only `Put`, `Link` and `Get`, from one
+goroutine, in one process: nothing it does exercises a shared file. The switch removes that cover.
+It makes fs a **concurrent writer** to one shared `~/.memstore/memory.db` — the cap, the gap read
+and every worker's command may write `fs:` rows at the same time — and that is exactly the defect
+class `7192bce` carries: `f61295a` (a fresh file opened by two processes), `54c1ad8` (the schema
+and its version row become visible together), `9586fa7` (the v2/v3 upgrade re-read under a held
+lock). The second load-bearing change is **provenance** (`f1f4a60`): `Put` writes
+`Origin`/`OriginId`/`Ref`/`FsNode` from its caller (empty `origin` → `native`, the rest NULL) and
+refuses a duplicate `(origin, origin_id)` with `ErrDuplicateOrigin`, under `schema_version` 5's
+partial unique index. That is how a projected row names the event it came from instead of hiding
+its identity in the `Extra` envelope, and it is what makes the fold idempotent. The vendored copy
+at this lock is stale: `grep -n 'schemaVersion = ' vendor/github.com/IanLuo/memstore/store.go`
+prints `= 4`, and its `Put` hardcodes `"native", nil, nil, nil`.
+
+**A1b, in full — the risk the re-vendor drags in.** The pin moves `modernc.org/sqlite`
+**v1.59.0 → v1.60.1** across fs's own event store. Slice 1's card
+(`.agents/dispatch/fs-store-memstore.md`) called the entire existing suite staying green after that
+driver bump *the round's only real risk* — `internal/store`, `internal/query`, `internal/dispatch`,
+`cmd` — and it is the same risk in the code round. The code round's acceptance must carry
+`go test ./... -count=1`, `go vet ./...` and `gofmt -l` (non-vendor) green, not only the new tests.
 
 ## Data requirements
 
@@ -342,7 +387,8 @@ The card left seven questions; each is a frozen answer here.
 | D5 scope safety as construction | the same AC6 grep plus the seeded-file test |
 | D6 performance buys the switch | AC8's projection-alone arm against the log-only arm; a regression reverts the read |
 | D7 rollback | `FS_STATE_SOURCE=log "$FS_BIN" pending` against a diverged projection exits 0 and records `source=log` |
-| A1 the pin | `go.mod` names memstore `7192bce`; `grep -n "schemaVersion = 5" vendor/github.com/IanLuo/memstore/store.go`; vendor matches the pin |
+| A1 the pin (code round, step 0) | `go.mod` names memstore `7192bce`; `grep -n 'schemaVersion = 5' vendor/github.com/IanLuo/memstore/store.go`; vendor matches the pin |
+| A1b the driver collateral | `go test ./... -count=1`, `go vet ./...`, `gofmt -l` (non-vendor) green after the re-vendor; `go.mod` names `modernc.org/sqlite v1.60.1` |
 
 - **Independent check:** a dispatched `review-task` reads this doc against the slice-2 worker's node,
   and is asked specifically whether any code path can return the event store's answer on a divergence,
