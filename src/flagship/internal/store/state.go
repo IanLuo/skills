@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/IanLuo/memstore"
 )
@@ -152,59 +153,127 @@ func (i StateIssue) String() string {
 		i.Scope, i.Field, i.EventStore, i.Projection)
 }
 
-// canonRow is one projected row as both sides compare it: everything the row
-// asserts, with the parent resolved to the node it names (row ids differ between
-// two files, so an id would compare unequal for equal state) and without the
-// row's own id.
-type canonRow struct {
-	Kind   string `json:"kind"`
-	Text   string `json:"text"`
-	Status string `json:"status"`
-	FsNode string `json:"fs_node,omitempty"`
-	Ref    string `json:"ref,omitempty"`
-	Parent string `json:"parent,omitempty"`
-	Extra  string `json:"extra"`
+// scopeState is a scope's derived state as both sides compare it: what a reader
+// gets, with no row id and nothing else that is local to one file. It is the
+// comparison D4 asks for — "each scope's derived state" — and it is deliberately
+// not a row-by-row comparison: a row written out of order carries a snapshot
+// that could not inherit from a predecessor it never saw, while the state
+// derived from its payload is the same either way.
+type scopeState struct {
+	ProjectID string      `json:"project_id"`
+	RootPath  string      `json:"root_path,omitempty"`
+	Nodes     []nodeState `json:"nodes"`
+	SideRows  []rowState  `json:"side_rows"`
 }
 
-// canonicalScope is one scope as a map keyed on provenance: one entry per
-// projected event, so a difference is named by the event it belongs to rather
-// than by a position in a list.
-func canonicalScope(ms *memstore.Store, projectID string) (map[string]canonRow, error) {
+// nodeState is one node's derived state, without the file-local row id.
+type nodeState struct {
+	NodeID     string   `json:"node_id"`
+	Goal       string   `json:"goal"`
+	Kind       string   `json:"kind"`
+	Status     string   `json:"status"`
+	ParentID   string   `json:"parent_id,omitempty"`
+	FoundBy    string   `json:"found_by,omitempty"`
+	Check      string   `json:"check,omitempty"`
+	BlockCheck string   `json:"block_check,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
+	Integrates string   `json:"integrates,omitempty"`
+	Reviews    string   `json:"reviews,omitempty"`
+	Absorbed   []string `json:"absorbed,omitempty"`
+}
+
+// rowState is one side row as both sides compare it: the event it came from,
+// its node, and the payload the event carried — which is the row's whole content
+// and never inherited.
+type rowState struct {
+	Kind     string `json:"kind"`
+	FsNode   string `json:"fs_node,omitempty"`
+	OriginID string `json:"origin_id"`
+	Ts       string `json:"ts"`
+	Payload  any    `json:"payload,omitempty"`
+}
+
+// rowProvenance is one row's place in the projection: which event it names, and
+// whether it has been retired. Both are stable across a fold and a re-fold; the
+// row's own content is not (see scopeState), so it is not compared here.
+type rowProvenance struct {
+	OriginID string `json:"origin_id"`
+	Closed   bool   `json:"closed"`
+}
+
+// derivedScope renders a scope's derived state canonically.
+func derivedScope(ms *memstore.Store, projectID string) (*scopeState, error) {
+	scope, err := ReadScope(ms, projectID)
+	if err != nil {
+		return nil, err
+	}
+	out := &scopeState{ProjectID: projectID, RootPath: scope.RootPath, Nodes: []nodeState{}, SideRows: []rowState{}}
+	for _, nid := range scope.NodeIDs {
+		n := scope.Nodes[nid]
+		out.Nodes = append(out.Nodes, nodeState{
+			NodeID: n.NodeID, Goal: n.Goal, Kind: n.Kind, Status: n.Status,
+			ParentID: n.ParentID, FoundBy: n.FoundBy, Check: n.Check,
+			BlockCheck: n.BlockCheck, Severity: n.Severity,
+			Integrates: n.Integrates, Reviews: n.Reviews, Absorbed: n.Absorbed,
+		})
+	}
+	for _, group := range [][]memstore.Memory{scope.CapRows, scope.Deliveries, scope.Reports, scope.Blocks} {
+		for _, m := range group {
+			var payload any
+			if env, err := decodeExtra(m.Extra); err == nil {
+				_ = json.Unmarshal(env.Payload, &payload)
+			}
+			out.SideRows = append(out.SideRows, rowState{
+				Kind: m.Kind, FsNode: m.FsNode, OriginID: m.OriginId,
+				Ts: m.Ts.UTC().Format(time.RFC3339Nano), Payload: payload,
+			})
+		}
+	}
+	sort.Slice(out.SideRows, func(i, j int) bool {
+		a, b := out.SideRows[i], out.SideRows[j]
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.FsNode != b.FsNode {
+			return a.FsNode < b.FsNode
+		}
+		return a.OriginID < b.OriginID
+	})
+	return out, nil
+}
+
+// provenanceOf lists one scope's rows by the event each names, and whether it is
+// retired. It is how verify sees a row that should not be there and a row that
+// should be and is not, without comparing content a re-fold is allowed to differ
+// on.
+func provenanceOf(ms *memstore.Store, projectID string) ([]rowProvenance, error) {
 	rows, err := scopeRows(ms, ProjectionScope(projectID))
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[int64]string, len(rows))
+	out := make([]rowProvenance, 0, len(rows))
 	for _, m := range rows {
-		byID[m.Id] = m.FsNode
+		out = append(out, rowProvenance{OriginID: m.OriginId, Closed: m.Status == closedStatus})
 	}
-	out := make(map[string]canonRow, len(rows))
-	for _, m := range rows {
-		key := m.OriginId
-		if key == "" {
-			// A row with no provenance names no event: it is named by what it
-			// says instead, so a stray row still appears as a difference.
-			key = "#" + m.Kind + "#" + m.Text
-		}
-		if _, taken := out[key]; taken {
-			key = key + "+" + m.Kind
-		}
-		parent := ""
-		if m.Parent != nil {
-			parent = byID[*m.Parent]
-		}
-		out[key] = canonRow{
-			Kind: m.Kind, Text: m.Text, Status: m.Status,
-			FsNode: m.FsNode, Ref: m.Ref, Parent: parent, Extra: m.Extra,
-		}
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].OriginID < out[j].OriginID })
 	return out, nil
 }
 
 // StateVerify compares the live projection with a scratch re-fold of the event
 // store, scope by scope. It writes nothing to the live file: the scratch store
-// is a temp file, removed before it returns. A scope present in the event store
-// but absent from the projection is a divergence with an empty projection.
+// is a temp file, removed before it returns.
+//
+// Three things must hold, and each is what a reader actually relies on:
+//
+//  1. the derived state is equal — the answers a read gives are the event
+//     store's answers;
+//  2. every row names an event of the scope and every event of the scope has a
+//     row, and each row's retired state is the one a fresh fold gives it — so
+//     "verify clean" is what a rebuild would produce, and a stray row or a row
+//     the fold never closed is named;
+//  3. no fs: scope exists in the projection that the event store does not name,
+//     because a rebuild removes such a scope and a verify that missed it would
+//     be certifying something a repair would change.
 func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
 	scopes, err := s.Scopes()
 	if err != nil {
@@ -222,7 +291,9 @@ func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
 	defer cleanup()
 
 	var issues []StateIssue
+	known := make(map[string]bool, len(scopes))
 	for _, scope := range scopes {
+		known[ProjectionScope(scope)] = true
 		events, err := s.Replay(scope, nil)
 		if err != nil {
 			return nil, fmt.Errorf("state verify: replay %s: %w", scope, err)
@@ -232,26 +303,58 @@ func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
 				return nil, fmt.Errorf("state verify: fold %s: %w", scope, err)
 			}
 		}
-		want, err := canonicalScope(scratch, scope)
-		if err != nil {
-			return nil, err
-		}
-		got, err := canonicalScope(live, scope)
-		if err != nil {
-			return nil, err
-		}
-		diff, err := DiffJSON(want, got)
-		if err != nil {
-			return nil, err
-		}
-		if diff != nil {
-			issues = append(issues, StateIssue{
-				Scope: scope, Field: diff.Field,
-				EventStore: diff.A, Projection: diff.B,
-			})
+		if issue := compareScope(scratch, live, scope); issue != nil {
+			issues = append(issues, *issue)
 		}
 	}
+
+	stray, err := projectionScopes(live)
+	if err != nil {
+		return nil, err
+	}
+	for _, scope := range stray {
+		if known[scope] {
+			continue
+		}
+		issues = append(issues, StateIssue{
+			Scope: scope, Field: "scope",
+			EventStore: "<missing>", Projection: "the scope holds rows the event store does not name",
+		})
+	}
 	return issues, nil
+}
+
+// compareScope compares one scope's derived state and row provenance, and
+// returns the first difference, or nil when the scope agrees.
+func compareScope(scratch, live *memstore.Store, scope string) *StateIssue {
+	want, err := derivedScope(scratch, scope)
+	if err != nil {
+		return &StateIssue{Scope: scope, Field: "read", EventStore: err.Error()}
+	}
+	got, err := derivedScope(live, scope)
+	if err != nil {
+		return &StateIssue{Scope: scope, Field: "read", Projection: err.Error()}
+	}
+	if diff, err := DiffJSON(want, got); err != nil {
+		return &StateIssue{Scope: scope, Field: "compare", EventStore: err.Error()}
+	} else if diff != nil {
+		return &StateIssue{Scope: scope, Field: diff.Field, EventStore: diff.A, Projection: diff.B}
+	}
+
+	wantRows, err := provenanceOf(scratch, scope)
+	if err != nil {
+		return &StateIssue{Scope: scope, Field: "provenance", EventStore: err.Error()}
+	}
+	gotRows, err := provenanceOf(live, scope)
+	if err != nil {
+		return &StateIssue{Scope: scope, Field: "provenance", Projection: err.Error()}
+	}
+	if diff, err := DiffJSON(wantRows, gotRows); err != nil {
+		return &StateIssue{Scope: scope, Field: "compare", EventStore: err.Error()}
+	} else if diff != nil {
+		return &StateIssue{Scope: scope, Field: "rows" + diff.Field, EventStore: diff.A, Projection: diff.B}
+	}
+	return nil
 }
 
 // StateRebuild re-folds the event store into the live projection file, and

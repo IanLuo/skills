@@ -3,10 +3,12 @@ package dispatch_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IanLuo/memstore"
 	"github.com/flagship-dev/flagship/internal/command"
@@ -89,10 +91,9 @@ func newPendingFixture(t *testing.T) *pendingFixture {
 		Payload: json.RawMessage(`{"goal":"a node from before kinds"}`),
 	})
 
-	// status-changed, delivery-recorded, report-recorded, cap-claimed.
-	if resp := p.h.TaskUpdate("skills", p.workerNode, "active", "", nil); !resp.OK {
-		t.Fatalf("task update: %s", resp.Error)
-	}
+	// delivery-recorded, report-recorded, cap-claimed. (The status-changed is the
+	// one addWorkerNode wrote; a second would leave the node with two, and a test
+	// that removes one status row would not see the state move.)
 	recordDeliveryAs(t, p.fixture, p.capNode, "agent-1", p.workerNode)
 	if resp := p.h.ReportAdd("skills", p.workerNode, "question", "one line about the work"); !resp.OK {
 		t.Fatalf("report: %s", resp.Error)
@@ -235,17 +236,22 @@ func eventTypes(t *testing.T, f *fixture) map[store.EventType]bool {
 // divergences: a row's status changed, a row deleted, a row added. Each one
 // must exit the read with an error naming the scope and the differing field with
 // both values, and return no answer at all.
+//
+// Each injection changes the state the read derives — a wrong payload, a missing
+// row, an extra node — because that is what a fold bug or a stray writer
+// produces, and it is what the gate must see.
 func TestPendingParityRefuses(t *testing.T) {
 	cases := []struct {
 		name    string
 		diverge func(t *testing.T, p *pendingFixture)
 		field   string
+		scope   string
 	}{
 		{
 			name: "a row's status changed",
 			diverge: func(t *testing.T, p *pendingFixture) {
-				// The worker's current row says done instead of active: a change
-				// one row can carry, which is exactly what a fold bug would do.
+				// The worker's status row says done instead of active: the same
+				// event projected wrong, which is exactly what a fold bug is.
 				ms := p.h.Projection()
 				scope, err := store.ReadScope(ms, "skills")
 				if err != nil {
@@ -255,13 +261,17 @@ func TestPendingParityRefuses(t *testing.T) {
 				if node == nil {
 					t.Fatalf("no projected worker node %s", p.workerNode)
 				}
-				reviseRow(t, p, node.RowID, "done")
+				injectNodeRow(t, p, "skills", p.workerNode, "dispatch",
+					`{"to":"done"}`, "status-changed", "injected-status", node.RowID)
 			},
 			field: "worker.status",
+			scope: "skills",
 		},
 		{
 			name: "a row deleted",
 			diverge: func(t *testing.T, p *pendingFixture) {
+				// The status row is gone, so the node falls back to pending: the
+				// state the read derives is not the event store's.
 				ms := p.h.Projection()
 				scope, err := store.ReadScope(ms, "skills")
 				if err != nil {
@@ -275,21 +285,18 @@ func TestPendingParityRefuses(t *testing.T) {
 					t.Fatalf("forget: %v", err)
 				}
 			},
-			field: "worker",
+			field: "worker.status",
+			scope: "skills",
 		},
 		{
 			name: "a row added",
 			diverge: func(t *testing.T, p *pendingFixture) {
 				// An extra open gap nobody recorded: the backlog count moves.
-				if _, err := p.h.Projection().Put(&memstore.Memory{
-					Kind: "gap", Scope: "fs:skills", Text: "a gap nobody wrote",
-					Status: "pending", FsNode: "t-injected-gap",
-					Origin: "test", OriginId: "injected-gap",
-				}); err != nil {
-					t.Fatalf("inject row: %v", err)
-				}
+				injectNodeRow(t, p, "skills", "t-injected-gap", "gap",
+					`{"goal":"a gap nobody wrote","kind":"gap"}`, "task-created", "injected-gap", 0)
 			},
 			field: "undispatched_gaps",
+			scope: "cap",
 		},
 	}
 
@@ -306,7 +313,7 @@ func TestPendingParityRefuses(t *testing.T) {
 				t.Fatalf("the gate answered %+v on a diverged projection; a divergence must refuse", answer)
 			}
 			msg := err.Error()
-			for _, want := range []string{"refused", tc.field, "cap", "fs state rebuild"} {
+			for _, want := range []string{"refused", tc.field, tc.scope, "fs state rebuild"} {
 				if !strings.Contains(msg, want) {
 					t.Errorf("refusal %q does not name %q", msg, want)
 				}
@@ -324,24 +331,26 @@ func TestPendingParityRefuses(t *testing.T) {
 	}
 }
 
-// reviseRow retires a projected row and puts a new version in its place with a
-// different status, which is how the fold itself would write a status change.
-func reviseRow(t *testing.T, p *pendingFixture, rowID int64, status string) {
+// injectNodeRow writes one node-version row the way a diverged fold would: a
+// real envelope, so the read derives state from it, and (when retiring is asked
+// for) it retires the row it replaces.
+func injectNodeRow(t *testing.T, p *pendingFixture, project, node, kind, payloadJSON, eventType, originID string, retire int64) {
 	t.Helper()
 	ms := p.h.Projection()
-	old, err := ms.Get(rowID)
-	if err != nil {
-		t.Fatalf("get row: %v", err)
-	}
+	extra := fmt.Sprintf(`{"event_id":%q,"project_id":%q,"event_type":%q,"fs_node":%q,"payload":%s}`,
+		originID, project, eventType, node, payloadJSON)
 	id, err := ms.Put(&memstore.Memory{
-		Ts: old.Ts, Kind: old.Kind, Scope: old.Scope, Text: old.Text, Extra: old.Extra,
-		Status: status, Parent: old.Parent, Origin: "test", OriginId: "injected-revision",
+		Ts: time.Now().UTC(), Kind: kind, Scope: "fs:" + project, Text: node,
+		Status: "pending", Extra: extra, FsNode: node,
+		Origin: "test", OriginId: originID,
 	})
 	if err != nil {
-		t.Fatalf("inject revision: %v", err)
+		t.Fatalf("inject row: %v", err)
 	}
-	if err := ms.CloseMemory(old.Id, &id); err != nil {
-		t.Fatalf("close revised row: %v", err)
+	if retire != 0 {
+		if err := ms.CloseMemory(retire, &id); err != nil {
+			t.Fatalf("retire injected-into row: %v", err)
+		}
 	}
 }
 

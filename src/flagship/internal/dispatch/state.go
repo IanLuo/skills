@@ -10,6 +10,8 @@ package dispatch
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/IanLuo/memstore"
 	"github.com/flagship-dev/flagship/internal/command"
@@ -76,12 +78,41 @@ func gatedAnswer(read, source string, h *command.Handler, fromLog func() (pendin
 		return pendingAnswer{}, fmt.Errorf("%s: compare sources: %w", read, err)
 	}
 	if diff != nil {
+		scope := refusalScope(logAnswer, diff.Field)
 		h.Logger().Error("state read refused: the projection and the event store disagree",
-			"command", read, "scope", capScope, "field", diff.Field,
+			"command", read, "scope", scope, "field", diff.Field,
 			"event_store", diff.A, "projection", diff.B, "source", command.SourceLog)
-		return pendingAnswer{}, &stateRefusal{read: read, scope: capScope, diff: diff}
+		return pendingAnswer{}, &stateRefusal{read: read, scope: scope, diff: diff}
 	}
 	return projAnswer, nil
+}
+
+// refusalScope names the scope the differing field lives in. A dispatch's own
+// node, its delivery record and the cap's claim are cap-scope values; a worker's
+// node and its reports live in the worker's project, and the field path says
+// which of them the difference is in. Naming cap for a row that is in fs:skills
+// would send a reader to the wrong file's rows.
+func refusalScope(answer pendingAnswer, field string) string {
+	rest, ok := strings.CutPrefix(field, "dispatches[")
+	if !ok {
+		return capScope
+	}
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		return capScope
+	}
+	idx, err := strconv.Atoi(rest[:end])
+	if err != nil || idx < 0 || idx >= len(answer.Dispatches) {
+		return capScope
+	}
+	tail := rest[end+1:]
+	if !strings.HasPrefix(tail, ".worker") && !strings.HasPrefix(tail, ".reports") {
+		return capScope
+	}
+	if d := answer.Dispatches[idx].Delivery; d != nil && d.Project != "" {
+		return d.Project
+	}
+	return capScope
 }
 
 // answerFromLog derives the pending answer from the event store: the cap scope's

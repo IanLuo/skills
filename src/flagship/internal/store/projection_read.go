@@ -10,6 +10,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -25,6 +26,18 @@ func ScopeRows(ms *memstore.Store, projectID string) ([]memstore.Memory, error) 
 }
 
 // ProjectedNode is one node's current state, reconstructed from its rows.
+//
+// The state is derived by folding the node's rows in EVENT order and applying
+// each row's own event to the state, exactly as query.BuildTree applies the
+// events — not by reading the newest row's snapshot. That is what makes the read
+// independent of the order the rows were written in: a fold that arrives late
+// (a lag filled by `fs state rebuild`, or a fold that failed and was re-run)
+// writes a row whose snapshot could not inherit from a predecessor that was not
+// there yet, and the state must still come out the same.
+//
+// RowID is the row of the node's newest event, and Rows is how many versions the
+// node has; both are file-local and are for a caller that needs to point at a
+// row, never part of the state a comparison uses.
 type ProjectedNode struct {
 	NodeID     string
 	Goal       string
@@ -39,10 +52,7 @@ type ProjectedNode struct {
 	Reviews    string
 	Absorbed   []string
 	RowID      int64
-	// Rows is how many versions the node has, and AllRetired says every one of
-	// them is closed — the node was absorbed by a merge.
 	Rows       int
-	AllRetired bool
 }
 
 // ProjectedScope is one scope's state as the projection holds it. Side rows are
@@ -92,45 +102,98 @@ func ReadScope(ms *memstore.Store, projectID string) (*ProjectedScope, error) {
 	}
 
 	for nid, vs := range versions {
-		node := &ProjectedNode{NodeID: nid, Kind: "work", Status: "pending", Rows: len(vs)}
-		// The current row is the newest one still open. A node whose rows are all
-		// closed was absorbed by a merge: the last row is its state and its
-		// status is done, which is what the merge wrote before the close retired
-		// the row.
-		cur := vs[len(vs)-1]
-		node.AllRetired = true
-		for i := len(vs) - 1; i >= 0; i-- {
-			if vs[i].Status != closedStatus {
-				cur, node.AllRetired = vs[i], false
-				break
-			}
-		}
-		node.RowID = cur.Id
-		node.Status = cur.Status
-		if node.AllRetired {
-			node.Status = "done"
-		}
-		doc := nodeDoc{Kind: cur.Kind}
-		if got := docOf(cur.Extra); got != nil {
-			doc = *got
-		}
-		node.Goal, node.Kind = doc.Goal, doc.Kind
-		if !isNodeKind(node.Kind) {
-			node.Kind = "work"
-		}
-		node.ParentID = doc.ParentNodeID
-		node.FoundBy = doc.FoundBy
-		node.Check = doc.Check
-		node.BlockCheck = doc.BlockCheck
-		node.Severity = doc.Severity
-		node.Integrates = doc.Integrates
-		node.Reviews = doc.Reviews
-		node.Absorbed = doc.Absorbed
-		out.Nodes[nid] = node
+		out.Nodes[nid] = deriveNode(nid, vs)
 		out.NodeIDs = append(out.NodeIDs, nid)
 	}
 	sort.Strings(out.NodeIDs)
 	return out, nil
+}
+
+// deriveNode folds a node's version rows in event order into the state the
+// event store would derive, using each row's own event type and payload. A row
+// whose snapshot is incomplete because it was written out of order contributes
+// only what its own event establishes, which is all BuildTree takes from it too.
+func deriveNode(nid string, vs []memstore.Memory) *ProjectedNode {
+	ordered := make([]memstore.Memory, len(vs))
+	copy(ordered, vs)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return eventOrderOf(ordered[i]) < eventOrderOf(ordered[j])
+	})
+
+	node := &ProjectedNode{NodeID: nid, Kind: "work", Status: "pending", Rows: len(vs)}
+	for _, m := range ordered {
+		env, err := decodeExtra(m.Extra)
+		if err != nil {
+			continue
+		}
+		node.RowID = m.Id
+		payload := payloadFields(env)
+		switch env.EventType {
+		case string(TaskCreated):
+			node.Goal = payload["goal"]
+			node.Kind = nodeKindOf(payload["kind"], node.Goal)
+			node.FoundBy = payload["found_by"]
+			node.Check = payload["check"]
+			node.Integrates = payload["integrates"]
+			node.Reviews = payload["reviews"]
+			node.Severity = parseSeverityOf(payload["severity"])
+			// The parent is the event's own column, which the row's document
+			// carries because a task-created's document is built from the event
+			// alone and never inherited.
+			if env.Node != nil {
+				node.ParentID = env.Node.ParentNodeID
+			}
+		case string(StatusChanged):
+			if to := payload["to"]; to != "" {
+				node.Status = to
+			}
+		case string(MetadataChanged):
+			switch payload["field"] {
+			case "goal":
+				node.Goal = payload["new_value"]
+			case "kind":
+				node.Kind = parseKindOf(payload["new_value"])
+			case "severity":
+				node.Severity = parseSeverityOf(payload["new_value"])
+			case "absorbed":
+				node.Absorbed = splitAbsorbed(payload["new_value"])
+			}
+		case string(TaskBlocked):
+			node.BlockCheck = payload["check"]
+		case string(TaskUnblocked):
+			node.BlockCheck = ""
+		}
+	}
+	if !isNodeKind(node.Kind) {
+		node.Kind = "work"
+	}
+	return node
+}
+
+// eventOrderOf is a row's place in its node's event order: the provenance id,
+// which is the event's own ULID and so sorts in time order. A row with no
+// provenance keeps its insertion order after every row that has one.
+func eventOrderOf(m memstore.Memory) string {
+	if m.OriginId == "" {
+		return "~"
+	}
+	return m.OriginId
+}
+
+// payloadFields decodes a row's raw event payload into strings, so the read
+// applies the event rather than the snapshot beside it.
+func payloadFields(env rowExtra) map[string]string {
+	out := map[string]string{}
+	var raw map[string]any
+	if err := json.Unmarshal(env.Payload, &raw); err != nil {
+		return out
+	}
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
 }
 
 // RowPayload decodes a side row's raw event payload, which is what the row was

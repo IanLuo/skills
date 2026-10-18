@@ -2,9 +2,11 @@ package store_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IanLuo/memstore"
 	"github.com/flagship-dev/flagship/internal/store"
@@ -192,4 +194,178 @@ func rowCount(t *testing.T, ms *memstore.Store) int {
 		t.Fatalf("recent: %v", err)
 	}
 	return len(rows)
+}
+
+// AC10/T10 — a fold killed between the insert and the close leaves a hole, and
+// a re-fold closes it.
+//
+// This is the state the live store was in: a node's older row still open while a
+// newer row already existed, so every reader saw the wrong current row, and a
+// re-fold skipped at the same place and changed nothing.
+//
+// A fold cannot be killed on purpose, so the hole is constructed from the
+// outside: the newer event's row is written exactly as the fold's insert half
+// writes it, and the older row is left open, which is the state the death
+// leaves. The re-fold that follows is the real fold.
+func TestRefoldClosesAHoleLeftByAKilledFold(t *testing.T) {
+	const node = "t-hole"
+	older := store.Event{
+		ID: "01HOLEA", Type: store.TaskCreated, ProjectID: "proj-hole",
+		NodeID: strPtr(node), Timestamp: time.Unix(1700000000, 0).UTC(),
+		Payload: json.RawMessage(`{"goal":"the older event","kind":"work"}`),
+	}
+	newer := store.Event{
+		ID: "01HOLEB", Type: store.StatusChanged, ProjectID: "proj-hole",
+		NodeID: strPtr(node), Timestamp: time.Unix(1700000100, 0).UTC(),
+		Payload: json.RawMessage(`{"to":"done"}`),
+	}
+
+	ms, err := memstore.Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("memstore open: %v", err)
+	}
+	defer ms.Close()
+
+	// The older event folds, and its row stays open — nothing newer exists yet.
+	if err := store.FoldEvent(ms, older); err != nil {
+		t.Fatalf("fold older: %v", err)
+	}
+	// The newer event's INSERT half: its row is written and the older row is not
+	// retired, which is where a fold killed between the two leaves the node.
+	insertHalfOf(t, ms, newer, node, "done")
+
+	rows := nodeRowsOf(t, ms, "proj-hole", node)
+	if len(rows) != 2 {
+		t.Fatalf("node has %d rows, want 2", len(rows))
+	}
+	if closed(rowByOrigin(t, rows, older.ID)) {
+		t.Fatalf("the hole is not there: the older row is already closed (%v)", rowStates(rows))
+	}
+
+	// The re-fold: the newer event is already projected, so this is the skip
+	// path — and the skip path must still retire what the insert half left open,
+	// or the hole can never be closed.
+	if err := store.FoldEvent(ms, newer); err != nil {
+		t.Fatalf("re-fold newer: %v", err)
+	}
+	rows = nodeRowsOf(t, ms, "proj-hole", node)
+	if !closed(rowByOrigin(t, rows, older.ID)) {
+		t.Errorf("after the re-fold the older row is open — the skip path retired nothing (%v)", rowStates(rows))
+	}
+	if closed(rowByOrigin(t, rows, newer.ID)) {
+		t.Errorf("after the re-fold the newer row is closed; a re-fold must not retire the current row")
+	}
+
+	// And the state a reader derives is the event store's: done, from the newer
+	// event, with the older event's goal.
+	scope, err := store.ReadScope(ms, "proj-hole")
+	if err != nil {
+		t.Fatalf("read scope: %v", err)
+	}
+	got := scope.Nodes[node]
+	if got == nil {
+		t.Fatal("no node in the derived state")
+	}
+	if got.Status != "done" || got.Goal != "the older event" {
+		t.Errorf("derived state = status %q goal %q, want done / the older event", got.Status, got.Goal)
+	}
+}
+
+// insertHalfOf writes one event's node row exactly as the fold's insert half
+// writes it: the same envelope, the same provenance, and no retire.
+func insertHalfOf(t *testing.T, ms *memstore.Store, evt store.Event, node, status string) {
+	t.Helper()
+	extra := fmt.Sprintf(`{"event_id":%q,"project_id":%q,"event_type":%q,"fs_node":%q,"payload":%s}`,
+		evt.ID, evt.ProjectID, evt.Type, node, evt.Payload)
+	if _, err := ms.Put(&memstore.Memory{
+		Ts: evt.Timestamp, Kind: "work", Scope: store.ProjectionScope(evt.ProjectID),
+		Text: node, Status: status, Extra: extra, FsNode: node,
+		Origin: "fs", OriginId: evt.ID,
+	}); err != nil {
+		t.Fatalf("insert half: %v", err)
+	}
+}
+
+// The same hole reached by fold ORDER rather than by a death: fold the newer
+// event first, then fill the lag, then re-fold — the sequence the live store
+// went through.
+func TestOutOfOrderFoldsConvergeOnARefold(t *testing.T) {
+	const node = "t-order"
+	events := []store.Event{
+		{ID: "01ORDA", Type: store.TaskCreated, ProjectID: "proj-order", NodeID: strPtr(node),
+			Timestamp: time.Unix(1700000000, 0).UTC(), Payload: json.RawMessage(`{"goal":"the goal","kind":"dispatch"}`)},
+		{ID: "01ORDB", Type: store.StatusChanged, ProjectID: "proj-order", NodeID: strPtr(node),
+			Timestamp: time.Unix(1700000100, 0).UTC(), Payload: json.RawMessage(`{"to":"done"}`)},
+	}
+	ms, err := memstore.Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatalf("memstore open: %v", err)
+	}
+	defer ms.Close()
+
+	for _, i := range []int{1, 0, 1} { // newer, then the lag, then the re-fold
+		if err := store.FoldEvent(ms, events[i]); err != nil {
+			t.Fatalf("fold %d: %v", i, err)
+		}
+	}
+	rows := nodeRowsOf(t, ms, "proj-order", node)
+	if len(rows) != 2 {
+		t.Fatalf("node has %d rows, want 2", len(rows))
+	}
+	olderRow, newerRow := rowByOrigin(t, rows, "01ORDA"), rowByOrigin(t, rows, "01ORDB")
+	if !closed(olderRow) || closed(newerRow) {
+		t.Errorf("after the re-fold rows are %v, want the older closed and the newer open", rowStates(rows))
+	}
+	scope, err := store.ReadScope(ms, "proj-order")
+	if err != nil {
+		t.Fatalf("read scope: %v", err)
+	}
+	got := scope.Nodes[node]
+	if got == nil || got.Status != "done" || got.Goal != "the goal" || got.Kind != "dispatch" {
+		t.Errorf("derived state = %+v, want done / the goal / dispatch", got)
+	}
+}
+
+func nodeRowsOf(t *testing.T, ms *memstore.Store, project, node string) []memstore.Memory {
+	t.Helper()
+	rows, err := store.ScopeRows(ms, project)
+	if err != nil {
+		t.Fatalf("scope rows: %v", err)
+	}
+	var out []memstore.Memory
+	for _, m := range rows {
+		if m.FsNode == node && !isSideKind(m.Kind) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func isSideKind(kind string) bool {
+	switch kind {
+	case "work", "dispatch", "gap", "batch":
+		return false
+	}
+	return true
+}
+
+func closed(m memstore.Memory) bool { return m.Status == "closed" }
+
+func rowByOrigin(t *testing.T, rows []memstore.Memory, origin string) memstore.Memory {
+	t.Helper()
+	for _, m := range rows {
+		if m.OriginId == origin {
+			return m
+		}
+	}
+	t.Fatalf("no row for %s among %v", origin, rowStates(rows))
+	return memstore.Memory{}
+}
+
+func rowStates(rows []memstore.Memory) []string {
+	out := make([]string, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, m.OriginId+"="+m.Status)
+	}
+	return out
 }

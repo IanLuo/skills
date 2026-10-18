@@ -480,24 +480,93 @@ func (p *projector) put(evt Event, scope, kind, text, status string, parent *int
 	return id, false, nil
 }
 
-// putVersion writes one node version row and closes the row it replaces. The
-// previous row is closed with the new one named as its replacement, which is
-// memstore's correction rule: content is immutable, so a change is a new
-// version and the old one retires (D3).
+// putVersion writes one node version row and retires the rows a fresh in-order
+// fold would have retired (see rechain). The retire is memstore's correction
+// rule: content is immutable, so a change is a new version and the old one
+// retires (D3).
 func (p *projector) putVersion(evt Event, scope, nid string, doc nodeDoc, status string, parent *int64, prev *memstore.Memory) error {
 	if parent == nil && prev != nil {
 		parent = prev.Parent
 	}
-	id, skip, err := p.put(evt, scope, doc.Kind, doc.Goal, status, parent, &doc, evt.ID)
-	if err != nil || skip {
+	if _, _, err := p.put(evt, scope, doc.Kind, doc.Goal, status, parent, &doc, evt.ID); err != nil {
 		return err
 	}
-	if prev != nil && prev.Status != closedStatus {
-		if err := p.ms.CloseMemory(prev.Id, &id); err != nil {
-			return fmt.Errorf("projection: close superseded row %d: %w", prev.Id, err)
+	return p.rechain(scope, nid)
+}
+
+// rechain retires every row of a node that a fresh in-order fold would have
+// retired: each row that has a successor in event order, plus every row of a
+// node that was absorbed by a merge.
+//
+// It runs after EVERY node-version fold, insert or skip, and that is the whole
+// point. Two holes are otherwise unhealable, and both were seen live:
+//
+//   - a fold killed between its insert and its close leaves the older row open
+//     while the newer row exists; every later re-fold skips at the same place
+//     (the row is already there) and retires nothing;
+//   - a fold of an OLDER event — a lag being filled by `fs state rebuild` —
+//     arrives when a newer row already exists, so the newer row cannot be the
+//     thing it retires, and retiring only the current row leaves the row between
+//     them open.
+//
+// Recomputing from the whole set fixes both, because the expected closed-ness is
+// a function of the row set and not of the order the rows arrived in. Resolving
+// rows needs no new memstore verb: nodeRows is the same scope-listing read
+// link() already uses.
+//
+// The supersede pointer is set from the successor in event order, which is what
+// an in-order fold writes; a row already closed keeps the pointer it has, since
+// memstore's close is a no-op on a closed row. Verify compares closed-ness and
+// never the pointer, for exactly that reason.
+func (p *projector) rechain(scope, nid string) error {
+	rows, err := p.nodeRows(scope, nid)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	ordered := make([]memstore.Memory, len(rows))
+	copy(ordered, rows)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return eventOrderKey(ordered[i]) < eventOrderKey(ordered[j])
+	})
+
+	// A node whose rows were closed with no replacement was absorbed: the merge
+	// closed every version of it, including the newest.
+	absorbed := false
+	for _, m := range ordered {
+		if m.Status == closedStatus && m.Supersedes == nil {
+			absorbed = true
+		}
+	}
+	for i, m := range ordered {
+		if m.Status == closedStatus {
+			continue
+		}
+		switch {
+		case i < len(ordered)-1:
+			next := ordered[i+1].Id
+			if err := p.ms.CloseMemory(m.Id, &next); err != nil {
+				return fmt.Errorf("projection: close superseded row %d: %w", m.Id, err)
+			}
+		case absorbed:
+			if err := p.ms.CloseMemory(m.Id, nil); err != nil {
+				return fmt.Errorf("projection: close absorbed row %d: %w", m.Id, err)
+			}
 		}
 	}
 	return nil
+}
+
+// eventOrderKey is a row's place in its node's event order: the provenance id,
+// which is the event's own ULID and so sorts in time order. A row with no
+// provenance keeps its insertion order after every row that has one.
+func eventOrderKey(m memstore.Memory) string {
+	if m.OriginId == "" {
+		return "~"
+	}
+	return m.OriginId
 }
 
 // link hangs a side row off the node's first row, so a node's outgoing set does

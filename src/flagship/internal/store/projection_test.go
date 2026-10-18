@@ -44,23 +44,23 @@ func fixtureEvents(t *testing.T) []store.Event {
 
 	var out []store.Event
 	out = append(out,
-		ev("e-proj", store.ProjectCreated, nil, nil, ts(1, 0, 0), map[string]string{"name": "proj-a", "root_path": "/tmp/proj-a"}),
-		ev("e-t1", store.TaskCreated, strPtr("t1"), nil, ts(1, 0, 1), map[string]string{"goal": "root goal", "kind": "work"}),
-		ev("e-t2", store.TaskCreated, strPtr("t2"), strPtr("t1"), ts(1, 0, 2), map[string]string{"goal": "child goal"}),
-		ev("e-t1a", store.StatusChanged, strPtr("t1"), nil, ts(1, 0, 3), map[string]string{"from": "pending", "to": "active"}),
-		ev("e-t1d", store.DecisionRecorded, strPtr("t1"), nil, ts(1, 0, 4), map[string]string{"summary": "decided X"}),
-		ev("e-t1k", store.KnowledgeAdded, strPtr("t1"), nil, ts(1, 0, 5), map[string]string{"summary": "learned Y"}),
-		ev("e-t1r", store.ReportRecorded, strPtr("t1"), nil, ts(1, 0, 6), map[string]string{"kind": "done", "line": "done line"}),
-		ev("e-t2b", store.TaskBlocked, strPtr("t2"), nil, ts(1, 0, 7), map[string]string{"reason": "waiting on probe", "check": "test -f /tmp/x"}),
-		ev("e-t2s", store.StatusChanged, strPtr("t2"), nil, ts(1, 0, 8), map[string]string{"from": "pending", "to": "blocked"}),
-		ev("e-t1m", store.MetadataChanged, strPtr("t1"), nil, ts(1, 1, 0), map[string]string{"field": "goal", "new_value": "root goal v2"}),
-		ev("e-t2u", store.TaskUnblocked, strPtr("t2"), nil, ts(1, 1, 1), map[string]any{}),
-		ev("e-t2p", store.StatusChanged, strPtr("t2"), nil, ts(1, 1, 2), map[string]string{"from": "blocked", "to": "pending"}),
-		ev("e-t3", store.TaskCreated, strPtr("t3"), strPtr("t1"), ts(1, 1, 3), map[string]string{"goal": "gap goal", "kind": "gap", "severity": "severe", "check": "grep -q x /tmp/file"}),
-		ev("e-cap", store.CapClaimed, nil, nil, ts(1, 1, 4), map[string]string{"pane_id": "w9:p1", "tab_id": "w9:t1", "agent": "pi", "claimed_at": "2026-10-01T00:00:00Z"}),
-		ev("e-t2m", store.StatusChanged, strPtr("t2"), nil, ts(1, 1, 5), map[string]string{"from": "pending", "to": "done"}),
-		ev("e-t2d", store.DecisionRecorded, strPtr("t2"), nil, ts(1, 1, 6), map[string]string{"summary": "absorbed into t1"}),
-		ev("e-t1abs", store.MetadataChanged, strPtr("t1"), nil, ts(1, 1, 7), map[string]string{"field": "absorbed", "new_value": "t2"}),
+		ev("e01-proj", store.ProjectCreated, nil, nil, ts(1, 0, 0), map[string]string{"name": "proj-a", "root_path": "/tmp/proj-a"}),
+		ev("e02-t1", store.TaskCreated, strPtr("t1"), nil, ts(1, 0, 1), map[string]string{"goal": "root goal", "kind": "work"}),
+		ev("e03-t2", store.TaskCreated, strPtr("t2"), strPtr("t1"), ts(1, 0, 2), map[string]string{"goal": "child goal"}),
+		ev("e04-t1a", store.StatusChanged, strPtr("t1"), nil, ts(1, 0, 3), map[string]string{"from": "pending", "to": "active"}),
+		ev("e05-t1d", store.DecisionRecorded, strPtr("t1"), nil, ts(1, 0, 4), map[string]string{"summary": "decided X"}),
+		ev("e06-t1k", store.KnowledgeAdded, strPtr("t1"), nil, ts(1, 0, 5), map[string]string{"summary": "learned Y"}),
+		ev("e07-t1r", store.ReportRecorded, strPtr("t1"), nil, ts(1, 0, 6), map[string]string{"kind": "done", "line": "done line"}),
+		ev("e08-t2b", store.TaskBlocked, strPtr("t2"), nil, ts(1, 0, 7), map[string]string{"reason": "waiting on probe", "check": "test -f /tmp/x"}),
+		ev("e09-t2s", store.StatusChanged, strPtr("t2"), nil, ts(1, 0, 8), map[string]string{"from": "pending", "to": "blocked"}),
+		ev("e10-t1m", store.MetadataChanged, strPtr("t1"), nil, ts(1, 1, 0), map[string]string{"field": "goal", "new_value": "root goal v2"}),
+		ev("e11-t2u", store.TaskUnblocked, strPtr("t2"), nil, ts(1, 1, 1), map[string]any{}),
+		ev("e12-t2p", store.StatusChanged, strPtr("t2"), nil, ts(1, 1, 2), map[string]string{"from": "blocked", "to": "pending"}),
+		ev("e13-t3", store.TaskCreated, strPtr("t3"), strPtr("t1"), ts(1, 1, 3), map[string]string{"goal": "gap goal", "kind": "gap", "severity": "severe", "check": "grep -q x /tmp/file"}),
+		ev("e14-cap", store.CapClaimed, nil, nil, ts(1, 1, 4), map[string]string{"pane_id": "w9:p1", "tab_id": "w9:t1", "agent": "pi", "claimed_at": "2026-10-01T00:00:00Z"}),
+		ev("e15-t2m", store.StatusChanged, strPtr("t2"), nil, ts(1, 1, 5), map[string]string{"from": "pending", "to": "done"}),
+		ev("e16-t2d", store.DecisionRecorded, strPtr("t2"), nil, ts(1, 1, 6), map[string]string{"summary": "absorbed into t1"}),
+		ev("e17-t1abs", store.MetadataChanged, strPtr("t1"), nil, ts(1, 1, 7), map[string]string{"field": "absorbed", "new_value": "t2"}),
 	)
 	return out
 }
@@ -508,13 +508,13 @@ func TestProjectionFixture(t *testing.T) {
 		if nodeDocOf["severity"] != "severe" || nodeDocOf["check"] != "grep -q x /tmp/file" {
 			t.Errorf("t3 node document severity/check = %v/%v", nodeDocOf["severity"], nodeDocOf["check"])
 		}
-		if env["event_id"] != "e-t3" || env["fs_node"] != "t3" || env["commit_sha"] != "ce-t3" {
+		if env["event_id"] != "e13-t3" || env["fs_node"] != "t3" || env["commit_sha"] != "ce13-t3" {
 			t.Errorf("t3 envelope provenance = %v", env)
 		}
 		// The row names the event it came from in its provenance columns, which is
 		// what makes a re-fold safe (D3, A1).
-		if m.Origin != "fs" || m.OriginId != "e-t3" || m.FsNode != "t3" || m.Ref != "ce-t3" {
-			t.Errorf("t3 structured provenance = %s/%q/%q/%q, want fs/e-t3/t3/ce-t3",
+		if m.Origin != "fs" || m.OriginId != "e13-t3" || m.FsNode != "t3" || m.Ref != "ce13-t3" {
+			t.Errorf("t3 structured provenance = %s/%q/%q/%q, want fs/e13-t3/t3/ce-t3",
 				m.Origin, m.OriginId, m.FsNode, m.Ref)
 		}
 	}
@@ -530,7 +530,7 @@ func TestProjectionFixture(t *testing.T) {
 	if pm.Kind != "project" || pm.Text != "/tmp/proj-a" || pm.Scope != "fs:proj-a" {
 		t.Errorf("project row = %s/%q/%q, want project//tmp/proj-a/fs:proj-a", pm.Kind, pm.Text, pm.Scope)
 	}
-	if envelopeOf(pm)["event_id"] != "e-proj" {
+	if envelopeOf(pm)["event_id"] != "e01-proj" {
 		t.Errorf("project envelope event_id = %v", envelopeOf(pm)["event_id"])
 	}
 
