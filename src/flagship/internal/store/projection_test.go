@@ -98,6 +98,15 @@ func envelopeOf(m memstore.Memory) map[string]any {
 	return env
 }
 
+// payloadOf reads a row's raw event payload out of its envelope.
+func payloadOf(env map[string]any) map[string]any {
+	p, _ := env["payload"].(map[string]any)
+	if p == nil {
+		return map[string]any{}
+	}
+	return p
+}
+
 func fsNodeOf(m memstore.Memory) string {
 	if v, ok := envelopeOf(m)["fs_node"].(string); ok {
 		return v
@@ -408,26 +417,36 @@ func TestProjectionFixture(t *testing.T) {
 	if got := len(proj.NodeRows); got != 3 {
 		t.Fatalf("NodeRows has %d nodes, want 3", got)
 	}
-	if rows := proj.NodeRows["t1"]; len(rows) != 2 {
-		t.Fatalf("t1 has %d rows, want 2 (goal edit)", len(rows))
+	// One row per change to the node's displayed state: created, set active, goal
+	// edited, and the merge's absorbed list (D3 — content is immutable, so a
+	// change is a new version and the row it replaces is closed).
+	if rows := proj.NodeRows["t1"]; len(rows) != 4 {
+		t.Fatalf("t1 has %d rows, want 4 (create, active, goal edit, absorbed)", len(rows))
 	} else {
 		old, err := ms.Get(rows[0])
 		if err != nil {
 			t.Fatalf("get t1 row0: %v", err)
 		}
-		cur, err := ms.Get(rows[1])
+		cur, err := ms.Get(rows[len(rows)-1])
 		if err != nil {
-			t.Fatalf("get t1 row1: %v", err)
+			t.Fatalf("get t1 current row: %v", err)
 		}
 		if old.Text != "root goal" || cur.Text != "root goal v2" {
 			t.Errorf("t1 texts = %q/%q, want root goal / root goal v2", old.Text, cur.Text)
 		}
-		// The supersede chain: the old row closed, naming the new one.
-		if old.Status != "closed" {
-			t.Errorf("t1 old row status %q, want closed", old.Status)
-		}
-		if old.Supersedes == nil || *old.Supersedes != rows[1] {
-			t.Errorf("t1 old row supersedes %v, want %d", old.Supersedes, rows[1])
+		// The supersede chain: each retired row names the row that replaced it,
+		// and only the newest stays open.
+		for i := 0; i < len(rows)-1; i++ {
+			retired, err := ms.Get(rows[i])
+			if err != nil {
+				t.Fatalf("get t1 row %d: %v", i, err)
+			}
+			if retired.Status != "closed" {
+				t.Errorf("t1 row %d status %q, want closed", i, retired.Status)
+			}
+			if retired.Supersedes == nil || *retired.Supersedes != rows[i+1] {
+				t.Errorf("t1 row %d supersedes %v, want %d", i, retired.Supersedes, rows[i+1])
+			}
 		}
 		if cur.Status != "active" {
 			t.Errorf("t1 current status %q, want active", cur.Status)
@@ -436,8 +455,10 @@ func TestProjectionFixture(t *testing.T) {
 			t.Errorf("t1 current text %q, want root goal v2", cur.Text)
 		}
 	}
-	if rows := proj.NodeRows["t2"]; len(rows) != 1 {
-		t.Fatalf("t2 has %d rows, want 1", len(rows))
+	// t2: created, blocked, status blocked, unblocked, status pending, done — six
+	// versions, every one of them closed by the merge that absorbed it.
+	if rows := proj.NodeRows["t2"]; len(rows) != 6 {
+		t.Fatalf("t2 has %d rows, want 6 (create, block, blocked, unblock, pending, done)", len(rows))
 	} else {
 		m, err := ms.Get(rows[0])
 		if err != nil {
@@ -450,8 +471,11 @@ func TestProjectionFixture(t *testing.T) {
 		if m.Parent == nil || *m.Parent != proj.NodeRows["t1"][0] {
 			t.Errorf("t2 parent %v, want t1 first row %d", m.Parent, proj.NodeRows["t1"][0])
 		}
-		if got := edgeRows(t, ms.Path(), rows[0])["absorbed-into"]; len(got) != 1 || got[0] != proj.NodeRows["t1"][0] {
-			t.Errorf("t2 absorbed-into edges %v, want [%d]", got, proj.NodeRows["t1"][0])
+		got := edgeRows(t, ms.Path(), rows[0])["absorbed-into"]
+		if len(got) != 1 {
+			t.Errorf("t2 absorbed-into edges %v, want one edge to the survivor", got)
+		} else if survivor, err := ms.Get(got[0]); err != nil || fsNodeOf(survivor) != "t1" {
+			t.Errorf("t2 absorbed-into edge points at %v, want the survivor t1", survivor.Id)
 		}
 		// The block link (task-blocked), with the reason riding the block row.
 		blk := edgeRows(t, ms.Path(), rows[0])["block"]
@@ -465,7 +489,7 @@ func TestProjectionFixture(t *testing.T) {
 		if b.Kind != "block" || b.Text != "waiting on probe" {
 			t.Errorf("t2 block row kind/text = %s/%q", b.Kind, b.Text)
 		}
-		if got := envelopeOf(b)["reason"]; got != "waiting on probe" {
+		if got := payloadOf(envelopeOf(b))["reason"]; got != "waiting on probe" {
 			t.Errorf("t2 block envelope reason %v", got)
 		}
 	}
@@ -480,15 +504,18 @@ func TestProjectionFixture(t *testing.T) {
 			t.Errorf("t3 kind/status = %s/%q, want gap/pending", m.Kind, m.Status)
 		}
 		env := envelopeOf(m)
-		if env["severity"] != "severe" || env["check"] != "grep -q x /tmp/file" {
-			t.Errorf("t3 envelope severity/check = %v/%v", env["severity"], env["check"])
+		nodeDocOf := env["node"].(map[string]any)
+		if nodeDocOf["severity"] != "severe" || nodeDocOf["check"] != "grep -q x /tmp/file" {
+			t.Errorf("t3 node document severity/check = %v/%v", nodeDocOf["severity"], nodeDocOf["check"])
 		}
 		if env["event_id"] != "e-t3" || env["fs_node"] != "t3" || env["commit_sha"] != "ce-t3" {
 			t.Errorf("t3 envelope provenance = %v", env)
 		}
-		// Structured provenance stays native and empty this slice (cap ruling).
-		if m.Origin != "native" || m.OriginId != "" || m.FsNode != "" {
-			t.Errorf("t3 structured provenance = %s/%q/%q, want native/empty", m.Origin, m.OriginId, m.FsNode)
+		// The row names the event it came from in its provenance columns, which is
+		// what makes a re-fold safe (D3, A1).
+		if m.Origin != "fs" || m.OriginId != "e-t3" || m.FsNode != "t3" || m.Ref != "ce-t3" {
+			t.Errorf("t3 structured provenance = %s/%q/%q/%q, want fs/e-t3/t3/ce-t3",
+				m.Origin, m.OriginId, m.FsNode, m.Ref)
 		}
 	}
 

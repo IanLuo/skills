@@ -1,0 +1,489 @@
+package dispatch_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/IanLuo/memstore"
+	"github.com/flagship-dev/flagship/internal/command"
+	"github.com/flagship-dev/flagship/internal/dispatch"
+	"github.com/flagship-dev/flagship/internal/query"
+	"github.com/flagship-dev/flagship/internal/store"
+)
+
+// AC1 — exactly one read is switched, and it is `pending`.
+//
+// Slice 2's declaration is empty, and that is its measured outcome rather than
+// an unfinished line: the projection-derived answer costs 1.71x the event
+// store's on the live stream and the gated read 2.29x, over AC8's 1.25x and 2x
+// ceilings. The spec's D6 is explicit — a read that regresses is not kept
+// switched past the gate — so the declaration names nothing until the projection
+// can answer a scope without scanning the file. TestPendingParity,
+// TestPendingParityRefuses and TestPendingGapFields prove the gate the
+// declaration would turn on.
+func TestSwitchedReads(t *testing.T) {
+	declared := command.SwitchedReads()
+	if len(declared) != 0 {
+		t.Fatalf("switched reads = %v, want none: AC8 measured the switch over its ceiling (spec D6), so enabling one is a performance decision, not a code one — see internal/command/state_source.go", declared)
+	}
+
+	// The declaration is the only switch: Switched agrees with it for every read
+	// the log records, and nothing else can turn a read on.
+	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
+		if !command.IsStateRead(read) {
+			t.Errorf("read %q records no source, so AC1 cannot tell whether it is switched", read)
+		}
+		if command.Switched(read) {
+			t.Errorf("read %q answers from the projection, and the declaration is empty", read)
+		}
+		if got := command.StateSource(read); got != command.SourceLog {
+			t.Errorf("source of %q = %q, want %q", read, got, command.SourceLog)
+		}
+	}
+	if command.Switched("pending") {
+		t.Error("pending is switched; the declaration is empty")
+	}
+
+	// The field rollback is a rollback, never a second way to switch a read on:
+	// it can only turn one off, and it is read from the environment per process.
+	t.Setenv(command.StateSourceEnv, "projection")
+	if got := command.StateSource("status"); got != command.SourceLog {
+		t.Errorf("source of an unswitched read under FS_STATE_SOURCE=projection = %q, want log", got)
+	}
+}
+
+// pendingFixture builds a stream containing every event type fs pending
+// consumes, so the parity gate compares the whole answer and not a subset:
+// task-created with and without a kind, status-changed, delivery-recorded,
+// report-recorded, cap-claimed, and a kind=gap node carrying severity, check and
+// found_by.
+type pendingFixture struct {
+	*fixture
+	capNode    string
+	workerNode string
+	gapNode    string
+	foundBy    string
+}
+
+func newPendingFixture(t *testing.T) *pendingFixture {
+	t.Helper()
+	p := &pendingFixture{fixture: newFixture(t, t.TempDir())}
+
+	// A work node that can be a gap's found_by: a gap's provenance names a node
+	// that exists.
+	p.foundBy = addCapKindNode(t, p.fixture, "the finding node", query.KindWork)
+
+	// task-created with a kind.
+	p.capNode = addCapNode(t, p.fixture, "dispatch code: sample")
+	p.workerNode = addWorkerNode(t, p.fixture, "active")
+
+	// task-created without a kind: an event written before nodes carried one.
+	// It reads as work, and the projection must materialise it the same way —
+	// with a row, and with the goal the event's payload carries.
+	appendRaw(t, p.fixture, store.Event{
+		Type: store.TaskCreated, ProjectID: "cap", NodeID: strPtr("t-legacy"),
+		Payload: json.RawMessage(`{"goal":"a node from before kinds"}`),
+	})
+
+	// status-changed, delivery-recorded, report-recorded, cap-claimed.
+	if resp := p.h.TaskUpdate("skills", p.workerNode, "active", "", nil); !resp.OK {
+		t.Fatalf("task update: %s", resp.Error)
+	}
+	recordDeliveryAs(t, p.fixture, p.capNode, "agent-1", p.workerNode)
+	if resp := p.h.ReportAdd("skills", p.workerNode, "question", "one line about the work"); !resp.OK {
+		t.Fatalf("report: %s", resp.Error)
+	}
+	if resp := p.h.ClaimCap("cap", command.CapClaim{PaneID: "w9:p54", TabID: "w9:t1", Agent: "pi"}); !resp.OK {
+		t.Fatalf("cap claim: %s", resp.Error)
+	}
+
+	// A gap with every field memstore has no column for.
+	added := p.h.TaskAddKind("skills", "a gap with a weight", query.KindGap,
+		"cap:"+p.foundBy, "", "", "true", query.SeveritySevere, nil)
+	if !added.OK {
+		t.Fatalf("gap add: %s", added.Error)
+	}
+	p.gapNode = added.Data.(command.EventData).NodeID
+	return p
+}
+
+func strPtr(s string) *string { return &s }
+
+// appendRaw writes an event past the append path and folds it into the
+// projection, which is the fixture's way of writing a stream shape the CLI's
+// validators refuse today.
+func appendRaw(t *testing.T, f *fixture, evt store.Event) store.Event {
+	t.Helper()
+	s, err := store.Open(f.storeDB)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	id, err := s.Append(evt)
+	if err != nil {
+		t.Fatalf("append raw: %v", err)
+	}
+	events, err := s.Replay(evt.ProjectID, nil)
+	if err != nil {
+		t.Fatalf("replay raw: %v", err)
+	}
+	for _, got := range events {
+		if got.ID != id {
+			continue
+		}
+		if err := store.FoldEvent(f.h.Projection(), got); err != nil {
+			t.Fatalf("fold raw: %v", err)
+		}
+		return got
+	}
+	t.Fatalf("event %s not replayed", id)
+	return store.Event{}
+}
+
+// answers derives the read's two store-derived answers and the gated one.
+// AC2 — the projection answers every state question pending asks, and the gate
+// compares them. The fixture carries every event type the read consumes, the two
+// derivations are canonically equal, the gated read returns the projection's
+// answer, and the read itself answers.
+func TestPendingParity(t *testing.T) {
+	p := newPendingFixture(t)
+
+	// The fixture is what it says it is: every type pending consumes is there.
+	types := eventTypes(t, p.fixture)
+	for _, want := range []store.EventType{
+		store.TaskCreated, store.StatusChanged, store.DeliveryRecorded,
+		store.ReportRecorded, store.CapClaimed,
+	} {
+		if !types[want] {
+			t.Errorf("fixture has no %s event, so the parity gate is comparing less than the read asks", want)
+		}
+	}
+
+	fromLog, err := dispatch.AnswerFromLog(p.h)
+	if err != nil {
+		t.Fatalf("event-store answer: %v", err)
+	}
+	fromProj, err := dispatch.AnswerFromProjection(p.h)
+	if err != nil {
+		t.Fatalf("projection answer: %v", err)
+	}
+	if fromLog.Gaps != fromProj.Gaps {
+		t.Fatalf("undispatched gaps: event store %d, projection %d", fromLog.Gaps, fromProj.Gaps)
+	}
+	if len(fromProj.Dispatches) != 1 {
+		t.Fatalf("projection found %d unresolved dispatches, want 1: %+v", len(fromProj.Dispatches), fromProj.Dispatches)
+	}
+	if diff, err := store.DiffJSON(fromLog, fromProj); err != nil {
+		t.Fatalf("compare: %v", err)
+	} else if diff != nil {
+		t.Fatalf("the two sources disagree at %s: event store %s, projection %s", diff.Field, diff.A, diff.B)
+	}
+
+	// The gate returns the projection's answer, not the event store's. The two
+	// are equal here — that is the gate's precondition — so identity is proven by
+	// TestPendingParityRefuses, where only the projection's answer changes.
+	gated, err := dispatch.GatedAnswer("pending", command.SourceProjection, p.h,
+		func() (dispatch.Answer, error) { return fromLog, nil },
+		func() (dispatch.Answer, error) { return fromProj, nil })
+	if err != nil {
+		t.Fatalf("gated answer: %v", err)
+	}
+	if !reflect.DeepEqual(gated, fromProj) {
+		t.Fatalf("gated answer = %+v, want the projection's %+v", gated, fromProj)
+	}
+
+	// And the read answers, with the entry the stream describes.
+	entry := pendingEntryFor(t, pendingOf(t, dispatch.Pending(p.h, &fakeHerdr{agents: map[string]string{"agent-1": "working"}})), p.capNode)
+	if entry.WorkerNode != p.workerNode {
+		t.Errorf("worker_node = %q, want %q", entry.WorkerNode, p.workerNode)
+	}
+	if len(entry.Reports) != 1 || entry.Reports[0].Line != "one line about the work" {
+		t.Errorf("reports = %+v, want the one recorded report", entry.Reports)
+	}
+}
+
+// eventTypes is the set of event types a fixture's store holds, across scopes.
+func eventTypes(t *testing.T, f *fixture) map[store.EventType]bool {
+	t.Helper()
+	s, err := store.Open(f.storeDB)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	scopes, err := s.Scopes()
+	if err != nil {
+		t.Fatalf("scopes: %v", err)
+	}
+	out := map[store.EventType]bool{}
+	for _, scope := range scopes {
+		events, err := s.Replay(scope, nil)
+		if err != nil {
+			t.Fatalf("replay %s: %v", scope, err)
+		}
+		for _, evt := range events {
+			out[evt.Type] = true
+		}
+	}
+	return out
+}
+
+// AC3 — a difference refuses, and there is no fallback. Three injected
+// divergences: a row's status changed, a row deleted, a row added. Each one
+// must exit the read with an error naming the scope and the differing field with
+// both values, and return no answer at all.
+func TestPendingParityRefuses(t *testing.T) {
+	cases := []struct {
+		name    string
+		diverge func(t *testing.T, p *pendingFixture)
+		field   string
+	}{
+		{
+			name: "a row's status changed",
+			diverge: func(t *testing.T, p *pendingFixture) {
+				// The worker's current row says done instead of active: a change
+				// one row can carry, which is exactly what a fold bug would do.
+				ms := p.h.Projection()
+				scope, err := store.ReadScope(ms, "skills")
+				if err != nil {
+					t.Fatalf("read scope: %v", err)
+				}
+				node := scope.Nodes[p.workerNode]
+				if node == nil {
+					t.Fatalf("no projected worker node %s", p.workerNode)
+				}
+				reviseRow(t, p, node.RowID, "done")
+			},
+			field: "worker.status",
+		},
+		{
+			name: "a row deleted",
+			diverge: func(t *testing.T, p *pendingFixture) {
+				ms := p.h.Projection()
+				scope, err := store.ReadScope(ms, "skills")
+				if err != nil {
+					t.Fatalf("read scope: %v", err)
+				}
+				node := scope.Nodes[p.workerNode]
+				if node == nil {
+					t.Fatalf("no projected worker node %s", p.workerNode)
+				}
+				if err := ms.Forget(node.RowID); err != nil {
+					t.Fatalf("forget: %v", err)
+				}
+			},
+			field: "worker",
+		},
+		{
+			name: "a row added",
+			diverge: func(t *testing.T, p *pendingFixture) {
+				// An extra open gap nobody recorded: the backlog count moves.
+				if _, err := p.h.Projection().Put(&memstore.Memory{
+					Kind: "gap", Scope: "fs:skills", Text: "a gap nobody wrote",
+					Status: "pending", FsNode: "t-injected-gap",
+					Origin: "test", OriginId: "injected-gap",
+				}); err != nil {
+					t.Fatalf("inject row: %v", err)
+				}
+			},
+			field: "undispatched_gaps",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPendingFixture(t)
+			logs := captureLogs(t, p.fixture)
+			tc.diverge(t, p)
+
+			answer, err := dispatch.GatedAnswer("pending", command.SourceProjection, p.h,
+				func() (dispatch.Answer, error) { return dispatch.AnswerFromLog(p.h) },
+				func() (dispatch.Answer, error) { return dispatch.AnswerFromProjection(p.h) })
+			if err == nil {
+				t.Fatalf("the gate answered %+v on a diverged projection; a divergence must refuse", answer)
+			}
+			msg := err.Error()
+			for _, want := range []string{"refused", tc.field, "cap", "fs state rebuild"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("refusal %q does not name %q", msg, want)
+				}
+			}
+			if !reflect.DeepEqual(answer, dispatch.Answer{}) {
+				t.Errorf("refusal returned %+v; nothing may be returned from the event store", answer)
+			}
+
+			// The running log keeps the difference too: the cap reads the log,
+			// and a silent refusal would be a refusal nobody can find.
+			if !logHasRefusal(logs, tc.field) {
+				t.Errorf("the running log has no refusal naming %q", tc.field)
+			}
+		})
+	}
+}
+
+// reviseRow retires a projected row and puts a new version in its place with a
+// different status, which is how the fold itself would write a status change.
+func reviseRow(t *testing.T, p *pendingFixture, rowID int64, status string) {
+	t.Helper()
+	ms := p.h.Projection()
+	old, err := ms.Get(rowID)
+	if err != nil {
+		t.Fatalf("get row: %v", err)
+	}
+	id, err := ms.Put(&memstore.Memory{
+		Ts: old.Ts, Kind: old.Kind, Scope: old.Scope, Text: old.Text, Extra: old.Extra,
+		Status: status, Parent: old.Parent, Origin: "test", OriginId: "injected-revision",
+	})
+	if err != nil {
+		t.Fatalf("inject revision: %v", err)
+	}
+	if err := ms.CloseMemory(old.Id, &id); err != nil {
+		t.Fatalf("close revised row: %v", err)
+	}
+}
+
+// captureLogs points the handler at a captured log stream and returns it, so a
+// test can read what the running log recorded.
+func captureLogs(t *testing.T, f *fixture) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	f.h.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	return &buf
+}
+
+// logHasRefusal reports whether the captured running log recorded a refusal
+// naming field — the live half of AC3, which requires the refusal to leave a
+// line naming the read and the difference.
+func logHasRefusal(log *bytes.Buffer, field string) bool {
+	return strings.Contains(log.String(), field) && strings.Contains(log.String(), "refused")
+}
+
+// AC9 — no pending answer loses information to a missing memstore column.
+func TestPendingGapFields(t *testing.T) {
+	p := newPendingFixture(t)
+
+	ms := p.h.Projection()
+	scope, err := store.ReadScope(ms, "skills")
+	if err != nil {
+		t.Fatalf("read scope: %v", err)
+	}
+	gap := scope.Nodes[p.gapNode]
+	if gap == nil {
+		t.Fatalf("no projected gap node %s", p.gapNode)
+	}
+	if gap.Severity != string(query.SeveritySevere) {
+		t.Errorf("projected severity = %q, want %q", gap.Severity, query.SeveritySevere)
+	}
+	if gap.Check != "true" {
+		t.Errorf("projected check = %q, want %q", gap.Check, "true")
+	}
+	if gap.FoundBy != "cap:"+p.foundBy {
+		t.Errorf("projected found_by = %q, want %q", gap.FoundBy, "cap:"+p.foundBy)
+	}
+
+	// The gap count, field by field: both sources count the same backlog.
+	fromLog, err := dispatch.AnswerFromLog(p.h)
+	if err != nil {
+		t.Fatalf("event-store answer: %v", err)
+	}
+	fromProj, err := dispatch.AnswerFromProjection(p.h)
+	if err != nil {
+		t.Fatalf("projection answer: %v", err)
+	}
+	if fromLog.Gaps != 1 || fromProj.Gaps != 1 {
+		t.Errorf("undispatched gaps = %d (event store) / %d (projection), want 1 and 1", fromLog.Gaps, fromProj.Gaps)
+	}
+
+	// The check-derived decoration: the check exits 0, so the claim is over and
+	// every reader says so — the projection included, from the check parsed out
+	// of its row rather than replayed from an event.
+	info, found, err := p.h.NodeIn("skills", p.gapNode)
+	if err != nil || !found {
+		t.Fatalf("event-store node: found=%v err=%v", found, err)
+	}
+	fromStore := command.UnfinishedNode{
+		ProjectID: "skills", NodeID: info.NodeID, Status: info.Status, Goal: info.Goal,
+		Kind: info.Kind, FoundBy: info.FoundBy, Check: info.Check, BlockCheck: info.BlockCheck,
+	}
+	fromRow := dispatch.UnfinishedOf("skills", gap)
+	if got, want := command.NodeStatus(fromRow, ""), command.NodeStatus(fromStore, ""); got != want {
+		t.Errorf("check-derived status = %q from the projection, %q from the event store", got, want)
+	}
+	if !strings.Contains(command.NodeStatus(fromRow, ""), "claim no longer holds") {
+		t.Errorf("gap check was not re-run: status = %q", command.NodeStatus(fromRow, ""))
+	}
+}
+
+// AC5, runtime half — a representative write set leaves the projection at
+// parity with the event store. Every event type a dispatch writes is written
+// here by its own command (the dispatch's plan and delivery are the same two
+// appends), so the write set covers the surface and the static test covers the
+// call sites.
+func TestWriteSetStaysAtParity(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	h := f.h
+
+	mustOK := func(what string, resp command.Response) command.EventData {
+		t.Helper()
+		if !resp.OK {
+			t.Fatalf("%s: %s", what, resp.Error)
+		}
+		if data, ok := resp.Data.(command.EventData); ok {
+			return data
+		}
+		return command.EventData{}
+	}
+
+	mustOK("project create", h.ProjectCreate("skills", t.TempDir()))
+	work := mustOK("task add", h.TaskAddKind("skills", "a work node", query.KindWork, "", "", "", "", "", nil))
+	mustOK("task update", h.TaskUpdate("skills", work.NodeID, "active", "a decision", nil))
+	mustOK("task edit", h.TaskEdit("skills", work.NodeID, "an edited goal", query.KindWork, "", nil))
+	mustOK("task block", h.TaskBlockWithCheck("skills", work.NodeID, "blocked on a probe", "true"))
+	mustOK("task unblock", h.TaskUnblock("skills", work.NodeID))
+	mustOK("task knowledge", h.KnowledgeAdd("skills", work.NodeID, "something learned"))
+
+	survivor := mustOK("survivor add", h.TaskAddKind("skills", "a survivor", query.KindWork, "", "", "", "", "", nil))
+	absorbed := mustOK("absorbed add", h.TaskAddKind("skills", "an absorbed node", query.KindWork, "", "", "", "", "", nil))
+	if resp := h.TaskMerge("skills", absorbed.NodeID, survivor.NodeID, "folded in", nil); !resp.OK {
+		t.Fatalf("task merge: %s", resp.Error)
+	}
+
+	mustOK("report", h.ReportAdd("skills", work.NodeID, "done", "finished the work"))
+	mustOK("cap claim", h.ClaimCap("cap", command.CapClaim{PaneID: "w9:p54", TabID: "w9:t1"}))
+	capNode := mustOK("cap dispatch node", h.TaskAddKind("cap", "dispatch code: sample", query.KindDispatch, "", "", "", "", "", nil))
+	mustOK("record delivery", h.RecordDelivery("cap", capNode.NodeID, command.DeliveryRecord{
+		PaneID: "w1:p1", Agent: "agent-1", Engine: "herdr", Project: "skills", Node: work.NodeID,
+	}))
+	if resp := h.RecordPlan("cap", capNode.NodeID, []byte(`{"playbooks":["code"]}`)); !resp.OK {
+		t.Fatalf("record plan: %s", resp.Error)
+	}
+
+	// The projection is at parity with the event store after the whole set.
+	issues, err := h.StateVerify("")
+	if err != nil {
+		t.Fatalf("state verify: %v", err)
+	}
+	if len(issues) != 0 {
+		for _, issue := range issues {
+			t.Errorf("after the write set: %s", issue)
+		}
+	}
+
+	// And the read's own answer agrees, which is what the gate would compare.
+	fromLog, err := dispatch.AnswerFromLog(h)
+	if err != nil {
+		t.Fatalf("event-store answer: %v", err)
+	}
+	fromProj, err := dispatch.AnswerFromProjection(h)
+	if err != nil {
+		t.Fatalf("projection answer: %v", err)
+	}
+	if diff, err := store.DiffJSON(fromLog, fromProj); err != nil {
+		t.Fatalf("compare: %v", err)
+	} else if diff != nil {
+		t.Fatalf("the write set left the sources disagreeing at %s: event store %s, projection %s", diff.Field, diff.A, diff.B)
+	}
+}

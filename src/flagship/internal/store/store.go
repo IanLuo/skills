@@ -10,6 +10,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/IanLuo/memstore"
 )
 
 // EventType enumerates the hardcoded event types (SPEC R3, SYSTEM-DESIGN R2).
@@ -86,6 +88,10 @@ type Store struct {
 	db   *sql.DB
 	ulid *ULIDGenerator
 	path string
+	// proj is the memstore file every appended event is folded into, or nil
+	// when no projection is attached. The fold runs here, in the append path,
+	// and never as a caller's loop beside it (D3, AC5).
+	proj *memstore.Store
 }
 
 // Open creates or opens a store at path. Sets WAL mode and creates schema.
@@ -228,7 +234,29 @@ func (s *Store) Append(evt Event) (string, error) {
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("store: commit: %w", err)
 	}
-	return id, nil
+	return id, s.fold(committed(evt, id, ts))
+}
+
+// committed is the event as the store wrote it: the caller's event with the
+// store's own id and timestamp, which is what the fold keys the row on.
+func committed(evt Event, id string, ts time.Time) Event {
+	evt.ID = id
+	evt.Timestamp = ts
+	return evt
+}
+
+// fold projects one committed event, and reports a fold failure as a
+// ProjectionFailure rather than as a failed write: the event is durable first
+// and the fold second (NFR Ordering), so the write result stands and only the
+// projection is behind (AC10).
+func (s *Store) fold(evt Event) error {
+	if s.proj == nil {
+		return nil
+	}
+	if err := FoldEvent(s.proj, evt); err != nil {
+		return &ProjectionFailure{Scope: ProjectionScope(evt.ProjectID), Err: err}
+	}
+	return nil
 }
 
 // AppendBatch validates and persists multiple events in a single transaction.
@@ -286,6 +314,12 @@ func (s *Store) AppendBatch(events []Event) ([]string, error) {
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit: %w", err)
+	}
+	// A batch is not one fold: N events, N folds, each one event's row (D3).
+	for i := range events {
+		if err := s.fold(committed(events[i], ids[i], ts)); err != nil {
+			return ids, err
+		}
 	}
 	return ids, nil
 }

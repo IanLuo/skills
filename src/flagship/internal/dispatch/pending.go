@@ -108,28 +108,50 @@ type PendingResult struct {
 
 // Pending lists every dispatch in the cap's scope that is not done, with what
 // the cap should do about each. It appends no events and touches no pane.
+//
+// Slice 2 switched this read: its store-derived answer comes from the memstore
+// projection, and it is returned only when the parity gate found it equal to the
+// event store's (spec D2, AC2). A divergence refuses the command — it never
+// answers from the event store on the side (AC3). Everything herdr contributes
+// is applied after the comparison, so the gate never compares an environment
+// read against itself.
 func Pending(h *command.Handler, hc engine.Engine) command.Response {
-	unresolved, err := unresolvedDispatches(h)
+	source := command.StateSource("pending")
+	answer, err := gatedAnswer("pending", source, h,
+		func() (pendingAnswer, error) { return answerFromLog(h) },
+		func() (pendingAnswer, error) { return answerFromProjection(h) },
+	)
 	if err != nil {
-		return errResp(fmt.Sprintf("pending: %v", err))
+		return errResp("pending: " + err.Error())
 	}
 
-	// herdr says when to look, not whether the work is done. When it cannot be
-	// asked, the states that depend on it are reported as unread rather than
-	// guessed at: an unreadable herdr is not an agent that has gone, and it is
-	// not an agent that was seen working either.
+	result := decoratePending(hc, answer)
+	h.Logger().Info("command executed", "command", "pending", "source", source,
+		"pending", len(result.Pending), "undispatched_gaps", result.UndispatchedGaps)
+	return command.Response{OK: true, Data: result}
+}
+
+// decoratePending applies what neither source holds — herdr's agent states and
+// the re-run checks — to the answer the gate settled on, and counts the states a
+// cap acts on. It reads nothing from the store.
+func decoratePending(hc engine.Engine, answer pendingAnswer) PendingResult {
 	agents, herdrErr := hc.Agents()
 
-	entries := make([]PendingEntry, 0, len(unresolved))
+	entries := make([]PendingEntry, 0, len(answer.Dispatches))
 	counts := make(map[string]int, len(pendingStates))
 	for _, state := range pendingStates {
 		counts[state] = 0
 	}
-	for _, node := range unresolved {
-		entry, err := pendingEntry(h, node.NodeID, agents, herdrErr)
-		if err != nil {
-			return errResp("pending: " + err.Error())
+	for _, d := range answer.Dispatches {
+		entry := PendingEntry{CapNode: d.Node.NodeID}
+		if d.Delivery != nil {
+			entry.Project = d.Delivery.Project
+			entry.Tab = d.Delivery.TabID
+			entry.Agent = d.Delivery.Agent
+			entry.WorkerNode = d.Delivery.Node
 		}
+		entry.State = pendingStateOf(d, agents, herdrErr)
+
 		// An unfinished dispatch is still a dispatch the cap has not closed out,
 		// so its recorded check is re-run here: it runs in the cap scope's
 		// directory, which is this process's own — cap is never a registered
@@ -138,87 +160,66 @@ func Pending(h *command.Handler, hc engine.Engine) command.Response {
 		// report says no more than its status keeps its status out of the read —
 		// except a blocked one, whose block is the whole answer and is reported
 		// whether or not it still holds.
-		if reported := command.NodeStatus(node, ""); reported != node.Status || node.Status == "blocked" {
+		if reported := command.NodeStatus(d.Node, ""); reported != d.Node.Status || d.Node.Status == "blocked" {
 			entry.Status = reported
 		}
+		entry.Reports = d.Reports
 		counts[entry.State]++
 		entries = append(entries, entry)
 	}
 
-	result := PendingResult{Pending: entries, Counts: counts}
-	capState, err := CapStatusOf(h, hc)
-	if err != nil {
-		return errResp(fmt.Sprintf("pending: %v", err))
+	result := PendingResult{
+		Pending: entries, Counts: counts, UndispatchedGaps: answer.Gaps,
+		Cap: capStatusOf(answer, hc),
 	}
-	result.Cap = capState
-	gaps, err := h.OpenGaps()
-	if err != nil {
-		return errResp(fmt.Sprintf("pending: %v", err))
-	}
-	result.UndispatchedGaps = gaps
 	if herdrErr != nil {
 		result.Warning = fmt.Sprintf(
 			"herdr is unavailable (%v): an unfinished worker's state cannot be read, and is reported as %q",
 			herdrErr, StateUnknown)
 	}
-	return command.Response{OK: true, Data: result}
+	return result
 }
 
-// pendingEntry reads one dispatch node's delivery record and the worker node it
-// names, and classifies it.
-func pendingEntry(h *command.Handler, capNodeID string, agents map[string]string, herdrErr error) (PendingEntry, error) {
-	entry := PendingEntry{CapNode: capNodeID}
-
-	delivery, recorded, err := h.DeliveryFor(capScope, capNodeID)
-	if err != nil {
-		return entry, fmt.Errorf("read delivery record for %s: %w", capNodeID, err)
+// capStatusOf adds herdr's answer about the claim the gate compared: the claim
+// itself is a store value, and whether its pane still exists is the environment
+// read that goes beside it.
+func capStatusOf(answer pendingAnswer, hc engine.Engine) CapStatus {
+	if answer.Cap == nil {
+		return CapStatus{State: CapNone}
 	}
-	if recorded {
-		entry.Project = delivery.Project
-		entry.Tab = delivery.TabID
-		entry.Agent = delivery.Agent
-		entry.WorkerNode = delivery.Node
+	claim := *answer.Cap
+	status := CapStatus{
+		PaneID: claim.PaneID, TabID: claim.TabID,
+		Agent: claim.Agent, ClaimedAt: claim.ClaimedAt,
 	}
-
-	entry.State = pendingState(h, delivery, recorded, agents, herdrErr)
-
-	// A report lives on the worker's own node, so a record that names no worker
-	// node names no reports either: there is nothing to read and the entry is
-	// already unlinked.
-	if recorded && delivery.Project != "" && delivery.Node != "" {
-		reports, err := h.ReportsFor(delivery.Project, delivery.Node)
-		if err != nil {
-			return entry, fmt.Errorf("read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
-		}
-		entry.Reports = reports
+	live, err := hc.PaneExists(claim.PaneID)
+	switch {
+	case err != nil:
+		status.State = CapUnknown
+	case live:
+		status.State = CapLive
+	default:
+		status.State = CapDead
 	}
-	return entry, nil
+	return status
 }
 
-// pendingState classifies one dispatch. The worker's node is the truth about
-// whether the work is done, so a done node is ready however herdr reads — a
-// worker whose pane was looked at reads idle, not done, and is still finished.
-//
-// A record carrying no worker node is unlinked before anything else: there is no
-// node to read, and herdr reporting no such agent would otherwise be mistaken
-// for a worker that died.
-//
-// A herdr that could not be asked is its own state, never running: every other
-// route into running follows a read that placed the agent, and reporting an
-// unread worker as one that was read working is the state the cap acts on.
-func pendingState(h *command.Handler, delivery command.DeliveryRecord, recorded bool, agents map[string]string, herdrErr error) string {
-	if !recorded || delivery.Project == "" || delivery.Node == "" {
+// pendingStateOf classifies one dispatch from the answer the gate settled on.
+// The worker's node is the truth about whether the work is done, so a done node
+// is ready however herdr reads. A record carrying no worker node is unlinked
+// before anything else. A herdr that could not be asked is its own state, never
+// running.
+func pendingStateOf(d pendingDispatch, agents map[string]string, herdrErr error) string {
+	if d.Delivery == nil || d.Delivery.Project == "" || d.Delivery.Node == "" {
 		return StateUnlinked
 	}
-
-	if worker, found := scopeNode(h, delivery.Project, delivery.Node); found && worker.Status == "done" {
+	if d.Worker != nil && d.Worker.Status == "done" {
 		return StateReady
 	}
-
 	if herdrErr != nil {
 		return StateUnknown
 	}
-	state, found := agents[delivery.Agent]
+	state, found := agents[d.Delivery.Agent]
 	switch {
 	case !found:
 		return StateGone

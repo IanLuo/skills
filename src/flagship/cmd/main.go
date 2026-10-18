@@ -121,6 +121,8 @@ func main() {
 		pendingCmd()
 	case "cap":
 		capCmd(os.Args[2:])
+	case "state":
+		stateCmd(os.Args[2:])
 	case "report":
 		checkArgs("report", os.Args[2:])
 		reportCmd(os.Args[2:])
@@ -216,6 +218,15 @@ Commands:
                                                 "recorded, not notified"
   tell PROJECT:NODE "TEXT"                      The cap's reply, routed through
                                                 that dispatch's delivery record
+  state verify                                 Does the projection agree with the
+                                               event store? Re-folds every scope
+                                               into a scratch file and compares;
+                                               writes nothing, exits 1 naming the
+                                               first difference
+  state rebuild                                Re-fold every scope into the live
+                                               projection file — the repair for a
+                                               drifted projection; touches no
+                                               non-fs row
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events; --node
                                                 takes a node address — a bare
@@ -434,6 +445,18 @@ func openHandler(root string) *command.Handler {
 
 	// Inject structured logger (ARCHITECTURE R4: JSON to stderr).
 	h.SetLogger(logger)
+
+	// The projection: fs's rows in the one memory file it shares with personal
+	// memories. Attaching it here is what makes every append fold in the same
+	// command step (spec D3), and what lets fs pending answer from it.
+	//
+	// A projection that cannot be opened does not fail the command: most
+	// commands do not read state, and refusing them all would let one broken
+	// file stop the tool. The switched read refuses instead, naming the file.
+	if err := h.AttachProjection(store.ProjectionPath()); err != nil {
+		logger.Warn("projection unavailable; the switched read will refuse",
+			"path", store.ProjectionPath(), "error", err)
+	}
 
 	// Auto-capture the referenced project's git HEAD (ARCHITECTURE R4).
 	h.SetCommitSHA(command.DetectCommitSHAIn(root))
@@ -664,6 +687,7 @@ func taskGet(args []string) {
 	h := openHandler(root)
 	defer h.Close()
 
+	logReadSource("task get")
 	resp := h.StatusIn(name, root)
 	if !resp.OK {
 		output(resp)
@@ -848,6 +872,7 @@ func statusCmd(args []string) {
 	defer h.Close()
 
 	updateActivity(name)
+	logReadSource("status")
 	output(h.StatusIn(name, root))
 }
 
@@ -1237,6 +1262,7 @@ func unfinishedCmd() {
 	reg := openRegistry()
 	defer reg.Close()
 
+	logReadSource("unfinished")
 	output(h.Unfinished(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
@@ -1257,12 +1283,97 @@ func gapsCmd() {
 	reg := openRegistry()
 	defer reg.Close()
 
+	logReadSource("gaps")
 	output(h.Gaps(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
 // pendingCmd answers "what is waiting on the cap": every dispatch in the cap's
 // scope that is not done, classified against its delivery record, its worker's
 // node, and herdr. It is a read — it writes nothing.
+// stateCmd is fs state: the drift checkpoint and the repair. The event store is
+// the truth and the projection is derived, so `verify` says whether they agree
+// and `rebuild` makes them, and neither invents a third source.
+func stateCmd(args []string) {
+	if len(args) < 1 || isHelp(args[0]) {
+		fmt.Fprintln(os.Stderr, `Usage: fs state <subcommand>
+
+Subcommands:
+  verify    Re-fold every scope into a scratch projection and compare it with
+            the live one; writes nothing, and exits 1 naming the first scope
+            that differs and the differing field
+  rebuild   Re-fold every scope into the live projection file, touching no
+            non-fs: row`)
+		if len(args) < 1 {
+			os.Exit(2)
+		}
+		return
+	}
+	switch args[0] {
+	case "verify":
+		checkArgs("state verify", args[1:])
+		stateVerify()
+	case "rebuild":
+		checkArgs("state rebuild", args[1:])
+		stateRebuild()
+	default:
+		fmt.Fprintf(os.Stderr, "fs state: unknown subcommand %q\n", args[0])
+		os.Exit(2)
+	}
+}
+
+// stateVerify answers "does the projection agree with the event store?" without
+// writing anything. A difference is a refusal naming the scope, the field and a
+// value from each side, with the command that repairs it.
+func stateVerify() {
+	s, err := store.Open(storePath())
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer s.Close()
+
+	scopes, err := s.Scopes()
+	if err != nil {
+		fatal(err.Error())
+	}
+	issues, err := s.StateVerify(store.ProjectionPath())
+	if err != nil {
+		fatal(err.Error())
+	}
+	if len(issues) > 0 {
+		output(command.Response{OK: false, Error: fmt.Sprintf(
+			"fs state verify: %s — run \"fs state rebuild\"", issues[0])})
+		return
+	}
+	output(command.Response{OK: true, Data: map[string]any{"clean": true, "scopes": len(scopes)}})
+}
+
+// stateRebuild re-folds the event store into the live projection file. It is the
+// repair for a drifted or missing projection, and it is the only command that
+// forgets fs's own rows.
+func stateRebuild() {
+	s, err := store.Open(storePath())
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer s.Close()
+
+	rebuilt, err := s.StateRebuild(store.ProjectionPath())
+	if err != nil {
+		fatal(err.Error())
+	}
+	output(command.Response{OK: true, Data: map[string]any{"rebuilt": rebuilt}})
+}
+
+// logReadSource records which source a state read answered from. The source is a
+// property of the read (spec D2), so the read that ran names it on the running
+// log — which is what lets a reader tell a switched read from the event store's
+// answer without changing the JSON envelope. fs pending and fs task get log
+// their own line because their read is composed rather than answered by one
+// handler method.
+func logReadSource(read string) {
+	logger.Info("command executed", "command", read, "source", command.StateSource(read))
+}
+
 func pendingCmd() {
 	h := openHandler("")
 	defer h.Close()
