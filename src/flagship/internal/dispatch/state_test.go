@@ -79,6 +79,12 @@ type pendingFixture struct {
 }
 
 func newPendingFixture(t *testing.T) *pendingFixture {
+	return newPendingFixtureGaps(t, true)
+}
+
+// newPendingFixtureGaps is the same stream with or without a kind=gap node, so a
+// test can build the shape where one side's open-gap map is empty.
+func newPendingFixtureGaps(t *testing.T, withGap bool) *pendingFixture {
 	t.Helper()
 	p := &pendingFixture{fixture: newFixture(t, t.TempDir())}
 
@@ -109,6 +115,9 @@ func newPendingFixture(t *testing.T) *pendingFixture {
 		t.Fatalf("cap claim: %s", resp.Error)
 	}
 
+	if !withGap {
+		return p
+	}
 	// A gap with every field memstore has no column for.
 	added := p.h.TaskAddKind("skills", "a gap with a weight", query.KindGap,
 		"cap:"+p.foundBy, "", "", "true", query.SeveritySevere, nil)
@@ -117,6 +126,105 @@ func newPendingFixture(t *testing.T) *pendingFixture {
 	}
 	p.gapNode = added.Data.(command.EventData).NodeID
 	return p
+}
+
+// gapScopesRefusal drives the gate and returns its refusal message, failing the
+// test when it answers.
+func gapScopesRefusal(t *testing.T, p *pendingFixture) string {
+	t.Helper()
+	answer, err := dispatch.GatedAnswer("pending", command.SourceProjection, p.h,
+		func() (dispatch.Answer, error) { return dispatch.AnswerFromLog(p.h) },
+		func() (dispatch.Answer, error) { return dispatch.AnswerFromProjection(p.h) })
+	if err == nil {
+		t.Fatalf("the gate answered %+v; a per-scope divergence must refuse", answer)
+	}
+	return err.Error()
+}
+
+// A2 — the per-scope breakdown is what makes a cancelling divergence visible and
+// what names the scope a count moved in. Each case below is one the total-only
+// comparison passes, so each is a gap this closes.
+func TestPendingParityRefusesOnThePerScopeGapBreakdown(t *testing.T) {
+	t.Run("the totals cancel out", func(t *testing.T) {
+		p := newPendingFixture(t)
+		// A gap in cap as well, so one scope can gain while another loses: cap
+		// 1 -> 0 and skills 1 -> 2 leaves the total at 2 either way.
+		added := p.h.TaskAddKind("cap", "a cap gap", query.KindGap, "", "", "", "", "", nil)
+		if !added.OK {
+			t.Fatalf("cap gap: %s", added.Error)
+		}
+		capGap := added.Data.(command.EventData).NodeID
+
+		ms := p.h.Projection()
+		capScopeState, err := store.ReadScope(ms, "cap")
+		if err != nil {
+			t.Fatalf("read cap: %v", err)
+		}
+		if err := ms.Forget(capScopeState.Nodes[capGap].RowID); err != nil {
+			t.Fatalf("forget the cap gap's row: %v", err)
+		}
+		injectNodeRow(t, p, "skills", "t-injected-gap", "gap",
+			`{"goal":"a gap nobody wrote","kind":"gap"}`, "task-created", "injected-gap", 0)
+
+		// The totals are equal; only the parts differ.
+		fromLog, err := dispatch.AnswerFromLog(p.h)
+		if err != nil {
+			t.Fatalf("log answer: %v", err)
+		}
+		fromProj, err := dispatch.AnswerFromProjection(p.h)
+		if err != nil {
+			t.Fatalf("projection answer: %v", err)
+		}
+		if fromLog.Gaps != fromProj.Gaps {
+			t.Fatalf("the totals differ (%d vs %d); this case is about a cancelling difference", fromLog.Gaps, fromProj.Gaps)
+		}
+
+		msg := gapScopesRefusal(t, p)
+		if !strings.Contains(msg, "gap_scopes.cap") || !strings.Contains(msg, "on scope cap") {
+			t.Errorf("refusal = %q, want it to refuse on the per-scope breakdown at gap_scopes.cap", msg)
+		}
+		if strings.Contains(msg, "undispatched_gaps") {
+			t.Errorf("refusal = %q, want the per-scope field, not the total", msg)
+		}
+	})
+
+	t.Run("a scope is added to the map", func(t *testing.T) {
+		// The projection holds no gap at all, so its map is empty and the whole
+		// field differs: a scope-spanning divergence, said to be one.
+		p := newPendingFixture(t)
+		ms := p.h.Projection()
+		state, err := store.ReadScope(ms, "skills")
+		if err != nil {
+			t.Fatalf("read skills: %v", err)
+		}
+		if err := ms.Forget(state.Nodes[p.gapNode].RowID); err != nil {
+			t.Fatalf("forget the gap's row: %v", err)
+		}
+
+		msg := gapScopesRefusal(t, p)
+		if !strings.Contains(msg, "across scopes") || !strings.Contains(msg, "skills") {
+			t.Errorf("refusal = %q, want a scope-spanning refusal naming skills", msg)
+		}
+		if strings.Contains(msg, "on scope cap") {
+			t.Errorf("refusal = %q, want no single scope for a spanning count", msg)
+		}
+	})
+
+	t.Run("a scope is removed from the map", func(t *testing.T) {
+		// The event store holds no gap, so ITS map is empty and the projection's
+		// is not: the same whole-field difference, from the other side.
+		p := newPendingFixtureGaps(t, false)
+		injectNodeRow(t, p, "skills", "t-injected-gap", "gap",
+			`{"goal":"a gap nobody wrote","kind":"gap"}`, "task-created", "injected-gap", 0)
+
+		msg := gapScopesRefusal(t, p)
+		if !strings.Contains(msg, "across scopes") || !strings.Contains(msg, "skills") {
+			t.Errorf("refusal = %q, want a scope-spanning refusal naming skills", msg)
+		}
+		if strings.Contains(msg, "on scope cap") {
+			t.Errorf("refusal = %q, want no single scope for a spanning count", msg)
+		}
+	})
 }
 
 func strPtr(s string) *string { return &s }

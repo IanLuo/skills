@@ -107,45 +107,68 @@ func gatedAnswer(read, source string, h *command.Handler, fromLog func() (pendin
 // refusalScope names where the differing field lives, and whether the field is
 // one scope's value at all.
 //
-// A field derived ACROSS scopes — the open-gap count — has no one scope, and
-// attributing it to the read's own scope is a claim the number does not support.
-// It says so instead, and names the scopes that contributed the difference.
-// The per-scope breakdown is compared too, so a count that moved in one scope
-// while another moved the other way is caught rather than cancelling out.
+// A field derived ACROSS scopes — the per-scope gap map itself, the open-gap
+// total, the dispatch list — has no one scope, and attributing it to the read's
+// own scope is a claim the value does not support. Spanning is therefore the
+// DEFAULT for every path that is not provably one scope's value: the next
+// aggregate added to the compared answer cannot silently inherit cap's name, and
+// a field this function has not been taught is described as spanning rather than
+// guessed at.
 func refusalScope(logAnswer, projAnswer pendingAnswer, field string) (string, bool) {
-	if scope, ok := strings.CutPrefix(field, "gap_scopes."); ok {
+	// One scope's own value: its count in the per-scope gap map.
+	if scope, ok := strings.CutPrefix(field, gapScopePrefix); ok && scope != "" && !strings.Contains(scope, ".") {
 		return scope, false
 	}
-	if field == "undispatched_gaps" {
-		return contributingScopes(logAnswer, projAnswer), true
+
+	// One dispatch's own values. The dispatch node and its delivery record live
+	// in the cap scope; the worker it names and that worker's reports live in the
+	// worker's project. The list itself — no index — spans every scope it names.
+	if rest, ok := strings.CutPrefix(field, "dispatches["); ok {
+		if end := strings.Index(rest, "]"); end >= 0 {
+			if idx, err := strconv.Atoi(rest[:end]); err == nil && idx >= 0 && idx < len(logAnswer.Dispatches) {
+				tail := rest[end+1:]
+				switch {
+				case strings.HasPrefix(tail, ".worker"), strings.HasPrefix(tail, ".reports"):
+					if d := logAnswer.Dispatches[idx].Delivery; d != nil && d.Project != "" {
+						return d.Project, false
+					}
+					return capScope, false
+				case strings.HasPrefix(tail, "."):
+					return capScope, false
+				}
+			}
+		}
 	}
 
-	rest, ok := strings.CutPrefix(field, "dispatches[")
-	if !ok {
+	// The cap's own claim.
+	if field == "cap" || strings.HasPrefix(field, "cap.") {
 		return capScope, false
 	}
-	end := strings.Index(rest, "]")
-	if end < 0 {
-		return capScope, false
-	}
-	idx, err := strconv.Atoi(rest[:end])
-	if err != nil || idx < 0 || idx >= len(logAnswer.Dispatches) {
-		return capScope, false
-	}
-	tail := rest[end+1:]
-	if !strings.HasPrefix(tail, ".worker") && !strings.HasPrefix(tail, ".reports") {
-		return capScope, false
-	}
-	if d := logAnswer.Dispatches[idx].Delivery; d != nil && d.Project != "" {
-		return d.Project, false
-	}
-	return capScope, false
+
+	// Everything else is an aggregate over scopes, or a field this function has
+	// not been taught. Say so, and name the scopes that contributed a difference
+	// when the answer carries the breakdown to tell.
+	return spanningScope(logAnswer, projAnswer), true
 }
 
-// contributingScopes names the scopes whose open-gap count differs between the
-// two answers — the scopes the total's difference came from. With no breakdown
-// on either side (a caller that built an answer by hand), it says the count is
-// across every scope rather than inventing one.
+// gapScopePrefix is the per-scope prefix in the compared answer: the field
+// "gap_scopes.<scope>" is one scope's count.
+const gapScopePrefix = "gap_scopes."
+
+// spanningScope is what a scope-spanning difference names: the scopes whose
+// per-scope counts differ, or every scope when no breakdown can name them.
+func spanningScope(logAnswer, projAnswer pendingAnswer) string {
+	if scopes := contributingScopes(logAnswer, projAnswer); scopes != "" {
+		return scopes
+	}
+	return "every scope"
+}
+
+// contributingScopes names the scopes whose open-gap count DIFFERS between the
+// two answers — the scopes the total's difference came from. Two answers that
+// agree contribute nothing: the count spans scopes, but no scope moved, and
+// listing every scope either side mentions would name scopes that agree as
+// though they had contributed.
 func contributingScopes(logAnswer, projAnswer pendingAnswer) string {
 	seen := map[string]bool{}
 	var scopes []string
@@ -155,13 +178,12 @@ func contributingScopes(logAnswer, projAnswer pendingAnswer) string {
 				continue
 			}
 			seen[scope] = true
-			scopes = append(scopes, scope)
+			if logAnswer.GapScopes[scope] != projAnswer.GapScopes[scope] {
+				scopes = append(scopes, scope)
+			}
 		}
 	}
 	sort.Strings(scopes)
-	if len(scopes) == 0 {
-		return "every scope"
-	}
 	return strings.Join(scopes, ", ")
 }
 

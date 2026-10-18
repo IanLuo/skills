@@ -106,13 +106,17 @@ func seedPendingStream(b *testing.B, h *command.Handler) {
 		return r.Data.(command.EventData).NodeID
 	}
 	capNode := add("cap", "dispatch code: sample", query.KindDispatch)
+	// The worker's node is created first and its id is what the delivery record
+	// and the report name. A literal id here would name a node that does not
+	// exist, and the fixture would fail before it measured anything — which is
+	// what made this benchmark unusable without FS_PROJECTION_REAL_DB.
+	worker := add("skills", "worker goal", query.KindWork)
 	if r := h.RecordDelivery("cap", capNode, command.DeliveryRecord{
-		PaneID: "w1:p1", Agent: "agent", Engine: "herdr", Project: "skills", Node: "t-worker",
+		PaneID: "w1:p1", Agent: "agent", Engine: "herdr", Project: "skills", Node: worker,
 	}); !r.OK {
 		b.Fatalf("record delivery: %s", r.Error)
 	}
-	add("skills", "worker goal", query.KindWork)
-	if r := h.ReportAdd("skills", "t-worker", "question", "one line"); !r.OK {
+	if r := h.ReportAdd("skills", worker, "question", "one line"); !r.OK {
 		b.Fatalf("report: %s", r.Error)
 	}
 	add("skills", "a gap", query.KindGap)
