@@ -529,7 +529,7 @@ func (p *projector) rechain(scope, nid string) error {
 	ordered := make([]memstore.Memory, len(rows))
 	copy(ordered, rows)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return eventOrderKey(ordered[i]) < eventOrderKey(ordered[j])
+		return eventOrderOf(ordered[i]) < eventOrderOf(ordered[j])
 	})
 
 	// A node whose rows were closed with no replacement was absorbed: the merge
@@ -557,16 +557,6 @@ func (p *projector) rechain(scope, nid string) error {
 		}
 	}
 	return nil
-}
-
-// eventOrderKey is a row's place in its node's event order: the provenance id,
-// which is the event's own ULID and so sorts in time order. A row with no
-// provenance keeps its insertion order after every row that has one.
-func eventOrderKey(m memstore.Memory) string {
-	if m.OriginId == "" {
-		return "~"
-	}
-	return m.OriginId
 }
 
 // link hangs a side row off the node's first row, so a node's outgoing set does

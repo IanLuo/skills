@@ -286,16 +286,19 @@ func insertHalfOf(t *testing.T, ms *memstore.Store, evt store.Event, node, statu
 	}
 }
 
-// The same hole reached by fold ORDER rather than by a death: fold the newer
-// event first, then fill the lag, then re-fold — the sequence the live store
-// went through.
+// The same hole reached by fold ORDER rather than by a death: the sequence the
+// live store went through. Three events, so the row that ends up between two
+// others is the one a retire of only the current row cannot reach — with two
+// events the current row IS the one to retire, and the defect hides.
 func TestOutOfOrderFoldsConvergeOnARefold(t *testing.T) {
 	const node = "t-order"
 	events := []store.Event{
 		{ID: "01ORDA", Type: store.TaskCreated, ProjectID: "proj-order", NodeID: strPtr(node),
 			Timestamp: time.Unix(1700000000, 0).UTC(), Payload: json.RawMessage(`{"goal":"the goal","kind":"dispatch"}`)},
 		{ID: "01ORDB", Type: store.StatusChanged, ProjectID: "proj-order", NodeID: strPtr(node),
-			Timestamp: time.Unix(1700000100, 0).UTC(), Payload: json.RawMessage(`{"to":"done"}`)},
+			Timestamp: time.Unix(1700000100, 0).UTC(), Payload: json.RawMessage(`{"to":"active"}`)},
+		{ID: "01ORDC", Type: store.StatusChanged, ProjectID: "proj-order", NodeID: strPtr(node),
+			Timestamp: time.Unix(1700000200, 0).UTC(), Payload: json.RawMessage(`{"to":"done"}`)},
 	}
 	ms, err := memstore.Open(filepath.Join(t.TempDir(), "memory.db"))
 	if err != nil {
@@ -303,18 +306,29 @@ func TestOutOfOrderFoldsConvergeOnARefold(t *testing.T) {
 	}
 	defer ms.Close()
 
-	for _, i := range []int{1, 0, 1} { // newer, then the lag, then the re-fold
+	// The live order, and it matters: the middle event's row is written first
+	// (a fold that ran while the others were missing), then the newest, then the
+	// lag filled and the re-fold a rebuild makes. A retire of only the current
+	// row cannot reach the middle row here, because the current row is always the
+	// newest — which is exactly what the live store looked like.
+	for _, i := range []int{1, 0, 2, 0, 1, 2} {
 		if err := store.FoldEvent(ms, events[i]); err != nil {
 			t.Fatalf("fold %d: %v", i, err)
 		}
 	}
 	rows := nodeRowsOf(t, ms, "proj-order", node)
-	if len(rows) != 2 {
-		t.Fatalf("node has %d rows, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("node has %d rows, want 3", len(rows))
 	}
-	olderRow, newerRow := rowByOrigin(t, rows, "01ORDA"), rowByOrigin(t, rows, "01ORDB")
-	if !closed(olderRow) || closed(newerRow) {
-		t.Errorf("after the re-fold rows are %v, want the older closed and the newer open", rowStates(rows))
+	for _, tc := range []struct {
+		origin string
+		closed bool
+	}{
+		{"01ORDA", true}, {"01ORDB", true}, {"01ORDC", false},
+	} {
+		if got := closed(rowByOrigin(t, rows, tc.origin)); got != tc.closed {
+			t.Errorf("row %s closed=%v, want %v — rows are %v", tc.origin, got, tc.closed, rowStates(rows))
+		}
 	}
 	scope, err := store.ReadScope(ms, "proj-order")
 	if err != nil {

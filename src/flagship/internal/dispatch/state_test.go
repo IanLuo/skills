@@ -298,12 +298,14 @@ func TestPendingParityRefuses(t *testing.T) {
 		{
 			name: "a row added",
 			diverge: func(t *testing.T, p *pendingFixture) {
-				// An extra open gap nobody recorded: the backlog count moves.
+				// An extra open gap nobody recorded, in skills: the backlog
+				// moves, and the per-scope breakdown says WHICH scope moved —
+				// the total alone is a count across scopes and cannot name one.
 				injectNodeRow(t, p, "skills", "t-injected-gap", "gap",
 					`{"goal":"a gap nobody wrote","kind":"gap"}`, "task-created", "injected-gap", 0)
 			},
-			field: "undispatched_gaps",
-			scope: "cap",
+			field: "gap_scopes.skills",
+			scope: "skills",
 		},
 	}
 

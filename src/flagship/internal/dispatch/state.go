@@ -10,6 +10,7 @@ package dispatch
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -30,7 +31,13 @@ import (
 type pendingAnswer struct {
 	Dispatches []pendingDispatch `json:"dispatches"`
 	Cap        *command.CapClaim `json:"cap,omitempty"`
-	Gaps       int               `json:"undispatched_gaps"`
+	// Gaps is the open-gap count across every scope, and GapScopes is that count
+	// per scope. The breakdown is part of the compared answer because the total
+	// alone can hide a divergence — one scope gaining a gap while another loses
+	// one leaves the total unchanged — and because a count across scopes cannot
+	// be attributed to any one of them when it differs.
+	Gaps      int            `json:"undispatched_gaps"`
+	GapScopes map[string]int `json:"gap_scopes,omitempty"`
 }
 
 // pendingDispatch is one unresolved dispatch and the state its record leads to.
@@ -46,13 +53,23 @@ type pendingDispatch struct {
 type stateRefusal struct {
 	read  string
 	scope string
-	diff  *store.JSONDiff
+	// spanning says the differing field is not one scope's value: it is derived
+	// across scopes, and the scope list names the ones that contributed to it.
+	spanning bool
+	diff     *store.JSONDiff
 }
 
+// Error renders the refusal. It does NOT name the read as a prefix: the caller
+// already names it once, and two prefixes read as "pending: pending: refused" —
+// the same doubled-prefix defect memstore's A6 fixed in the other direction.
 func (r *stateRefusal) Error() string {
+	where := fmt.Sprintf("on scope %s", r.scope)
+	if r.spanning {
+		where = fmt.Sprintf("across scopes (%s)", r.scope)
+	}
 	return fmt.Sprintf(
-		"%s: refused — the projection and the event store disagree on scope %s at %s: the event store says %s, the projection says %s; run \"fs state rebuild\" (or FS_STATE_SOURCE=log %s to answer from the event store for this process)",
-		r.read, r.scope, r.diff.Field, r.diff.A, r.diff.B, r.read)
+		"refused — the projection and the event store disagree %s at %s: the event store says %s, the projection says %s; run \"fs state rebuild\" (or FS_STATE_SOURCE=log %s to answer from the event store for this process)",
+		where, r.diff.Field, r.diff.A, r.diff.B, r.read)
 }
 
 // gatedAnswer derives the read's store-derived answer from the declared source,
@@ -78,41 +95,74 @@ func gatedAnswer(read, source string, h *command.Handler, fromLog func() (pendin
 		return pendingAnswer{}, fmt.Errorf("%s: compare sources: %w", read, err)
 	}
 	if diff != nil {
-		scope := refusalScope(logAnswer, diff.Field)
+		scope, spanning := refusalScope(logAnswer, projAnswer, diff.Field)
 		h.Logger().Error("state read refused: the projection and the event store disagree",
-			"command", read, "scope", scope, "field", diff.Field,
+			"command", read, "scope", scope, "scope_spanning", spanning, "field", diff.Field,
 			"event_store", diff.A, "projection", diff.B, "source", command.SourceLog)
-		return pendingAnswer{}, &stateRefusal{read: read, scope: scope, diff: diff}
+		return pendingAnswer{}, &stateRefusal{read: read, scope: scope, spanning: spanning, diff: diff}
 	}
 	return projAnswer, nil
 }
 
-// refusalScope names the scope the differing field lives in. A dispatch's own
-// node, its delivery record and the cap's claim are cap-scope values; a worker's
-// node and its reports live in the worker's project, and the field path says
-// which of them the difference is in. Naming cap for a row that is in fs:skills
-// would send a reader to the wrong file's rows.
-func refusalScope(answer pendingAnswer, field string) string {
+// refusalScope names where the differing field lives, and whether the field is
+// one scope's value at all.
+//
+// A field derived ACROSS scopes — the open-gap count — has no one scope, and
+// attributing it to the read's own scope is a claim the number does not support.
+// It says so instead, and names the scopes that contributed the difference.
+// The per-scope breakdown is compared too, so a count that moved in one scope
+// while another moved the other way is caught rather than cancelling out.
+func refusalScope(logAnswer, projAnswer pendingAnswer, field string) (string, bool) {
+	if scope, ok := strings.CutPrefix(field, "gap_scopes."); ok {
+		return scope, false
+	}
+	if field == "undispatched_gaps" {
+		return contributingScopes(logAnswer, projAnswer), true
+	}
+
 	rest, ok := strings.CutPrefix(field, "dispatches[")
 	if !ok {
-		return capScope
+		return capScope, false
 	}
 	end := strings.Index(rest, "]")
 	if end < 0 {
-		return capScope
+		return capScope, false
 	}
 	idx, err := strconv.Atoi(rest[:end])
-	if err != nil || idx < 0 || idx >= len(answer.Dispatches) {
-		return capScope
+	if err != nil || idx < 0 || idx >= len(logAnswer.Dispatches) {
+		return capScope, false
 	}
 	tail := rest[end+1:]
 	if !strings.HasPrefix(tail, ".worker") && !strings.HasPrefix(tail, ".reports") {
-		return capScope
+		return capScope, false
 	}
-	if d := answer.Dispatches[idx].Delivery; d != nil && d.Project != "" {
-		return d.Project
+	if d := logAnswer.Dispatches[idx].Delivery; d != nil && d.Project != "" {
+		return d.Project, false
 	}
-	return capScope
+	return capScope, false
+}
+
+// contributingScopes names the scopes whose open-gap count differs between the
+// two answers — the scopes the total's difference came from. With no breakdown
+// on either side (a caller that built an answer by hand), it says the count is
+// across every scope rather than inventing one.
+func contributingScopes(logAnswer, projAnswer pendingAnswer) string {
+	seen := map[string]bool{}
+	var scopes []string
+	for _, counts := range []map[string]int{logAnswer.GapScopes, projAnswer.GapScopes} {
+		for scope := range counts {
+			if seen[scope] {
+				continue
+			}
+			seen[scope] = true
+			scopes = append(scopes, scope)
+		}
+	}
+	sort.Strings(scopes)
+	if len(scopes) == 0 {
+		return "every scope"
+	}
+	return strings.Join(scopes, ", ")
 }
 
 // answerFromLog derives the pending answer from the event store: the cap scope's
@@ -121,7 +171,7 @@ func refusalScope(answer pendingAnswer, field string) string {
 func answerFromLog(h *command.Handler) (pendingAnswer, error) {
 	nodes, err := h.UnfinishedIn(capScope)
 	if err != nil {
-		return pendingAnswer{}, fmt.Errorf("pending: replay %s: %w", capScope, err)
+		return pendingAnswer{}, fmt.Errorf("replay %s: %w", capScope, err)
 	}
 
 	answer := pendingAnswer{Dispatches: []pendingDispatch{}}
@@ -132,21 +182,21 @@ func answerFromLog(h *command.Handler) (pendingAnswer, error) {
 		d := pendingDispatch{Node: node}
 		delivery, recorded, err := h.DeliveryFor(capScope, node.NodeID)
 		if err != nil {
-			return pendingAnswer{}, fmt.Errorf("pending: read delivery record for %s: %w", node.NodeID, err)
+			return pendingAnswer{}, fmt.Errorf("read delivery record for %s: %w", node.NodeID, err)
 		}
 		if recorded {
 			d.Delivery = &delivery
 			if delivery.Project != "" && delivery.Node != "" {
 				worker, found, err := workerOf(h, delivery.Project, delivery.Node)
 				if err != nil {
-					return pendingAnswer{}, fmt.Errorf("pending: read node %s:%s: %w", delivery.Project, delivery.Node, err)
+					return pendingAnswer{}, fmt.Errorf("read node %s:%s: %w", delivery.Project, delivery.Node, err)
 				}
 				if found {
 					d.Worker = &worker
 				}
 				reports, err := h.ReportsFor(delivery.Project, delivery.Node)
 				if err != nil {
-					return pendingAnswer{}, fmt.Errorf("pending: read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
+					return pendingAnswer{}, fmt.Errorf("read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
 				}
 				d.Reports = reports
 			}
@@ -156,16 +206,16 @@ func answerFromLog(h *command.Handler) (pendingAnswer, error) {
 
 	claim, claimed, err := h.CapFor(capScope)
 	if err != nil {
-		return pendingAnswer{}, fmt.Errorf("pending: read the claim: %w", err)
+		return pendingAnswer{}, fmt.Errorf("read the claim: %w", err)
 	}
 	if claimed {
 		answer.Cap = &claim
 	}
-	gaps, err := h.OpenGaps()
+	gaps, err := gapCountsFromLog(h)
 	if err != nil {
-		return pendingAnswer{}, fmt.Errorf("pending: count the backlog: %w", err)
+		return pendingAnswer{}, err
 	}
-	answer.Gaps = gaps
+	answer.Gaps, answer.GapScopes = totalGaps(gaps), gaps
 	return answer, nil
 }
 
@@ -178,7 +228,7 @@ func answerFromProjection(h *command.Handler) (pendingAnswer, error) {
 	ms := h.Projection()
 	if ms == nil {
 		return pendingAnswer{}, fmt.Errorf(
-			"pending: refused — no projection is open, so this read cannot answer from it; run \"fs state rebuild\" after attaching the projection, or FS_STATE_SOURCE=log pending")
+			"refused — no projection is open, so this read cannot answer from it; run \"fs state rebuild\" after attaching the projection, or FS_STATE_SOURCE=log pending")
 	}
 
 	// One read per scope: a scope is read at most once per answer, so the gate
@@ -237,25 +287,25 @@ func answerFromProjection(h *command.Handler) (pendingAnswer, error) {
 	if err != nil {
 		return pendingAnswer{}, err
 	}
-	answer.Gaps = gaps
+	answer.Gaps, answer.GapScopes = totalGaps(gaps), gaps
 	return answer, nil
 }
 
 // projectedGaps counts the kind=gap nodes that are not done, across every scope
 // the event store names — the same set the event store's own count walks. The
 // scope list is a DISTINCT query, not a replay.
-func projectedGaps(h *command.Handler, ms *memstore.Store, reads map[string]*store.ProjectedScope, read func(string) (*store.ProjectedScope, error)) (int, error) {
+func projectedGaps(h *command.Handler, ms *memstore.Store, reads map[string]*store.ProjectedScope, read func(string) (*store.ProjectedScope, error)) (map[string]int, error) {
 	scopes, err := h.Scopes()
 	if err != nil {
-		return 0, fmt.Errorf("pending: list scopes: %w", err)
+		return nil, fmt.Errorf("list scopes: %w", err)
 	}
-	count := 0
+	counts := make(map[string]int, len(scopes))
 	for _, scope := range scopes {
 		if state, ok := reads[scope]; ok {
 			for _, nid := range state.NodeIDs {
 				node := state.Nodes[nid]
 				if node.Kind == "gap" && node.Status != "done" {
-					count++
+					counts[scope]++
 				}
 			}
 			continue
@@ -265,7 +315,7 @@ func projectedGaps(h *command.Handler, ms *memstore.Store, reads map[string]*sto
 		// so nothing here decodes a node document it does not use.
 		rows, err := store.ScopeRows(ms, scope)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		status := map[string]string{}
 		kind := map[string]string{}
@@ -283,10 +333,42 @@ func projectedGaps(h *command.Handler, ms *memstore.Store, reads map[string]*sto
 			if st == "closed" || st == "done" {
 				continue
 			}
-			count++
+			counts[scope]++
 		}
 	}
-	return count, nil
+	return counts, nil
+}
+
+// gapCountsFromLog counts the open gaps in each scope, the walk fs pending's
+// total has always made — named per scope now, so the gate can compare the parts
+// and a refusal can say which scope moved.
+func gapCountsFromLog(h *command.Handler) (map[string]int, error) {
+	scopes, err := h.Scopes()
+	if err != nil {
+		return nil, fmt.Errorf("list scopes: %w", err)
+	}
+	counts := make(map[string]int, len(scopes))
+	for _, scope := range scopes {
+		nodes, err := h.UnfinishedIn(scope)
+		if err != nil {
+			return nil, fmt.Errorf("count the backlog in %s: %w", scope, err)
+		}
+		for _, node := range nodes {
+			if node.Kind == "gap" {
+				counts[scope]++
+			}
+		}
+	}
+	return counts, nil
+}
+
+// totalGaps sums a per-scope count.
+func totalGaps(counts map[string]int) int {
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	return total
 }
 
 // isGapRowKind reports whether a row is a node version that could be a gap. A

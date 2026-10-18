@@ -172,7 +172,10 @@ func deriveNode(nid string, vs []memstore.Memory) *ProjectedNode {
 
 // eventOrderOf is a row's place in its node's event order: the provenance id,
 // which is the event's own ULID and so sorts in time order. A row with no
-// provenance keeps its insertion order after every row that has one.
+// provenance keeps its insertion order after every row that has one. It is the
+// one order helper: the fold's retire and the read's derivation must agree on
+// what "older" means, or a row would be retired by one and read as current by
+// the other.
 func eventOrderOf(m memstore.Memory) string {
 	if m.OriginId == "" {
 		return "~"

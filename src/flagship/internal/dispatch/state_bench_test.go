@@ -73,6 +73,27 @@ var (
 	benchDir  string
 )
 
+// cleanupBenchFixture removes the shared fixture's temp dir and closes its
+// handler. The fixture is built once per process and both benchmarks share it,
+// so it cannot be cleaned up by either of them: TestMain does it, after the
+// whole run.
+func cleanupBenchFixture() {
+	if benchH != nil {
+		benchH.Close()
+	}
+	if benchDir != "" {
+		os.RemoveAll(benchDir)
+	}
+}
+
+// TestMain runs the package's tests and then cleans the benchmark fixture, which
+// outlives every individual benchmark because it is shared between them.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	cleanupBenchFixture()
+	os.Exit(code)
+}
+
 // seedPendingStream writes a stream with the shapes fs pending reads: a cap
 // dispatch, its delivery record, the worker's node, a report, and a gap.
 func seedPendingStream(b *testing.B, h *command.Handler) {
