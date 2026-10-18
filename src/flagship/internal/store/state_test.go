@@ -369,3 +369,57 @@ func rowStates(rows []memstore.Memory) []string {
 	}
 	return out
 }
+
+// AC7/verify — a stray fs: scope is a divergence, because rebuild removes it:
+// "verify clean" has to mean "what a rebuild would produce", or a reader is
+// certifying a projection a repair would change.
+func TestStateVerifySeesAStrayScope(t *testing.T) {
+	dir := t.TempDir()
+	ms, err := memstore.Open(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("memstore open: %v", err)
+	}
+	defer ms.Close()
+
+	s, err := store.Open(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatalf("store open: %v", err)
+	}
+	defer s.Close()
+	s.AttachProjection(ms)
+	for _, evt := range fixtureEvents(t) {
+		if _, err := s.Append(evt); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	if issues, err := s.StateVerify(""); err != nil || len(issues) != 0 {
+		t.Fatalf("verify on a fresh projection: issues=%v err=%v", issues, err)
+	}
+
+	// A scope nothing in the event store names: another writer's fs: rows, or
+	// rows an older mapping left behind.
+	if _, err := ms.Put(&memstore.Memory{
+		Kind: "note", Scope: "fs:strayscope", Text: "a stray row", Origin: "fs", OriginId: "stray-1",
+	}); err != nil {
+		t.Fatalf("inject stray scope: %v", err)
+	}
+
+	issues, err := s.StateVerify("")
+	if err != nil {
+		t.Fatalf("StateVerify: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Scope != "fs:strayscope" {
+		t.Fatalf("verify issues = %+v, want one naming fs:strayscope", issues)
+	}
+
+	// And rebuild does produce what verify now expects: the stray scope gone.
+	if _, err := s.StateRebuild(""); err != nil {
+		t.Fatalf("StateRebuild: %v", err)
+	}
+	if issues, err := s.StateVerify(""); err != nil || len(issues) != 0 {
+		t.Fatalf("verify after the rebuild: issues=%v err=%v", issues, err)
+	}
+	if rows, err := store.ScopeRows(ms, "strayscope"); err != nil || len(rows) != 0 {
+		t.Errorf("stray scope still holds %d rows after the rebuild", len(rows))
+	}
+}

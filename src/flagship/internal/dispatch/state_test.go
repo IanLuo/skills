@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,42 +20,48 @@ import (
 
 // AC1 — exactly one read is switched, and it is `pending`.
 //
-// Slice 2's declaration is empty, and that is its measured outcome rather than
-// an unfinished line: the projection-derived answer costs 1.71x the event
-// store's on the live stream and the gated read 2.29x, over AC8's 1.25x and 2x
-// ceilings. The spec's D6 is explicit — a read that regresses is not kept
-// switched past the gate — so the declaration names nothing until the projection
-// can answer a scope without scanning the file. TestPendingParity,
-// TestPendingParityRefuses and TestPendingGapFields prove the gate the
-// declaration would turn on.
+// The AC cannot be satisfied on this store: AC8 measures the projection-alone arm
+// at 1.27x against a 1.25x ceiling, and spec D6 reverts a read that regresses. So
+// the acceptance is the contingency, enforced as behaviour rather than asserted
+// as a pass: this test FAILS if any read is declared switched while the ceiling
+// is unmet, and FAILS if none is declared once the ceiling is met. The measured
+// reason and number are recorded on the running test's output and on the node;
+// the AC's text is not amended (the divergence is errata on skills:t-222f53e7).
 func TestSwitchedReads(t *testing.T) {
+	m := command.MeasuredSwitch()
 	declared := command.SwitchedReads()
-	if len(declared) != 0 {
-		t.Fatalf("switched reads = %v, want none: AC8 measured the switch over its ceiling (spec D6), so enabling one is a performance decision, not a code one — see internal/command/state_source.go", declared)
+
+	switch {
+	case !m.WithinCeiling() && len(declared) > 0:
+		t.Fatalf("reads %v are declared switched while AC8's ceiling is unmet (%s): spec D6 reverts a regressing read — clear the declaration or re-measure", declared, m)
+	case m.WithinCeiling() && len(declared) == 0:
+		t.Fatalf("no read is declared switched and AC8's ceiling IS met (%s): AC1 requires exactly %q", m, m.Read)
 	}
 
-	// The declaration is the only switch: Switched agrees with it for every read
-	// the log records, and nothing else can turn a read on.
-	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
+	// The declaration is the only switch, and it names state reads.
+	for _, read := range declared {
 		if !command.IsStateRead(read) {
-			t.Errorf("read %q records no source, so AC1 cannot tell whether it is switched", read)
+			t.Errorf("read %q is declared switched but records no source, so AC1 cannot tell whether it is switched", read)
 		}
-		if command.Switched(read) {
-			t.Errorf("read %q answers from the projection, and the declaration is empty", read)
-		}
-		if got := command.StateSource(read); got != command.SourceLog {
-			t.Errorf("source of %q = %q, want %q", read, got, command.SourceLog)
+		if !command.Switched(read) {
+			t.Errorf("read %q is declared but Switched says otherwise", read)
 		}
 	}
-	if command.Switched("pending") {
-		t.Error("pending is switched; the declaration is empty")
+	if command.Switched("pending") != slices.Contains(declared, "pending") {
+		t.Error("Switched and the declaration disagree about pending")
 	}
 
 	// The field rollback is a rollback, never a second way to switch a read on:
 	// it can only turn one off, and it is read from the environment per process.
-	t.Setenv(command.StateSourceEnv, "projection")
-	if got := command.StateSource("status"); got != command.SourceLog {
-		t.Errorf("source of an unswitched read under FS_STATE_SOURCE=projection = %q, want log", got)
+	t.Setenv(command.StateSourceEnv, command.SourceProjection)
+	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
+		if got := command.StateSource(read); got != command.SourceLog {
+			t.Errorf("source of %q under FS_STATE_SOURCE=projection = %q, want log: the env var rolls back, it does not roll forward", read, got)
+		}
+	}
+
+	if !m.WithinCeiling() {
+		t.Logf("AC1 red by contingency — %s; declaration is empty. Protocol: %s", m, m.Protocol)
 	}
 }
 
@@ -427,10 +434,11 @@ func TestPendingGapFields(t *testing.T) {
 }
 
 // AC5, runtime half — a representative write set leaves the projection at
-// parity with the event store. Every event type a dispatch writes is written
-// here by its own command (the dispatch's plan and delivery are the same two
-// appends), so the write set covers the surface and the static test covers the
-// call sites.
+// parity with the event store. The set is the one the spec names, and it ends
+// with a REAL dispatch through the playbook machinery (prepare, the entry gate,
+// the brief, the delivery record, the worker's node, the worker finishing), so
+// `fs dispatch` is covered by running it and not only by the static check of its
+// append sites.
 func TestWriteSetStaysAtParity(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	h := f.h
@@ -447,6 +455,13 @@ func TestWriteSetStaysAtParity(t *testing.T) {
 	}
 
 	mustOK("project create", h.ProjectCreate("skills", t.TempDir()))
+
+	// A real dispatch first, through the playbook machinery: prepared, gated,
+	// delivered, and finished. The gate refuses while an unresolved dispatch sits
+	// in the cap scope, so it runs before the hand-written cap nodes below.
+	f.writePlaybook(t, "code-entry", passingEntry)
+	runDispatch(t, f, devReq("a dispatched task"))
+
 	work := mustOK("task add", h.TaskAddKind("skills", "a work node", query.KindWork, "", "", "", "", "", nil))
 	mustOK("task update", h.TaskUpdate("skills", work.NodeID, "active", "a decision", nil))
 	mustOK("task edit", h.TaskEdit("skills", work.NodeID, "an edited goal", query.KindWork, "", nil))

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/flagship-dev/flagship/internal/command"
@@ -19,36 +20,58 @@ import (
 // the 2x ceiling in AC8 is about. The projection-alone ceiling (1.25x) is the
 // first of these against the second.
 //
-// With FS_PROJECTION_REAL_DB naming a copy of ~/.fs/store.db the benchmark runs
-// over the real stream — the shape the ceiling was set against. Without it the
-// benchmark builds a small stream of its own, so it always runs and always
-// compares like with like.
+// Protocol, and it is the one MeasuredSwitch names:
+//
+//   - ONE load: the event store and the projection are opened once per process,
+//     and the projection is rebuilt once before any measurement, so a sample is
+//     never paying for the rebuild.
+//   - N runs: -benchtime=20x, and -count=5 for a spread rather than one number.
+//   - WARM: a few untimed iterations run before the timer starts, so the first
+//     sample is not the page-cache fill.
+//   - FS_PROJECTION_REAL_DB names a copy of ~/.fs/store.db; without it the
+//     benchmark builds a small stream of its own, so it always runs.
 func benchHandler(b *testing.B) *command.Handler {
 	b.Helper()
+	benchOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fs-bench-")
+		if err != nil {
+			benchErr = err
+			return
+		}
+		benchDir = dir
 
-	dir := b.TempDir()
-	dbPath := filepath.Join(dir, "store.db")
-	src := os.Getenv("FS_PROJECTION_REAL_DB")
-	if src != "" {
-		dbPath = src
+		dbPath := filepath.Join(dir, "store.db")
+		if src := os.Getenv("FS_PROJECTION_REAL_DB"); src != "" {
+			dbPath = src
+		}
+		benchH, benchErr = command.NewHandler(dbPath)
+		if benchErr != nil {
+			return
+		}
+		if err := benchH.AttachProjection(filepath.Join(dir, "mem.db")); err != nil {
+			benchErr = err
+			return
+		}
+		if _, err := benchH.StateRebuild(""); err != nil {
+			benchErr = err
+			return
+		}
+		if os.Getenv("FS_PROJECTION_REAL_DB") == "" {
+			seedPendingStream(b, benchH)
+		}
+	})
+	if benchErr != nil {
+		b.Fatalf("benchmark fixture: %v", benchErr)
 	}
-	h, err := command.NewHandler(dbPath)
-	if err != nil {
-		b.Fatalf("NewHandler: %v", err)
-	}
-	b.Cleanup(func() { h.Close() })
-
-	if err := h.AttachProjection(filepath.Join(dir, "mem.db")); err != nil {
-		b.Fatalf("AttachProjection: %v", err)
-	}
-	if _, err := h.StateRebuild(""); err != nil {
-		b.Fatalf("StateRebuild: %v", err)
-	}
-	if src == "" {
-		seedPendingStream(b, h)
-	}
-	return h
+	return benchH
 }
+
+var (
+	benchOnce sync.Once
+	benchH    *command.Handler
+	benchErr  error
+	benchDir  string
+)
 
 // seedPendingStream writes a stream with the shapes fs pending reads: a cap
 // dispatch, its delivery record, the worker's node, a report, and a gap.
@@ -79,6 +102,11 @@ func seedPendingStream(b *testing.B, h *command.Handler) {
 // replay in it.
 func BenchmarkPendingProjectionCost(b *testing.B) {
 	h := benchHandler(b)
+	for i := 0; i < 3; i++ { // warm
+		if _, err := answerFromProjection(h); err != nil {
+			b.Fatalf("projection answer: %v", err)
+		}
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := answerFromProjection(h); err != nil {
@@ -91,6 +119,11 @@ func BenchmarkPendingProjectionCost(b *testing.B) {
 // unswitched state read derives by replaying the store and building the tree.
 func BenchmarkPendingLogCost(b *testing.B) {
 	h := benchHandler(b)
+	for i := 0; i < 3; i++ { // warm
+		if _, err := answerFromLog(h); err != nil {
+			b.Fatalf("log answer: %v", err)
+		}
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := answerFromLog(h); err != nil {

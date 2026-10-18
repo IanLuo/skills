@@ -1515,7 +1515,8 @@ func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 		}
 	}
 
-	h.logger.Info("command executed", "command", "unfinished", "scopes", len(scopes), "unfinished", total)
+	h.logger.Info("command executed", "command", "unfinished", "source", StateSource("unfinished"),
+		"scopes", len(scopes), "unfinished", total)
 	return okResp(map[string]any{"unfinished": grouped})
 }
 
@@ -1596,8 +1597,11 @@ func (h *Handler) Gaps(rootOf func(scope string) string) Response {
 		return gaps[i].NodeID < gaps[j].NodeID
 	})
 
-	h.logger.Info("command executed", "command", "gaps", "scopes", len(scopes), "gaps", len(gaps),
-		"open", counts.Open, "done", counts.Done)
+	// The source is a property of the read (D2), so the read's own line carries
+	// it: a second line beside this one would leave AC1's `tail -1` proof reading
+	// whichever line came last.
+	h.logger.Info("command executed", "command", "gaps", "source", StateSource("gaps"),
+		"scopes", len(scopes), "gaps", len(gaps), "open", counts.Open, "done", counts.Done)
 	// counts before gaps is the header position: encoding/json emits map keys in
 	// sorted order, and the counts are what a reader should meet first.
 	return okResp(map[string]any{"counts": counts, "gaps": gaps})

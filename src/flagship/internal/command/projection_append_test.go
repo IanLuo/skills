@@ -52,17 +52,14 @@ func TestEveryAppendProjects(t *testing.T) {
 			}
 			sites++
 
-			// The enclosing function must call storeWriteOk: the fold's failure
-			// is a projection failure, and this is the only thing that tells the
-			// two apart.
-			fn := enclosingFunc(file, call.Pos())
-			if fn == nil {
-				t.Errorf("%s: Append call outside any function", fset.Position(call.Pos()))
-				return true
-			}
-			if !callsStoreWriteOk(fn) {
-				t.Errorf("%s: %s call site in %s does not pass its error to storeWriteOk",
-					fset.Position(call.Pos()), sel.Sel.Name, fn.Name.Name)
+			// The statement that FOLLOWS this one must pass the error to
+			// storeWriteOk. Per call site, not per function: TaskUpdate and
+			// TaskMerge each hold two sites, and a function-level check would
+			// pass with one of the two unwrapped.
+			next := statementAfter(file, call.Pos())
+			if next == nil || !callsStoreWriteOk(next) {
+				t.Errorf("%s: the %s call site is not followed by a storeWriteOk call, so a projection failure would be reported as a failed write",
+					fset.Position(call.Pos()), sel.Sel.Name)
 			}
 			return true
 		})
@@ -103,24 +100,30 @@ func TestEveryAppendProjects(t *testing.T) {
 	})
 }
 
-// enclosingFunc returns the function declaration containing pos.
-func enclosingFunc(file *ast.File, pos token.Pos) *ast.FuncDecl {
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+// statementAfter returns the statement that follows the one containing pos,
+// within the innermost block that holds it. Overwriting as the walk descends
+// leaves the innermost block's answer, which is the one the call site lives in.
+func statementAfter(file *ast.File, pos token.Pos) ast.Stmt {
+	var next ast.Stmt
+	ast.Inspect(file, func(n ast.Node) bool {
+		block, ok := n.(*ast.BlockStmt)
+		if !ok {
+			return true
 		}
-		if fn.Pos() <= pos && pos <= fn.End() {
-			return fn
+		for i, st := range block.List {
+			if st.Pos() <= pos && pos <= st.End() && i+1 < len(block.List) {
+				next = block.List[i+1]
+			}
 		}
-	}
-	return nil
+		return true
+	})
+	return next
 }
 
-// callsStoreWriteOk reports whether a function body calls storeWriteOk.
-func callsStoreWriteOk(fn *ast.FuncDecl) bool {
+// callsStoreWriteOk reports whether a statement calls storeWriteOk.
+func callsStoreWriteOk(st ast.Stmt) bool {
 	found := false
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	ast.Inspect(st, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true

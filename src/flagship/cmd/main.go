@@ -1262,7 +1262,6 @@ func unfinishedCmd() {
 	reg := openRegistry()
 	defer reg.Close()
 
-	logReadSource("unfinished")
 	output(h.Unfinished(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
@@ -1283,7 +1282,6 @@ func gapsCmd() {
 	reg := openRegistry()
 	defer reg.Close()
 
-	logReadSource("gaps")
 	output(h.Gaps(func(scope string) string { return registryRoot(reg, scope) }))
 }
 
@@ -1364,12 +1362,11 @@ func stateRebuild() {
 	output(command.Response{OK: true, Data: map[string]any{"rebuilt": rebuilt}})
 }
 
-// logReadSource records which source a state read answered from. The source is a
-// property of the read (spec D2), so the read that ran names it on the running
-// log — which is what lets a reader tell a switched read from the event store's
-// answer without changing the JSON envelope. fs pending and fs task get log
-// their own line because their read is composed rather than answered by one
-// handler method.
+// logReadSource records which source a state read answered from, for the reads
+// whose handler method does not log a line of its own: fs status and fs task get.
+// fs pending logs its line in dispatch.Pending, and fs gaps and fs unfinished log
+// theirs in the handler — one line each, every one of them carrying source, so
+// AC1's `tail -1` proof reads the same field whichever read it asks about.
 func logReadSource(read string) {
 	logger.Info("command executed", "command", read, "source", command.StateSource(read))
 }
