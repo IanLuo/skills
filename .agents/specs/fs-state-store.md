@@ -1,4 +1,4 @@
-<!-- specs:locked:73d8cf76 2026-10-18 type=spec -->
+<!-- specs:locked:fa13c939 2026-10-18 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): cap-role.md
@@ -81,6 +81,12 @@ event store again.
 - A per-read CLI flag (`fs pending --via-projection`) or a source selector in the JSON envelope.
 - Reading, writing or counting a non-`fs:` scope in `~/.memstore/memory.db`.
 - The `fs kb add` scope default and the lock-gate redesign (`cap:t-57f9fa75`).
+- **A single cross-file transaction** — attaching `~/.memstore/memory.db` to the event store's
+  connection so a write and its projection commit together. **REJECTED:** both files are WAL
+  (`internal/store/store.go:102`; memstore `store.go:400` at `7192bce`), and SQLite makes an
+  attached-database commit atomic only in rollback-journal mode, never under WAL, so the mechanism
+  cannot deliver what it promises and would only hide the lag it pretends to remove. Do not
+  re-propose it.
 
 **Primary flow (one read, step by step)**
 
@@ -170,6 +176,15 @@ Every criterion names the command that proves it. Go test commands run under `sr
   `fs pending`'s `data.undispatched_gaps` compared field by field: `go test ./internal/dispatch -run
   TestPendingGapFields -count=1`.
 
+- **AC10 — a failed fold heals by re-fold, and the failure tells the user not to retry the
+  command.** A fold that fails leaves the event in place and reports `recorded; only the projection
+  failed for <scope> — run "fs state rebuild"` (and does not report the write as failed). Re-running
+  the fold over the already-projected prefix skips those rows via `errors.Is(err,
+  ErrDuplicateOrigin)` instead of erroring; `fs state rebuild` after a failed fold restores parity
+  and `fs state verify` exits 0. Proven by `go test ./internal/command -run TestFoldFailureMessage
+  -count=1`, `go test ./internal/store -run TestRefoldSkipsDuplicates -count=1`, and the live
+  sequence in AC4.
+
 ## KPIs & failure signal
 
 - **Good:** after the seed, the parity gate is silent in normal use; `fs state verify` stays clean
@@ -189,21 +204,39 @@ Every criterion names the command that proves it. Go test commands run under `sr
   answer because the projection disagreed is a regression against this spec, not a resilience
   feature. The only way to answer from the event store is to say so (`FS_STATE_SOURCE=log`), which is
   a person's decision and is recorded.
-- **Ordering — the event store is written first, and a projection failure never unwrites it.**
-  `fs` appends to `~/.fs/store.db` and commits, then folds into `~/.memstore/memory.db`. The two are
-  separate SQLite files, and memstore exposes no way to join them in one transaction, so atomicity
-  across both is not available; the guarantee is instead that the projection can only **lag** the
-  event store, never lead it. A lag is detectable by the gate and repairable from the event store; a
-  lead would be a fact with no event behind it, and is forbidden. A fold that fails reports the
-  failure on stderr and in the running log, leaves the event in place, and does not report the
-  command's write as failed. **For a batch this is the whole story:** a batch of N events is one
-  atomic append (today's `AppendBatch`) followed by N folds invoked from inside that append path,
-  each fold atomic. A single transaction spanning both files is not available — neither file can
-  join the other's transaction through memstore's exported verbs, and SQLite does not make a
-  multi-file commit atomic under WAL, which both files use (A1). "The projection commits with the
-  batch" therefore means the batch's folds run inside the append step and no row is ever
-  half-written, **not** that the two files share one SQL commit; the projection can lag the batch as
-  a whole, and the gate and `fs state rebuild` are what make that visible and repairable.
+- **Ordering — the reading of the card's D4 (`writes append the event and project in the same
+  step`) that the two-file fact forces.** The event store and the projection are two files, and **one
+  atomic commit across both is impossible**: both are WAL (`internal/store/store.go:102`; memstore
+  `store.go:400` at `7192bce`), and SQLite makes an attached-database commit atomic only in
+  rollback-journal mode, never under WAL. "The same step" is therefore three properties, not one
+  transaction:
+
+  1. **Ownership.** The fold is written by the append path — `store.Append`/`AppendBatch` — in one
+     step. It is not a lazy hook, not a background reconciler, and not a caller's loop beside the
+     append.
+  2. **Order.** The event is appended first and committed; the fold runs second. A crash between the
+     two leaves the projection **behind** the event store of that step, never ahead of it. The event
+     store is the truth; the projection is derived.
+  3. **Heal is a re-fold, not a retry.** The fold keys each row on its event id (D3), and memstore
+     refuses a duplicate `(origin, origin_id)` with `ErrDuplicateOrigin`, so an overlapping re-fold is
+     safe: `errors.Is(err, ErrDuplicateOrigin)` is **already projected, continue**, never an error.
+     That skip is what the provenance round (`f1f4a60`) bought, and it is why the heal is a re-fold
+     rather than a hand repair.
+  4. **The retry hazard, named.** The event is durable before the fold, so a fold failure means the
+     *action is recorded* and only the projection is behind. A user who retries the command appends
+     a **second event** and doubles the state. The failure must say so and name the heal — the
+     message reads `recorded; only the projection failed for <scope> — run "fs state rebuild"` — and
+     must not read as an invitation to retry the command. The command does not report its write as
+     failed.
+  5. **D2 is the detector.** A lagging projection is not silent: the parity gate catches it at read
+     time (the next switched read refuses, naming the difference) and `fs state verify` catches it
+     at rest. Keeping the lag in the recoverable direction is what gives the detector something to
+     catch and the re-fold something to fix.
+
+  This is also the batch's story: a batch of N events is one atomic append (today's `AppendBatch`)
+  followed by N folds invoked from inside that append path, each fold atomic. No row is ever
+  half-written, and the projection can lag the batch as a whole — `fs state verify` and `fs state
+  rebuild` are what make that visible and repairable.
 - **Immutability — the projection only puts, closes and links.** memstore's content is immutable, and
   its only lifecycle writer is `CloseMemory` (which writes `closed`); no verb changes a row's status
   to an arbitrary value, and adding one is out of scope. The projection therefore writes a new row
@@ -264,12 +297,15 @@ The card left seven questions; each is a frozen answer here.
   event carries — a merge closes the absorbed node and links it to the survivor — are applied by that
   event's fold. A folded row writes its provenance — `Origin="fs"`, `OriginId=<event id>`,
   `Ref=<commit>`, `FsNode=<node>` — so the row names the event it came from instead of hiding that
-  identity in `Extra` (A1). That is also what makes the fold idempotent: `Put` refuses an existing
-  `(origin, origin_id)` with `ErrDuplicateOrigin`, so an event already folded is a no-op and a
-  rebuild cannot double-write a row. **A batch is not one fold.** `AppendBatch` appends N events,
-  and the batch's fold is N folds, one per event, never a single row summarising the batch; and the
-  fold is owned by the append path, so it runs inside the append step rather than in a caller's
-  loop beside it.
+  identity in `Extra` (A1). That is also what makes a **re-fold** safe, and the re-fold is the
+  heal's whole mechanism: `Put` refuses an existing `(origin, origin_id)` with `ErrDuplicateOrigin`,
+  so an overlapping fold must treat `errors.Is(err, ErrDuplicateOrigin)` as **already projected,
+  continue** — never as an error — and a heal can run over a stream that is partly folded. That
+  skip is what the provenance round (`f1f4a60`) bought; without it a heal could not be run safely.
+  **A batch is not one fold.** `AppendBatch` appends N events, and the batch's fold is N folds, one
+  per event, never a single row summarising the batch; the fold is owned by the append path, so it
+  runs inside the append step rather than in a caller's loop beside it. See the Ordering NFR for the
+  step's three properties — ownership, order, heal — and the retry hazard it creates.
 - **D4 — rebuild and drift.** `fs state verify` re-folds every `fs:` scope from the event store into
   a scratch memstore file and compares each scope's derived state to the live projection with the
   same canonical comparison the gate uses; it writes nothing. On a difference it exits 1 naming the
@@ -383,6 +419,9 @@ driver bump *the round's only real risk* — `internal/store`, `internal/query`,
 | AC7 rebuild and verify | `go test ./cmd -run TestStateVerifyRebuild` |
 | AC8 performance | 20-run `/usr/bin/time -p` medians per arm; `go test ./internal/dispatch -run '^$' -bench BenchmarkPendingProjectionCost -benchtime=20x` |
 | AC9 no lost `pending` field | `go test ./internal/dispatch -run TestPendingGapFields`; field-by-field `undispatched_gaps` comparison |
+| AC10 fold failure heals; no-retry message | `go test ./internal/command -run TestFoldFailureMessage`; `go test ./internal/store -run TestRefoldSkipsDuplicates`; AC4's live sequence |
+| D4 order/ownership/heal (NFR Ordering) | review: only the append path folds (no lazy hook, no caller loop); a re-fold skips `ErrDuplicateOrigin`; the failure message names `fs state rebuild` |
+| D4 cross-file transaction REJECTED | `internal/store/store.go:102` and memstore `store.go:400` both WAL; no `ATTACH` of `~/.memstore/memory.db` in the tree |
 | D3 immutability (no in-place update) | review of `internal/store/projection.go`: only `Put`, `CloseMemory`, `Link` are called; no `UPDATE`/`sql.DB` bypass |
 | D5 scope safety as construction | the same AC6 grep plus the seeded-file test |
 | D6 performance buys the switch | AC8's projection-alone arm against the log-only arm; a regression reverts the read |
