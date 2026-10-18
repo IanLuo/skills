@@ -222,6 +222,26 @@ func TestProjectionFailureKeepsEvent(t *testing.T) {
 	if info.Status != "active" {
 		t.Errorf("node status = %q, want active", info.Status)
 	}
+
+	// The heal: re-attach a projection at the same path and rebuild. The events
+	// the failed fold left behind are folded now, and verify says the two agree —
+	// which is what makes the failure message's "run fs state rebuild" a repair
+	// rather than a hope (AC10).
+	if err := h.AttachProjection(filepath.Join(filepath.Dir(dbPath), "mem.db")); err != nil {
+		t.Fatalf("re-attach projection: %v", err)
+	}
+	if _, err := h.StateRebuild(""); err != nil {
+		t.Fatalf("rebuild after the failed fold: %v", err)
+	}
+	issues, err := h.StateVerify("")
+	if err != nil {
+		t.Fatalf("verify after the rebuild: %v", err)
+	}
+	if len(issues) != 0 {
+		for _, issue := range issues {
+			t.Errorf("after the heal: %s", issue)
+		}
+	}
 }
 
 // newProjectedHandler opens a handler with a scratch projection attached, the
