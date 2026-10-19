@@ -38,24 +38,15 @@ const StateSourceEnv = "FS_STATE_SOURCE"
 // There is no flag and no env var that switches a read on — the rollback above
 // only turns the switch off.
 //
-// It is EMPTY, and that is slice 2's measured outcome, not an oversight. The
-// read is built and its parity gate is proven (TestPendingParity,
-// TestPendingParityRefuses, TestPendingGapFields all drive it), but AC8's
-// ceiling is not met on the live store — see MeasuredSwitch below for the
-// numbers and the protocol — and the spec's D6 says a read that regresses is not
-// kept switched past the gate. TestSwitchedReads enforces that rule in both
-// directions, so the declaration and the measurement cannot drift apart.
-//
-// The cause is memstore's read surface, not this code: Recent(scope, k) is the
-// only scope-listing verb, it carries no index on scope, and it sorts what it
-// returns — so every projection read scans and sorts the whole memory file,
-// while the event store's Replay walks a primary key. Ending the whole-history
-// replay is the switch's whole purchase, and it has not been bought.
-//
-// Turning it back on is this one line — `[]string{"pending"}` — once the read
-// surface can answer a scope without scanning the file. Everything else the
-// read needs is in place.
-var switchedReads []string
+// It contains `pending` because AC8's ceiling is met now that memstore's
+// `Recent(scope, k)` has a covering index (`b5be5fd`, schema 6,
+// `idx_memory_scope_recent`): before that pin the projection-alone arm scanned
+// and sorted the whole memory file and measured 1.26-1.40x, over the 1.25x
+// ceiling, so the declaration was empty. See MeasuredSwitch below for the
+// numbers and the protocol. TestSwitchedReads enforces the rule in both
+// directions, so the declaration and the measurement cannot drift apart: this
+// line is the only thing that turns `fs pending` on.
+var switchedReads = []string{"pending"}
 
 // SwitchMeasurement is AC8's measurement on the live store, recorded as data so
 // the declaration and the measurement cannot drift apart: TestSwitchedReads
@@ -92,32 +83,32 @@ func (m SwitchMeasurement) String() string {
 		m.Read, m.ProjectionRatio, m.CeilingProjection, m.GateRatio, m.CeilingGate)
 }
 
-// MeasuredSwitch is AC8's measurement as taken on the live store, and it is the
-// reason the declaration above is empty: the projection-alone arm is over its
-// ceiling, so D6 reverts the read. The gate-on arm is inside its ceiling — the
-// switch-off conclusion rests on the 1.25x arm alone, by a few percent.
+// MeasuredSwitch is AC8's measurement as taken on the live store, and it is
+// what justifies the declaration above: both arms are inside their ceilings
+// after the memstore re-vendor, so D6 keeps the read switched.
 func MeasuredSwitch() SwitchMeasurement {
 	return SwitchMeasurement{
 		Read:              "pending",
-		ProjectionRatio:   1.40,
-		GateRatio:         1.89,
+		ProjectionRatio:   0.54,
+		GateRatio:         1.36,
 		CeilingProjection: 1.25,
 		CeilingGate:       2.00,
-		ProjectionMillis:  87.0,
-		LogMillis:         62.2,
-		GateMillis:        170,
-		LogOnlyMillis:     90,
+		ProjectionMillis:  28.5,
+		LogMillis:         52.5,
+		GateMillis:        108.6,
+		LogOnlyMillis:     80.0,
 		Protocol: "in-process arms: go test ./internal/dispatch -run '^$' " +
 			"-bench BenchmarkPendingProjectionCost|BenchmarkPendingLogCost -benchtime=20x -count=5 " +
 			"with FS_PROJECTION_REAL_DB=a copy of ~/.fs/store.db, one store and one projection opened " +
 			"per process and rebuilt once before the loop, 3 untimed warm iterations, 5 samples of 20, " +
-			"medians reported (projection 86.3-89.8ms, log 61.8-63.0ms); " +
-			"CLI arms: the same commit built with switchedReads={pending}, 20 warm runs per arm at the " +
-			"live store, /usr/bin/time -p, medians reported (gate 170ms, log-only 90ms; one gate " +
-			"outlier at 1310ms). Both ratios are load- and machine-sensitive: an independent run of " +
-			"the same benchmark measured 1.26-1.28x on the projection arm, so the switch-off " +
-			"conclusion rests on that arm being over its ceiling in every measurement taken, not on " +
-			"one number",
+			"medians reported; two independent runs: projection 28.7ms vs log 53.1ms (0.54x) and " +
+			"projection 28.2ms vs log 51.9ms (0.54x); CLI arms: the same commit built with " +
+			"switchedReads={pending}, 3 untimed warm runs then 20 timed runs per arm against a copy of " +
+			"the live store under an isolated HOME, wall time via python time.perf_counter around the " +
+			"process, medians and spread reported (gate 108.6ms, spread 3.0ms; log-only 80.0ms, spread " +
+			"8.8ms). Both ratios are load- and machine-sensitive; the projection arm is inside its " +
+			"ceiling in every sample taken here, where before the memstore b5be5fd pin every sample was " +
+			"over it",
 	}
 }
 

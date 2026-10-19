@@ -20,13 +20,14 @@ import (
 
 // AC1 — exactly one read is switched, and it is `pending`.
 //
-// The AC cannot be satisfied on this store: AC8 measures the projection-alone arm
-// at 1.27x against a 1.25x ceiling, and spec D6 reverts a read that regresses. So
-// the acceptance is the contingency, enforced as behaviour rather than asserted
-// as a pass: this test FAILS if any read is declared switched while the ceiling
-// is unmet, and FAILS if none is declared once the ceiling is met. The measured
-// reason and number are recorded on the running test's output and on the node;
-// the AC's text is not amended (the divergence is errata on skills:t-222f53e7).
+// The AC's acceptance is enforced as behaviour rather than asserted as a pass:
+// this test FAILS if any read is declared switched while AC8's ceiling is unmet,
+// and FAILS if none is declared once the ceiling is met. The measured reason and
+// number are recorded on the running test's output and on the node. Before the
+// memstore `b5be5fd` pin the projection-alone arm measured 1.26-1.40x against a
+// 1.25x ceiling and the declaration was empty; the covering index
+// `idx_memory_scope_recent` puts it inside the ceiling and the declaration names
+// `pending`.
 func TestSwitchedReads(t *testing.T) {
 	m := command.MeasuredSwitch()
 	declared := command.SwitchedReads()
@@ -52,11 +53,28 @@ func TestSwitchedReads(t *testing.T) {
 	}
 
 	// The field rollback is a rollback, never a second way to switch a read on:
-	// it can only turn one off, and it is read from the environment per process.
+	// it has one recognised value, and an unrecognised one leaves every read on
+	// its declared source. So this asserts the env var, not the declaration: an
+	// undeclared read stays on the event store, and a declared read keeps
+	// answering from the projection — "projection" in the env cannot switch
+	// anything on, and cannot switch a declared read further on than it already
+	// is.
 	t.Setenv(command.StateSourceEnv, command.SourceProjection)
 	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
+		want := command.SourceLog
+		if command.Switched(read) {
+			want = command.SourceProjection
+		}
+		if got := command.StateSource(read); got != want {
+			t.Errorf("source of %q under FS_STATE_SOURCE=projection = %q, want %q: the env var rolls back, it does not roll forward", read, got, want)
+		}
+	}
+
+	// The one value it recognises actually rolls a switched read back.
+	t.Setenv(command.StateSourceEnv, command.SourceLog)
+	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
 		if got := command.StateSource(read); got != command.SourceLog {
-			t.Errorf("source of %q under FS_STATE_SOURCE=projection = %q, want log: the env var rolls back, it does not roll forward", read, got)
+			t.Errorf("source of %q under FS_STATE_SOURCE=log = %q, want log: the rollback must turn a switched read off", read, got)
 		}
 	}
 
