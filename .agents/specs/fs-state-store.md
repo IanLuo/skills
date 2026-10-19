@@ -1,4 +1,4 @@
-<!-- specs:locked:fa13c939 2026-10-18 type=spec -->
+<!-- specs:locked:36dc4bc9 2026-10-19 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): cap-role.md
