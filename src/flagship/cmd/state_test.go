@@ -101,6 +101,43 @@ func TestStateVerifyRebuild(t *testing.T) {
 		}
 	})
 
+	// The live red of skills:t-55266895, reproduced at will. A process with
+	// FS_MEMSTORE set folds its rows into THAT file, so a real, committed write
+	// leaves the live projection lagging by that row and nothing warns — the
+	// command reports success. A missing SIDE row is the shape that surfaced it:
+	// verify's positional walk names `side_rows[i].fs_node`, which reads like a
+	// wrong node and is really a row that is not there. It is a lag, so the
+	// re-fold heals it; it is not lost content.
+	t.Run("a side row folded into another projection file lags, and rebuild heals it", func(t *testing.T) {
+		f := newStateFixture(t, bin, true)
+		if resp, code := f.run("state", "verify"); code != 0 {
+			t.Fatalf("verify on a fresh projection: code=%d resp=%v", code, resp)
+		}
+
+		// One report written the way the memstore worker's shell wrote five of
+		// them on 2026-10-19: the append is durable and the row lands in a
+		// scratch file, so the live projection never sees it.
+		if resp, code := f.runUnfolded("report", f.project+":"+f.node, "--line", "a report folded into another file"); code != 0 || resp["ok"] != true {
+			t.Fatalf("report under a scratch projection: code=%d resp=%v", code, resp)
+		}
+
+		resp, code := f.run("state", "verify")
+		if code != 1 {
+			t.Fatalf("verify after a side row landed outside the live projection: code=%d resp=%v, want 1", code, resp)
+		}
+		if err, _ := resp["error"].(string); !strings.Contains(err, f.project) || !strings.Contains(err, "fs state rebuild") {
+			t.Fatalf("verify refusal = %q, want it to name the scope and the remedy", resp["error"])
+		}
+
+		if resp, code := f.run("state", "rebuild"); code != 0 || resp["ok"] != true {
+			t.Fatalf("rebuild: code=%d resp=%v", code, resp)
+		}
+		if resp, code := f.run("state", "verify"); code != 0 || resp["ok"] != true {
+			t.Fatalf("verify after the repair: code=%d resp=%v, want 0 — a side row that never reached the live file is a lag, not lost content", code, resp)
+		}
+		f.assertPersonalRowIntact(t)
+	})
+
 	t.Run("a forgotten row is not resurrected", func(t *testing.T) {
 		f := newStateFixture(t, bin, true)
 		forgetOneRow(t, f.projPath(), f.project)
@@ -136,6 +173,9 @@ type stateFixture struct {
 	home    string
 	dir     string
 	project string
+	// node is the id the fixture's task-add created, so a test can address it in
+	// a report — the write whose row lands in a named projection file.
+	node string
 	// unfolded is where writes go when they must not fold, so a projection that
 	// never saw them can be built.
 	unfolded string
@@ -163,6 +203,11 @@ func newStateFixture(t *testing.T, bin string, foldWrites bool) *stateFixture {
 	}
 	if resp, code := write("task", "add", "--goal", "a node to project", "--project", f.project); code != 0 || resp["ok"] != true {
 		t.Fatalf("task add: code=%d resp=%v", code, resp)
+	} else if data, _ := resp["data"].(map[string]any); data != nil {
+		f.node, _ = data["node_id"].(string)
+	}
+	if f.node == "" {
+		t.Fatalf("the fixture's task-add returned no node id")
 	}
 
 	// A personal memory, so "touches no non-fs row" is a claim about a row that
