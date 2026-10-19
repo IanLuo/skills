@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/IanLuo/memstore"
@@ -146,9 +147,21 @@ type StateIssue struct {
 	Field      string
 	EventStore string
 	Projection string
+	// Cause is a sentence naming the divergence itself, for the differences that
+	// are not one field with two values: rows one side holds and the other does
+	// not, a row retired on one side only, a node present on one side only. It
+	// leads the message because a positional field path answers "which index"
+	// when the question is "what is wrong": the live red of skills:t-55266895
+	// read "side_rows[68].fs_node: t-abf680c9 vs t-beec6a55" and named a node that
+	// was never wrong, while the cause was five rows the projection never
+	// received and the index had shifted under them.
+	Cause string
 }
 
 func (i StateIssue) String() string {
+	if i.Cause != "" {
+		return fmt.Sprintf("scope %s: %s", i.Scope, i.Cause)
+	}
 	return fmt.Sprintf("scope %s differs at %s: the event store says %s, the projection says %s",
 		i.Scope, i.Field, i.EventStore, i.Projection)
 }
@@ -193,14 +206,6 @@ type rowState struct {
 	Payload  any    `json:"payload,omitempty"`
 }
 
-// rowProvenance is one row's place in the projection: which event it names, and
-// whether it has been retired. Both are stable across a fold and a re-fold; the
-// row's own content is not (see scopeState), so it is not compared here.
-type rowProvenance struct {
-	OriginID string `json:"origin_id"`
-	Closed   bool   `json:"closed"`
-}
-
 // derivedScope renders a scope's derived state canonically.
 func derivedScope(ms *memstore.Store, projectID string) (*scopeState, error) {
 	scope, err := ReadScope(ms, projectID)
@@ -242,18 +247,32 @@ func derivedScope(ms *memstore.Store, projectID string) (*scopeState, error) {
 	return out, nil
 }
 
-// provenanceOf lists one scope's rows by the event each names, and whether it is
-// retired. It is how verify sees a row that should not be there and a row that
-// should be and is not, without comparing content a re-fold is allowed to differ
-// on.
-func provenanceOf(ms *memstore.Store, projectID string) ([]rowProvenance, error) {
+// stateRow is one projected row as presence is compared: the event it names, the
+// kind and node it belongs to, and whether it is retired. Presence is compared
+// before content and keyed on this identity rather than on a position, so a row
+// the projection never received names itself instead of shifting a list.
+type stateRow struct {
+	OriginID string `json:"origin_id"`
+	Kind     string `json:"kind,omitempty"`
+	FsNode   string `json:"fs_node,omitempty"`
+	Closed   bool   `json:"closed"`
+}
+
+// rowsByProvenance lists one scope's rows by the event each names, and whether it
+// is retired, sorted by that identity. It is how verify sees a row that should
+// not be there and a row that should be and is not, without comparing content a
+// re-fold is allowed to differ on.
+func rowsByProvenance(ms *memstore.Store, projectID string) ([]stateRow, error) {
 	rows, err := scopeRows(ms, ProjectionScope(projectID))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]rowProvenance, 0, len(rows))
+	out := make([]stateRow, 0, len(rows))
 	for _, m := range rows {
-		out = append(out, rowProvenance{OriginID: m.OriginId, Closed: m.Status == closedStatus})
+		out = append(out, stateRow{
+			OriginID: m.OriginId, Kind: m.Kind, FsNode: m.FsNode,
+			Closed: m.Status == closedStatus,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].OriginID < out[j].OriginID })
 	return out, nil
@@ -274,21 +293,37 @@ func provenanceOf(ms *memstore.Store, projectID string) ([]rowProvenance, error)
 //  3. no fs: scope exists in the projection that the event store does not name,
 //     because a rebuild removes such a scope and a verify that missed it would
 //     be certifying something a repair would change.
-func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
+//
+// A difference is reported by what it IS — rows one side holds and the other
+// does not, then a field keyed on the row's identity — never as the first index
+// that differs, because an index answers a question nobody asked and hides the
+// one they did (skills:t-55266895).
+
+// VerifyReport says where StateVerify looked: the live projection it read and the
+// scratch re-fold it compared it with, plus the scopes it walked. A "clean"
+// answer names both files, so it is never ambiguous which projection is clean.
+type VerifyReport struct {
+	Live    string
+	Scratch string
+	Scopes  []string
+}
+
+func (s *Store) StateVerify(projPath string) ([]StateIssue, VerifyReport, error) {
 	scopes, err := s.Scopes()
 	if err != nil {
-		return nil, err
+		return nil, VerifyReport{}, err
 	}
 	live, closeLive, err := s.openProjection(projPath)
 	if err != nil {
-		return nil, err
+		return nil, VerifyReport{}, err
 	}
 	defer closeLive()
-	scratch, cleanup, err := scratchProjection()
+	scratch, scratchPath, cleanup, err := scratchProjection()
 	if err != nil {
-		return nil, err
+		return nil, VerifyReport{}, err
 	}
 	defer cleanup()
+	report := VerifyReport{Live: projPath, Scratch: scratchPath, Scopes: scopes}
 
 	var issues []StateIssue
 	known := make(map[string]bool, len(scopes))
@@ -296,11 +331,11 @@ func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
 		known[ProjectionScope(scope)] = true
 		events, err := s.Replay(scope, nil)
 		if err != nil {
-			return nil, fmt.Errorf("state verify: replay %s: %w", scope, err)
+			return nil, report, fmt.Errorf("state verify: replay %s: %w", scope, err)
 		}
 		for i := range events {
 			if err := FoldEvent(scratch, events[i]); err != nil {
-				return nil, fmt.Errorf("state verify: fold %s: %w", scope, err)
+				return nil, report, fmt.Errorf("state verify: fold %s: %w", scope, err)
 			}
 		}
 		if issue := compareScope(scratch, live, scope); issue != nil {
@@ -310,7 +345,7 @@ func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
 
 	stray, err := projectionScopes(live)
 	if err != nil {
-		return nil, err
+		return nil, report, err
 	}
 	for _, scope := range stray {
 		if known[scope] {
@@ -321,12 +356,33 @@ func (s *Store) StateVerify(projPath string) ([]StateIssue, error) {
 			EventStore: "<missing>", Projection: "the scope holds rows the event store does not name",
 		})
 	}
-	return issues, nil
+	return issues, report, nil
 }
 
-// compareScope compares one scope's derived state and row provenance, and
-// returns the first difference, or nil when the scope agrees.
+// compareScope compares one scope's rows and derived state, and returns the
+// first difference, or nil when the scope agrees.
+//
+// Presence is compared first, and by the event each row names rather than by its
+// position. A row the projection never received is the cause a repair fixes;
+// walked by position it surfaces as the first index that differs and names a
+// field that was never wrong — the live red of skills:t-55266895 said
+// "side_rows[68].fs_node: t-abf680c9 vs t-beec6a55", while five events had no row
+// at all and the index had shifted under them. Content is compared only once the
+// row sets agree, and then keyed on the same identity: `nodes[t-abf680c9].status`
+// is a place a reader can go back to, `nodes[66].status` is not.
 func compareScope(scratch, live *memstore.Store, scope string) *StateIssue {
+	wantRows, err := rowsByProvenance(scratch, scope)
+	if err != nil {
+		return &StateIssue{Scope: scope, Field: "rows", EventStore: err.Error()}
+	}
+	gotRows, err := rowsByProvenance(live, scope)
+	if err != nil {
+		return &StateIssue{Scope: scope, Field: "rows", Projection: err.Error()}
+	}
+	if issue := comparePresence(scope, wantRows, gotRows); issue != nil {
+		return issue
+	}
+
 	want, err := derivedScope(scratch, scope)
 	if err != nil {
 		return &StateIssue{Scope: scope, Field: "read", EventStore: err.Error()}
@@ -335,26 +391,235 @@ func compareScope(scratch, live *memstore.Store, scope string) *StateIssue {
 	if err != nil {
 		return &StateIssue{Scope: scope, Field: "read", Projection: err.Error()}
 	}
-	if diff, err := DiffJSON(want, got); err != nil {
-		return &StateIssue{Scope: scope, Field: "compare", EventStore: err.Error()}
-	} else if diff != nil {
-		return &StateIssue{Scope: scope, Field: diff.Field, EventStore: diff.A, Projection: diff.B}
+	if want.RootPath != got.RootPath {
+		return &StateIssue{Scope: scope, Field: "root_path",
+			EventStore: encode(want.RootPath), Projection: encode(got.RootPath)}
+	}
+	if issue := compareNodes(scope, want.Nodes, got.Nodes); issue != nil {
+		return issue
+	}
+	return compareSideRows(scope, want.SideRows, got.SideRows)
+}
+
+// comparePresence names the rows one side holds and the other does not, and the
+// shared rows whose retired state differs. These are the differences a repair
+// fixes, and the ones a positional walk misreports.
+func comparePresence(scope string, want, got []stateRow) *StateIssue {
+	wantBy := indexRows(want)
+	gotBy := indexRows(got)
+
+	var missing, extra []stateRow
+	for _, r := range want {
+		if _, ok := gotBy[r.OriginID]; !ok {
+			missing = append(missing, r)
+		}
+	}
+	for _, r := range got {
+		if _, ok := wantBy[r.OriginID]; !ok {
+			extra = append(extra, r)
+		}
+	}
+	if len(missing) > 0 || len(extra) > 0 {
+		return &StateIssue{Scope: scope, Field: "rows", Cause: presenceCause(missing, extra)}
 	}
 
-	wantRows, err := provenanceOf(scratch, scope)
-	if err != nil {
-		return &StateIssue{Scope: scope, Field: "provenance", EventStore: err.Error()}
-	}
-	gotRows, err := provenanceOf(live, scope)
-	if err != nil {
-		return &StateIssue{Scope: scope, Field: "provenance", Projection: err.Error()}
-	}
-	if diff, err := DiffJSON(wantRows, gotRows); err != nil {
-		return &StateIssue{Scope: scope, Field: "compare", EventStore: err.Error()}
-	} else if diff != nil {
-		return &StateIssue{Scope: scope, Field: "rows" + diff.Field, EventStore: diff.A, Projection: diff.B}
+	for _, r := range want {
+		other := gotBy[r.OriginID]
+		if r.Closed == other.Closed {
+			continue
+		}
+		return &StateIssue{Scope: scope, Field: "rows", Cause: fmt.Sprintf(
+			"row %s is %s in the event store and %s in the projection",
+			rowLabel(r), retired(r.Closed), retired(other.Closed))}
 	}
 	return nil
+}
+
+func indexRows(rows []stateRow) map[string]stateRow {
+	out := make(map[string]stateRow, len(rows))
+	for _, r := range rows {
+		out[r.OriginID] = r
+	}
+	return out
+}
+
+func retired(closed bool) string {
+	if closed {
+		return "closed"
+	}
+	return "open"
+}
+
+// presenceCause says which side holds rows the other does not, and names them.
+func presenceCause(missing, extra []stateRow) string {
+	var a, b string
+	if len(missing) > 0 {
+		a = absentPhrase(len(missing), "row", "event store", "projection", describeRows(missing))
+	}
+	if len(extra) > 0 {
+		b = absentPhrase(len(extra), "row", "projection", "event store", describeRows(extra))
+	}
+	return joinCauses(a, b)
+}
+
+func joinCauses(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + ", and " + b
+}
+
+// absentPhrase reads "1 row present in the event store is absent from the
+// projection (kind/id on node)": the count decides the noun and the verb, so a
+// one-row difference reads as one row.
+func absentPhrase(count int, noun, side, other, items string) string {
+	subject, verb := fmt.Sprintf("%d %ss", count, noun), "are"
+	if count == 1 {
+		subject, verb = "1 "+noun, "is"
+	}
+	return fmt.Sprintf("%s present in the %s %s absent from the %s (%s)", subject, side, verb, other, items)
+}
+
+// listLimit bounds how many rows or nodes one message names: enough to identify
+// the drift, never a wall of ids.
+const listLimit = 5
+
+// describeRows renders rows as "kind/id on node", bounded by listLimit.
+func describeRows(rows []stateRow) string {
+	labels := make([]string, 0, listLimit+1)
+	for i, r := range rows {
+		if i == listLimit {
+			labels = append(labels, fmt.Sprintf("and %d more", len(rows)-listLimit))
+			break
+		}
+		labels = append(labels, rowLabel(r))
+	}
+	return strings.Join(labels, ", ")
+}
+
+func rowLabel(r stateRow) string {
+	switch {
+	case r.Kind == "" && r.FsNode == "":
+		return r.OriginID
+	case r.FsNode == "":
+		return r.Kind + "/" + r.OriginID
+	}
+	return fmt.Sprintf("%s/%s on %s", r.Kind, r.OriginID, r.FsNode)
+}
+
+// compareNodes compares the derived nodes by node id: which nodes each side
+// holds, then each shared node's fields, named by the node they belong to.
+func compareNodes(scope string, want, got []nodeState) *StateIssue {
+	wantBy := make(map[string]nodeState, len(want))
+	for _, n := range want {
+		wantBy[n.NodeID] = n
+	}
+	gotBy := make(map[string]nodeState, len(got))
+	for _, n := range got {
+		gotBy[n.NodeID] = n
+	}
+
+	var missing, extra []string
+	for _, n := range want {
+		if _, ok := gotBy[n.NodeID]; !ok {
+			missing = append(missing, n.NodeID)
+		}
+	}
+	for _, n := range got {
+		if _, ok := wantBy[n.NodeID]; !ok {
+			extra = append(extra, n.NodeID)
+		}
+	}
+	if len(missing) > 0 || len(extra) > 0 {
+		return &StateIssue{Scope: scope, Field: "nodes", Cause: nodePresenceCause(missing, extra)}
+	}
+
+	for _, n := range want {
+		diff, err := DiffJSON(n, gotBy[n.NodeID])
+		if err != nil {
+			return &StateIssue{Scope: scope, Field: "nodes[" + n.NodeID + "]", EventStore: err.Error()}
+		}
+		if diff != nil {
+			return &StateIssue{Scope: scope,
+				Field:      fieldPath("nodes["+n.NodeID+"]", diff.Field),
+				EventStore: diff.A, Projection: diff.B}
+		}
+	}
+	return nil
+}
+
+// nodePresenceCause says which side holds nodes the other does not.
+func nodePresenceCause(missing, extra []string) string {
+	var a, b string
+	if len(missing) > 0 {
+		a = absentPhrase(len(missing), "node", "event store", "projection", describeNames(missing))
+	}
+	if len(extra) > 0 {
+		b = absentPhrase(len(extra), "node", "projection", "event store", describeNames(extra))
+	}
+	return joinCauses(a, b)
+}
+
+// describeNames renders node ids, bounded by listLimit.
+func describeNames(names []string) string {
+	if len(names) > listLimit {
+		body := strings.Join(names[:listLimit], ", ")
+		return fmt.Sprintf("%s, and %d more", body, len(names)-listLimit)
+	}
+	return strings.Join(names, ", ")
+}
+
+// compareSideRows compares the side rows (cap claims, deliveries, reports,
+// blocks) by the event each names, so a difference names the row.
+func compareSideRows(scope string, want, got []rowState) *StateIssue {
+	wantBy := make(map[string]rowState, len(want))
+	for _, r := range want {
+		wantBy[sideKey(r)] = r
+	}
+	gotBy := make(map[string]rowState, len(got))
+	for _, r := range got {
+		gotBy[sideKey(r)] = r
+	}
+
+	for _, r := range want {
+		key := sideKey(r)
+		other, ok := gotBy[key]
+		if !ok {
+			return &StateIssue{Scope: scope, Field: "side_rows[" + key + "]",
+				EventStore: encode(r), Projection: "<missing>"}
+		}
+		diff, err := DiffJSON(r, other)
+		if err != nil {
+			return &StateIssue{Scope: scope, Field: "side_rows[" + key + "]", EventStore: err.Error()}
+		}
+		if diff != nil {
+			return &StateIssue{Scope: scope,
+				Field:      fieldPath("side_rows["+key+"]", diff.Field),
+				EventStore: diff.A, Projection: diff.B}
+		}
+	}
+	for _, r := range got {
+		if _, ok := wantBy[sideKey(r)]; !ok {
+			return &StateIssue{Scope: scope, Field: "side_rows[" + sideKey(r) + "]",
+				EventStore: "<missing>", Projection: encode(r)}
+		}
+	}
+	return nil
+}
+
+// sideKey is a side row's identity: its kind and the event it names, because one
+// event can write rows of different kinds.
+func sideKey(r rowState) string { return r.Kind + "/" + r.OriginID }
+
+// fieldPath joins a row's identity path to the field that differs.
+func fieldPath(base, field string) string {
+	if field == "" {
+		return base
+	}
+	return base + "." + field
 }
 
 // StateRebuild re-folds the event store into the live projection file, and
@@ -503,17 +768,18 @@ func (s *Store) openProjection(projPath string) (*memstore.Store, func(), error)
 	return ms, func() { ms.Close() }, nil
 }
 
-// scratchProjection opens a throwaway projection file, with the function that
-// removes it.
-func scratchProjection() (*memstore.Store, func(), error) {
+// scratchProjection opens a throwaway projection file, with its path and the
+// function that removes it.
+func scratchProjection() (*memstore.Store, string, func(), error) {
 	dir, err := os.MkdirTemp("", "fs-state-verify-")
 	if err != nil {
-		return nil, nil, fmt.Errorf("state verify: scratch dir: %w", err)
+		return nil, "", nil, fmt.Errorf("state verify: scratch dir: %w", err)
 	}
-	ms, err := memstore.Open(filepath.Join(dir, "memory.db"))
+	path := filepath.Join(dir, "memory.db")
+	ms, err := memstore.Open(path)
 	if err != nil {
 		os.RemoveAll(dir)
-		return nil, nil, fmt.Errorf("state verify: scratch projection: %w", err)
+		return nil, "", nil, fmt.Errorf("state verify: scratch projection: %w", err)
 	}
-	return ms, func() { ms.Close(); os.RemoveAll(dir) }, nil
+	return ms, path, func() { ms.Close(); os.RemoveAll(dir) }, nil
 }

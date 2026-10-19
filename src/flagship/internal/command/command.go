@@ -270,8 +270,9 @@ func (h *Handler) Scopes() ([]string, error) {
 }
 
 // StateVerify re-folds every scope into a scratch projection and compares it to
-// the live one, naming the first difference per scope. It writes nothing.
-func (h *Handler) StateVerify(projPath string) ([]store.StateIssue, error) {
+// the live one, naming the first difference per scope and the two files it
+// compared. It writes nothing.
+func (h *Handler) StateVerify(projPath string) ([]store.StateIssue, store.VerifyReport, error) {
 	return h.store.StateVerify(projPath)
 }
 

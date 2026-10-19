@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/IanLuo/memstore"
+	"github.com/flagship-dev/flagship/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -101,41 +106,100 @@ func TestStateVerifyRebuild(t *testing.T) {
 		}
 	})
 
-	// The live red of skills:t-55266895, reproduced at will. A process with
-	// FS_MEMSTORE set folds its rows into THAT file, so a real, committed write
-	// leaves the live projection lagging by that row and nothing warns — the
-	// command reports success. A missing SIDE row is the shape that surfaced it:
-	// verify's positional walk names `side_rows[i].fs_node`, which reads like a
-	// wrong node and is really a row that is not there. It is a lag, so the
-	// re-fold heals it; it is not lost content.
-	t.Run("a side row folded into another projection file lags, and rebuild heals it", func(t *testing.T) {
+	// The live red of skills:t-55266895, reproduced at will, and the three things
+	// the ruling on it asked for: every write names the projection it folded into,
+	// a non-default projection warns (loud, never a refusal), and a refusal names
+	// the CAUSE — rows one side holds and the other does not — rather than the
+	// first index that differs.
+	//
+	// The write here is a REPORT folded into another file: a real, committed
+	// event whose row the live projection never receives. That is what the red
+	// was, and it is a lag, so the re-fold heals it.
+	t.Run("a write names its projection, warns when re-pointed, and the refusal names the cause", func(t *testing.T) {
 		f := newStateFixture(t, bin, true)
-		if resp, code := f.run("state", "verify"); code != 0 {
+
+		// A clean answer names both files it compared, so "clean" is never
+		// ambiguous about which projection is clean.
+		resp, code := f.run("state", "verify")
+		if code != 0 {
 			t.Fatalf("verify on a fresh projection: code=%d resp=%v", code, resp)
 		}
-
-		// One report written the way the memstore worker's shell wrote five of
-		// them on 2026-10-19: the append is durable and the row lands in a
-		// scratch file, so the live projection never sees it.
-		if resp, code := f.runUnfolded("report", f.project+":"+f.node, "--line", "a report folded into another file"); code != 0 || resp["ok"] != true {
-			t.Fatalf("report under a scratch projection: code=%d resp=%v", code, resp)
+		clean, _ := resp["data"].(map[string]any)
+		if got, _ := clean["projection"].(string); got != f.projPath() {
+			t.Fatalf("verify's projection = %q, want the live file %q", got, f.projPath())
+		}
+		if got, _ := clean["projection_env"].(string); got != store.ProjectionSourceDefault {
+			t.Fatalf("verify's projection_env = %q, want %q", got, store.ProjectionSourceDefault)
+		}
+		if got, _ := clean["folded_against"].(string); got == "" {
+			t.Fatalf("verify's folded_against is empty: a clean answer must name the fold it compared against")
 		}
 
-		resp, code := f.run("state", "verify")
+		// A write on the default path records where it folded, and is quiet.
+		resp, stderr, code := runFSEnvStderr(t, f.bin, f.dir,
+			[]string{"HOME=" + f.home}, "report", f.project+":"+f.node, "--line", "a report on the default path")
+		if code != 0 || resp["ok"] != true {
+			t.Fatalf("report on the default path: code=%d resp=%v stderr=%s", code, resp, stderr)
+		}
+		mustNotContain(t, stderr, "projection re-pointed")
+		mustContain(t, stderr, `"projection":"`+f.projPath()+`"`)
+		mustContain(t, stderr, `"projection_env":"`+store.ProjectionSourceDefault+`"`)
+
+		// The write that produced the live red: FS_MEMSTORE sends the fold
+		// elsewhere. The command still succeeds — a refusal would break the suite,
+		// which sets this variable on purpose — and the run says where it went.
+		resp, stderr, code = runFSEnvStderr(t, f.bin, f.dir,
+			[]string{"HOME=" + f.home, store.ProjectionEnv + "=" + f.unfolded},
+			"report", f.project+":"+f.node, "--line", "a report folded into another file")
+		if code != 0 || resp["ok"] != true {
+			t.Fatalf("report under a re-pointed projection: code=%d resp=%v stderr=%s", code, resp, stderr)
+		}
+		eventID := firstEventID(t, resp)
+		mustContain(t, stderr, `"level":"WARN"`)
+		mustContain(t, stderr, "projection re-pointed")
+		mustContain(t, stderr, `"variable":"`+store.ProjectionEnv+`"`)
+		mustContain(t, stderr, `"value":"`+f.unfolded+`"`)
+		mustContain(t, stderr, `"default":"`+f.projPath()+`"`)
+		mustContain(t, stderr, `"projection":"`+f.unfolded+`"`)
+		mustContain(t, stderr, `"projection_env":"`+store.ProjectionPathEnv+`"`)
+
+		// The refusal names the cause: the row that is absent, by the event it
+		// names, and the file that lacks it. No index path, because no index is
+		// what is wrong.
+		resp, code = f.run("state", "verify")
 		if code != 1 {
 			t.Fatalf("verify after a side row landed outside the live projection: code=%d resp=%v, want 1", code, resp)
 		}
-		if err, _ := resp["error"].(string); !strings.Contains(err, f.project) || !strings.Contains(err, "fs state rebuild") {
-			t.Fatalf("verify refusal = %q, want it to name the scope and the remedy", resp["error"])
-		}
+		refusal, _ := resp["error"].(string)
+		mustContain(t, refusal, "1 row present in the event store is absent from the projection")
+		mustContain(t, refusal, "report/"+eventID)
+		mustContain(t, refusal, "the projection is "+f.projPath())
+		mustContain(t, refusal, "fs state rebuild")
+		mustNotContain(t, refusal, "side_rows[")
 
 		if resp, code := f.run("state", "rebuild"); code != 0 || resp["ok"] != true {
 			t.Fatalf("rebuild: code=%d resp=%v", code, resp)
 		}
 		if resp, code := f.run("state", "verify"); code != 0 || resp["ok"] != true {
-			t.Fatalf("verify after the repair: code=%d resp=%v, want 0 — a side row that never reached the live file is a lag, not lost content", code, resp)
+			t.Fatalf("verify after the repair: code=%d resp=%v, want 0 — a row that never reached the live file is a lag, not lost content", code, resp)
 		}
 		f.assertPersonalRowIntact(t)
+	})
+
+	// The other direction of the same cause: a row the projection holds and the
+	// event store does not. It is named as an extra, not as a shifted index.
+	t.Run("a row the event store does not hold is named as an extra", func(t *testing.T) {
+		f := newStateFixture(t, bin, true)
+		seedStrayRow(t, f.projPath(), f.project)
+
+		resp, code := f.run("state", "verify")
+		if code != 1 {
+			t.Fatalf("verify with an extra row: code=%d resp=%v, want 1", code, resp)
+		}
+		refusal, _ := resp["error"].(string)
+		mustContain(t, refusal, "1 row present in the projection is absent from the event store")
+		mustContain(t, refusal, "report/stray-1")
+		mustNotContain(t, refusal, "side_rows[")
 	})
 
 	t.Run("a forgotten row is not resurrected", func(t *testing.T) {
@@ -271,6 +335,23 @@ func personalRow(t *testing.T, path string) string {
 	return text
 }
 
+// seedStrayRow writes a row the event store names no event for, in the fixture's
+// scope: a row the projection holds and the fold does not produce.
+func seedStrayRow(t *testing.T, path, project string) {
+	t.Helper()
+	ms, err := memstore.Open(path)
+	if err != nil {
+		t.Fatalf("open projection: %v", err)
+	}
+	defer ms.Close()
+	if _, err := ms.Put(&memstore.Memory{
+		Kind: "report", Scope: "fs:" + project, Text: "a row nobody folded",
+		Origin: "fs", OriginId: "stray-1",
+	}); err != nil {
+		t.Fatalf("seed stray row: %v", err)
+	}
+}
+
 // oneProjectRowID is the newest projected row of a scope, which is the row the
 // drift cases remove.
 func oneProjectRowID(t *testing.T, path, project string) int64 {
@@ -318,4 +399,68 @@ func forgetOneRow(t *testing.T, path, project string) {
 	if err := ms.Forget(id); err != nil {
 		t.Fatalf("forget row %d: %v", id, err)
 	}
+}
+
+// runFSEnvStderr is runFSEnv with the process's stderr, which is where the
+// running log — and the projection warning — goes. A test that asserts a WARN
+// has to read it.
+func runFSEnvStderr(t *testing.T, bin, dir string, extraEnv []string, args ...string) (map[string]any, string, int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(append(os.Environ(), "HOME="+testHome(t)), extraEnv...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	exitCode := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+			if len(out) == 0 {
+				out = stderr.Bytes()
+			}
+		} else {
+			t.Fatalf("exec: %v", err)
+		}
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal output %q: %v", string(out), err)
+	}
+	return resp, stderr.String(), exitCode
+}
+
+// mustContain asserts a substring, with the whole string in the failure so a
+// reader sees what was there instead.
+func mustContain(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if !strings.Contains(haystack, needle) {
+		t.Fatalf("missing %q in:\n%s", needle, haystack)
+	}
+}
+
+// mustNotContain is the other half: the thing that must not be said.
+func mustNotContain(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if strings.Contains(haystack, needle) {
+		t.Fatalf("unexpected %q in:\n%s", needle, haystack)
+	}
+}
+
+// firstEventID reads the event id out of a write's response.
+func firstEventID(t *testing.T, resp map[string]any) string {
+	t.Helper()
+	data, _ := resp["data"].(map[string]any)
+	if id, _ := data["event_id"].(string); id != "" {
+		return id
+	}
+	if events, _ := data["events"].([]any); len(events) > 0 {
+		if first, _ := events[0].(map[string]any); first != nil {
+			if id, _ := first["event_id"].(string); id != "" {
+				return id
+			}
+		}
+	}
+	t.Fatalf("no event id in %v", resp)
+	return ""
 }

@@ -82,7 +82,7 @@ func TestProjectionScopeSafety(t *testing.T) {
 		}
 	}
 
-	issues, err := s.StateVerify("")
+	issues, _, err := s.StateVerify("")
 	if err != nil {
 		t.Fatalf("StateVerify: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestStateVerifySeesAStrayScope(t *testing.T) {
 			t.Fatalf("append: %v", err)
 		}
 	}
-	if issues, err := s.StateVerify(""); err != nil || len(issues) != 0 {
+	if issues, _, err := s.StateVerify(""); err != nil || len(issues) != 0 {
 		t.Fatalf("verify on a fresh projection: issues=%v err=%v", issues, err)
 	}
 
@@ -418,7 +418,7 @@ func TestStateVerifySeesAStrayScope(t *testing.T) {
 		t.Fatalf("inject stray scope: %v", err)
 	}
 
-	issues, err := s.StateVerify("")
+	issues, _, err := s.StateVerify("")
 	if err != nil {
 		t.Fatalf("StateVerify: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestStateVerifySeesAStrayScope(t *testing.T) {
 	if _, err := s.StateRebuild(""); err != nil {
 		t.Fatalf("StateRebuild: %v", err)
 	}
-	if issues, err := s.StateVerify(""); err != nil || len(issues) != 0 {
+	if issues, _, err := s.StateVerify(""); err != nil || len(issues) != 0 {
 		t.Fatalf("verify after the rebuild: issues=%v err=%v", issues, err)
 	}
 	if rows, err := store.ScopeRows(ms, "strayscope"); err != nil || len(rows) != 0 {

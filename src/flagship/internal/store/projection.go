@@ -81,18 +81,46 @@ func ProjectionScope(projectID string) string {
 	return projectionScopePrefix + projectID
 }
 
-// ProjectionPath is where the projection lives: $FS_MEMSTORE when set (tests,
-// scratch files), otherwise ~/.memstore/memory.db — the one file fs shares with
-// personal memories.
-func ProjectionPath() string {
-	if p := os.Getenv("FS_MEMSTORE"); p != "" {
-		return p
-	}
+// ProjectionEnv is the variable that re-points the projection. It exists for
+// tests and scratch files; production leaves it unset, so every line that says
+// where a write's state went can also say whether this variable chose the file
+// (skills:t-55266895).
+const ProjectionEnv = "FS_MEMSTORE"
+
+// ProjectionPathEnv is the value ProjectionSource reports when ProjectionEnv
+// chose the path, and ProjectionSourceDefault when nothing did. They are the
+// words the running log and `fs state verify` print, so both name the same fact.
+const (
+	ProjectionPathEnv       = ProjectionEnv
+	ProjectionSourceDefault = "default"
+)
+
+// DefaultProjectionPath is where the projection lives when nothing overrides it:
+// ~/.memstore/memory.db, the one file fs shares with personal memories.
+func DefaultProjectionPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(home, ".memstore", "memory.db")
+}
+
+// ProjectionPath is where the projection lives for this process: $FS_MEMSTORE
+// when set (tests, scratch files), otherwise DefaultProjectionPath.
+func ProjectionPath() string {
+	if p := os.Getenv(ProjectionEnv); p != "" {
+		return p
+	}
+	return DefaultProjectionPath()
+}
+
+// ProjectionSource names what chose ProjectionPath: ProjectionPathEnv when the
+// variable did, ProjectionSourceDefault otherwise.
+func ProjectionSource() string {
+	if os.Getenv(ProjectionEnv) != "" {
+		return ProjectionPathEnv
+	}
+	return ProjectionSourceDefault
 }
 
 // OpenProjection opens the projection file at path, creating it and its parent

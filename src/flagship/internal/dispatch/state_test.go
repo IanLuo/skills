@@ -614,7 +614,7 @@ func TestWriteSetStaysAtParity(t *testing.T) {
 	}
 
 	// The projection is at parity with the event store after the whole set.
-	issues, err := h.StateVerify("")
+	issues, _, err := h.StateVerify("")
 	if err != nil {
 		t.Fatalf("state verify: %v", err)
 	}

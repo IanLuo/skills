@@ -236,7 +236,7 @@ func TestProjectionFailureKeepsEvent(t *testing.T) {
 	if _, err := h.StateRebuild(""); err != nil {
 		t.Fatalf("rebuild after the failed fold: %v", err)
 	}
-	issues, err := h.StateVerify("")
+	issues, _, err := h.StateVerify("")
 	if err != nil {
 		t.Fatalf("verify after the rebuild: %v", err)
 	}
