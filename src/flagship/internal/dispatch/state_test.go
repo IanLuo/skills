@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,60 +27,9 @@ import (
 // 1.25x ceiling and the declaration was empty; the covering index
 // `idx_memory_scope_recent` puts it inside the ceiling and the declaration names
 // `pending`.
-func TestSwitchedReads(t *testing.T) {
-	m := command.MeasuredSwitch()
-	declared := command.SwitchedReads()
-
-	switch {
-	case !m.WithinCeiling() && len(declared) > 0:
-		t.Fatalf("reads %v are declared switched while AC8's ceiling is unmet (%s): spec D6 reverts a regressing read — clear the declaration or re-measure", declared, m)
-	case m.WithinCeiling() && len(declared) == 0:
-		t.Fatalf("no read is declared switched and AC8's ceiling IS met (%s): AC1 requires exactly %q", m, m.Read)
-	}
-
-	// The declaration is the only switch, and it names state reads.
-	for _, read := range declared {
-		if !command.IsStateRead(read) {
-			t.Errorf("read %q is declared switched but records no source, so AC1 cannot tell whether it is switched", read)
-		}
-		if !command.Switched(read) {
-			t.Errorf("read %q is declared but Switched says otherwise", read)
-		}
-	}
-	if command.Switched("pending") != slices.Contains(declared, "pending") {
-		t.Error("Switched and the declaration disagree about pending")
-	}
-
-	// The field rollback is a rollback, never a second way to switch a read on:
-	// it has one recognised value, and an unrecognised one leaves every read on
-	// its declared source. So this asserts the env var, not the declaration: an
-	// undeclared read stays on the event store, and a declared read keeps
-	// answering from the projection — "projection" in the env cannot switch
-	// anything on, and cannot switch a declared read further on than it already
-	// is.
-	t.Setenv(command.StateSourceEnv, command.SourceProjection)
-	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
-		want := command.SourceLog
-		if command.Switched(read) {
-			want = command.SourceProjection
-		}
-		if got := command.StateSource(read); got != want {
-			t.Errorf("source of %q under FS_STATE_SOURCE=projection = %q, want %q: the env var rolls back, it does not roll forward", read, got, want)
-		}
-	}
-
-	// The one value it recognises actually rolls a switched read back.
-	t.Setenv(command.StateSourceEnv, command.SourceLog)
-	for _, read := range []string{"pending", "status", "gaps", "unfinished", "task get"} {
-		if got := command.StateSource(read); got != command.SourceLog {
-			t.Errorf("source of %q under FS_STATE_SOURCE=log = %q, want log: the rollback must turn a switched read off", read, got)
-		}
-	}
-
-	if !m.WithinCeiling() {
-		t.Logf("AC1 red by contingency — %s; declaration is empty. Protocol: %s", m, m.Protocol)
-	}
-}
+// TestSwitchedReads (AC1/AC8 of the superseded spec) is retired: the contract
+// .agents/specs/fs-contract.md R2 = one source, the event log. The projection and
+// its gate are scheduled for deletion, so there is no source to switch between.
 
 // pendingFixture builds a stream containing every event type fs pending
 // consumes, so the parity gate compares the whole answer and not a subset:

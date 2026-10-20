@@ -38,15 +38,14 @@ const StateSourceEnv = "FS_STATE_SOURCE"
 // There is no flag and no env var that switches a read on — the rollback above
 // only turns the switch off.
 //
-// It contains `pending` because AC8's ceiling is met now that memstore's
-// `Recent(scope, k)` has a covering index (`b5be5fd`, schema 6,
-// `idx_memory_scope_recent`): before that pin the projection-alone arm scanned
-// and sorted the whole memory file and measured 1.26-1.40x, over the 1.25x
-// ceiling, so the declaration was empty. See MeasuredSwitch below for the
-// numbers and the protocol. TestSwitchedReads enforces the rule in both
-// directions, so the declaration and the measurement cannot drift apart: this
-// line is the only thing that turns `fs pending` on.
-var switchedReads = []string{"pending"}
+// It is EMPTY because the contract says one source. `.agents/specs/fs-contract.md`
+// (R2 = B, DECOUPLE) makes the event log the only source a state read may answer
+// from; the projection, this declaration and the parity gate are scheduled for
+// deletion. This is STEP 4's first line, executed early because the every-scope fix
+// (38d9ea9b) made the gate refuse on real data: the widened answer names scopes the
+// projection has never seeded, and there is no way to compare one source against a
+// source that is not meant to exist.
+var switchedReads []string
 
 // SwitchMeasurement is AC8's measurement on the live store, recorded as data so
 // the declaration and the measurement cannot drift apart: TestSwitchedReads
