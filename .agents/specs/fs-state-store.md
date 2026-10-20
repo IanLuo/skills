@@ -1,5 +1,7 @@
 <!-- specs:locked:36dc4bc9 2026-10-19 type=spec -->
 
+**Superseded by:** `.agents/specs/fs-contract.md` (locked 2026-10-20). Read that doc; this one is kept only so citations do not dead-end.
+
 ## Link contract
 - **upstream** (this doc relies on): cap-role.md
 - **referrers** (must cite this when they change): skills/flagship/SKILL.md, cap-role.md
