@@ -394,6 +394,31 @@ func TestPrepareConfirmRunsEveryCheckAndRecordsOverride(t *testing.T) {
 	}
 }
 
+// The unresolved-dispatch gate is the same scope filter as fs pending's read, and
+// it failed the same way: a dispatch standing in a project's own scope did not
+// stop the next one, so `fs dispatch --deliver` proceeded while a dispatch was
+// open. The gate asks about every dispatch that is not done, wherever it lives.
+func TestPrepareRefusesADispatchOpenOutsideTheCapScope(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	f.writePlaybook(t, "code-entry", passingEntry)
+
+	added := f.h.TaskAddKind("skills", "dispatch dev-task: open in the project", query.KindDispatch, "", "", "", "", "", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	open := added.Data.(command.EventData).NodeID
+
+	resp := f.prepare(devReq("second"))
+	if resp.OK {
+		t.Fatal("a dispatch open in a project scope must refuse the next dispatch")
+	}
+	for _, want := range []string{"unresolved dispatches", open, "--allow-unresolved"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("error %q must mention %q", resp.Error, want)
+		}
+	}
+}
+
 func TestPrepareRefusesWhileAnUnresolvedDispatchExists(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	f.writePlaybook(t, "code-entry", passingEntry)

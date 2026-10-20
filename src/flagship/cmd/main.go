@@ -190,7 +190,9 @@ Commands:
                                                 header first, then open ones
                                                 before done, heaviest first, with
                                                 found_by and severity
-  pending                                      Every dispatch not closed out, with
+  pending                                      Every dispatch not closed out, in
+                                                EVERY scope — each entry names the
+                                                scope its node stands in — with
                                                 what the cap should do about each:
                                                 ready, blocked, running, unknown,
                                                 unseen, gone, unlinked — blocked

@@ -1124,6 +1124,14 @@ func (h *Handler) DispatchFor(scope, workerProject, workerNode string) (Delivery
 
 // TaskEdit appends a metadata-changed event for each field it is given: the
 // goal, the kind, the severity, or any combination. AC11.
+//
+// Every field is validated before anything is appended, and the accepted set is
+// then written in ONE batch. Validating as it appended made a refused edit a
+// half-written one — `--kind dispatch --severity prose` stored the kind, refused
+// the weight for a node that was not a gap, and told the caller the edit had not
+// happened. The caller therefore compensates nothing, and events are immutable,
+// so the half-written edit stands on the log for good. The batch below is the
+// same shape task block and task unblock use, for the same reason.
 func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind, newSeverity query.Severity, commitSHA *string) Response {
 	if projectID == "" {
 		return errResp("project_id is required")
@@ -1142,32 +1150,52 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 		sha = commitSHA
 	}
 
-	var events []EventData
-
-	if newGoal != "" {
-		data, err := h.appendMetadata(projectID, nodeID, "goal", h.deriveGoal(projectID, nodeID), newGoal, sha)
-		if err != nil {
-			h.logger.Error("store append failed", "command", "task-edit", "error", err)
-			return errResp(err.Error())
-		}
-		events = append(events, data)
+	// An empty kind means "leave it alone": the CLI cannot distinguish an
+	// absent --kind from an empty one, and neither should be stored. The same
+	// holds for the goal and the severity.
+	if newKind != "" && !query.ValidKind(newKind) {
+		return errResp(fmt.Sprintf("invalid kind: %q (valid: work, dispatch, gap)", newKind))
+	}
+	if newSeverity != "" && !query.ValidSeverity(newSeverity) {
+		return errResp(fmt.Sprintf("invalid severity: %q (valid: severe, defect, prose)", newSeverity))
 	}
 
-	// An empty kind means "leave it alone": the CLI cannot distinguish an
-	// absent --kind from an empty one, and neither should be stored.
+	// A weight is a gap's and only a gap's, on this path as on every other. The
+	// kind the edit LEAVES BEHIND is what the weight is judged against: one
+	// command that re-kinds a node to gap and weighs it is one decision, not a
+	// weight on a node that is still work.
+	kind := h.deriveKind(projectID, nodeID)
 	if newKind != "" {
-		if !query.ValidKind(newKind) {
-			return errResp(fmt.Sprintf("invalid kind: %q (valid: work, dispatch, gap)", newKind))
-		}
-		data, err := h.appendMetadata(projectID, nodeID, "kind", string(h.deriveKind(projectID, nodeID)), string(newKind), sha)
-		if err != nil {
-			h.logger.Error("store append failed", "command", "task-edit", "error", err)
-			return errResp(err.Error())
-		}
-		events = append(events, data)
+		kind = newKind
+	}
+	if newSeverity != "" && kind != query.KindGap {
+		return errResp(fmt.Sprintf("severity is a gap's weight and node %s is not a gap", nodeID))
+	}
 
-		// A weight is a gap's and only a gap's, on this path as on every other:
-		// a kind that leaves gap takes the weight with it, so the node never
+	var batch []store.Event
+	appendField := func(field, oldValue, newValue string) {
+		payload, _ := json.Marshal(map[string]string{
+			"field":     field,
+			"old_value": oldValue,
+			"new_value": newValue,
+		})
+		batch = append(batch, store.Event{
+			Type:      store.MetadataChanged,
+			ProjectID: projectID,
+			NodeID:    &nodeID,
+			CommitSHA: sha,
+			Payload:   payload,
+		})
+	}
+
+	if newGoal != "" {
+		appendField("goal", h.deriveGoal(projectID, nodeID), newGoal)
+	}
+
+	if newKind != "" {
+		appendField("kind", string(h.deriveKind(projectID, nodeID)), string(newKind))
+
+		// A kind that leaves gap takes the weight with it, so the node never
 		// carries one it is not entitled to and could not be told to drop.
 		// Refusing the edit instead would strand the node — an empty --severity
 		// means "leave it alone", so a node nothing can re-kind is a state no
@@ -1176,37 +1204,29 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 		// commands.
 		if newKind != query.KindGap {
 			if prior := h.deriveSeverity(projectID, nodeID); prior != "" {
-				data, err := h.appendMetadata(projectID, nodeID, "severity", string(prior), "", sha)
-				if err != nil {
-					h.logger.Error("store append failed", "command", "task-edit", "error", err)
-					return errResp(err.Error())
-				}
-				events = append(events, data)
+				appendField("severity", string(prior), "")
 			}
 		}
 	}
 
-	// An empty severity means "leave it alone", like the goal and the kind. A
-	// node that is not a gap has no weight to set, for the same reason fs task
-	// add refuses one.
 	if newSeverity != "" {
-		if !query.ValidSeverity(newSeverity) {
-			return errResp(fmt.Sprintf("invalid severity: %q (valid: severe, defect, prose)", newSeverity))
-		}
-		if h.deriveKind(projectID, nodeID) != query.KindGap {
-			return errResp(fmt.Sprintf("severity is a gap's weight and node %s is not a gap", nodeID))
-		}
-		data, err := h.appendMetadata(projectID, nodeID, "severity",
-			string(h.deriveSeverity(projectID, nodeID)), string(newSeverity), sha)
-		if err != nil {
-			h.logger.Error("store append failed", "command", "task-edit", "error", err)
-			return errResp(err.Error())
-		}
-		events = append(events, data)
+		appendField("severity", string(h.deriveSeverity(projectID, nodeID)), string(newSeverity))
 	}
 
-	if len(events) == 0 {
+	if len(batch) == 0 {
 		return errResp("nothing to edit: provide --goal, --kind and/or --severity")
+	}
+
+	ids, err := h.store.AppendBatch(batch)
+	err = h.storeWriteOk("task-edit", projectID, err)
+	if err != nil {
+		h.logger.Error("store append failed", "command", "task-edit", "error", err)
+		return errResp(err.Error())
+	}
+
+	events := make([]EventData, len(batch))
+	for i := range batch {
+		events[i] = EventData{EventID: ids[i], EventType: store.MetadataChanged, NodeID: nodeID, CommitSHA: sha}
 	}
 
 	h.logger.Info("command executed", "command", "task-edit", "project", projectID, "node_id", nodeID, "events", len(events))

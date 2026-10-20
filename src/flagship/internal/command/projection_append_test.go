@@ -19,10 +19,12 @@ import (
 // AC5 — every append projects, in the same step, without ever rolling back the
 // event.
 //
-// The static half: the append surface is the 14 event-store sites in
-// internal/command/command.go — 11 store.Append and 3 store.AppendBatch — and
+// The static half: the append surface is the 15 event-store sites in
+// internal/command/command.go — 11 store.Append and 4 store.AppendBatch — and
 // every one of them hands its error to storeWriteOk, which is what clears a
-// projection failure without failing the write. A call site that skipped it
+// projection failure without failing the write. task edit is the fourth batch:
+// it validates every field before it appends anything, so its accepted set is
+// written in one step or not at all. A call site that skipped it
 // would report a committed event as a failed write and invite the retry that
 // doubles the state.
 func TestEveryAppendProjects(t *testing.T) {
@@ -64,8 +66,8 @@ func TestEveryAppendProjects(t *testing.T) {
 			return true
 		})
 
-		if sites != 14 {
-			t.Errorf("found %d event-store append sites, want the locked 14 (11 Append + 3 AppendBatch)", sites)
+		if sites != 15 {
+			t.Errorf("found %d event-store append sites, want the locked 15 (11 Append + 4 AppendBatch)", sites)
 		}
 	})
 

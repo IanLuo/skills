@@ -351,7 +351,7 @@ fs tell PROJECT:NODE "TEXT"
 
 `--deliver` splits a **sibling pane of your own** — `pane split --current --direction right --no-focus`, recorded as `pane_id`, `tab_id`, `project`, `node`, and the task `type`. The split is anchored to the pane you run in, so the worker lands in *your* workspace and your tab. The worker's pane is the only thing close-out tears down by machinery: the tab in the record is yours.
 
-Start every turn with `fs pending`; never wait on one and never poll with a sleep. It answers "what is waiting on me" in one read:
+Start every turn with `fs pending`; never wait on one and never poll with a sleep. It answers "what is waiting on me" in one read. It reads **every scope**, not the cap's own: a dispatch node is a dispatch wherever it was written, and a read filtered to the cap's scope reported nothing in flight while four dispatch nodes stood in project scopes. Each entry names the scope its node stands in as `cap_project` (`cap` for one the cap prepared), because a bare node id resolves in the cap's scope. Both ends of a link are `kind=dispatch`, so one dispatch is one entry: the worker's node is the work being waited on, and it appears on its own only when the dispatch that owned it was closed and the node was left open:
 
 | state | meaning | what to do |
 |---|---|---|
@@ -361,7 +361,7 @@ Start every turn with `fs pending`; never wait on one and never poll with a slee
 | `unknown` | the node is not done and herdr could not be asked at all, so nothing about this worker was read — it may be working, dead, or there may be no herdr on this machine | nobody measured it — read the node, and go look before acting on the state |
 | `unseen` | the node is not done but herdr reports the agent `done` | finished unseen — go look |
 | `gone` | the node is not done and herdr has no such agent | the worker died; needs the user |
-| `unlinked` | no delivery record, or one written before it carried a node | close it with `--abandoned`, or `--worker` for an old record |
+| `unlinked` | no delivery record in the scope its node stands in, or one written before it carried a node — a dispatch nobody linked, and also a worker node its closed dispatch left open | close it with `--abandoned`, or `--worker` for an old record |
 
 herdr is a hint about *when to look*, never the truth about whether the work is done — `ready` and `blocked` are the states to act on. `running` is deliberately the wide one: `idle` is not `blocked`, because a worker between two tool calls is thinking and not stuck, and neither is an agent state herdr reports as `unknown` or one it cannot place at all — a state that cried wolf would be one the cap learns to ignore. `unknown` is the one state reached by *failing* to ask herdr — `blocked`, `running`, `unseen` and `gone` each follow an answer it gave (and `running` still asserts an agent exists), while `ready` and `unlinked` are settled without asking at all: `ready` because a done node is done however herdr reads, `unlinked` because there is no node to read.
 

@@ -1380,33 +1380,80 @@ func dispatchGoal(taskType, goal string) string {
 	return fmt.Sprintf("dispatch %s: %s", taskType, goal)
 }
 
-// unresolvedDispatches returns the cap's dispatch nodes that are not done. A
-// node is a dispatch because it was written as one, so a dispatch whose goal
-// was later edited is still recognised — the failure the goal prefix had.
+// unresolvedDispatches returns every dispatch node that is not done and not
+// already covered by an open dispatch, in every scope. A node is a dispatch
+// because it was written as one, so a dispatch whose goal was later edited is
+// still recognised — the failure the goal prefix had.
+//
+// The scope is not a filter. A dispatch written in a project's own scope is in
+// flight exactly like one the cap prepared, and reading the cap's scope alone let
+// the next dispatch proceed while a dispatch stood — the same blindness fs
+// pending had, in the same place: one scope's events are not the record.
+//
+// Both ends of a link are kind=dispatch, so the same rule fs pending applies is
+// applied here: the worker node of a dispatch that is still open is that
+// dispatch, not a second one. Without it every open dispatch would be named
+// twice, and the exemption that subtracts a declared dispatch would subtract the
+// cap's node while the worker's stayed behind to refuse the dispatch anyway.
 func unresolvedDispatches(h *command.Handler) ([]command.UnfinishedNode, error) {
-	nodes, err := h.UnfinishedIn(capScope)
+	scopes, err := h.Scopes()
 	if err != nil {
 		return nil, err
 	}
 
-	var unresolved []command.UnfinishedNode
-	for _, node := range nodes {
-		if node.Kind == query.KindDispatch {
-			unresolved = append(unresolved, node)
+	var nodes []command.UnfinishedNode
+	covered := map[string]bool{}
+	for _, scope := range scopes {
+		unfinished, err := h.UnfinishedIn(scope)
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range unfinished {
+			if node.Kind != query.KindDispatch {
+				continue
+			}
+			nodes = append(nodes, node)
+
+			delivery, recorded, err := h.DeliveryFor(scope, node.NodeID)
+			if err != nil {
+				return nil, err
+			}
+			if recorded && delivery.Project != "" && delivery.Node != "" {
+				covered[workerRef(delivery.Project, delivery.Node)] = true
+			}
 		}
 	}
+
+	var unresolved []command.UnfinishedNode
+	for _, node := range nodes {
+		if covered[workerRef(node.ProjectID, node.NodeID)] {
+			continue
+		}
+		unresolved = append(unresolved, node)
+	}
 	return unresolved, nil
+}
+
+// nodeRef names a node the way every command resolves one: the bare id for the
+// cap's own scope, and the address form for a node in a project. A bare id
+// resolves in the cap's scope, so an id without its scope is a node a reader can
+// be told about and cannot reach.
+func nodeRef(node command.UnfinishedNode) string {
+	if node.ProjectID == "" || node.ProjectID == capScope {
+		return node.NodeID
+	}
+	return node.ProjectID + ":" + node.NodeID
 }
 
 // unresolvedError names each unresolved dispatch and says how to clear it.
 func unresolvedError(unresolved []command.UnfinishedNode) string {
 	named := make([]string, len(unresolved))
 	for i, node := range unresolved {
-		named[i] = fmt.Sprintf("%s (%q)", node.NodeID, node.Goal)
+		named[i] = fmt.Sprintf("%s (%q)", nodeRef(node), node.Goal)
 	}
 	return fmt.Sprintf(
-		"dispatch: unresolved dispatches in scope %s: %s; resolve them (fs task update ID --status done --decision ...) or re-run with --allow-unresolved to proceed",
-		capScope, strings.Join(named, ", "))
+		"dispatch: unresolved dispatches: %s; resolve them (fs task update ID --status done --decision ...) or re-run with --allow-unresolved to proceed",
+		strings.Join(named, ", "))
 }
 
 // entryRun is what running the plan's entry phase produced: the checklist the
@@ -1722,7 +1769,7 @@ func recordCheckOverrides(h *command.Handler, nodeID string, brief *Brief) error
 func recordUnresolvedOverride(h *command.Handler, nodeID string, unresolved []command.UnfinishedNode) error {
 	named := make([]string, len(unresolved))
 	for i, node := range unresolved {
-		named[i] = node.NodeID
+		named[i] = nodeRef(node)
 	}
 	summary := "--allow-unresolved proceeded with unresolved dispatches: " + strings.Join(named, ", ")
 	return recordDecision(h, nodeID, summary)

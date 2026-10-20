@@ -187,44 +187,65 @@ func contributingScopes(logAnswer, projAnswer pendingAnswer) string {
 	return strings.Join(scopes, ", ")
 }
 
-// answerFromLog derives the pending answer from the event store: the cap scope's
-// unresolved dispatches, each one's delivery record, and the node and reports of
-// the worker that record names.
+// answerFromLog derives the pending answer from the event store: every scope's
+// unresolved dispatches, each one's delivery record read in the scope that holds
+// the dispatch, and the node and reports of the worker that record names.
+//
+// The scopes are every scope the events name, not the cap's alone. A dispatch is
+// a dispatch by its kind, wherever it was written, and a read filtered to the
+// cap's scope reported nothing in flight while four dispatch nodes stood in project
+// scopes — the read the cap is told to trust at the start of every turn. The
+// open-gap count is taken in the same walk, which it already made over every
+// scope.
 func answerFromLog(h *command.Handler) (pendingAnswer, error) {
-	nodes, err := h.UnfinishedIn(capScope)
+	scopes, err := h.Scopes()
 	if err != nil {
-		return pendingAnswer{}, fmt.Errorf("replay %s: %w", capScope, err)
+		return pendingAnswer{}, fmt.Errorf("list scopes: %w", err)
 	}
 
 	answer := pendingAnswer{Dispatches: []pendingDispatch{}}
-	for _, node := range nodes {
-		if node.Kind != "dispatch" {
-			continue
-		}
-		d := pendingDispatch{Node: node}
-		delivery, recorded, err := h.DeliveryFor(capScope, node.NodeID)
+	gaps := make(map[string]int, len(scopes))
+	for _, scope := range scopes {
+		nodes, err := h.UnfinishedIn(scope)
 		if err != nil {
-			return pendingAnswer{}, fmt.Errorf("read delivery record for %s: %w", node.NodeID, err)
+			return pendingAnswer{}, fmt.Errorf("replay %s: %w", scope, err)
 		}
-		if recorded {
-			d.Delivery = &delivery
-			if delivery.Project != "" && delivery.Node != "" {
-				worker, found, err := workerOf(h, delivery.Project, delivery.Node)
-				if err != nil {
-					return pendingAnswer{}, fmt.Errorf("read node %s:%s: %w", delivery.Project, delivery.Node, err)
-				}
-				if found {
-					d.Worker = &worker
-				}
-				reports, err := h.ReportsFor(delivery.Project, delivery.Node)
-				if err != nil {
-					return pendingAnswer{}, fmt.Errorf("read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
-				}
-				d.Reports = reports
+		for _, node := range nodes {
+			if node.Kind == "gap" {
+				gaps[scope]++
+				continue
 			}
+			if node.Kind != "dispatch" {
+				continue
+			}
+
+			d := pendingDispatch{Node: node}
+			delivery, recorded, err := h.DeliveryFor(scope, node.NodeID)
+			if err != nil {
+				return pendingAnswer{}, fmt.Errorf("read delivery record for %s:%s: %w", scope, node.NodeID, err)
+			}
+			if recorded {
+				d.Delivery = &delivery
+				if delivery.Project != "" && delivery.Node != "" {
+					worker, found, err := workerOf(h, delivery.Project, delivery.Node)
+					if err != nil {
+						return pendingAnswer{}, fmt.Errorf("read node %s:%s: %w", delivery.Project, delivery.Node, err)
+					}
+					if found {
+						d.Worker = &worker
+					}
+					reports, err := h.ReportsFor(delivery.Project, delivery.Node)
+					if err != nil {
+						return pendingAnswer{}, fmt.Errorf("read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
+					}
+					d.Reports = reports
+				}
+			}
+			answer.Dispatches = append(answer.Dispatches, d)
 		}
-		answer.Dispatches = append(answer.Dispatches, d)
 	}
+
+	answer.Dispatches = onePerDispatch(answer.Dispatches)
 
 	claim, claimed, err := h.CapFor(capScope)
 	if err != nil {
@@ -232,10 +253,6 @@ func answerFromLog(h *command.Handler) (pendingAnswer, error) {
 	}
 	if claimed {
 		answer.Cap = &claim
-	}
-	gaps, err := gapCountsFromLog(h)
-	if err != nil {
-		return pendingAnswer{}, err
 	}
 	answer.Gaps, answer.GapScopes = totalGaps(gaps), gaps
 	return answer, nil
@@ -268,38 +285,55 @@ func answerFromProjection(h *command.Handler) (pendingAnswer, error) {
 		return got, nil
 	}
 
+	scopes, err := h.Scopes()
+	if err != nil {
+		return pendingAnswer{}, fmt.Errorf("list scopes: %w", err)
+	}
+
+	// Every scope the events name, for the same reason the event store's own walk
+	// makes: a dispatch node is a dispatch wherever it was written, so the rows of
+	// one scope are not the whole answer. The cap's own claim is read here too —
+	// it lives in the cap's scope and nowhere else.
 	capState, err := read(capScope)
 	if err != nil {
 		return pendingAnswer{}, err
 	}
 
 	answer := pendingAnswer{Dispatches: []pendingDispatch{}}
-	for _, nid := range capState.NodeIDs {
-		node := capState.Nodes[nid]
-		if node.Kind != "dispatch" || node.Status == "done" {
-			continue
+	for _, scope := range scopes {
+		state, err := read(scope)
+		if err != nil {
+			return pendingAnswer{}, err
 		}
-		d := pendingDispatch{Node: unfinishedOf(capScope, node)}
-		if delivery := deliveryOf(capState, nid); delivery != nil {
-			d.Delivery = delivery
-			if delivery.Project != "" && delivery.Node != "" {
-				workerScope, err := read(delivery.Project)
-				if err != nil {
-					return pendingAnswer{}, err
-				}
-				if worker, ok := workerScope.Nodes[delivery.Node]; ok {
-					u := unfinishedOf(delivery.Project, worker)
-					d.Worker = &u
-				}
-				reports, err := reportsOf(workerScope, delivery.Node)
-				if err != nil {
-					return pendingAnswer{}, err
-				}
-				d.Reports = reports
+		for _, nid := range state.NodeIDs {
+			node := state.Nodes[nid]
+			if node.Kind != "dispatch" || node.Status == "done" {
+				continue
 			}
+			d := pendingDispatch{Node: unfinishedOf(scope, node)}
+			if delivery := deliveryOf(state, nid); delivery != nil {
+				d.Delivery = delivery
+				if delivery.Project != "" && delivery.Node != "" {
+					workerScope, err := read(delivery.Project)
+					if err != nil {
+						return pendingAnswer{}, err
+					}
+					if worker, ok := workerScope.Nodes[delivery.Node]; ok {
+						u := unfinishedOf(delivery.Project, worker)
+						d.Worker = &u
+					}
+					reports, err := reportsOf(workerScope, delivery.Node)
+					if err != nil {
+						return pendingAnswer{}, err
+					}
+					d.Reports = reports
+				}
+			}
+			answer.Dispatches = append(answer.Dispatches, d)
 		}
-		answer.Dispatches = append(answer.Dispatches, d)
 	}
+
+	answer.Dispatches = onePerDispatch(answer.Dispatches)
 
 	if claim := capOf(capState); claim != nil {
 		answer.Cap = claim
@@ -361,28 +395,41 @@ func projectedGaps(h *command.Handler, ms *memstore.Store, reads map[string]*sto
 	return counts, nil
 }
 
-// gapCountsFromLog counts the open gaps in each scope, the walk fs pending's
-// total has always made — named per scope now, so the gate can compare the parts
-// and a refusal can say which scope moved.
-func gapCountsFromLog(h *command.Handler) (map[string]int, error) {
-	scopes, err := h.Scopes()
-	if err != nil {
-		return nil, fmt.Errorf("list scopes: %w", err)
-	}
-	counts := make(map[string]int, len(scopes))
-	for _, scope := range scopes {
-		nodes, err := h.UnfinishedIn(scope)
-		if err != nil {
-			return nil, fmt.Errorf("count the backlog in %s: %w", scope, err)
+// onePerDispatch drops the WORKER node of a dispatch that is still open: one
+// dispatch is one entry, and its entry is the node the cap prepared. Both ends of
+// the link are kind=dispatch in their own scope, so a read that spanned scopes
+// without this would report every running dispatch twice — once as the dispatch
+// and once as an `unlinked` node that is in fact the work being waited on, which
+// is how a state the cap is told to act on becomes noise it learns to ignore.
+//
+// The test is what the record names, never the goal text. A dispatch node whose
+// own scope holds no delivery record, and which no OPEN dispatch names as its
+// worker, is kept: either nothing was ever dispatched from it, or the dispatch
+// that owned it was closed while the node was left open, and it is waiting on the
+// cap in the scope it stands in either way.
+func onePerDispatch(dispatches []pendingDispatch) []pendingDispatch {
+	covered := make(map[string]bool, len(dispatches))
+	for _, d := range dispatches {
+		if d.Delivery == nil || d.Delivery.Project == "" || d.Delivery.Node == "" {
+			continue
 		}
-		for _, node := range nodes {
-			if node.Kind == "gap" {
-				counts[scope]++
-			}
-		}
+		covered[workerRef(d.Delivery.Project, d.Delivery.Node)] = true
 	}
-	return counts, nil
+
+	kept := make([]pendingDispatch, 0, len(dispatches))
+	for _, d := range dispatches {
+		if covered[workerRef(d.Node.ProjectID, d.Node.NodeID)] {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
 }
+
+// workerRef names a worker node the way a delivery record does: the scope it
+// lives in and its bare id, together, because the same id can stand in two
+// scopes.
+func workerRef(scope, node string) string { return scope + ":" + node }
 
 // totalGaps sums a per-scope count.
 func totalGaps(counts map[string]int) int {

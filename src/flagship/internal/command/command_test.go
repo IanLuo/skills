@@ -577,6 +577,64 @@ func TestTaskEditRefusesAnUnknownKind(t *testing.T) {
 	}
 }
 
+// A refused edit writes nothing. TaskEdit validated as it appended, so a command
+// that exited 1 had already written part of itself: `--kind dispatch --severity
+// prose` stored the kind, refused the weight for a node that was not a gap, and
+// told the caller the edit did not happen. Nothing compensates a false failure —
+// the caller believes there is nothing to undo — and events are immutable, so the
+// half-written edit stands on the log forever. Every field is validated before
+// anything is appended, and what survives is written in one batch.
+func TestTaskEditRefusedAppendsNothing(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	nodeID := h.TaskAdd("proj", "a task", nil).Data.(command.EventData).NodeID
+
+	before := len(h.Log("proj", nil, nil).Data.(command.LogResult).Events)
+
+	resp := h.TaskEdit("proj", nodeID, "", query.KindDispatch, query.SeverityProse, nil)
+	if resp.OK {
+		t.Fatal("a severity on a node that is not a gap must be refused")
+	}
+	if !strings.Contains(resp.Error, "not a gap") {
+		t.Errorf("refusal %q must say why the severity was refused", resp.Error)
+	}
+
+	after := h.Log("proj", nil, nil).Data.(command.LogResult).Events
+	if len(after) != before {
+		t.Fatalf("a refused edit appended %d event(s): %+v", len(after)-before, after[before:])
+	}
+	if got := nodeInfo(t, h, "proj", nodeID).Kind; got != query.KindWork {
+		t.Errorf("kind = %q after a refused edit, want work: the refused command must have changed nothing", got)
+	}
+}
+
+// The accepted set is one batch: a goal and a kind given together land together,
+// and the severity a kind change away from gap clears is on the record beside the
+// change that cleared it.
+func TestTaskEditAppendsTheAcceptedSetInOneBatch(t *testing.T) {
+	h := setup(t)
+	h.ProjectCreate("proj", "/tmp/proj")
+	gap := gapOf(t, h, "proj", "a gap with a weight", query.SeveritySevere)
+
+	resp := h.TaskEdit("proj", gap, "a reworded gap", query.KindWork, "", nil)
+	if !resp.OK {
+		t.Fatalf("TaskEdit: %s", resp.Error)
+	}
+	data := resp.Data.(command.UpdateResult)
+	if len(data.Events) != 3 {
+		t.Fatalf("events = %d, want the goal, the kind and the cleared weight: %+v", len(data.Events), data.Events)
+	}
+	for i, event := range data.Events {
+		if event.EventID == "" {
+			t.Errorf("event %d carries no id: a batched append must report every id it wrote", i)
+		}
+	}
+	got := nodeInfo(t, h, "proj", gap)
+	if got.Goal != "a reworded gap" || got.Kind != query.KindWork || got.Severity != "" {
+		t.Errorf("node = %+v, want the reworded goal, the kind work and no weight", got)
+	}
+}
+
 // Unfinished reports one group per kind, each present even when empty.
 func TestUnfinishedGroupsByKind(t *testing.T) {
 	h := setup(t)

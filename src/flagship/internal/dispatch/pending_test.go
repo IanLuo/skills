@@ -96,6 +96,108 @@ func TestPendingLeavesAChecklessBlockAsProse(t *testing.T) {
 	}
 }
 
+// A dispatch the cap abandoned is not gone while its worker's node is open. The
+// measured shape of 2026-10-07: the cap marked its own node done — abandoned at
+// delivery — and left the worker's node active in the project. fs unfinished
+// showed it; fs pending, filtered to the cap's own scope, showed nothing in
+// flight. The node has no delivery record in the scope it stands in, so the
+// taxonomy says unlinked, and unlinked is what the read must say.
+func TestPendingSeesAWorkerLeftOpenByAClosedDispatch(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	capNode := addCapNode(t, f, "dispatch dev-task: abandoned at delivery")
+	worker := addWorkerNode(t, f, "active")
+	deliverTo(t, f, capNode, "w1:p9", worker)
+	if resp := f.h.TaskUpdate("cap", capNode, "done", "abandoned after delivery", nil); !resp.OK {
+		t.Fatalf("closing the cap node: %s", resp.Error)
+	}
+
+	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{}))
+	entry := pendingEntryFor(t, result, worker)
+	if entry.State != dispatch.StateUnlinked {
+		t.Errorf("state = %q, want %q: the node carries no delivery record of its own", entry.State, dispatch.StateUnlinked)
+	}
+	if entry.CapProject != "skills" {
+		t.Errorf("cap_project = %q, want skills: the entry must name the scope the node stands in", entry.CapProject)
+	}
+}
+
+// One dispatch is one entry. Both ends of the link are kind=dispatch — the cap's
+// node and the worker's — so a read that spanned scopes and nothing else would
+// report every running dispatch twice, and one of the two lines would read
+// unlinked: a state the cap is told to act on, fired on healthy work.
+func TestPendingReportsOneEntryPerDispatch(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	capNode := addCapNode(t, f, "dispatch dev-task: sample")
+	worker := addWorkerNode(t, f, "active")
+	deliverTo(t, f, capNode, "w1:p9", worker)
+
+	hc := &fakeHerdr{agents: map[string]string{"dispatch-dev-task-" + worker: "idle"}}
+	result := pendingOf(t, dispatch.Pending(f.h, hc))
+	if len(result.Pending) != 1 {
+		t.Fatalf("pending %+v has %d entries, want the dispatch's one", result.Pending, len(result.Pending))
+	}
+	entry := result.Pending[0]
+	if entry.CapNode != capNode || entry.CapProject != "cap" || entry.WorkerNode != worker {
+		t.Errorf("entry = %+v, want the cap node %s, its scope cap, and the worker %s", entry, capNode, worker)
+	}
+	if entry.State != dispatch.StateRunning {
+		t.Errorf("state = %q, want running: an idle agent between two tool calls is not blocked", entry.State)
+	}
+	if result.Counts[dispatch.StateUnlinked] != 0 {
+		t.Errorf("counts = %v, want no unlinked: the worker node is the work, not a dispatch of its own", result.Counts)
+	}
+}
+
+// A dispatch node is a dispatch wherever it lives. The read the cap is told to
+// trust at the start of every turn was filtered to the cap's own scope, so a
+// dispatch written in a project's scope — the shape measured on 2026-10-07, four
+// of them standing while this read said nothing was in flight — appeared
+// nowhere: not as running, not as unlinked, not at all. The node carries no
+// delivery record, so the taxonomy says unlinked, and unlinked is a state this
+// read must be able to report.
+func TestPendingSeesADispatchOutsideTheCapScope(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	added := f.h.TaskAddKind("skills", "dispatch dev-task: sample", query.KindDispatch, "", "", "", "", "", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	node := added.Data.(command.EventData).NodeID
+
+	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{}))
+	entry := pendingEntryFor(t, result, node)
+	if entry.State != dispatch.StateUnlinked {
+		t.Errorf("state = %q, want %q: the node carries no delivery record", entry.State, dispatch.StateUnlinked)
+	}
+	if result.Counts[dispatch.StateUnlinked] != 1 {
+		t.Errorf("counts = %v, want one unlinked: the entry and the count must agree", result.Counts)
+	}
+}
+
+// A dispatch in the cap's own scope and one in a project's scope are both in
+// flight, and neither is lost to the other: the read spans the scopes and names
+// the scope each dispatch node lives in, so the cap can address the node it was
+// told about.
+func TestPendingNamesTheScopeEachDispatchLivesIn(t *testing.T) {
+	f := newFixture(t, t.TempDir())
+	capNode := addCapNode(t, f, "dispatch dev-task: in the cap scope")
+	added := f.h.TaskAddKind("skills", "dispatch dev-task: in the project", query.KindDispatch, "", "", "", "", "", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	projectNode := added.Data.(command.EventData).NodeID
+
+	result := pendingOf(t, dispatch.Pending(f.h, &fakeHerdr{}))
+	if len(result.Pending) != 2 {
+		t.Fatalf("pending %+v has %d entries, want both dispatches", result.Pending, len(result.Pending))
+	}
+	if got := pendingEntryFor(t, result, capNode).CapProject; got != "cap" {
+		t.Errorf("cap_project = %q for %s, want cap", got, capNode)
+	}
+	if got := pendingEntryFor(t, result, projectNode).CapProject; got != "skills" {
+		t.Errorf("cap_project = %q for %s, want skills", got, projectNode)
+	}
+}
+
 // fs pending is one of the readers that renders a node's status, and it re-runs
 // a node's recorded claim through the same rule every reader that renders a
 // status does, with the same wording. The claim need not come from a block: a

@@ -60,7 +60,14 @@ var pendingStates = []string{StateReady, StateBlocked, StateRunning, StateUnknow
 
 // PendingEntry is one dispatch node the cap has not closed out.
 type PendingEntry struct {
-	CapNode    string `json:"cap_node"`
+	CapNode string `json:"cap_node"`
+	// CapProject is the scope the dispatch node lives in. It is `cap` for a
+	// dispatch the cap prepared in its own scope, and a project's id for one
+	// written there — a dispatch is a dispatch by its kind, not by its scope. It
+	// is always present because a reader that has to address the node needs it:
+	// a bare node id resolves in the cap's scope, so an id without this field is
+	// a dispatch the reader can name and cannot reach.
+	CapProject string `json:"cap_project"`
 	WorkerNode string `json:"worker_node,omitempty"`
 	Project    string `json:"project,omitempty"`
 	Tab        string `json:"tab,omitempty"`
@@ -143,7 +150,10 @@ func decoratePending(hc engine.Engine, answer pendingAnswer) PendingResult {
 		counts[state] = 0
 	}
 	for _, d := range answer.Dispatches {
-		entry := PendingEntry{CapNode: d.Node.NodeID}
+		entry := PendingEntry{CapNode: d.Node.NodeID, CapProject: d.Node.ProjectID}
+		if entry.CapProject == "" {
+			entry.CapProject = capScope
+		}
 		if d.Delivery != nil {
 			entry.Project = d.Delivery.Project
 			entry.Tab = d.Delivery.TabID
