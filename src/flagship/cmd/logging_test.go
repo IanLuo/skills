@@ -53,20 +53,18 @@ func setupDispatchRoot(t *testing.T, bin, home, name string) string {
 	return root
 }
 
-// A dispatch stderr that carries the plan-resolved DEBUG line proves the level
+// A dispatch stderr that carries the brief-composed DEBUG line proves the level
 // moved; the same run without -v must not.
 func TestCLIVerboseWritesDebugLines(t *testing.T) {
 	bin := getFS(t)
 	home := testHome(t)
-	writeKBPlaybook(t, home, "code-entry", dispatchPlaybook)
-
 	setupDispatchRoot(t, bin, home, "verbosedefault")
 	_, defaultStderr, code := runFSCapture(t, bin, t.TempDir(), home, nil,
 		"dispatch", "--project", "verbosedefault", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
 		t.Fatalf("default dispatch exit %d: %s", code, defaultStderr)
 	}
-	if strings.Contains(defaultStderr, `"level":"DEBUG"`) || strings.Contains(defaultStderr, "plan resolved") {
+	if strings.Contains(defaultStderr, `"level":"DEBUG"`) || strings.Contains(defaultStderr, "brief composed") {
 		t.Errorf("default dispatch wrote a DEBUG line:\n%s", defaultStderr)
 	}
 
@@ -76,8 +74,8 @@ func TestCLIVerboseWritesDebugLines(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("-v dispatch exit %d: %s", code, verboseStderr)
 	}
-	if !strings.Contains(verboseStderr, `"level":"DEBUG"`) || !strings.Contains(verboseStderr, "plan resolved") {
-		t.Errorf("-v dispatch did not write the plan-resolved DEBUG line:\n%s", verboseStderr)
+	if !strings.Contains(verboseStderr, `"level":"DEBUG"`) || !strings.Contains(verboseStderr, "brief composed") {
+		t.Errorf("-v dispatch did not write the brief-composed DEBUG line:\n%s", verboseStderr)
 	}
 }
 
@@ -85,15 +83,13 @@ func TestCLIVerboseWritesDebugLines(t *testing.T) {
 func TestCLIFSLogLevelEnvWritesDebug(t *testing.T) {
 	bin := getFS(t)
 	home := testHome(t)
-	writeKBPlaybook(t, home, "code-entry", dispatchPlaybook)
-
 	setupDispatchRoot(t, bin, home, "envdebug")
 	_, stderr, code := runFSCapture(t, bin, t.TempDir(), home, []string{"FS_LOG_LEVEL=debug"},
 		"dispatch", "--project", "envdebug", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
 		t.Fatalf("dispatch exit %d: %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "plan resolved") {
+	if !strings.Contains(stderr, "brief composed") {
 		t.Errorf("FS_LOG_LEVEL=debug dispatch did not write the DEBUG line:\n%s", stderr)
 	}
 }
@@ -103,15 +99,13 @@ func TestCLIFSLogLevelEnvWritesDebug(t *testing.T) {
 func TestCLIFlagOverridesEnvLevel(t *testing.T) {
 	bin := getFS(t)
 	home := testHome(t)
-	writeKBPlaybook(t, home, "code-entry", dispatchPlaybook)
-
 	setupDispatchRoot(t, bin, home, "flagwins")
 	_, stderr, code := runFSCapture(t, bin, t.TempDir(), home, []string{"FS_LOG_LEVEL=error"},
 		"dispatch", "-v", "--project", "flagwins", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
 		t.Fatalf("dispatch exit %d: %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "plan resolved") {
+	if !strings.Contains(stderr, "brief composed") {
 		t.Errorf("flag did not override FS_LOG_LEVEL=error:\n%s", stderr)
 	}
 }
@@ -178,7 +172,7 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 			[]string{"dispatch", "--project", "nosuchproject", "--type", "dev-task", "--goal", "x"},
 			"nosuchproject", 1},
 		{"a --worker address",
-			[]string{"close", "--node", "t-nope", "--worker", "nosuchproject:t-nope", "--decision", "d", "--confirm"},
+			[]string{"close", "--node", "t-nope", "--worker", "nosuchproject:t-nope", "--decision", "d"},
 			"nosuchproject", 1},
 		{"report's positional address",
 			[]string{"report", "nosuchproject:t-nope", "--line", "x"},
@@ -199,7 +193,7 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 		// in the cap scope, so nothing is split and the invocation named no project.
 		// A line carrying one would name a project the command did not use.
 		{"close's --node is a bare id, not an address",
-			[]string{"close", "--node", "nosuchproject:t-nope", "--decision", "d", "--confirm"},
+			[]string{"close", "--node", "nosuchproject:t-nope", "--decision", "d"},
 			"", 1},
 		{"a flag value that reads like a flag",
 			[]string{"report", "nosuchproject:t-nope", "--line", "--project", "skills"},
@@ -221,19 +215,19 @@ func TestCLIRefusalLineCarriesTheProjectTheInvocationNamed(t *testing.T) {
 			[]string{"log", "--node", "skills:t-nope", "--project", "nosuchproject"},
 			"", 1},
 		{"a project flag after a bare --worker",
-			[]string{"close", "--node", "t-nope", "--worker", "t-nope", "--decision", "d", "--confirm", "--project", "skills"},
+			[]string{"close", "--node", "t-nope", "--worker", "t-nope", "--decision", "d", "--project", "skills"},
 			"skills", 2},
 		{"named none",
 			[]string{"task", "get", "t-nope"},
 			"", 1},
 		{"a bare --worker names none",
-			[]string{"close", "--node", "t-nope", "--worker", "t-nope", "--decision", "d", "--confirm"},
+			[]string{"close", "--node", "t-nope", "--worker", "t-nope", "--decision", "d"},
 			"", 1},
 		{"a glued --project=P",
 			[]string{"task", "get", "t-nope", "--project=skills"},
 			"skills", 2},
 		{"a glued --worker=P:N",
-			[]string{"close", "--node", "t-nope", "--worker=nosuchproject:t-nope", "--decision", "d", "--confirm"},
+			[]string{"close", "--node", "t-nope", "--worker=nosuchproject:t-nope", "--decision", "d"},
 			"nosuchproject", 2},
 		// The glued token names P wherever it sits, whether or not the command
 		// declares the flag one: no command ever resolves a --flag=value form,

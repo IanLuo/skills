@@ -142,72 +142,27 @@ empty list and not a refusal.`,
 		addressFlags: map[string]bool{"--node": true},
 	},
 
-	"kb add": {
-		usage: "Usage: fs kb add --name NAME --file PATH [--dry-run] [--project PROJECT_ID]",
-		flags: map[string]bool{"--name": true, "--file": true, "--dry-run": false, "--project": true},
-	},
-	"kb get":    {usage: "Usage: fs kb get NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
-	"kb list":   {usage: "Usage: fs kb list [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
-	"kb diff":   {usage: "Usage: fs kb diff NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
-	"kb reset":  {usage: "Usage: fs kb reset NAME --yes [--project PROJECT_ID]", flags: map[string]bool{"--yes": false, "--project": true}, positionals: 1},
-	"kb edit":   {usage: "Usage: fs kb edit --name NAME --file PATH [--project PROJECT_ID]", flags: map[string]bool{"--name": true, "--file": true, "--project": true}},
-	"kb remove": {usage: "Usage: fs kb remove NAME [--project PROJECT_ID]", flags: map[string]bool{"--project": true}, positionals: 1},
-	"kb prompt": {usage: "Usage: fs kb prompt [--project PROJECT_ID]", flags: map[string]bool{"--project": true}},
-
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--cards CARD[,CARD...]] [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--fixes CAP_NODE]... [--batch BATCH_NODE] [--tag K[=V]] [--also NAME] [--without NAME] [--confirm] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--fixes CAP_NODE]... [--batch BATCH_NODE] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID] [--worktree-new]
 
-The plan is the playbooks whose applies_when the dispatch's tags satisfy,
-ordered by the order they declare and then by name. The tags are
-type=<TASK_TYPE>, engine=herdr, and every --tag. Each gate has its own override,
-so saying yes to one never waves the other through:
+A dispatch is a worker node, a rendered brief, and a herdr delivery. There is no
+plan and no gate: the launch config — engine=herdr, agent=pi, and the provider
+route the agent is started with — is frozen in the binary, and the brief is the
+whole instruction the worker receives.
 
-  --confirm            proceed past a FAILING ENTRY CHECK
-  --allow-unresolved   proceed with an UNRESOLVED DISPATCH open
+--allow-unresolved proceeds while another dispatch is open and has not been
+delivered. It is the dispatch's only override, and it records the dispatches it
+proceeded past as a decision on its own node.
 
-  --tag K[=V]          a declared situation term. Repeatable. It may not restate
-                       type or engine: those are set by the dispatch itself.
-  --also NAME          force a playbook into the plan that the tags did not
-                       select. A name that does not resolve is refused.
-  --without NAME       drop a playbook the tags did select. It has the last word
-                       over --also.
+Without --deliver the dispatch is prepared only: the cap node and the brief are
+recorded and printed — nothing is started, so no pane is split, no worker node
+exists and no agent runs. The prepared node stays open, and the next dispatch
+into that scope refuses on it until it is delivered or closed.
 
-An empty plan is legal and reported: a dispatch whose tags select nothing runs
-no protocol, which is visible in the brief and in the trace rather than silent.
-
-Without --deliver the dispatch is prepared only: the cap node and its plan are
-recorded, the entry checks run, and the brief is printed — nothing is started, so
-no pane is split, no worker node exists and no agent runs. The prepared node
-stays open, and the next dispatch into that scope refuses on it until it is
-delivered or closed; --allow-unresolved is what proceeds past that.
-
---deliver carries the prepared brief the rest of the way, and it is the whole
-difference between a plan a cap can read and a worker doing the work: it opens
-the pane (or the --worktree-new workspace), creates the worker's node, starts an
-agent named "dispatch-<type>-<node>", prompts it with the brief, and records the
-delivery that close tears down.
-
-Every entry check step runs with this dispatch's own inputs in its environment,
-so a gate can ask about this dispatch and not only about the world:
-
-  FS_PROJECT      the resolved project
-  FS_TYPE         the task type
-  FS_GOAL         the goal text
-  FS_CARDS        the --cards value, comma-separated; empty when none was given
-  FS_INTEGRATES   the --integrates value — the member cap node this integration
-                  merges; empty when none was given
-  FS_BIN          the running binary's own path. A step that runs fs must say
-                  "$FS_BIN": the binary is installed into ~/.fs and is not on
-                  PATH, so a bare fs exits 127. Empty if the path could not be
-                  read, which a step must treat as missing, not as a path
-
-A step names a script the binary ships as "$FS_BIN" script <name> [args...]: the
-scripts are read out of the binary and written nowhere, so there is no
-directory to address and no FS_SCRIPTS. The script's exit status is fs's, so a
-gate run this way can fail.
-
---cards names the batch's cards. It is repeatable, and each value may be a
-comma-separated list.
+--deliver carries the prepared brief the rest of the way: it opens the pane (or
+the --worktree-new workspace), creates the worker's node, starts an agent named
+"dispatch-<type>-<node>" on the launch config, prompts it with the brief, and
+records the delivery close tears down.
 
 --integrates names the member cap node an integration merges. It must exist in
 the cap scope and be a dispatch node; the link is recorded on this dispatch's own
@@ -216,106 +171,57 @@ record rather than from a goal string.
 
 --reviews names the cap node whose change this dispatch reviews. It must exist
 in the cap scope and be a dispatch node, and the link is recorded on this
-dispatch's own task-created payload, together with the revision the review reads:
-the reviewed dispatch's tree as it stands when the review is prepared. A review
-that cannot name a revision is refused, and fs reviews accepts a done review only
-while the change still stands at the revision it read — a review that names none
-does not satisfy the gate at all. It is not --integrates: an integration names
+dispatch's own task-created payload. It is not --integrates: an integration names
 what it merges and lands after it, a review names what it reads and runs before
-the dispatch it is about closes. A dispatch may carry either, both, or neither.
-fs reviews <CAP_NODE> is the read side — the check a close runs to ask whether
-its change was reviewed.
+the dispatch it is about closes. fs reviews <CAP_NODE> is the read side, and a
+review is a node kind with a link — never a gate.
 
 --fixes names the cap nodes this dispatch repairs. Repeatable, because a fix
 round answers more than one dispatch in the ordinary case: the change it repairs
 and the review whose finding it fixes are both open while the fix is made. Each
 must exist in the cap scope and be a dispatch node, and the link is recorded as a
 decision on this dispatch's own node. Those dispatches are open by construction,
-so naming them is what stops the unresolved-dispatch gate from reading them as
+so naming them is what stops the unresolved-dispatch read from treating them as
 open work piled on top of the fix. Without the flag they are open work like any
 other and the round needs --allow-unresolved.
 
 --batch names the batch node this dispatch is a member of. It must be a
 kind: batch node; the member's cap node is recorded as the batch's child
-(parent_node_id), and the tag member is derived so the member playbooks load.
+(parent_node_id).
 
 --worktree-new creates the worktree (herdr worktree create) instead of naming an
 existing one with --worktree; the created workspace and checkout path are
-recorded on the delivery exactly as --worktree records them, so the existing
-teardown removes them with no new flags.`,
+recorded on the delivery exactly as --worktree records them.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
-			"--cards": true, "--integrates": true, "--reviews": true,
+			"--integrates": true, "--reviews": true,
 			"--fixes": true, "--batch": true,
-			"--tag": true, "--also": true, "--without": true,
-			"--confirm": false, "--allow-unresolved": false,
-			"--deliver": false, "--worktree": true, "--worktree-new": false,
+			"--allow-unresolved": false,
+			"--deliver":          false, "--worktree": true, "--worktree-new": false,
 		},
 	},
 	"close": {
-		usage: `Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT [--confirm] [--without-review REASON]
+		usage: `Usage: fs close --node CAP_NODE [--worker PROJECT:NODE] --decision TEXT
        fs close --node CAP_NODE --abandoned --reason TEXT
+
+Close-out is one evidence line and a teardown. It refuses while the worker's node
+is not done, and while the tree has not moved past the revision the dispatch was
+prepared at: HEAD unmoved means nothing reached the repository, so there is
+nothing to close.
+
+The line recorded on the node is the sha HEAD stands at, the base it was measured
+against, and the verdict — which is where the suite result belongs, because the
+cap is what ran the suite. Two cases are reported rather than refused: a project
+that was not a git repository when the dispatch was prepared, and a tree fs
+cannot read a revision from. The line says the deliverable was not checked.
 
 --abandoned closes a dispatch without a verdict, delivered or not. One that was
 never delivered records "abandoned, never delivered: <reason>"; one that was
 delivered records "abandoned after delivery to <project>:<node>: <reason>". It
-skips the exit phase's checks and asks, but not its declared actions: what the
-delivery opened is still torn down, and an action that fails is a warning.
-
---without-review is the review gate's own override, and it is required, not
-optional: the exit phase asks whether this change was reviewed as a check, and
---confirm answers an ask, never a check. So a dispatch that legitimately needs no
-review is closed with --without-review "<why>", which proceeds and records the
-reason as a decision on the node. An unrecorded skip does not exist: the point is
-that a skipped review is visible, not that it is impossible. The reason is
-trimmed, so whitespace is refused with the empty case — and so is a waiver on a
-close that faced no gate at all, whether because it was abandoned (no exit check
-runs) or because its plan carries no review gate (there is none to stand down).
-Recording a waiver there would write "waived the review gate" on a node whose
-close never met one, which is the record asserting what the flag exists to make
-visible.
-
-The exit phase is the plan's phase: exit playbooks, in the order the plan
-recorded. close refuses while the dispatch's trace does not account for every
-step of that plan — every entry step, every work playbook's handover, every exit
-step — naming the playbook, the step and the kind. The trace records what the
-dispatch loaded and ran, not what the worker obeyed, so a step with no line is a
-step that did not happen; the refusal says so rather than implying disobedience.
-
-Every exit check and action runs with the closing dispatch's own inputs in its
-environment, so an exit gate can ask about the dispatch it is gating and act on
-what the delivery opened:
-
-  FS_PROJECT        the worker's project
-  FS_TYPE           the task type
-  FS_NODE           the cap node being closed
-  FS_WORKER         the worker's node as "<project>:<node>"; empty without one
-  FS_CARDS          the --cards the dispatch named, comma-separated, read back
-                    from its recorded plan; empty when it named none, but
-                    present, not missing
-  FS_BASE           the revision the project stood at when the dispatch was
-                    prepared; empty for a project that was not a repository
-                    then, which is what the deliverable check stands down on
-  FS_INTEGRATES     the member this integration merges; empty when it merges none
-  FS_WITHOUT_REVIEW the --without-review reason, empty when the flag was not
-                    given; a step that gates on a review stands down on a
-                    non-empty value, and on empty must run its check
-  FS_PANE           the pane the delivery opened
-  FS_WORKTREE       the worktree workspace the dispatch ran in; empty without one
-  FS_WORKTREE_PATH  that worktree's checkout path; empty without one
-  FS_BIN            the running binary's own path, the same contract the entry
-                    gate gets; it is what the review gate below runs, because
-                    fs is not on PATH and "$FS_BIN" is. It is also how an exit
-                    step names a script the binary ships — "$FS_BIN" script
-                    <name> — since the scripts are read out of the binary and
-                    there is no FS_SCRIPTS to address
-
-Checks run in the tree the dispatch worked in; declared do steps run in the
-project root, so an action that removes the worktree does not stand inside it.`,
+skips the reads, never the teardown: what the delivery opened is still closed.`,
 		flags: map[string]bool{
 			"--node": true, "--worker": true, "--decision": true,
-			"--confirm": false, "--abandoned": false, "--reason": true,
-			"--without-review": true,
+			"--abandoned": false, "--reason": true,
 		},
 		// --worker names the worker node and is a PROJECT:NODE address; --node
 		// names the cap node and is an exact id, resolved in the cap scope.
@@ -455,27 +361,6 @@ members otherwise. A batch with no members is refused rather than read as
 complete. On success the payload carries each member and the resources its
 delivery opened (worktree, checkout path, pane) — what the batch's teardown
 loops over.`,
-		positionals: 1,
-	},
-	"trace": {
-		usage: `Usage: fs trace NODE [--project PROJECT_ID] [--json]
-
-Print one dispatch's trace: the plan it was measured against, then one line per
-step outcome, oldest first. It reads only — no line is ever written by this
-command — so it is safe against a dispatch that is still in flight.
-
-The text view ends with the deviation: what the plan asked for that the trace
-does not account for, or "deviation: none". It is the same comparison close
-refuses on, so what this prints is what would stop a close.
-
-A node with no trace prints "no trace was written for <node>" and exits 1. There
-is no empty timeline that reads as success.
-
-  --project PROJECT_ID  an assertion, not a selector: the trace is located by
-                        NODE alone, and a line whose project field disagrees
-                        with this value is refused.
-  --json                the raw lines, as the JSON envelope`,
-		flags:       map[string]bool{"--project": true, "--json": false},
 		positionals: 1,
 	},
 }

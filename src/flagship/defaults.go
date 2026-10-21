@@ -1,29 +1,17 @@
-// Package flagship ships the playbooks that live in ~/.fs/kb and the scripts a
-// playbook runs, inside the fs binary.
+// Package flagship ships the scripts the binary can run, inside the binary.
 //
-// Both are embedded from defaults/, so the cap's operating contract is
-// versioned with the code instead of being a hand-written file outside git —
-// and neither is written to disk: the playbooks are the last scope `fs kb`
-// resolves against, so a shipped playbook is live without being materialized
-// first, and Script hands a shipped script's body to `fs script` to run.
+// They are embedded from defaults/scripts, so whatever a caller runs with
+// `fs script <name>` is versioned with the code instead of being a hand-written
+// file outside git — and nothing is written to disk: Script hands a shipped
+// script's body to `fs script` to run.
 package flagship
 
 import (
 	"embed"
-	"io/fs"
 )
 
-// embedded holds defaults/kb, one YAML playbook per file, and
-// defaults/scripts, one shell script per file. Adding either is dropping a file
-// in there — nothing in this package changes.
+// embedded holds defaults/scripts, one shell script per file. Adding one is
+// dropping a file in there — nothing in this package changes.
 //
 //go:embed defaults
 var embedded embed.FS
-
-// KB returns the embedded playbooks, rooted at the KB directory so a playbook
-// addresses as "<name>.yaml". The directory is embedded above, so the only way
-// Sub can fail is if that directive and this path disagree — a build-time
-// mistake, reported rather than panicked.
-func KB() (fs.FS, error) {
-	return fs.Sub(embedded, "defaults/kb")
-}

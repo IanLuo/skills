@@ -199,7 +199,6 @@ func TestCLIReportRecordsAndNotifiesTheLiveCap(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, _ := fakeHerdrOnPath(t)
 
 	// The cap claims its own pane, then dispatches a worker.
@@ -319,7 +318,6 @@ func TestCLIReportingIsAllowedWhereCoordinatingIsRefused(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, _ := fakeHerdrOnPath(t)
 
 	seedPane(t, state, "wTEST:p9")
@@ -334,7 +332,7 @@ func TestCLIReportingIsAllowedWhereCoordinatingIsRefused(t *testing.T) {
 	// worked.
 	for _, args := range [][]string{
 		{"dispatch", "--project", "skills", "--type", "dev-task", "--goal", "a worker coordinating"},
-		{"close", "--node", "t-nothing", "--confirm"},
+		{"close", "--node", "t-nothing"},
 		{"cap", "claim"},
 		{"task", "add", "--goal", "a worker writing the cap's scope", "--project", "cap"},
 		{"tell", "skills:" + strings.TrimPrefix(workerRef, "skills:"), "a worker answering as the cap"},
@@ -383,7 +381,6 @@ func TestCLITellResolvesTheDeliveryRecordAndSends(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, _ := fakeHerdrOnPath(t)
 	seedPane(t, state, "wTEST:p9")
 	if _, code := runFSEnv(t, bin, root, claimEnv(env, "wTEST:p9"), "cap", "claim"); code != 0 {

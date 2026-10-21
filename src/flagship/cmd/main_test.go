@@ -1101,8 +1101,8 @@ func TestCLIHelpTopLevel(t *testing.T) {
 	if !strings.Contains(out, "task") {
 		t.Errorf("--help missing 'task': %s", out)
 	}
-	if !strings.Contains(out, "kb") {
-		t.Errorf("--help missing 'kb': %s", out)
+	if strings.Contains(out, "kb ") || strings.Contains(out, "  kb\n") || strings.Contains(out, "trace ") {
+		t.Errorf("--help still lists a deleted command: %s", out)
 	}
 }
 
@@ -1260,10 +1260,8 @@ func TestCLIRejectsUnknownFlags(t *testing.T) {
 		"log":            {"log", "--bogus"},
 		"task add":       {"task", "add", "--goal", "g", "--bogus"},
 		"project create": {"project", "create", "--name", "q", "--bogus"},
-		"kb add":         {"kb", "add", "--name", "n", "--file", "f", "--bogus"},
-		"kb diff":        {"kb", "diff", "n", "--bogus"},
-		"kb prompt":      {"kb", "prompt", "--bogus"},
-		"kb reset":       {"kb", "reset", "n", "--bogus"},
+		"reviews":        {"reviews", "t-1", "--bogus"},
+		"integrated":     {"integrated", "t-1", "--bogus"},
 		"close":          {"close", "--node", "n", "--bogus"},
 		"unfinished":     {"unfinished", "--bogus"},
 	}
@@ -1427,215 +1425,18 @@ func TestCLIStatusCarriesKnowledge(t *testing.T) {
 	}
 }
 
-func TestCLIKBAddGetListEditRemove(t *testing.T) {
-	bin := getFS(t)
-	dir := t.TempDir()
-
-	playbook := `name: dev-prereqs
-entry:
-  - check: test -f docs/prd.md
-  - check: test -f docs/arch.md
-`
-	pbFile := writePlaybook(t, dir, "dev-prereqs", playbook)
-
-	// Helper to run with HOME override.
-	runKB := func(args ...string) (map[string]any, int) {
-		t.Helper()
-		cmd := exec.Command(bin, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "HOME="+testHome(t))
-		out, err := cmd.Output()
-		exitCode := 0
-		if err != nil {
-			if ee, ok := err.(*exec.ExitError); ok {
-				exitCode = ee.ExitCode()
-				if len(out) == 0 {
-					out = ee.Stderr
-				}
-			} else {
-				t.Fatalf("exec: %v", err)
-			}
-		}
-		var resp map[string]any
-		if err := json.Unmarshal(out, &resp); err != nil {
-			t.Fatalf("unmarshal %q: %v", string(out), err)
-		}
-		return resp, exitCode
-	}
-
-	// kb list — the shipped playbooks and nothing else. A fresh home resolves
-	// them all out of the binary, so the list is never empty and a playbook
-	// nobody has written is not a playbook that is missing.
-	resp, code := runKB("kb", "list")
-	if code != 0 {
-		t.Fatalf("list exit %d: %v", code, resp["error"])
-	}
-	if listed := playbooksOf(t, resp); len(listed) != len(shippedPlaybooks) {
-		t.Errorf("expected the %d shipped playbooks, got %d: %v", len(shippedPlaybooks), len(listed), listed)
-	} else if _, ok := listed["dev-prereqs"]; ok {
-		t.Errorf("dev-prereqs is listed before it was added: %v", listed)
-	}
-
-	// kb add.
-	resp, code = runKB("kb", "add", "--name", "dev-prereqs", "--file", pbFile)
-	if code != 0 {
-		t.Fatalf("add exit %d: %v", code, resp["error"])
-	}
-
-	// kb get.
-	resp, code = runKB("kb", "get", "dev-prereqs")
-	if code != 0 {
-		t.Fatalf("get exit %d: %v", code, resp["error"])
-	}
-	pbData := resp["data"].(map[string]any)
-	if pbData["name"] != "dev-prereqs" {
-		t.Errorf("name: %v", pbData["name"])
-	}
-	if _, ok := pbData["entry"].([]any); !ok {
-		t.Errorf("entry section missing: %v", pbData)
-	}
-
-	// kb list — the shipped playbooks plus the one just added, which has no
-	// shipped default behind it and so is local to this home.
-	resp, code = runKB("kb", "list")
-	if code != 0 {
-		t.Fatalf("list exit %d: %v", code, resp["error"])
-	}
-	listed := playbooksOf(t, resp)
-	if len(listed) != len(shippedPlaybooks)+1 {
-		t.Fatalf("expected the shipped playbooks plus dev-prereqs, got %d: %v", len(listed), listed)
-	}
-	if got := listed["dev-prereqs"]["state"]; got != "local" {
-		t.Errorf("an added playbook state = %v, want local", got)
-	}
-
-	// kb edit.
-	updated := `name: dev-prereqs
-entry:
-  - check: test -f docs/prd.md
-  - check: test -f docs/arch.md
-  - check: go vet ./...
-`
-	updatedFile := writePlaybook(t, dir, "dev-prereqs-updated", updated)
-	resp, code = runKB("kb", "edit", "--name", "dev-prereqs", "--file", updatedFile)
-	if code != 0 {
-		t.Fatalf("edit exit %d: %v", code, resp["error"])
-	}
-
-	// Verify edit.
-	resp, _ = runKB("kb", "get", "dev-prereqs")
-	steps := resp["data"].(map[string]any)["entry"].([]any)
-	if len(steps) != 3 {
-		t.Fatalf("expected 3 steps after edit, got %d", len(steps))
-	}
-
-	// kb remove.
-	resp, code = runKB("kb", "remove", "dev-prereqs")
-	if code != 0 {
-		t.Fatalf("remove exit %d: %v", code, resp["error"])
-	}
-
-	// Verify removed.
-	resp, code = runKB("kb", "get", "dev-prereqs")
-	if code != 1 {
-		t.Errorf("expected exit 1 after remove, got %d", code)
-	}
-}
-
-// fs kb add refuses an invalid playbook, naming the offending step and the
-// kinds its type allows.
-func TestCLIKBAddRefusesInvalidPlaybooks(t *testing.T) {
-	bin := getFS(t)
-	dir := t.TempDir()
-
-	cases := []struct {
-		name string
-		pb   string
-		want string
-	}{
-		{
-			name: "entry-do",
-			pb: `name: entry-do
-entry:
-  - check: test -f AGENTS.md
-  - do: rm -rf build
-`,
-			want: "allowed kinds: check, ask, say, include",
-		},
-		{
-			name: "cap-ask",
-			pb: `name: cap-ask
-cap:
-  - ask: is the acceptance check stated?
-`,
-			want: "allowed kinds: say, include",
-		},
-		{
-			name: "nowhere-two",
-			pb: `name: nowhere-two
-phase: routing
-steps:
-  - say: dev-task
-`,
-			want: "removed field `phase: routing`",
-		},
-		{
-			name: "work-check",
-			pb: `name: work-check
-work:
-  - check: test -f AGENTS.md
-`,
-			want: "allowed kinds: say, use, include",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pbFile := writePlaybook(t, dir, tc.name, tc.pb)
-			resp, code := runFS(t, bin, dir, "kb", "add", "--name", tc.name, "--file", pbFile)
-			if code != 1 {
-				t.Fatalf("add exit = %d, want 1: %v", code, resp)
-			}
-			if resp["ok"] != false {
-				t.Errorf("ok = %v, want false", resp["ok"])
-			}
-			errMsg, _ := resp["error"].(string)
-			if !strings.Contains(errMsg, tc.want) {
-				t.Errorf("error %q must name %q", errMsg, tc.want)
-			}
-		})
-	}
-}
-
-const dispatchPlaybook = `name: code-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: test -f AGENTS.md
-  - check: grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' .
-  - ask: a locked PRD is present, and it names this one deliverable
-  - ask: is the acceptance check for this deliverable stated
-`
-
-// fs dispatch prepares the brief from the playbook and the project root, and
-// records the cap's node in the cap scope without registering "cap".
+// fs dispatch prepares a brief from code alone: the launch config (contract R8),
+// every worker's standing obligations, the locked docs the tree carries, and the
+// node the cap just made. No playbook is written anywhere: a missing file cannot
+// leave a worker started with no arguments, which is the round a 401 and an empty
+// turn cost.
 func TestCLIDispatchPreparesBrief(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("# agents\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "prd.md"), []byte("<!-- specs:locked: prd -->\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileIn(t, root, "AGENTS.md", "# agents\n")
+	writeFileIn(t, root, "docs/prd.md", "<!-- specs:locked: prd -->\n")
 
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-
-	writeKBPlaybook(t, testHome(t), "code-entry", dispatchPlaybook)
 
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 0 {
@@ -1643,29 +1444,18 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 	}
 	data := resp["data"].(map[string]any)
 
-	checklist := data["checklist"].([]any)
-	if len(checklist) != 4 {
-		t.Fatalf("checklist has %d items, want the 2 checks + 2 asks", len(checklist))
+	if data["engine"] != "herdr" || data["agent"] != "pi" {
+		t.Errorf("launch config = %v/%v, want herdr/pi", data["engine"], data["agent"])
 	}
-	byBody := map[string]map[string]any{}
-	for _, raw := range checklist {
-		item := raw.(map[string]any)
-		byBody[item["body"].(string)] = item
+	args := []string{}
+	for _, raw := range data["agent_args"].([]any) {
+		args = append(args, raw.(string))
 	}
-	agentsCheck, ok := byBody["test -f AGENTS.md"]
-	if !ok {
-		t.Fatalf("AGENTS.md check missing from the checklist: %v", byBody)
+	if got, want := strings.Join(args, " "), "--provider magpie --model opencode-go/deepseek-v4.1-flash"; got != want {
+		t.Errorf("agent_args = %q, want %q", got, want)
 	}
-	if agentsCheck["kind"] != "check" || agentsCheck["status"] != "pass" {
-		t.Errorf("AGENTS.md check = %v, want a passing check", agentsCheck)
-	}
-	grepBody := "grep -rl -e 'specs:locked' -e 'design:locked' --include='*.md' ."
-	if grepCheck, ok := byBody[grepBody]; !ok {
-		t.Fatalf("locked-doc check missing from the checklist: %v", byBody)
-	} else if grepCheck["status"] != "pass" {
-		t.Errorf("locked-doc check = %v, want pass", grepCheck)
-	} else if out, _ := grepCheck["output"].(string); !strings.Contains(out, filepath.Join("docs", "prd.md")) {
-		t.Errorf("locked-doc check output = %q, want the matched doc", out)
+	if obligations, _ := data["obligations"].([]any); len(obligations) == 0 {
+		t.Error("the brief carries no obligations: a worker with no standing rules has nothing to write its node with")
 	}
 
 	locked := data["locked_docs"].([]any)
@@ -1706,89 +1496,6 @@ func TestCLIDispatchPreparesBrief(t *testing.T) {
 	if code == 0 {
 		t.Errorf("cap must never be registered as a project, got %v", resp)
 	}
-}
-
-// The parallel gate is what --cards exists for. The shipped batch playbook runs
-// check-parallel.sh with $FS_CARDS, so the batch's disjointness is checked
-// mechanically against *this* dispatch's cards — the one thing a static shell
-// string could not do.
-//
-// The shipped playbook is used as shipped, so a gate that stopped reading
-// $FS_CARDS would fail here rather than pass on a test-local stand-in. Nothing
-// installs the script into the fixture repo or anywhere else: it is the
-// binary's own, run as "$FS_BIN" script. This test used to copy
-// bin/check-parallel.sh in by hand, which is the defect it now covers — the
-// playbook named a path only this repo had.
-func TestCLIDispatchCardsReachTheParallelGate(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	goGit(t, root, "init", "-q")
-	writeFileIn(t, root, "a.md", "# A\n\n## Files\nsrc/a.go\n")
-	writeFileIn(t, root, "b.md", "# B\n\n## Files\nsrc/b.go\n")
-	writeFileIn(t, root, "c.md", "# C\n\n## Files\nsrc/a.go\n")
-
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeWorkerPlaybook(t)
-	writeKBPlaybook(t, testHome(t), batchPb, shippedDefault(t, batchPb))
-	gateBody := shippedStep(t, shippedDefault(t, batchPb), "check", "$FS_CARDS")
-	env, _, _ := fakeHerdrOnPath(t)
-
-	// Disjoint cards pass, and the gate's output says what it intersected.
-	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch", "--cards", "a.md,b.md")
-	if code != 0 {
-		t.Fatalf("disjoint cards must pass the gate, exit %d: %v", code, resp["error"])
-	}
-	if out := checkOutputOf(t, resp, gateBody); !strings.Contains(out, "2 cards, no overlapping paths") {
-		t.Errorf("gate output = %q, want the two cards it checked", out)
-	}
-
-	// --cards is repeatable, and the two forms name the same batch.
-	resolveCapScope(t, bin, root)
-	repeated, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch", "--cards", "a.md", "--cards", "b.md")
-	if code != 0 {
-		t.Fatalf("--cards twice must name the same batch, exit %d: %v", code, repeated["error"])
-	}
-	if out := checkOutputOf(t, repeated, gateBody); !strings.Contains(out, "2 cards") {
-		t.Errorf("gate output = %q, want two cards", out)
-	}
-
-	// Overlapping cards are refused, and the refusal names the shared path.
-	resolveCapScope(t, bin, root)
-	overlap, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch", "--cards", "a.md,c.md")
-	if code != 1 {
-		t.Fatalf("overlapping cards must be refused, exit %d: %v", code, overlap)
-	}
-	errMsg, _ := overlap["error"].(string)
-	for _, want := range []string{"src/a.go", "a.md", "c.md"} {
-		if !strings.Contains(errMsg, want) {
-			t.Errorf("refusal %q must name %q", errMsg, want)
-		}
-	}
-
-	// With no cards the gate refuses instead of passing vacuously, and the
-	// message names the flag the caller forgot.
-	resolveCapScope(t, bin, root)
-	noCards, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "batch", "--goal", "batch")
-	if code != 1 {
-		t.Fatalf("a gate with no cards must refuse, exit %d: %v", code, noCards)
-	}
-	errMsg, _ = noCards["error"].(string)
-	if !strings.Contains(errMsg, "--cards") {
-		t.Errorf("refusal %q must name --cards", errMsg)
-	}
-}
-
-// checkOutputOf returns the output of the checklist item with the given body.
-func checkOutputOf(t *testing.T, resp map[string]any, body string) string {
-	t.Helper()
-	for _, raw := range resp["data"].(map[string]any)["checklist"].([]any) {
-		if item := raw.(map[string]any); item["body"] == body {
-			out, _ := item["output"].(string)
-			return out
-		}
-	}
-	t.Fatalf("checklist has no item %q: %v", body, resp["data"])
-	return ""
 }
 
 // resolveCapScope marks every open cap node done, so the next dispatch is not
@@ -1847,104 +1554,36 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 // standing engine and agent, so it is live without being written to disk first.
 // (The dispatch names a tag, because a dispatch that selects no protocol at all
 // is refused — see TestCLIDispatchRefusesATypeWithNoProtocol.)
-func TestCLIDispatchResolvesTheRealizationOutOfTheBinary(t *testing.T) {
+// The launch config is in code, not in a playbook: a dispatch resolves it with no
+// KB present at all, and nothing is written into HOME to make that true. This is
+// the property that failed once — a dispatch reported as running that started a
+// worker with no provider route.
+func TestCLIDispatchLaunchConfigIsInCode(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	home := testHome(t)
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
 
-	writeKBPlaybook(t, home, "code-only", `name: code-only
-applies_when: code
-entry:
-  - check: test -f AGENTS.md
-`)
-
-	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "what", "--tag", "code",
-		"--goal", "x", "--confirm")
+	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "what", "--goal", "x")
 	if code != 0 {
-		t.Fatalf("a dispatch must resolve the shipped worker's realization, exit %d: %v", code, resp)
+		t.Fatalf("a dispatch must carry the launch config from code, exit %d: %v", code, resp)
 	}
 	data := resp["data"].(map[string]any)
-	worker := shippedDefault(t, "worker")
-	for _, field := range []string{"engine", "agent"} {
-		want := shippedField(t, worker, field)
-		if want == "" {
-			t.Fatalf("the shipped worker declares no %s to resolve", field)
-		}
-		if data[field] != want {
-			t.Errorf("dispatch %s = %v, want the shipped worker's %q", field, data[field], want)
-		}
+	if data["engine"] != "herdr" || data["agent"] != "pi" {
+		t.Errorf("launch config = %v/%v, want herdr/pi", data["engine"], data["agent"])
+	}
+	args := []string{}
+	for _, raw := range data["agent_args"].([]any) {
+		args = append(args, raw.(string))
+	}
+	if got, want := strings.Join(args, " "), "--provider magpie --model opencode-go/deepseek-v4.1-flash"; got != want {
+		t.Errorf("agent_args = %q, want %q", got, want)
 	}
 
-	// Nothing was written: the realization came out of the binary.
-	if _, err := os.Stat(filepath.Join(home, ".fs", "kb", "worker.yaml")); !os.IsNotExist(err) {
-		t.Errorf("the dispatch materialised the shipped worker: %v", err)
+	// Nothing was written: the config came out of the binary.
+	if _, err := os.Stat(filepath.Join(home, ".fs", "kb")); !os.IsNotExist(err) {
+		t.Errorf("the dispatch materialised a knowledge center: %v", err)
 	}
-}
-
-// A dispatch that selects no protocol is refused, from the shipped set as much
-// as from HOME's KB: design-task and init-context name types no playbook
-// declares, so the only thing that matched was the standing worker — a plan
-// with no entry, work or exit steps for that type — and running it would be the
-// silent degradation the refusal exists to stop. The refusal names the type it
-// could not place. A dispatch that does select a protocol still proceeds.
-func TestCLIDispatchRefusesATypeWithNoProtocol(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-
-	for _, taskType := range []string{"design-task", "init-context"} {
-		resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", taskType, "--goal", "x")
-		if code != 1 {
-			t.Fatalf("dispatch --type %s exit %d, want 1: %v", taskType, code, resp)
-		}
-		errMsg, _ := resp["error"].(string)
-		for _, want := range []string{`"` + taskType + `"`, "worker", "no protocol"} {
-			if !strings.Contains(errMsg, want) {
-				t.Errorf("refusal for %s = %q, want it to mention %q", taskType, errMsg, want)
-			}
-		}
-	}
-
-	// The plan the refusal reports is the standing declaration alone, which is
-	// the whole reason it refuses.
-	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--tag", "code",
-		"--goal", "x", "--confirm")
-	if code != 0 {
-		t.Fatalf("a dispatch that selects code's protocol must proceed, exit %d: %v", code, resp)
-	}
-}
-
-// shippedField returns a playbook body's value for one top-level field.
-func shippedField(t *testing.T, body, field string) string {
-	t.Helper()
-	for _, line := range strings.Split(body, "\n") {
-		if val, ok := strings.CutPrefix(line, field+":"); ok {
-			return strings.TrimSpace(val)
-		}
-	}
-	return ""
-}
-
-// writeKBPlaybook installs a playbook in the isolated home's knowledge center.
-func writeKBPlaybook(t *testing.T, home, name, content string) {
-	t.Helper()
-	kbDir := filepath.Join(home, ".fs", "kb")
-	if err := os.MkdirAll(kbDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(kbDir, name+".yaml"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// writeWorkerPlaybook writes the standing worker playbook — engine: herdr,
-// agent: pi — into the isolated home. A dispatch resolves its realization from a
-// playbook, and the shipped worker is the one that declares it; these CLI tests
-// write their own gates, so they bring the standing declaration with them.
-func writeWorkerPlaybook(t *testing.T) {
-	t.Helper()
-	writeKBPlaybook(t, testHome(t), "worker", shippedDefault(t, "worker"))
 }
 
 // scopeTasks returns every task in a scope, via fs status.
@@ -2050,88 +1689,12 @@ func TestCLIUnfinishedListsEveryScopeFromTheStore(t *testing.T) {
 	}
 }
 
-// A failing check stops the run at that check, and --confirm overrides it while
-// recording the override on the cap node.
-func TestCLIDispatchFailsFastThenConfirm(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	sentinel := filepath.Join(t.TempDir(), "dispatch-check3-ran")
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeWorkerPlaybook(t)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, fmt.Sprintf(`name: code-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-  - check: false
-  - check: touch %s
-`, sentinel))
-
-	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "sample")
-	if code != 1 {
-		t.Fatalf("exit = %d, want 1: %v", code, resp)
-	}
-	if resp["ok"] != false {
-		t.Errorf("ok = %v, want false", resp["ok"])
-	}
-	errMsg, _ := resp["error"].(string)
-	// The refusal names the playbook and the step, so the cap knows which
-	// protocol stopped it rather than only that something did.
-	for _, want := range []string{"entry check", `"false"`, codeEntryPb, "step 2", "tell the user", "--confirm"} {
-		if !strings.Contains(errMsg, want) {
-			t.Errorf("error %q must mention %q", errMsg, want)
-		}
-	}
-	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
-		t.Errorf("check 3 ran despite check 2 failing: %v", err)
-	}
-	// The refusal leaves its evidence behind without inventing an open dispatch:
-	// the attempt's node exists, is done, and carries the refusal as its
-	// decision, so the cap can read what stopped it — and the next dispatch is
-	// not gated by an attempt that never got as far as a worker.
-	refused := capTask(t, bin, root, "dispatch dev-task: sample")
-	if refused["status"] != "done" {
-		t.Errorf("a refused dispatch's node status = %v, want done: it must not stand as an open dispatch", refused["status"])
-	}
-	refusal := `dispatch refused at entry: entry check "false" (playbook code-entry step 2) failed: ` +
-		`(no output); tell the user and fix it, or re-run with --confirm to proceed`
-	if !containsString(refused["decisions"].([]any), refusal) {
-		t.Errorf("refused node decisions = %q, want %q", refused["decisions"], refusal)
-	}
-
-	resp, code = runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "confirmed")
-	if code != 0 {
-		t.Fatalf("--confirm exit = %d: %v", code, resp["error"])
-	}
-	if _, err := os.Stat(sentinel); err != nil {
-		t.Errorf("--confirm must run every check; check 3 did not run: %v", err)
-	}
-
-	task := capTask(t, bin, root, "dispatch dev-task: confirmed")
-	want := `--confirm overrode the failing check "false" (output: (no output))`
-	if !containsString(task["decisions"].([]any), want) {
-		t.Errorf("cap decisions = %v, want %q", task["decisions"], want)
-	}
-
-	// Clean up: an unresolved dispatch node makes later dispatches refuse.
-	nodeID := resp["data"].(map[string]any)["cap_node_id"].(string)
-	runFS(t, bin, root, "task", "update", nodeID, "--status", "done", "--decision", "test cleanup", "--project", "cap")
-}
-
 // An unresolved dispatch stops the next one, and --allow-unresolved overrides
 // that gate — and only that gate — while naming the dispatch it left open.
 func TestCLIDispatchRefusesWhileUnresolvedDispatchExists(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, `name: code-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
 
 	first, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "first")
 	if code != 0 {
@@ -2151,15 +1714,6 @@ entry:
 		if !strings.Contains(errMsg, want) {
 			t.Errorf("error %q must mention %q", errMsg, want)
 		}
-	}
-
-	// --confirm is the failing-check override and must not pass this gate.
-	byConfirm, code := runFS(t, bin, root, "dispatch", "--confirm", "--project", "skills", "--type", "dev-task", "--goal", "second")
-	if code != 1 {
-		t.Fatalf("--confirm must not override an unresolved dispatch: exit %d: %v", code, byConfirm)
-	}
-	if msg, _ := byConfirm["error"].(string); !strings.Contains(msg, "unresolved dispatches") {
-		t.Errorf("--confirm refusal %q must still be about the unresolved dispatch", msg)
 	}
 
 	confirmed, code := runFS(t, bin, root, "dispatch", "--allow-unresolved", "--project", "skills", "--type", "dev-task", "--goal", "second")
@@ -2541,7 +2095,6 @@ func TestCLIDeliverSplitsASiblingPaneAndCloseTearsItDown(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, script := fakeHerdrOnPath(t)
 
 	capNode, tabID, paneID, workerRef := deliverProbe(t, bin, root, env)
@@ -2639,6 +2192,67 @@ func TestCLIDeliverSplitsASiblingPaneAndCloseTearsItDown(t *testing.T) {
 	}
 }
 
+// The deliverable check is one line, and it replaced a script: HEAD must have
+// moved past the revision the dispatch was prepared at, because that is the one
+// thing git can answer about whether the work reached the repository. The line
+// recorded on the node names both shas; the verdict, which carries the suite
+// result, is recorded beside it.
+func TestCLICloseRefusesUntilTheTreeMoves(t *testing.T) {
+	bin := getFS(t)
+	root := t.TempDir()
+	goGit(t, root, "init", "-q", "-b", "main")
+	writeFileIn(t, root, "seed.txt", "seed\n")
+	goGit(t, root, "add", "seed.txt")
+	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
+	base := gitOut(t, root, "rev-parse", "HEAD")
+
+	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
+	env, _, _ := fakeHerdrOnPath(t)
+	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
+	finishWorker(t, bin, root, workerRef)
+
+	// Nothing has been committed since the dispatch was prepared, so there is no
+	// deliverable to close.
+	refused, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "read the worker node; verified")
+	if code != 1 {
+		t.Fatalf("close with an unmoved HEAD must be refused, exit %d: %v", code, refused)
+	}
+	if errMsg, _ := refused["error"].(string); !strings.Contains(errMsg, "has not moved past") || !strings.Contains(errMsg, base) {
+		t.Errorf("refusal %q must say HEAD has not moved past %s", errMsg, base)
+	}
+	if task := capTask(t, bin, root, "dispatch dev-task: sample"); task["status"] == "done" {
+		t.Errorf("a refused close marked the cap node done: %v", task)
+	}
+
+	// The work reaches the repository.
+	writeFileIn(t, root, "work.txt", "the work\n")
+	goGit(t, root, "add", "work.txt")
+	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "the work")
+	head := gitOut(t, root, "rev-parse", "HEAD")
+
+	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "read the worker node; verified, suite green")
+	if code != 0 {
+		t.Fatalf("close exit %d: %v", code, closed["error"])
+	}
+	evidence, _ := closed["data"].(map[string]any)["evidence"].(string)
+	for _, want := range []string{"HEAD " + head, "base " + base, "the deliverable reached the repository"} {
+		if !strings.Contains(evidence, want) {
+			t.Errorf("evidence line %q must carry %q", evidence, want)
+		}
+	}
+
+	task := capTask(t, bin, root, "dispatch dev-task: sample")
+	if task["status"] != "done" {
+		t.Errorf("cap node status = %v, want done", task["status"])
+	}
+	if !containsString(task["decisions"].([]any), evidence) {
+		t.Errorf("cap decisions = %v, want the evidence line recorded", task["decisions"])
+	}
+	if !containsString(task["decisions"].([]any), "read the worker node; verified, suite green") {
+		t.Errorf("cap decisions = %v, want the verdict the close rested on", task["decisions"])
+	}
+}
+
 // A worktree dispatch starts the worker inside the worktree, not the main
 // checkout. The worktree workspace already has a root pane at the worktree's own
 // checkout, so fs binds the worker to that pane and splits nothing: a split of
@@ -2648,7 +2262,6 @@ func TestCLIDeliverInAWorktreeStartsTheWorkerInTheWorktreeRootPane(t *testing.T)
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	worktree := t.TempDir()
 	env, state, script := fakeHerdrOnPath(t)
 	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
@@ -2689,348 +2302,12 @@ func TestCLIDeliverInAWorktreeStartsTheWorkerInTheWorktreeRootPane(t *testing.T)
 	}
 }
 
-// The exit gate's checks run in the worktree the dispatch worked in, not the
-// main checkout. This is the live failure in miniature: the project root is
-// dirty and the worktree is clean and merged, so the shipped checks pass in the
-// worktree and would fail in the root. The dirtiness is asserted at the time, so
-// the test proves what it claims rather than assuming it.
-func TestCLICloseRunsExitChecksInTheWorktreeNotTheMainCheckout(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
-	// The shipped parallel-exit checks, verbatim: no uncommitted files, and
-	// the branch merged into main.
-	writeKBPlaybook(t, testHome(t), codeExitPb, `name: code-exit
-exit:
-  - check: test -z "$(git status --porcelain)"
-  - check: git merge-base --is-ancestor HEAD main
-`)
-
-	// A real repository with a real linked worktree, so the checks shell out to
-	// git exactly as they do live.
-	goGit(t, root, "init", "-q", "-b", "main")
-	writeFileIn(t, root, "seed.txt", "seed\n")
-	goGit(t, root, "add", "seed.txt")
-	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
-	worktree := filepath.Join(t.TempDir(), "wt")
-	goGit(t, root, "worktree", "add", "-q", worktree, "-b", "batch-test-X")
-
-	writeFileIn(t, root, "uncommitted.txt", "another agent's work\n")
-	if dirty := gitOut(t, root, "status", "--porcelain"); !strings.Contains(dirty, "uncommitted.txt") {
-		t.Fatalf("the main checkout is not dirty (%q); the test would prove nothing", dirty)
-	}
-	if dirty := gitOut(t, worktree, "status", "--porcelain"); dirty != "" {
-		t.Fatalf("the worktree is not clean (%q); the test would prove nothing", dirty)
-	}
-
-	env, _, _ := fakeHerdrOnPath(t)
-	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode, _, _, workerRef := deliverProbeGoal(t, bin, root, env, "sample", "--worktree", "wWT")
-	finishWorker(t, bin, root, workerRef)
-
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("close exit %d: %v — the checks pass in the worktree even though the main checkout is dirty", code, closed["error"])
-	}
-	data := closed["data"].(map[string]any)
-	if data["cleanup"] != "exit phase code-exit: 2 checks passed in worktree wWT" {
-		t.Errorf("cleanup = %v, want the checks reported and the tree they ran in", data["cleanup"])
-	}
-}
-
-// realWorktree turns root into a real git repository with a real linked worktree
-// and returns the checkout path plus the path git itself reports for it: git
-// resolves symlinks, the delivery record holds what herdr reported.
-func realWorktree(t *testing.T, root string) (worktree, resolved string) {
-	t.Helper()
-	goGit(t, root, "init", "-q", "-b", "main")
-	writeFileIn(t, root, "seed.txt", "seed\n")
-	goGit(t, root, "add", "seed.txt")
-	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
-	worktree = filepath.Join(t.TempDir(), "wt")
-	goGit(t, root, "worktree", "add", "-q", worktree, "-b", "batch-test-a")
-
-	var err error
-	if resolved, err = filepath.EvalSymlinks(worktree); err != nil {
-		t.Fatalf("resolve worktree %s: %v", worktree, err)
-	}
-	return worktree, resolved
-}
-
-// assertWorktreeListed is the precondition the removal tests assert at the time,
-// so a close that passes proves something rather than assuming the leak.
-func assertWorktreeListed(t *testing.T, root, resolved string) {
-	t.Helper()
-	if listed := gitOut(t, root, "worktree", "list", "--porcelain"); !strings.Contains(listed, resolved) {
-		t.Fatalf("git does not list %s before close; the test would prove nothing:\n%s", resolved, listed)
-	}
-}
-
-// assertWorktreeGone is what "the worktree is gone" means: the checkout is gone
-// from disk, and git no longer lists it.
-func assertWorktreeGone(t *testing.T, root, worktree, resolved string) {
-	t.Helper()
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Errorf("worktree %s is still on disk (stat err = %v)", worktree, err)
-	}
-	if listed := gitOut(t, root, "worktree", "list", "--porcelain"); strings.Contains(listed, resolved) {
-		t.Errorf("git still lists the worktree %s:\n%s", resolved, listed)
-	}
-}
-
-// shippedTeardown returns the do bodies a shipped cleanup playbook declares, so
-// a CLI test runs the commands fs actually ships rather than a restatement that
-// could drift from them.
-func shippedTeardown(t *testing.T, playbook string) []string {
-	t.Helper()
-	var steps []string
-	for _, line := range strings.Split(shippedDefault(t, playbook), "\n") {
-		line = strings.TrimSpace(line)
-		if body, ok := strings.CutPrefix(line, "- do: "); ok {
-			steps = append(steps, body)
-		}
-	}
-	if len(steps) == 0 {
-		t.Fatalf("shipped %s declares no do steps", playbook)
-	}
-	return steps
-}
-
-// writeCleanupWithTeardown writes a cleanup playbook whose checks are checks and
-// whose actions are the shipped exit playbook's declared teardown. It declares
-// no applies_when, so it is in every dispatch's plan: these tests are about the
-// teardown, not about which tags select it.
-func writeCleanupWithTeardown(t *testing.T, home, name, shipped string, checks ...string) {
-	t.Helper()
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "name: %s\nexit:\n", name)
-	for _, check := range checks {
-		fmt.Fprintf(&sb, "  - check: %s\n", check)
-	}
-	for _, action := range shippedTeardown(t, shipped) {
-		fmt.Fprintf(&sb, "  - do: %s\n", action)
-	}
-	writeKBPlaybook(t, home, name, sb.String())
-}
-
-// mergeIntoMain commits work on the linked worktree's branch and fast-forwards
-// main onto it. The declared branch step refuses a branch that is not merged, so
-// a teardown test has to start from a merged one.
-func mergeIntoMain(t *testing.T, root, worktree, branch string) {
-	t.Helper()
-	writeFileIn(t, worktree, "work.txt", "work\n")
-	goGit(t, worktree, "add", "work.txt")
-	goGit(t, worktree, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "work")
-	goGit(t, root, "merge", "-q", "--ff-only", branch)
-}
-
-// deliverWorktreeDispatch prepares and delivers a dev-task dispatch bound to a
-// real worktree workspace, and marks the worker's node done so the close-out
-// gate has something to sign off. It returns the cap node.
-func deliverWorktreeDispatch(t *testing.T, bin, root string, env []string, worktree, ws string) string {
-	t.Helper()
-	delivered, code := runFSEnv(t, bin, root, env,
-		"dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", ws)
-	if code != 0 {
-		t.Fatalf("dispatch --deliver exit %d: %v", code, delivered["error"])
-	}
-	data := delivered["data"].(map[string]any)
-	if path, _ := data["delivery"].(map[string]any)["worktree_path"].(string); path != worktree {
-		t.Errorf("delivery worktree_path = %q, want the worktree %s", path, worktree)
-	}
-	finishWorker(t, bin, root, data["worker_node"].(string))
-	return data["cap_node_id"].(string)
-}
-
-// The acceptance check this whole path exists for: a dispatch runs in a real
-// worktree on its own branch, close runs the teardown the shipped playbook
-// declares, and both the checkout and the branch are gone afterwards. The steps
-// are read from the shipped default, so this exercises the commands fs ships.
-func TestCLICloseTearsDownTheWorktreeAndBranchByTheDeclaredSteps(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
-
-	worktree, resolved := realWorktree(t, root)
-	mergeIntoMain(t, root, worktree, "batch-test-a")
-	assertWorktreeListed(t, root, resolved)
-
-	env, _, _ := fakeHerdrOnPath(t)
-	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverWorktreeDispatch(t, bin, root, env, worktree, "wWT")
-
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("close exit %d: %v", code, closed["error"])
-	}
-	result := closed["data"].(map[string]any)
-	if warning := result["warning"]; warning != nil {
-		t.Errorf("warning = %v, want none", warning)
-	}
-	if actions, _ := result["actions"].([]any); len(actions) != 3 {
-		t.Errorf("actions = %v, want the declared teardown reported", result["actions"])
-	}
-	assertWorktreeGone(t, root, worktree, resolved)
-	if branches := gitOut(t, root, "branch", "--format=%(refname:short)"); strings.Contains(branches, "batch-test-a") {
-		t.Errorf("branch batch-test-a still exists after close:\n%s", branches)
-	}
-}
-
-// The state that leaked two checkouts: herdr no longer knows the workspace at
-// all — its agent having ended — while the git worktree is still there. The
-// recorded path is what keeps the declared teardown possible: close runs the
-// steps with the path from the delivery record and never asks herdr.
-func TestCLICloseTearsDownFromTheRecordedPathWhenHerdrForgotTheWorkspace(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
-
-	worktree, resolved := realWorktree(t, root)
-	mergeIntoMain(t, root, worktree, "batch-test-a")
-
-	env, _, _ := fakeHerdrOnPath(t)
-	deliverEnv := append(append([]string{}, env...), "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverWorktreeDispatch(t, bin, root, deliverEnv, worktree, "wWT")
-
-	// Close without the worktree environment: every herdr call about wWT reports
-	// workspace_not_found, and the recorded path is all the steps need.
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("close exit %d: %v — a forgotten workspace must not cost the close its footing", code, closed["error"])
-	}
-	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
-		t.Errorf("warning = %v, want none", warning)
-	}
-	assertWorktreeGone(t, root, worktree, resolved)
-}
-
-// A declared action that fails refuses the close. This is the whole point of
-// moving the teardown into the playbook: the failure is a refusal the cap has to
-// answer, not a warning nobody reads. The node stays open and the checkout stays
-// put, so the cap can fix it and close again.
-func TestCLICloseRefusesWhenADeclaredActionFails(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
-
-	worktree, resolved := realWorktree(t, root)
-	mergeIntoMain(t, root, worktree, "batch-test-a")
-	// An untracked file makes `git worktree remove` refuse without --force: the
-	// declared step reports that rather than forcing past it.
-	writeFileIn(t, worktree, "untracked.txt", "left behind\n")
-
-	env, _, _ := fakeHerdrOnPath(t)
-	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverWorktreeDispatch(t, bin, root, env, worktree, "wWT")
-
-	resp, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 1 {
-		t.Fatalf("exit = %d, want 1: %v", code, resp)
-	}
-	errMsg, _ := resp["error"].(string)
-	for _, want := range []string{"exit action failed", teardownExitPb, "git worktree remove", "untracked files"} {
-		if !strings.Contains(errMsg, want) {
-			t.Errorf("error %q must mention %q", errMsg, want)
-		}
-	}
-	// The refusal left everything where it was: the checkout is still there, so
-	// the cap can clean it and close again.
-	assertWorktreeListed(t, root, resolved)
-	if task := capTask(t, bin, root, "dispatch dev-task: sample"); task["status"] == "done" {
-		t.Errorf("cap node status = %v, a refused close must leave it open", task["status"])
-	}
-
-	// Fixing what the step reported and closing again succeeds: the refusal is
-	// the cap's to answer, not a dead end.
-	if err := os.Remove(filepath.Join(worktree, "untracked.txt")); err != nil {
-		t.Fatal(err)
-	}
-	retried, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("close after fixing the action exit %d: %v", code, retried["error"])
-	}
-	assertWorktreeGone(t, root, worktree, resolved)
-}
-
-// Already gone is not a failure. A worktree removed out of band, and a second
-// close of a node that is already done, both run the declared steps into their
-// no-op case and succeed — a retry after a partial teardown must not fail on
-// "already removed".
-func TestCLICloseDoesNotFailWhenTheWorktreeIsAlreadyGone(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
-	writeCleanupWithTeardown(t, testHome(t), teardownExitPb, codePb, "true")
-
-	worktree, resolved := realWorktree(t, root)
-	mergeIntoMain(t, root, worktree, "batch-test-a")
-
-	env, _, _ := fakeHerdrOnPath(t)
-	env = append(env, "HERDR_TEST_WORKTREE_WS=wWT", "HERDR_TEST_WORKTREE_CWD="+worktree)
-	capNode := deliverWorktreeDispatch(t, bin, root, env, worktree, "wWT")
-
-	// The tree and branch are removed by hand, as a retry after a partial
-	// teardown leaves them: the declared steps must see nothing to do.
-	goGit(t, root, "worktree", "remove", worktree)
-	goGit(t, root, "branch", "-D", "batch-test-a")
-	assertWorktreeGone(t, root, worktree, resolved)
-
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("an already-removed worktree must not fail the close: %v", closed["error"])
-	}
-	if warning := closed["data"].(map[string]any)["warning"]; warning != nil {
-		t.Errorf("warning = %v, want none for an already-removed worktree", warning)
-	}
-
-	// And a second close of the same, now done, node is a no-op too.
-	again, code := runFSEnv(t, bin, root, env, "close", "--node", capNode, "--decision", "verified")
-	if code != 0 {
-		t.Fatalf("closing an already-closed dispatch must succeed: %v", again["error"])
-	}
-}
-
-// A worktree workspace herdr does not know is refused, naming it, before any
-// worker node exists and without splitting the cap's pane. The refusal is the
-// point: a fallback split would put a worker in the main checkout under a record
-// that claimed otherwise.
+// A --worktree that herdr cannot resolve is refused rather than falling back to
+// the cap's own checkout: the record would then claim isolation it never had.
 func TestCLIDeliverRefusesAnUnknownWorktreeWorkspace(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, state, _ := fakeHerdrOnPath(t)
 
 	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample", "--worktree", "wNOPE")
@@ -3057,7 +2334,6 @@ func TestCLICloseRefusesAMismatchedWorker(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
@@ -3084,7 +2360,6 @@ func TestCLICloseRefusesWithoutADeliveryRecord(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	prep, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "undelivered")
@@ -3107,7 +2382,6 @@ func TestCLICloseRefusesWhileTheWorkerIsActive(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
@@ -3131,7 +2405,6 @@ func TestCLICloseRefusesWithoutAVerdict(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	capNode, _, _, workerRef := deliverProbe(t, bin, root, env)
@@ -3151,7 +2424,6 @@ func TestCLICloseAbandoned(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	prep, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "undelivered")
@@ -3186,8 +2458,6 @@ func TestCLIDeliverHerdrUnavailable(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, noCheckPlaybook)
-
 	resp, code := runFSEnv(t, bin, root, []string{"PATH=/nonexistent"}, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "sample")
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1: %v", code, resp)
@@ -3239,7 +2509,6 @@ func TestCLIDeliverNamesEachWorkerAgentUniquely(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, script := fakeHerdrOnPath(t)
 
 	_, _, firstPane, firstWorker := deliverProbe(t, bin, root, env)
@@ -3267,7 +2536,6 @@ func TestCLIPendingReportsWhatIsWaiting(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, script := fakeHerdrOnPath(t)
 
 	firstNode, _, _, firstWorker := deliverProbe(t, bin, root, env)
@@ -3327,7 +2595,6 @@ func TestCLIPendingReportsAnUndeliveredDispatchUnlinked(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), codeEntryPb, herdrTestPlaybook)
 	env, _, _ := fakeHerdrOnPath(t)
 
 	prep, code := runFSEnv(t, bin, root, env, "dispatch", "--project", "skills", "--type", "dev-task", "--goal", "never delivered")
@@ -3433,13 +2700,6 @@ func TestCLIDispatchRecordsTheIntegratesLink(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()
 	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
-applies_when: type=integrate
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
 
 	member := capNodeOf(t, bin, root, "dispatch dev-task: member", "dispatch")
 	resp, code := runFS(t, bin, root, "dispatch", "--project", "skills", "--type", "integrate", "--goal", "merge the member", "--integrates", member)
@@ -3525,132 +2785,21 @@ func TestCLIReadsThePositionalTheSpecCounted(t *testing.T) {
 		t.Errorf("task get with its flags first returned %v, want %s", got, member)
 	}
 
-	// And a name that does not exist is refused as the name it was, rather than
+	// And a node that does not exist is refused as the node it was, rather than
 	// as the flag that preceded it.
-	resp, code = runFS(t, bin, root, "kb", "get", "--project", "skills", "nosuchplaybook")
+	resp, code = runFS(t, bin, root, "task", "get", "--project", "cap", "--kind", "dispatch", "t-00000000")
 	if code == 0 {
-		t.Fatalf("kb get for a missing playbook must exit non-zero, got %v", resp)
+		t.Fatalf("task get for a missing node must exit non-zero, got %v", resp)
 	}
 	errMsg, _ := resp["error"].(string)
-	if !strings.Contains(errMsg, "nosuchplaybook") || strings.Contains(errMsg, "--project") {
-		t.Errorf("refusal %q must name the playbook, not the flag", errMsg)
-	}
-
-	resp, code = runFS(t, bin, root, "trace", "--project", "skills", "t-00000000")
-	if code == 0 {
-		t.Fatalf("trace for a node with no trace must exit non-zero, got %v", resp)
-	}
-	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "t-00000000") {
+	if !strings.Contains(errMsg, "t-00000000") || strings.Contains(errMsg, "--project") {
 		t.Errorf("refusal %q must name the node, not the flag", errMsg)
 	}
 }
 
-// The member's exit gate checks the process, not the outcome. A branch merged by
-// hand — never by an integration dispatch — satisfies "HEAD is an ancestor of
-// main", which is exactly why that check could not tell a dispatched
-// integration from a bypass. This is that failure, live: the merge is asserted
-// at the time, and the gate must refuse it.
-func TestCLIMemberGateRefusesAHandMergedMember(t *testing.T) {
-	bin := getFS(t)
-	root := t.TempDir()
-	goGit(t, root, "init", "-q", "-b", "main")
-	writeFileIn(t, root, "seed.txt", "seed\n")
-	goGit(t, root, "add", "seed.txt")
-	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "seed")
-
-	// The member's branch, merged by hand into main.
-	goGit(t, root, "checkout", "-q", "-b", "member")
-	writeFileIn(t, root, "member.txt", "member work\n")
-	goGit(t, root, "add", "member.txt")
-	goGit(t, root, "-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "member")
-	goGit(t, root, "checkout", "-q", "main")
-	goGit(t, root, "merge", "-q", "--no-ff", "-m", "hand merge", "member")
-	// The old gate's condition, asserted so the test proves what it claims.
-	goGit(t, root, "merge-base", "--is-ancestor", "HEAD", "main")
-
-	runFS(t, bin, root, "project", "create", "--name", "skills", "--root", root)
-	writeKBPlaybook(t, testHome(t), teardownEntryPb, `name: teardown-entry
-applies_when: type=dev-task
-engine: herdr
-agent: pi
-entry:
-  - check: true
-`)
-	writeKBPlaybook(t, testHome(t), memberPb, shippedDefault(t, memberPb))
-
-	env, _, _ := fakeHerdrOnPath(t)
-	env = fsOnPath(t, bin, env)
-
-	// A member is a dispatch that names a batch: --batch records its parent, and
-	// the member tag it derives is what selects member-exit. The batch node is
-	// created directly — the batch's own creation is not what this test is
-	// about.
-	batchNode := capNodeOf(t, bin, root, "the batch", "batch")
-	resp, code := runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "dev-task", "--goal", "member", "--batch", batchNode)
-	if code != 0 {
-		t.Fatalf("dispatch --deliver exit %d: %v", code, resp["error"])
-	}
-	data := resp["data"].(map[string]any)
-	member := data["cap_node_id"].(string)
-	finishWorker(t, bin, root, data["worker_node"].(string))
-
-	// No integration dispatch names it, so fs integrated refuses and so does the
-	// member's exit gate — a hand merge is not an integration.
-	if integrated, code := runFSEnv(t, bin, root, env, "integrated", member); code == 0 {
-		t.Fatalf("fs integrated must exit 1 for a member no integration names, got %v", integrated)
-	}
-	closed, code := runFSEnv(t, bin, root, env, "close", "--node", member, "--decision", "read the worker node; verified")
-	if code == 0 {
-		t.Fatalf("a hand-merged member must be refused by member-exit, got %v", closed)
-	}
-	errMsg, _ := closed["error"].(string)
-	for _, want := range []string{"exit check failed", memberPb, "integrated $FS_NODE", member} {
-		if !strings.Contains(errMsg, want) {
-			t.Errorf("refusal %q must mention %q", errMsg, want)
-		}
-	}
-
-	// Now integrate it the dispatched way, per member: an integration dispatch
-	// names it, is closed done, and the member's gate passes.
-	writeKBPlaybook(t, testHome(t), integrationPb, `name: integration
-applies_when: type=integrate
-entry:
-  - check: true
-exit:
-  - check: true
-`)
-	resp, code = runFSEnv(t, bin, root, env, "dispatch", "--deliver", "--project", "skills", "--type", "integrate", "--goal", "merge the member", "--integrates", member)
-	if code != 0 {
-		t.Fatalf("dispatch --integrates exit %d: %v", code, resp["error"])
-	}
-	integration := resp["data"].(map[string]any)["cap_node_id"].(string)
-	finishWorker(t, bin, root, resp["data"].(map[string]any)["worker_node"].(string))
-
-	if integrated, code := runFSEnv(t, bin, root, env, "integrated", member); code == 0 {
-		t.Fatalf("a pending integration must not count, got %v", integrated)
-	}
-	if _, code := runFSEnv(t, bin, root, env, "close", "--node", integration, "--decision", "merged the member"); code != 0 {
-		t.Fatalf("closing the integration exit %d", code)
-	}
-
-	integrated, code := runFSEnv(t, bin, root, env, "integrated", member)
-	if code != 0 {
-		t.Fatalf("fs integrated exit %d: %v", code, integrated["error"])
-	}
-	if got := integrated["data"].(map[string]any)["integrated_by"]; got != integration {
-		t.Errorf("integrated_by = %v, want the integration node %s", got, integration)
-	}
-
-	if closed, code := runFSEnv(t, bin, root, env, "close", "--node", member, "--decision", "read the worker node; verified", "--confirm"); code != 0 {
-		t.Fatalf("an integrated member must close, exit %d: %v", code, closed["error"])
-	}
-}
-
-// fs status must agree with every reader that renders a status: a block whose
-// recorded condition is over reports so in all of them. The check runs in the
-// project's own root, so this reads status from somewhere else entirely — a
-// status that ran the check wherever it was standing would repeat the expired
-// block as current truth, which is the disagreement this fixes.
+// A block's recorded check runs in the project's own root, so a reader that
+// renders a status and the node's block do not disagree about a condition that
+// has expired.
 func TestCLIStatusReRunsABlockCheckInTheProjectRoot(t *testing.T) {
 	bin := getFS(t)
 	root := t.TempDir()

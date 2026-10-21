@@ -532,10 +532,9 @@ func TestWriteSetStaysAtParity(t *testing.T) {
 
 	mustOK("project create", h.ProjectCreate("skills", t.TempDir()))
 
-	// A real dispatch first, through the playbook machinery: prepared, gated,
-	// delivered, and finished. The gate refuses while an unresolved dispatch sits
-	// in the cap scope, so it runs before the hand-written cap nodes below.
-	f.writePlaybook(t, "code-entry", passingEntry)
+	// A real dispatch first: prepared, delivered, and finished. The read refuses
+	// while an unresolved dispatch sits in the cap scope, so it runs before the
+	// hand-written cap nodes below.
 	runDispatch(t, f, devReq("a dispatched task"))
 
 	work := mustOK("task add", h.TaskAddKind("skills", "a work node", query.KindWork, "", "", "", "", "", nil))
@@ -557,9 +556,6 @@ func TestWriteSetStaysAtParity(t *testing.T) {
 	mustOK("record delivery", h.RecordDelivery("cap", capNode.NodeID, command.DeliveryRecord{
 		PaneID: "w1:p1", Agent: "agent-1", Engine: "herdr", Project: "skills", Node: work.NodeID,
 	}))
-	if resp := h.RecordPlan("cap", capNode.NodeID, []byte(`{"playbooks":["code"]}`)); !resp.OK {
-		t.Fatalf("record plan: %s", resp.Error)
-	}
 
 	// The projection is at parity with the event store after the whole set.
 	issues, _, err := h.StateVerify("")

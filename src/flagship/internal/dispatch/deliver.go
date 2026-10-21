@@ -1,22 +1,19 @@
 // Delivery: handing a prepared brief to a worker and recording the binding.
 //
-// The dispatcher is whatever the plan's `engine:` resolves to, behind
-// engine.Engine: shelling out to a CLI is the adapter's business, and a gate
-// here is exercised by handing it an adapter that needs no live terminal.
+// The dispatcher is herdr, behind engine.Engine (launch.go): shelling out to a
+// CLI is the adapter's business, and a delivery here is exercised by handing it
+// an adapter that needs no live terminal.
 package dispatch
 
 import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"time"
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/engine"
-	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
-	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // Deliver hands the prepared brief to a worker: it finds the pane the worker
@@ -30,7 +27,7 @@ import (
 // that works, so a failure after the node exists rolls it back (see
 // rollbackWorker): a failed delivery neither leaves outstanding work behind nor
 // claims a delivery that did not happen.
-func Deliver(h *command.Handler, hc engine.Engine, lg *trace.Log, brief *Brief) command.Response {
+func Deliver(h *command.Handler, hc engine.Engine, brief *Brief) command.Response {
 	// The checkout --worktree-new made, known before the worker's pane is found:
 	// a delivery that fails in between has to be able to name the tree it leaves
 	// standing, and for --worktree-new this is the only place the path is known
@@ -94,16 +91,6 @@ func Deliver(h *command.Handler, hc engine.Engine, lg *trace.Log, brief *Brief) 
 		return deliverErr(h, brief, worktreePath, fmt.Errorf("send brief: %w", err))
 	}
 
-	// The handover is now on the record, one line per work playbook. A line that
-	// cannot be written rolls the delivery back: close refuses a plan whose work
-	// playbook was never handed over, and a delivery that cannot be recorded is a
-	// delivery that cannot be closed as if it had happened.
-	if err := recordLoaded(lg, brief); err != nil {
-		abandonWorker(hc, brief.Worktree, paneID)
-		rollbackWorker(h, brief.Project, workerID, err.Error())
-		return deliverErr(h, brief, worktreePath, err)
-	}
-
 	delivery := command.DeliveryRecord{
 		PaneID:       paneID,
 		TabID:        tabID,
@@ -130,31 +117,6 @@ func Deliver(h *command.Handler, hc engine.Engine, lg *trace.Log, brief *Brief) 
 
 	brief.Delivery = &delivery
 	return command.Response{OK: true, Data: brief}
-}
-
-// recordLoaded appends the trace's `loaded` line for every work playbook in the
-// plan. It is the whole of the claim the trace makes about guidance: the brief
-// carried the playbook. There is deliberately no `followed` line — the trace
-// cannot see inside the worker, and nothing here pretends otherwise.
-func recordLoaded(lg *trace.Log, brief *Brief) error {
-	for _, entry := range brief.Plan {
-		if !slices.Contains(entry.Moments, knowledge.MomentWork) {
-			continue
-		}
-		if err := lg.Append(brief.Project, trace.Line{
-			ID:       trace.StepID(brief.CapNodeID, entry.Name, 0),
-			Dispatch: brief.CapNodeID,
-			Worker:   brief.WorkerNode,
-			Playbook: entry.Name,
-			Moment:   knowledge.MomentWork,
-			Kind:     trace.KindLoaded,
-			Status:   trace.StatusLoaded,
-			Detail:   "handed to " + brief.WorkerNode,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // workerPane returns the pane the worker starts in — and, for a worktree

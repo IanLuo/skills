@@ -4,8 +4,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // herdrName is herdr's grammar for a live agent name, spelled as herdr spells
@@ -78,37 +76,28 @@ func TestWorkerAgentRefusesANodeWithNoRoomLeft(t *testing.T) {
 }
 
 // renderBrief is the text Deliver prompts the worker with, so it is where the
-// plan, the obligations, the gate's own output and the entry phase's say steps
-// have to appear: the brief's fields say what was resolved, and this is what the
-// worker is told. Asserted here rather than beside the Prepare tests because
-// renderBrief is unexported, and the external package can reach it only through
-// a delivery.
-func TestRenderBriefCarriesThePlanTheCheckAndTheSaySteps(t *testing.T) {
+// node, the standing obligations and the launch config have to appear: the
+// brief's fields say what was resolved, and this is what the worker is told.
+// Asserted here rather than beside the Prepare tests because renderBrief is
+// unexported, and the external package can reach it only through a delivery.
+func TestRenderBriefCarriesTheObligationsAndTheLaunchConfig(t *testing.T) {
 	brief := &Brief{
-		Goal:      "sample",
-		Project:   "skills",
-		RootPath:  "/tmp/skills",
-		TaskType:  "dev-task",
-		CapNodeID: "t-cap",
-		Plan: []trace.PlanEntry{
-			{Name: "code-entry", Moments: []string{"entry"}, Order: 10},
-			{Name: "code-work", Moments: []string{"work"}, Order: 20},
-		},
-		Obligations: []string{"run the suite before you claim the work is done"},
-		Skills:      []string{"tdd"},
-		Context:     []string{"read AGENTS.md before editing"},
-		Checklist:   []Item{{Body: "echo reworded", Status: "pass", Output: "reworded"}},
+		Goal:        "sample",
+		Project:     "skills",
+		RootPath:    "/tmp/skills",
+		TaskType:    "dev-task",
+		CapNodeID:   "t-cap",
+		Obligations: workerObligations,
+		Engine:      LaunchEngine,
+		Agent:       LaunchAgent,
+		AgentArgs:   launchArgs(),
 	}
 
 	text := renderBrief(brief)
 	for _, want := range []string{
 		"Your node: (not created yet",
-		"- code-entry (entry, order 10)",
-		"- code-work (work, order 20)",
-		"run the suite before you claim the work is done",
-		"- tdd",
-		"read AGENTS.md before editing",
-		"reworded",
+		workerObligations[0],
+		"engine=herdr agent=pi args=--provider magpie --model opencode-go/deepseek-v4.1-flash",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("renderBrief must carry %q, got:\n%s", want, text)

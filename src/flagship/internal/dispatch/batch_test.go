@@ -1,7 +1,6 @@
 package dispatch_test
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
@@ -110,29 +109,11 @@ func TestPrepareBatchMemberRefusesNonBatch(t *testing.T) {
 	}
 }
 
-// A member names its batch with --batch: the member tag is derived from the
-// flag, so member and member-exit load, and the member's cap node is recorded
-// as the batch's child.
-func TestPrepareBatchMemberDerivesTheMemberTag(t *testing.T) {
+// A member names its batch with --batch: its cap node is recorded as the batch's
+// child, which is the structural fact fs batch reads.
+func TestPrepareBatchMemberRecordsTheParentLink(t *testing.T) {
 	f := newFixture(t, t.TempDir())
 	batch := mustAdd(t, f.h, "cap", "the batch", query.KindBatch, "", nil)
-
-	f.writePlaybook(t, "worker", `name: worker
-engine: herdr
-agent: pi
-work:
-  - say: use the node your brief names
-`)
-	f.writePlaybook(t, "member", `name: member
-applies_when: member
-work:
-  - say: you are a member of a batch
-`)
-	f.writePlaybook(t, "member-exit", `name: member-exit
-applies_when: member
-exit:
-  - check: true
-`)
 
 	resp := f.prepare(dispatch.PrepareRequest{
 		Project: "skills", TaskType: "dev-task", Goal: "member", Batch: batch,
@@ -141,14 +122,6 @@ exit:
 		t.Fatalf("Prepare: %s", resp.Error)
 	}
 	brief := resp.Data.(*dispatch.Brief)
-
-	names := make([]string, 0, len(brief.Plan))
-	for _, p := range brief.Plan {
-		names = append(names, p.Name)
-	}
-	if !slices.Contains(names, "member") || !slices.Contains(names, "member-exit") {
-		t.Errorf("plan = %v, want the member and member-exit playbooks loaded by the derived member tag", names)
-	}
 
 	task, ok := scopeTask(t, f, "cap", brief.CapNodeID)
 	if !ok {
@@ -162,101 +135,10 @@ exit:
 	}
 }
 
-// The node kind is declared by the playbook, not mapped from the type:
-// batch-entry carries `creates: batch`, so a --type batch dispatch leaves a
-// kind: batch node. There is no `if taskType == "batch"` in Go.
-func TestPrepareBatchDispatchCreatesABatchNode(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "batch-entry", `name: batch-entry
-applies_when: type=batch
-engine: herdr
-agent: pi
-creates: batch
-entry:
-  - check: true
-`)
-
-	resp := f.prepare(dispatch.PrepareRequest{
-		Project: "skills", TaskType: "batch", Goal: "fan out", Cards: []string{"a.md"},
-	})
-	if !resp.OK {
-		t.Fatalf("Prepare: %s", resp.Error)
-	}
-	brief := resp.Data.(*dispatch.Brief)
-
-	task, ok := scopeTask(t, f, "cap", brief.CapNodeID)
-	if !ok {
-		t.Fatalf("cap node %s not found", brief.CapNodeID)
-	}
-	if task.Kind != query.KindBatch {
-		t.Errorf("batch node's kind = %q, want batch (declared by batch-entry's creates field)", task.Kind)
-	}
-}
-
-const workerPlaybook = `name: worker
-engine: herdr
-agent: pi
-work:
-  - say: use the node your brief names
-`
-
-// FS_BATCH is exported to exit steps when the dispatch belongs to a batch and
-// absent otherwise — the one marker code-exit's teardown defers on. A member's
-// exit step can read it, so its teardown can defer to the batch.
-func TestCloseExportsFSBatchForAMember(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	batch := mustAdd(t, f.h, "cap", "the batch", query.KindBatch, "", nil)
-
-	f.writePlaybook(t, "worker", workerPlaybook)
-	f.writePlaybook(t, "member", `name: member
-applies_when: member
-work:
-  - say: you are a member of a batch
-`)
-	f.writePlaybook(t, "member-exit", `name: member-exit
-applies_when: member
-exit:
-  - do: test -n "$FS_BATCH"
-`)
-
-	brief := runDispatch(t, f, dispatch.PrepareRequest{
-		Project: "skills", TaskType: "dev-task", Goal: "member", Batch: batch,
-	})
-	hc := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
-	resp := f.close(hc, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "read", Confirm: true})
-	if !resp.OK {
-		t.Fatalf("a member's close must export FS_BATCH so its teardown can defer: %s", resp.Error)
-	}
-}
-
-// Outside a batch there is no FS_BATCH, so an exit step that reads it sees an
-// empty value — and code-exit's teardown runs, which is the t-33799786 fix this
-// change must not lose.
-func TestCloseDoesNotExportFSBatchOutsideABatch(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "worker", workerPlaybook)
-	f.writePlaybook(t, "code-exit", `name: code-exit
-applies_when: code
-exit:
-  - do: test -z "$FS_BATCH"
-`)
-
-	brief := runDispatch(t, f, dispatch.PrepareRequest{
-		Project: "skills", TaskType: "dev-task", Goal: "solo", Tags: []string{"code"},
-	})
-	hc := &fakeHerdr{tabID: "w1:t9", paneID: "w1:p9"}
-	resp := f.close(hc, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "read", Confirm: true})
-	if !resp.OK {
-		t.Fatalf("a solo dispatch must see no FS_BATCH: %s", resp.Error)
-	}
-}
-
 // --worktree-new creates the worktree itself and records the workspace and its
-// checkout path on the delivery exactly as --worktree does, so the existing
-// teardown removes them with no new flags.
+// checkout path on the delivery exactly as --worktree does.
 func TestDeliverWorktreeNewRecordsTheCreatedWorkspace(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "code-entry", passingEntry)
 
 	brief := prepareOnly(t, f, devReq("in a new tree"))
 	brief.WorktreeNew = true
@@ -266,7 +148,7 @@ func TestDeliverWorktreeNewRecordsTheCreatedWorkspace(t *testing.T) {
 		rootPaneID: "w-new:p1", rootPaneTab: "w-new:t1", checkoutPath: "/tmp/wt-new",
 	}
 
-	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
+	resp := dispatch.Deliver(f.h, herdr, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}

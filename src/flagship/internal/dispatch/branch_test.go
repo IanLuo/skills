@@ -26,6 +26,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
 	"github.com/flagship-dev/flagship/internal/query"
 )
@@ -37,8 +38,6 @@ import (
 // teardown's branch step was rewritten four times to stop making.
 func TestDeliverRecordsTheBranchOfTheWorktreeItCreated(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "code-entry", passingEntry)
-
 	brief := prepareOnly(t, f, devReq("in a new tree"))
 	brief.WorktreeNew = true
 	herdr := &fakeHerdr{
@@ -47,7 +46,7 @@ func TestDeliverRecordsTheBranchOfTheWorktreeItCreated(t *testing.T) {
 		rootPaneID: "w-new:p1", rootPaneTab: "w-new:t1", checkoutPath: "/tmp/wt-new",
 	}
 
-	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
+	resp := dispatch.Deliver(f.h, herdr, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
@@ -85,7 +84,7 @@ func TestDeliverRecordsNoBranchForAWorktreeItDidNotCreate(t *testing.T) {
 		CapNodeID: nodeID, Worktree: "wA",
 	}
 
-	resp := dispatch.Deliver(f.h, herdr, f.lg, brief)
+	resp := dispatch.Deliver(f.h, herdr, brief)
 	if !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
@@ -117,8 +116,6 @@ func TestDeliverRecordsNoBranchForAWorktreeItDidNotCreate(t *testing.T) {
 // test rules out is the delivery filling the gap with something it inferred.
 func TestDeliverRecordsNoBranchForAWorktreeHerdrCreatedDetached(t *testing.T) {
 	f := newFixture(t, t.TempDir())
-	f.writePlaybook(t, "code-entry", passingEntry)
-
 	brief := prepareOnly(t, f, devReq("in a detached new tree"))
 	brief.WorktreeNew = true
 	herdr := &fakeHerdr{
@@ -127,7 +124,7 @@ func TestDeliverRecordsNoBranchForAWorktreeHerdrCreatedDetached(t *testing.T) {
 		rootPaneID: "w-new:p1", rootPaneTab: "w-new:t1", checkoutPath: "/tmp/wt-new",
 	}
 
-	if resp := dispatch.Deliver(f.h, herdr, f.lg, brief); !resp.OK {
+	if resp := dispatch.Deliver(f.h, herdr, brief); !resp.OK {
 		t.Fatalf("Deliver: %s", resp.Error)
 	}
 
@@ -141,48 +138,6 @@ func TestDeliverRecordsNoBranchForAWorktreeHerdrCreatedDetached(t *testing.T) {
 	}
 	if d.WorktreePath != "/tmp/wt-new" {
 		t.Errorf("delivery path = %q, want the created checkout /tmp/wt-new", d.WorktreePath)
-	}
-}
-
-// The branch reaches a declared exit step as $FS_BRANCH, which is the only
-// variable the postcondition reads. A field recorded and never exported is a
-// field no step can assert over, so this is the link that makes the record
-// useful rather than merely accurate.
-func TestCloseGivesTheExitStepsTheBranchTheDeliveryCreated(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	workerID := addWorkerNode(t, f, "done")
-	parallelExitGate(t, f, `  - do: test "$FS_BRANCH" = worktree-delivery
-  - do: test -n "$FS_BRANCH" && printenv FS_BRANCH >/dev/null
-`)
-
-	brief := prepareOnly(t, f, parallelReq("sample"))
-	recordWorktreeDeliveryOnBranch(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7",
-		"worktree-delivery")
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
-	if !resp.OK {
-		t.Fatalf("Close: %s", resp.Error)
-	}
-}
-
-// A delivery that opened no worktree sees FS_BRANCH set and empty — printenv,
-// not echo, so a passing step proves the variable is there to be read at all.
-// A step that read an unset variable and a step that read an empty one would
-// otherwise behave the same, and the postcondition's stand-down has to be a
-// decision about a value rather than an accidental consequence of not exporting
-// one.
-func TestCloseGivesTheExitStepsAnEmptyBranchWhenTheDeliveryMadeNone(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	workerID := addWorkerNode(t, f, "done")
-	parallelExitGate(t, f, `  - do: test -z "$FS_BRANCH" && printenv FS_BRANCH >/dev/null
-`)
-
-	brief := prepareOnly(t, f, parallelReq("sample"))
-	recordWorktreeDelivery(t, f, brief.CapNodeID, "w7:p1", workerID, "w7", "/checkouts/w7")
-
-	resp := f.close(&fakeHerdr{}, dispatch.CloseRequest{NodeID: brief.CapNodeID, Decision: "verified"})
-	if !resp.OK {
-		t.Fatalf("Close: %s", resp.Error)
 	}
 }
 
@@ -239,4 +194,47 @@ func TestBatchPayloadCarriesEachMembersBranch(t *testing.T) {
 		t.Errorf("the payload has no \"branch\" key holding the member's branch, so the shipped "+
 			"step's `.branch // \"\"` reads nothing:\n%s", blob)
 	}
+}
+
+// recordWorktreeDelivery writes a delivery record bound to a worktree workspace,
+// the shape a worktree dispatch records: a batch's workers ran in one, the exit
+// gate has to find that tree, and the teardown has to verify it gone afterwards.
+// path is the checkout the workspace was made from — what the record keeps so the
+// worktree can be removed after the workspace is forgotten.
+func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path string) {
+	t.Helper()
+	recordWorktreeDeliveryOnBranch(t, f, capNode, paneID, workerID, wsID, path, "")
+}
+
+// recordWorktreeDeliveryOnBranch is the same record with the branch the delivery
+// created, which a test writes when it is about what a close asserts over the
+// branch. The delivery records a branch only for a worktree it made itself, so
+// the empty branch above is the ordinary record rather than a missing field.
+func recordWorktreeDeliveryOnBranch(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path, branch string) {
+	t.Helper()
+	resp := f.h.RecordDelivery("cap", capNode, command.DeliveryRecord{
+		PaneID: paneID, TabID: wsID + ":t1", Agent: "dispatch-parallel", Engine: "herdr",
+		Project: "skills", Node: workerID, Type: "parallel", Worktree: wsID, WorktreePath: path,
+		Branch: branch,
+	})
+	if !resp.OK {
+		t.Fatalf("RecordDelivery: %s", resp.Error)
+	}
+}
+
+// addWorkerNode creates the worker's node in the skills scope, the way Deliver
+// does — a dispatch node — with the given status.
+func addWorkerNode(t *testing.T, f *fixture, status string) string {
+	t.Helper()
+	added := f.h.TaskAddKind("skills", "worker task", query.KindDispatch, "", "", "", "", "", nil)
+	if !added.OK {
+		t.Fatalf("task add: %s", added.Error)
+	}
+	nodeID := added.Data.(command.EventData).NodeID
+	if status != "" && status != "pending" {
+		if resp := f.h.TaskUpdate("skills", nodeID, status, "", nil); !resp.OK {
+			t.Fatalf("task update: %s", resp.Error)
+		}
+	}
+	return nodeID
 }

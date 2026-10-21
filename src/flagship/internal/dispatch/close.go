@@ -1,43 +1,34 @@
-// Close: the close-out gate for a dispatch.
+// Close: the close-out of a dispatch.
 //
-// The gate exists because a cap that trusts its own in-context testing never
-// reads the worker's node. It can check that the worker's node exists and is
-// done, and that a verdict was recorded. It cannot check that the cap read that
-// node. Do not pretend otherwise: the gate makes the omission visible and
-// expensive, it does not make it impossible.
+// It is one evidence line and a teardown, and nothing else. Close refuses a
+// worker node that is not done, refuses a dispatch whose tree has not moved past
+// the revision it was prepared at, refuses a review-shaped close with no
+// decision, closes the pane the delivery split open, and marks the cap's node
+// done with the evidence on it.
 //
-// Close-out runs the exit phase of the plan the dispatch recorded, and gates on
-// the dispatch's own trace. The gate runs in two passes, split by the teardown
-// because the teardown is what it protects: before any exit step runs, every
-// entry step and every work handover must have a line in the trace; after they
-// run, every exit step must have one too. A step with no line is a step that did
-// not happen, and the refusal names it — playbook, step, kind.
+// The deliverable check is the one the old exit script answered, reduced to the
+// question git can answer: HEAD has moved past the revision the project stood at
+// when the dispatch was prepared. It is deliberately not a clean-tree check — the
+// tree is routinely dirty with another agent's work — and it does not read the
+// paths a card declares, which was the trap the script's second half was. Whether
+// the code works is the suite's answer, and the suite result is the cap's own
+// line, recorded with the sha.
 //
-// What the trace proves is bounded, and every refusal says so: it records that a
-// playbook was loaded and that a step ran. It can never record that the worker
-// obeyed. There is no `followed` status, and there is no way to add one.
-//
-// The pane is machinery, because every dispatch has one. The worktree the worker
-// ran in is not: removing it and deleting its branch are actions the exit
-// playbook declares as do steps, so each protocol owns its own teardown instead
-// of sharing one hardcoded path.
+// The pane is machinery, because every dispatch has one. A worktree's removal is
+// a git action the cap or the batch performs, not something a close declares.
 package dispatch
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/engine"
-	"github.com/flagship-dev/flagship/internal/knowledge"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/registry"
 	"github.com/flagship-dev/flagship/internal/store"
-	"github.com/flagship-dev/flagship/internal/trace"
 )
 
 // CloseRequest is the cap's close-out of one dispatch.
@@ -45,78 +36,44 @@ type CloseRequest struct {
 	NodeID    string // the cap's dispatch node
 	Worker    string // optional "<project>:<node>"; must match the delivery record when given
 	Decision  string // the cap's verdict, recorded on the cap node
-	Confirm   bool   // the cap has answered the plan's ask steps
-	Abandoned bool   // close without the delivery, worker, and trace gates
+	Abandoned bool   // close without the delivery, worker and deliverable reads
 	Reason    string // why it is being abandoned; required with Abandoned
-
-	// WithoutReview is why this close proceeds with no review of the change
-	// (--without-review). The exit gate asks the question as a `check:`, which
-	// --confirm cannot answer, so a dispatch that legitimately needs no review
-	// would otherwise be unclosable. It is the question's own override, the way
-	// --allow-unresolved is the unresolved-dispatch gate's: it skips nothing but
-	// the one gate, it is exported to the exit steps as FS_WITHOUT_REVIEW, and a
-	// close that used it records the reason as a decision on the node — so a
-	// skipped review is visible rather than impossible.
-	WithoutReview string
 }
 
 // CloseResult is the close-out's data payload. Worker names the node this
-// close-out rested on, so the cap can see which one it just signed off. Cleanup
-// says what the exit phase did — including that it was empty, which must be
-// visible rather than silent. Trace names the file the gate read, so the record
-// it gated on is one path away.
+// close-out rested on, so the cap can see which one it just signed off. Evidence
+// is the line recorded on the node: where HEAD stands, and the cap's verdict.
 //
-// TornDown names what close-out itself left gone. That is now the pane alone:
-// removing a worktree is an action the exit playbook declares, and close-out
-// runs it without owning it. It exists so a reader can see the cleanup happened
-// rather than infer it from a pane id that was there all along.
-//
-// Actions names the declared do steps that ran, in order. It is a report of what
-// the playbook was told to do, not a claim about what each command achieved —
-// close-out cannot see inside a shell command, and pretending it could is how a
-// teardown reported success over a checkout still on disk.
+// TornDown names what close-out itself left gone. That is the pane alone.
 type CloseResult struct {
 	NodeID   string   `json:"node_id"`
 	Decision string   `json:"decision"`
+	Evidence string   `json:"evidence,omitempty"`
 	Worker   string   `json:"worker,omitempty"`
 	PaneID   string   `json:"pane_id,omitempty"`
-	Trace    string   `json:"trace,omitempty"`
-	Cleanup  string   `json:"cleanup,omitempty"`
 	TornDown []string `json:"torn_down,omitempty"`
-	Actions  []string `json:"actions,omitempty"`
 	Warning  string   `json:"warning,omitempty"`
 }
 
 // Close closes out a dispatch node. It refuses — naming what is missing — when
 // the node is not a dispatch, when no delivery was recorded (or, with
 // --abandoned, no reason was given), when the worker's node is missing or not
-// done, when no verdict was given, or when the trace does not account for every
-// step of the plan. On success it runs the plan's exit phase, closes the
-// worker's pane, and marks the cap node done with the verdict.
+// done, when the tree has not moved past the revision the dispatch was prepared
+// at, or when no verdict was given. On success it records one evidence line on
+// the node, closes the worker's pane, and marks the node done.
 //
 // The worker's node comes from the delivery record, not from the caller: --worker
 // is optional and, when given, must name the recorded node. A record written
 // before the link existed carries no node, and is the one case --worker is still
 // the only way to name it.
 //
-// --abandoned skips the delivery and worker gates and records an abandonment —
-// "abandoned, never delivered: <reason>" when no delivery was recorded, and
-// "abandoned after delivery to <project>:<node>: <reason>" naming the pane and
-// worktree the teardown removed when one was. It skips the trace gate too, but
-// not the teardown: the delivery record, when there is one, is still read, its
-// plan's declared actions still run, and what it names is still removed.
-// Abandoning is a decision about the work, not a licence to leak a pane — a
-// delivered dispatch closed this way is still a successful close, and its pane
-// and worktree would otherwise outlive it silently. The record is written after
-// the teardown, so it can only claim what actually happened.
-//
-// reg, kc, lg, and hc are how the exit phase finds its footing: kc holds the
-// playbooks the plan names, reg says which project root the declared actions run
-// in, hc resolves the tree the checks run in when the record names a worktree
-// but no path, and lg is the trace both the gate and the record read. All are
-// needed only after the worker's node is known to be done, so a refusal never
-// reads any of them.
-func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
+// --abandoned skips the delivery, worker and deliverable reads and records an
+// abandonment — "abandoned, never delivered: <reason>" when no delivery was
+// recorded, and "abandoned after delivery to <project>:<node>: <reason>" when one
+// was. It skips only the reads, never the teardown: abandoning is a decision
+// about the work, not a licence to leak a pane. The record is written after the
+// teardown, so it can only claim what actually happened.
+func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, req CloseRequest) command.Response {
 	if req.NodeID == "" {
 		return errResp("--node is required: fs close --node <cap node> ...")
 	}
@@ -126,23 +83,12 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *kno
 		return errResp("close: " + err.Error())
 	}
 	if node.Kind == query.KindBatch {
-		return closeBatch(h, hc, reg, kc, lg, req)
+		return closeBatch(h, req)
 	}
 	if node.Kind != query.KindDispatch {
 		return errResp(fmt.Sprintf(
 			"close: %s is not a dispatch node — its kind is %q, want %q",
 			req.NodeID, node.Kind, query.KindDispatch))
-	}
-
-	// A member belongs to a batch when its cap node's parent is a kind: batch
-	// node. FS_BATCH is that node's id, exported to the exit steps so code's
-	// teardown defers to the batch — the marker is one value, derived from the
-	// structural parent link, never guessed from a goal string.
-	batch := ""
-	if node.ParentNodeID != "" {
-		if parent, ok := scopeNode(h, capScope, node.ParentNodeID); ok && parent.Kind == query.KindBatch {
-			batch = node.ParentNodeID
-		}
 	}
 
 	decision := req.Decision
@@ -154,11 +100,11 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *kno
 		if req.Reason == "" {
 			return errResp("--abandoned requires --reason: say why the dispatch is being abandoned")
 		}
-		// The record is still read on this path, though none of its gates apply:
+		// The record is still read on this path, though none of its reads apply:
 		// a dispatch can be delivered and then abandoned — a worker that never
-		// finished, a request withdrawn — and the record is what names the pane
-		// and the worktree to tear down. No record is the never-delivered case,
-		// where nothing was opened and there is nothing to clean.
+		// finished, a request withdrawn — and the record is what names the pane to
+		// tear down. No record is the never-delivered case, where nothing was
+		// opened and there is nothing to clean.
 		d, ok, err := h.DeliveryFor(capScope, req.NodeID)
 		if err != nil {
 			return errResp(fmt.Sprintf("close: read delivery record: %v", err))
@@ -207,112 +153,19 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *kno
 		Worker: workerRef,
 		PaneID: delivery.PaneID,
 	}
-	if delivered {
-		result.Trace = lg.Path(delivery.Project, req.NodeID)
-		// The plan resolved both scopes at dispatch time, so its exit playbooks
-		// may live in the target project's KB. Close resolves the same way — the
-		// dispatch's project, not the cap's terminal — or a project-scoped exit
-		// gate would be invisible to the only command that runs it.
-		kc = kc.InProject(delivery.Project)
-	}
 
-	// The plan the dispatch recorded is what this close-out is measured against:
-	// which playbooks ran at entry, which were handed to the worker, and which
-	// own the exit phase. It is read from the store, not from the trace, so a
-	// trace that has been damaged is a trace the gate can refuse on rather than
-	// an exit phase nobody can find.
-	recorded, err := recordedPlan(h, req.NodeID)
-	if err != nil {
-		if !req.Abandoned {
-			return errResp("close: " + err.Error())
-		}
-		recorded = trace.Plan{}
-	}
-
-	// The trace gate's first pass runs before any exit step, because the
-	// teardown is what it protects: a dispatch whose own record says a step never
-	// ran is not one to tear down, and a refusal here has to leave everything
-	// standing so it can be finished. A refusal above returned before this point,
-	// and so does a refusal here — the teardown below is only ever reached by a
-	// close that is going to succeed.
-	if !req.Abandoned {
-		if err := gateEntry(h, kc, lg, delivery, req.NodeID, recorded.Plan, req.Confirm, true); err != nil {
-			return errResp(err.Error())
-		}
-	}
-
-	// A waiver names a skip, and a skip needs a gate that stood down. An
-	// abandoned close runs no exit check at all, so it faced no gate to waive,
-	// and the reason is refused rather than recorded: the decision says "waived
-	// the review gate", and writing it there is the record asserting the very
-	// thing --without-review exists to make visible. The refusal is about the
-	// close, not about running the exit phase, so it cannot live where the exit
-	// run can skip it — a never-delivered close skips that run too.
-	if req.Abandoned && req.WithoutReview != "" {
-		return errResp(
-			"close: --without-review was given, but an abandoned close runs no exit check, so this dispatch faced no review gate to waive — drop the flag")
-	}
-
-	// An exit phase is teardown-and-verify, and a dispatch with no delivery
-	// record has no pane, no worktree, no worker and no work: there is nothing
-	// to tear down and nothing to verify. So a never-delivered dispatch runs no
-	// exit step at all, and none of the plan's playbooks are read for it — the
-	// scope those steps would resolve against is the project it was never
-	// delivered into, which is not a scope there is anything to read from. That
-	// is the same line the pane teardown is drawn on below.
-	//
-	// The guard is the delivery record, never a scope that could not be
-	// resolved: a delivered dispatch has its exit gate run and its declared
-	// actions run whatever its scope turns out to be.
-	var run exitRun
-	if delivered {
-		base, err := baseRevision(h, req.NodeID)
+	var warnings []string
+	if delivered && !req.Abandoned {
+		evidence, err := deliverable(h, hc, reg, delivery, req.NodeID)
 		if err != nil {
 			return errResp("close: " + err.Error())
 		}
-		run, err = runExit(hc, reg, kc, lg, delivery, req.NodeID, node.Integrates, batch, req.WithoutReview, base, recorded.Cards, recorded.Plan, req.Confirm, req.Abandoned)
-		if err != nil {
-			return errResp(err.Error())
-		}
-	} else {
-		run.Note = "no exit phase: the dispatch was never delivered, so there is nothing to tear down or verify"
-	}
-	result.Cleanup = run.Note
-	result.Actions = run.Actions
-	for _, confirmation := range run.Confirmations {
-		if err := recordDecision(h, req.NodeID, confirmation); err != nil {
-			return errResp(err.Error())
-		}
-	}
-	// The escape is recorded where every other override is: on the node it was
-	// granted for, after the gate it skipped has run, so it names a skip that
-	// actually happened rather than one that was about to.
-	if req.WithoutReview != "" {
-		if err := recordDecision(h, req.NodeID, withoutReviewDecision(req.WithoutReview)); err != nil {
-			return errResp(err.Error())
-		}
-	}
-	warnings := run.Warnings
-
-	// The second pass reads the trace back after the exit steps ran. It is what
-	// makes the file trustworthy as an account of the close rather than a
-	// by-product of it: a close that leaves the exit phase unrecorded would leave
-	// a trace that reads as a dispatch which was never closed.
-	if !req.Abandoned {
-		if err := gateExit(kc, lg, req.NodeID, recorded.Plan, true); err != nil {
-			return errResp(err.Error())
-		}
+		result.Evidence = evidence
 	}
 
-	// The pane is machinery; the worktree is not. The split is the point:
-	// universal invariants are machinery, per-type actions are declared.
-	//
-	// Every dispatch has a pane, and a playbook that forgot to close it would leak
-	// a terminal with nothing left to catch it — so closing it is coded here, for
-	// every protocol. A worktree is different: removing a tree and deleting its
-	// branch are git actions, they differ by task type, and the exit playbook
-	// declares them as do steps. close-out runs those steps and reports them; it
-	// does not own them, and it cannot verify what a shell command did.
+	// The pane is machinery, because every dispatch has one and a dispatch that
+	// forgot it would leak a terminal with nothing left to catch it. Closing is a
+	// claim; the read-back is the fact — see tearDownPane.
 	if delivery.PaneID != "" {
 		if warning := tearDownPane(hc, delivery.PaneID); warning != "" {
 			warnings = append(warnings, warning)
@@ -323,13 +176,22 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *kno
 	result.Warning = strings.Join(warnings, "; ")
 	if req.Abandoned {
 		// Only now, after the teardown, can the record say what happened: which
-		// dispatch was abandoned, and which resources were really removed. A
-		// record written before the teardown would assert a clearance that had
-		// not run yet.
-		decision = abandonedDecision(delivery, delivered, req.Reason, result.TornDown, result.Actions, result.Warning)
+		// dispatch was abandoned, and which resource was really removed. A record
+		// written before the teardown would assert a clearance that had not run
+		// yet.
+		decision = abandonedDecision(delivery, delivered, req.Reason, result.TornDown, result.Warning)
 	}
 	result.Decision = decision
 
+	// The evidence is its own line, recorded before the verdict: what was
+	// measured, then what the cap concluded about it. Keeping them apart is what
+	// lets a reader tell a close whose deliverable was checked from one whose was
+	// not, without reading the verdict for a hint.
+	if result.Evidence != "" {
+		if err := recordDecision(h, req.NodeID, result.Evidence); err != nil {
+			return errResp("close: " + err.Error())
+		}
+	}
 	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
 		return errResp("mark node done: " + resp.Error)
 	}
@@ -337,123 +199,79 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *kno
 }
 
 // closeBatch closes out a batch node. A batch has no delivery and no worker of
-// its own — it is the parent its members hang from — so the delivery and worker
-// gates do not apply, and neither does the work-playbook handover gate: the
-// plan's worker playbook was never handed to anyone by design. What does apply
-// is the batch's own exit phase, batch-exit, whose first step is the fs batch
-// gate — so a batch whose members are not all integrated refuses before any
-// teardown runs, naming the unintegrated members in the check's output.
-//
-// The batch's exit actions run in the main checkout — its declared teardown
-// removes members' worktrees and branches, which are git state of the project —
-// so the project is recovered from the trace's plan line, the one structured
-// record of which project the batch was dispatched into.
-func closeBatch(h *command.Handler, hc engine.Engine, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, req CloseRequest) command.Response {
+// its own — it is the parent its members hang from — so the delivery, worker and
+// deliverable reads do not apply. What does apply is the batch's own question:
+// every member has a done integration naming it. It is the same read fs batch
+// makes, so a close can never disagree with it.
+func closeBatch(h *command.Handler, req CloseRequest) command.Response {
 	if req.Decision == "" {
 		return errResp("--decision is required: record the verdict this close-out rests on")
 	}
 
-	plan, err := recordedPlan(h, req.NodeID)
-	if err != nil {
-		return errResp("close: " + err.Error())
-	}
-
-	project, err := batchProject(lg, req.NodeID)
-	if err != nil {
-		return errResp("close: " + err.Error())
-	}
-	// The batch's exit playbooks are resolved from the project's scope the same
-	// way a dispatch's are, so a project-scoped batch-exit is honoured.
-	kc = kc.InProject(project)
-	delivery := command.DeliveryRecord{Project: project}
-
-	result := CloseResult{NodeID: req.NodeID, Trace: lg.Path(project, req.NodeID)}
-
-	if !req.Abandoned {
-		if err := gateEntry(h, kc, lg, delivery, req.NodeID, plan.Plan, req.Confirm, false); err != nil {
-			return errResp(err.Error())
-		}
-	}
-
-	base, err := baseRevision(h, req.NodeID)
-	if err != nil {
-		return errResp("close: " + err.Error())
-	}
-	run, err := runExit(hc, reg, kc, lg, delivery, req.NodeID, "", "", "", base, plan.Cards, plan.Plan, req.Confirm, req.Abandoned)
-	if err != nil {
-		return errResp(err.Error())
-	}
-	result.Cleanup = run.Note
-	result.Actions = run.Actions
-	for _, confirmation := range run.Confirmations {
-		if err := recordDecision(h, req.NodeID, confirmation); err != nil {
-			return errResp(err.Error())
-		}
-	}
-
-	if !req.Abandoned {
-		if err := gateExit(kc, lg, req.NodeID, plan.Plan, false); err != nil {
-			return errResp(err.Error())
-		}
-	}
-
 	decision := req.Decision
 	if req.Abandoned {
+		if req.Reason == "" {
+			return errResp("--abandoned requires --reason: say why the batch is being abandoned")
+		}
 		decision = "abandoned, never delivered: " + req.Reason
+	} else if resp := Batch(h, req.NodeID); !resp.OK {
+		return errResp("close: " + resp.Error)
 	}
-	result.Decision = decision
+
 	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
 		return errResp("mark node done: " + resp.Error)
 	}
-	return command.Response{OK: true, Data: result}
+	return command.Response{OK: true, Data: CloseResult{NodeID: req.NodeID, Decision: decision}}
 }
 
-// batchProject returns the project a batch was dispatched into, read from the
-// trace's plan line — the one structured record of it, since a batch node has
-// no delivery record to name a project.
-func batchProject(lg *trace.Log, nodeID string) (string, error) {
-	lines, err := lg.Read(nodeID)
+// deliverable is the close's one check, and the line it records: where the tree
+// the dispatch worked in stands now. It is read by a stranger, so it leads with
+// the sha and names the base it was measured against. The cap's verdict —
+// which is where the suite result belongs, because the cap is what ran the suite
+// — is recorded with it, as the node's own decision.
+//
+// It refuses when HEAD has not moved past the revision the dispatch was prepared
+// at, because that is the one thing git can answer about whether the work reached
+// the repository. It stands down — and says so — when there is no revision to
+// measure: a project that was not a git repository when the dispatch was prepared,
+// or an unborn HEAD, is a missing input, not a change that failed to land.
+func deliverable(h *command.Handler, hc engine.Engine, reg *registry.Registry, delivery command.DeliveryRecord, nodeID string) (string, error) {
+	base, err := baseRevision(h, nodeID)
 	if err != nil {
 		return "", err
 	}
-	for _, ln := range lines {
-		if ln.Project != "" {
-			return ln.Project, nil
-		}
-	}
-	return "", fmt.Errorf("the batch's trace for %s records no project, so its teardown has no checkout to run in", nodeID)
-}
-
-// recordedPlan reads the plan a dispatch recorded at preparation time. A
-// dispatch with no plan was never prepared by a binary that gated on one, and
-// close says so instead of gating on an empty set: an exit phase nobody can find
-// is not the same dispatch as one that declared no exit phase.
-//
-// The whole record is returned, not just its playbooks: the cards a dispatch
-// named are part of what the exit gate is handed (trace.Plan.Cards), and a
-// caller that could only see the plan entries would have to read the payload a
-// second time to find them.
-func recordedPlan(h *command.Handler, nodeID string) (trace.Plan, error) {
-	payload, ok, err := h.PlanFor(capScope, nodeID)
+	proj, err := reg.Get(delivery.Project)
 	if err != nil {
-		return trace.Plan{}, fmt.Errorf("read the recorded plan: %v", err)
+		return "", fmt.Errorf("the project %s is not registered, so there is no tree to measure the deliverable in: %v", delivery.Project, err)
 	}
-	if !ok {
-		return trace.Plan{}, fmt.Errorf(
-			"no plan is recorded for %s — it was not prepared by a dispatch that records one, so there is nothing to gate the close against", nodeID)
+	tree, err := checkDir(hc, delivery, proj.RootPath)
+	if err != nil {
+		return "", err
 	}
-	var plan trace.Plan
-	if err := json.Unmarshal(payload, &plan); err != nil {
-		return trace.Plan{}, fmt.Errorf("read the recorded plan: %v", err)
+	head := command.DetectCommitSHAIn(tree)
+
+	if base == "" || head == nil {
+		// The two missing-input cases, named rather than smoothed over: nothing
+		// measured, and the line says so instead of implying a check passed.
+		where := "the dispatch recorded no base revision"
+		if head == nil {
+			where = tree + " is not a git repository with a commit"
+		}
+		return fmt.Sprintf("HEAD not measured (%s) — the deliverable was not checked", where), nil
 	}
-	return plan, nil
+	if *head == base {
+		return "", fmt.Errorf(
+			"%s has not moved past %s, the revision the dispatch was prepared at: nothing reached the repository, so there is no deliverable to close. Commit the work (or close with --abandoned --reason \"<why>\" to record that it did not land)",
+			tree, base)
+	}
+	return fmt.Sprintf("HEAD %s (base %s) — the deliverable reached the repository", *head, base), nil
 }
 
 // baseRevision reads the revision the dispatch's project stood at when the
 // dispatch was prepared: the commit_sha the store recorded on the cap node's own
 // task-created event.
 //
-// It is read rather than recorded on the plan because the store already records
+// It is read rather than recorded on the node because the store already records
 // it, immutably, for every dispatch that ever existed — every event carries the
 // SHA of the project it is about (ARCHITECTURE R4) — so the revision a change
 // began at needs no field of its own, and no dispatch is left without one by an
@@ -486,9 +304,9 @@ func baseRevision(h *command.Handler, nodeID string) (string, error) {
 // the teardown so it states what actually happened rather than what was about
 // to. A dispatch with no delivery record was never delivered. One with a record
 // was delivered, and the record names it and what close-out itself left gone —
-// the pane — plus how many declared exit actions ran. A teardown that could not
-// finish says so instead of claiming a clean-up it did not do.
-func abandonedDecision(delivery command.DeliveryRecord, delivered bool, reason string, tornDown, actions []string, warning string) string {
+// the pane. A teardown that could not finish says so instead of claiming a
+// clean-up it did not do.
+func abandonedDecision(delivery command.DeliveryRecord, delivered bool, reason string, tornDown []string, warning string) string {
 	if !delivered {
 		return "abandoned, never delivered: " + reason
 	}
@@ -501,695 +319,28 @@ func abandonedDecision(delivery command.DeliveryRecord, delivered bool, reason s
 	if len(tornDown) > 0 {
 		decision += " (" + strings.Join(tornDown, " and ") + " torn down)"
 	}
-	if len(actions) > 0 {
-		word := "actions"
-		if len(actions) == 1 {
-			word = "action"
-		}
-		decision += fmt.Sprintf(" (%d exit %s ran)", len(actions), word)
-	}
 	if warning != "" {
 		decision += " (teardown reported: " + warning + ")"
 	}
 	return decision
 }
 
-// planStep is one step of one playbook in a dispatch's plan, carrying the
-// playbook it came from and its 1-based position there — the pair that makes up
-// its trace id, and so the pair a refusal has to name.
-type planStep struct {
-	Playbook string
-	Index    int
-	Kind     string
-	Body     string
-}
-
-// flatten resolves one phase of the plan to its steps, in plan order. A playbook
-// the plan names but the knowledge centre cannot read is an error, never a skip:
-// a gate that fails open is worse than no gate at all.
-//
-// The steps come from the playbook as it stands now, not from the plan line,
-// which records a playbook's name and order but not its steps. That is
-// deliberate: a playbook edited between dispatch and close is refused by the
-// trace gate — its steps no longer line up with the lines already written —
-// rather than silently running a different protocol than the one dispatched.
-func flatten(kc *knowledge.Center, plan []trace.PlanEntry, moment string) ([]planStep, error) {
-	var steps []planStep
-	for _, entry := range plan {
-		if !slices.Contains(entry.Moments, moment) {
-			continue
-		}
-		pb, err := kc.Get(entry.Name)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"the plan names %s playbook %s, which cannot be read: %v", moment, entry.Name, err)
-		}
-		for _, is := range pb.IndexedSteps() {
-			if is.Moment != moment {
-				continue
-			}
-			steps = append(steps, planStep{
-				Playbook: entry.Name,
-				Index:    is.Index,
-				Kind:     is.Step.Kind,
-				Body:     is.Step.Body,
-			})
-		}
-	}
-	return steps, nil
-}
-
-// withoutReviewVar is the variable an exit check reads to stand down when the
-// cap waived the review: the value exitEnv exports. fs owns the name — it is the
-// close that exports it — so a step that defers on it is what makes a review
-// gate a review gate, and that is a fact this side of the boundary can know.
-//
-// Deliberately not the playbook's name. Which playbook carries the gate is the
-// playbook's business and the plan's; fs matching on `code` here would be the
-// constant this mechanism exists to delete, and it would go stale the day a
-// second playbook grew a gate.
-const withoutReviewVar = "$FS_WITHOUT_REVIEW"
-
-// reviewGate reports whether an exit phase carries the review gate: a check step
-// that stands down on $FS_WITHOUT_REVIEW. It is what lets a close tell a waiver
-// that names a skip from one that names nothing — either the gate is in this
-// phase or the reason has nothing to be about.
-func reviewGate(steps []planStep) bool {
-	for _, step := range steps {
-		if step.Kind == knowledge.KindCheck && strings.Contains(step.Body, withoutReviewVar) {
-			return true
-		}
-	}
-	return false
-}
-
-// lastLines indexes a trace by step id, keeping the last line written for each.
-// A step can carry more than one — an ask recorded `skipped` at dispatch time and
-// `confirmed` at close — and the last one is what the step stands as.
-func lastLines(lines []trace.Line) map[string]trace.Line {
-	last := map[string]trace.Line{}
-	for _, ln := range lines {
-		if ln.ID != "" {
-			last[ln.ID] = ln
-		}
-	}
-	return last
-}
-
-// Deviations is the whole comparison the trace makes against the plan: every
-// step of every phase it does not account for, in plan order. It is one function
-// because it is one question — `fs trace` reports it, and the close gate makes
-// the same comparison in two passes, split by the teardown.
-//
-// A step is accounted for when it carries a line with an outcome the gate
-// accepts: a check or do that passed (or that the cap confirmed), an ask the cap
-// answered. A `say` is prose the brief or the report carried, and nothing about
-// it is a gate. A work playbook is accounted for by its handover line — the
-// `loaded` line Deliver writes — because that line is the whole of the record
-// that the brief the worker received is the brief the plan named.
-//
-// Deviations reads; it never writes and never refuses. The caller decides what a
-// gap means, which is why the same list can be a refusal at close and a report
-// in `fs trace`.
-func Deviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace.Line, nodeID string) ([]string, error) {
-	return phaseDeviations(kc, plan, lines, nodeID, true, knowledge.MomentEntry, knowledge.MomentExit)
-}
-
-// phaseDeviations is Deviations over a subset of the plan's phases, which is how
-// the close gate checks the entry phase before the teardown and the exit phase
-// after it. requireWork toggles the work-playbook handover check: a dispatched
-// worker must have its work playbooks handed over, but a batch was never
-// delivered, so its plan's worker playbook has no `loaded` line by design.
-func phaseDeviations(kc *knowledge.Center, plan []trace.PlanEntry, lines []trace.Line, nodeID string, requireWork bool, phases ...string) ([]string, error) {
-	last := lastLines(lines)
-	var gaps []string
-
-	for _, phase := range phases {
-		steps, err := flatten(kc, plan, phase)
-		if err != nil {
-			return nil, err
-		}
-		for _, step := range steps {
-			if step.Kind == knowledge.KindSay {
-				continue
-			}
-			line, recorded := last[trace.StepID(nodeID, step.Playbook, step.Index)]
-			if !recorded {
-				gaps = append(gaps, gapText(step, ""))
-				continue
-			}
-			if step.Kind == knowledge.KindAsk {
-				if line.Status != trace.StatusConfirmed {
-					gaps = append(gaps, gapText(step, line.Status))
-				}
-				continue
-			}
-			if line.Status != trace.StatusPass && line.Status != trace.StatusConfirmed {
-				gaps = append(gaps, gapText(step, line.Status))
-			}
-		}
-	}
-
-	for _, entry := range plan {
-		if !requireWork || !slices.Contains(entry.Moments, knowledge.MomentWork) {
-			continue
-		}
-		line, recorded := last[trace.StepID(nodeID, entry.Name, 0)]
-		if !recorded || line.Kind != trace.KindLoaded {
-			gaps = append(gaps, fmt.Sprintf(
-				"work playbook %s: no `loaded` line — the brief the worker received is not on the record", entry.Name))
-		}
-	}
-	return gaps, nil
-}
-
-// gateEntry is the trace gate's first pass, and it runs before any exit step:
-// the teardown must not start over a dispatch whose own record says a step never
-// ran, and a refusal here has to leave everything standing so the work can be
-// finished.
-//
-// An entry ask the cap left unanswered at dispatch time was recorded `skipped`,
-// and --confirm is what answers it here — the same flag that answers the exit
-// asks, at the same point in the close, so there is one place to answer a
-// question and never two. A check is different: a failed one was the cap's to
-// accept when it dispatched, and a close is not where it gets accepted.
-func gateEntry(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, nodeID string, plan []trace.PlanEntry, confirm, requireWork bool) error {
-	lines, err := lg.Read(nodeID)
-	if err != nil {
-		return fmt.Errorf("close: %v", err)
-	}
-
-	if confirm {
-		lines, err = confirmAsks(h, kc, lg, delivery, nodeID, plan, knowledge.MomentEntry, lines)
-		if err != nil {
-			return fmt.Errorf("close: %v", err)
-		}
-	}
-
-	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.MomentEntry)
-	if err != nil {
-		return fmt.Errorf("close: %v", err)
-	}
-	if len(gaps) > 0 {
-		return traceGapError(nodeID, gaps)
-	}
-	return nil
-}
-
-// confirmAsks answers every unanswered ask of one phase: the cap's --confirm is
-// the answer, the trace records it, and the node carries the decision. It
-// returns the lines with the new ones appended, so the caller's comparison sees
-// the dispatch as it now stands rather than as it was when it was read.
-//
-// Only an ask is answered this way. A `skipped` check is not a question, and a
-// close that quietly turned one into a pass would be the gate agreeing with
-// itself.
-func confirmAsks(h *command.Handler, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, nodeID string, plan []trace.PlanEntry, phase string, lines []trace.Line) ([]trace.Line, error) {
-	steps, err := flatten(kc, plan, phase)
-	if err != nil {
-		return nil, err
-	}
-	last := lastLines(lines)
-
-	for _, step := range steps {
-		if step.Kind != knowledge.KindAsk {
-			continue
-		}
-		if line, recorded := last[trace.StepID(nodeID, step.Playbook, step.Index)]; recorded && line.Status == trace.StatusConfirmed {
-			continue
-		}
-		line := trace.Line{
-			ID:       trace.StepID(nodeID, step.Playbook, step.Index),
-			Dispatch: nodeID,
-			Playbook: step.Playbook,
-			Moment:   phase,
-			Step:     step.Index,
-			Kind:     step.Kind,
-			Status:   trace.StatusConfirmed,
-			Detail:   step.Body,
-		}
-		if err := lg.Append(delivery.Project, line); err != nil {
-			return nil, err
-		}
-		if err := recordDecision(h, nodeID, "user confirmed "+phase+" step: "+step.Body); err != nil {
-			return nil, err
-		}
-		lines = append(lines, line)
-	}
-	return lines, nil
-}
-
-// gateExit is the trace gate's second pass. It reads the trace back after the
-// exit phase ran and refuses if any of it is unrecorded, so a trace left behind
-// by a close always reads as a dispatch that was closed — not as one that was
-// prepared and then vanished.
-//
-// It re-checks the entry phase as well, which the first pass already cleared.
-// That is not redundancy for its own sake: the two passes are one gate split by
-// the teardown, and a gate that only ever verified the half it was looking at
-// would let a close pass on a plan it never fully read.
-func gateExit(kc *knowledge.Center, lg *trace.Log, nodeID string, plan []trace.PlanEntry, requireWork bool) error {
-	lines, err := lg.Read(nodeID)
-	if err != nil {
-		return fmt.Errorf("close: %v", err)
-	}
-	gaps, err := phaseDeviations(kc, plan, lines, nodeID, requireWork, knowledge.MomentEntry, knowledge.MomentExit)
-	if err != nil {
-		return fmt.Errorf("close: %v", err)
-	}
-	if len(gaps) > 0 {
-		return traceGapError(nodeID, gaps)
-	}
-	return nil
-}
-
-// gapText names one step the trace does not account for, in the terms the
-// refusal has to use: which playbook, which step, which kind, and what the trace
-// has there instead.
-func gapText(s planStep, status string) string {
-	switch status {
-	case "":
-		return fmt.Sprintf("%s step %d (%s): no line in the trace — a step with no line is a step that did not run",
-			s.Playbook, s.Index, s.Kind)
-	case trace.StatusSkipped:
-		return fmt.Sprintf("%s step %d (%s): recorded skipped, not answered — answer it, then re-run with --confirm",
-			s.Playbook, s.Index, s.Kind)
-	case trace.StatusFail:
-		return fmt.Sprintf("%s step %d (%s): recorded a failure — the dispatch should not have been delivered past it",
-			s.Playbook, s.Index, s.Kind)
-	default:
-		return fmt.Sprintf("%s step %d (%s): recorded %q, which is not an outcome this gate accepts",
-			s.Playbook, s.Index, s.Kind, status)
-	}
-}
-
-// traceGapError is the refusal an incomplete trace earns. It says what the trace
-// does and does not prove, because a cap that reads "the trace is incomplete" as
-// "the worker disobeyed" has learned exactly the wrong lesson from it.
-func traceGapError(nodeID string, gaps []string) error {
-	return fmt.Errorf(
-		"close: the trace for %s does not account for the plan — %s. The trace records what the dispatch loaded and ran, not what the worker obeyed, so a step with no line is a step that did not happen here. The dispatch cannot be closed as if it had: re-dispatch the work, or close with --abandoned --reason \"<why>\" to record that it did not",
-		nodeID, strings.Join(gaps, "; "))
-}
-
-// exitRun is what the exit phase did: the note the response reports, the
-// decisions its ask steps earn, the declared do steps that ran in order, and —
-// on the abandoned path only — the actions that could not finish.
-type exitRun struct {
-	Note          string
-	Confirmations []string
-	Actions       []string
-	Warnings      []string
-}
-
-// runExit runs the exit phase of the plan: the playbooks whose phase is exit, in
-// plan order, appending one line to the dispatch's trace per step.
-//
-// The order is the DECLARED order — the plan's, which is the order the playbooks
-// declared — and each step's kind says what it does. check runs a shell command
-// in the tree the dispatch worked in and refuses the close, fail-fast, on
-// non-zero, naming the step and its output. ask is a question only the user can
-// answer: it requires --confirm and is recorded per step. do runs a shell command
-// in the project root and refuses the same way. say is prose the close reports.
-//
-// A playbook's preconditions are enforced first because it declares them first,
-// and it can place a postcondition after an action, which is the whole point:
-// nothing verified what an action achieved before, which is how a teardown
-// reported success over a checkout that was still on disk.
-//
-// A refusal leaves the node open and returns before anything is torn down. A
-// check's tree is resolved before the first check runs; a check whose tree a
-// preceding action removed falls back to the project root, because a
-// postcondition about a removed resource has no footing inside it.
-//
-// abandoned is the escape hatch, and it skips only the gates: checks and asks do
-// not run, because a node being abandoned is not a node being gated. They are
-// still recorded as `skipped`, because a trace with holes in it would read as a
-// protocol that ran when it did not. The declared actions still run — abandoning
-// is a decision about the work, not a licence to leak the tree it ran in — and
-// one that fails is a warning, never a refusal, for the same reason: a stuck
-// teardown must not keep a node open.
-func runExit(hc engine.Engine, reg *registry.Registry, kc *knowledge.Center, lg *trace.Log, delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview, base string, cards []string, plan []trace.PlanEntry, confirm, abandoned bool) (exitRun, error) {
-	steps, err := flatten(kc, plan, knowledge.MomentExit)
-	if err != nil {
-		return exitRun{}, fmt.Errorf("close: %v", err)
-	}
-
-	// A waiver names a skip, and a skip needs a gate that stood down: a plan
-	// that carries no review gate has none to face. The reason is refused rather
-	// than recorded, because the decision says "waived the review gate", and
-	// writing it on a close that never met one is the record asserting the very
-	// thing --without-review exists to make visible. The other way a close faces
-	// no gate — an abandoned one, which runs no exit check — is refused before
-	// this run is reached, because it is the close that decides it and not this
-	// phase. Either way the cap has one move, and the refusal says which.
-	if withoutReview != "" && !reviewGate(steps) {
-		// Named by its playbooks, or named as the plan when there are none: a
-		// plan with no exit phase at all is a shape this refusal has to read as
-		// well as one whose exit phase simply has no gate in it.
-		phase := strings.Join(playbookNames(steps), ", ")
-		if phase == "" {
-			phase = "this plan"
-		}
-		return exitRun{}, fmt.Errorf(
-			"close: --without-review was given, but the exit phase of %s carries no review gate, so there is nothing to waive — drop the flag",
-			phase)
-	}
-
-	if len(steps) == 0 {
-		if abandoned {
-			return exitRun{Note: "no exit phase: the dispatch was abandoned"}, nil
-		}
-		return exitRun{Note: "no exit gate: the plan declares no exit playbook"}, nil
-	}
-
-	// The project root is only needed by a check or a do: an exit phase of asks
-	// and says alone needs no tree to run in. An abandoned close runs the do
-	// steps but skips the checks, so it needs the root only for an action.
-	needRoot := false
-	for _, step := range steps {
-		if step.Kind == knowledge.KindDo || (step.Kind == knowledge.KindCheck && !abandoned) {
-			needRoot = true
-		}
-	}
-	var proj registry.Project
-	if needRoot {
-		proj, err = reg.Get(delivery.Project)
-		if err != nil {
-			// A project whose registry row is gone leaves no root for a declared
-			// action to run in. On the gated path that is a refusal — the gate could
-			// not run. On the abandoned path it is a warning: abandoning is a
-			// decision, and a teardown that cannot run must not keep the node open.
-			if abandoned {
-				return exitRun{
-					Note:     fmt.Sprintf("exit phase skipped (abandoned): project %s is not registered, so its declared actions cannot run", delivery.Project),
-					Warnings: []string{fmt.Sprintf("exit actions cannot run: project %s is not registered (%v)", delivery.Project, err)},
-				}, nil
-			}
-			return exitRun{}, fmt.Errorf("close: exit phase cannot run: %v", err)
-		}
-	}
-
-	// Exit steps get the same FS_* treatment entry checks do, so a gate can ask
-	// about the dispatch it is gating: which project and task type it was, which
-	// cap node is closing, which worker's node it rested on, which member it
-	// integrates, and — for an action that has to remove a tree — the pane and
-	// the worktree the delivery opened. FS_CARDS is what the dispatch named with
-	// --cards, read back from its own plan; it stays present rather than missing
-	// when it named none, so a step can tell "this dispatch named no cards" from
-	// "this step has no env". FS_BATCH is the batch node when this dispatch is a
-	// member of one, empty otherwise: it is the marker code's teardown defers on,
-	// so a member's tree is owned by the batch, not the member.
-	// FS_WITHOUT_REVIEW is the same shape of marker for the review gate: code's
-	// exit check reads it and stands down when the cap has given a reason, so the
-	// one skip that gate has is a visible line in a playbook rather than a name fs
-	// matches on in Go.
-	env := exitEnv(delivery, capNodeID, integrates, batch, withoutReview, base, cards)
-
-	var run exitRun
-	checks, asks, says := 0, 0, 0
-	names := playbookNames(steps)
-	tree := "" // the tree the checks run in; resolved before the first check
-
-	worker := ""
-	if delivery.Project != "" && delivery.Node != "" {
-		worker = delivery.Project + ":" + delivery.Node
-	}
-
-	for i, step := range steps {
-		id := trace.StepID(capNodeID, step.Playbook, step.Index)
-		line := trace.Line{
-			ID:       id,
-			Dispatch: capNodeID,
-			Worker:   worker,
-			Playbook: step.Playbook,
-			Moment:   knowledge.MomentExit,
-			Step:     step.Index,
-			Kind:     step.Kind,
-			Detail:   step.Body,
-		}
-
-		switch step.Kind {
-		case knowledge.KindSay:
-			line.Status = trace.StatusLoaded
-			says++
-
-		case knowledge.KindCheck:
-			if abandoned {
-				line.Status = trace.StatusSkipped
-				line.Detail = "abandoned: " + step.Body
-				break
-			}
-			if tree == "" {
-				resolved, err := checkDir(hc, delivery, proj.RootPath)
-				if err != nil {
-					return exitRun{}, fmt.Errorf("close: exit check %s: %v", step.Playbook, err)
-				}
-				tree = resolved
-			}
-			item := runCheck(step.Body, checkTree(tree, proj.RootPath), env)
-			line.Status = item.Status
-			if err := lg.Append(delivery.Project, line); err != nil {
-				return exitRun{}, fmt.Errorf("close: %v", err)
-			}
-			if item.Status != "pass" {
-				return exitRun{}, fmt.Errorf(
-					"close: exit check failed (playbook %s step %d): %q; output: %s; fix it, then close again",
-					step.Playbook, step.Index, step.Body, checkOutput(item))
-			}
-			checks++
-			continue
-
-		case knowledge.KindAsk:
-			if abandoned {
-				line.Status = trace.StatusSkipped
-				line.Detail = "abandoned: " + step.Body
-				break
-			}
-			if !confirm {
-				// The refusal is written down before it is returned. `refused` is
-				// the one status that records a step the gate would not accept an
-				// answer for, and it is what makes `fs trace` after a refused close
-				// say which step stopped it rather than showing a protocol that
-				// simply stops.
-				line.Status = trace.StatusRefused
-				if err := lg.Append(delivery.Project, line); err != nil {
-					return exitRun{}, fmt.Errorf("close: %v", err)
-				}
-				// Every ask from here on is surfaced, not just this one: the cap
-				// should see the whole set it is being asked to confirm, across
-				// every exit playbook the plan names. Refusing here, at the ask's
-				// declared position, is what lets a declared action before it have
-				// already run.
-				return exitRun{}, fmt.Errorf(
-					"close: exit phase %s has unconfirmed steps: %s; answer each, then re-run with --confirm",
-					strings.Join(names, ", "), strings.Join(pendingAsks(steps[i:]), ", "))
-			}
-			line.Status = trace.StatusConfirmed
-			run.Confirmations = append(run.Confirmations, "user confirmed exit step: "+step.Body)
-			asks++
-
-		case knowledge.KindDo:
-			item := runStep(knowledge.KindDo, step.Body, proj.RootPath, env)
-			line.Status = item.Status
-			if err := lg.Append(delivery.Project, line); err != nil {
-				return exitRun{}, fmt.Errorf("close: %v", err)
-			}
-			if item.Status != "pass" {
-				if !abandoned {
-					return exitRun{}, fmt.Errorf(
-						"close: exit action failed (playbook %s step %d): %q; output: %s; fix it, then close again",
-						step.Playbook, step.Index, step.Body, checkOutput(item))
-				}
-				run.Warnings = append(run.Warnings,
-					fmt.Sprintf("exit action %q failed: %s", step.Body, checkOutput(item)))
-			}
-			run.Actions = append(run.Actions, step.Body)
-			continue
-		}
-
-		if err := lg.Append(delivery.Project, line); err != nil {
-			return exitRun{}, fmt.Errorf("close: %v", err)
-		}
-	}
-
-	run.Note = exitNote(names, checks, len(run.Actions), asks, says, delivery.Worktree, abandoned)
-	return run, nil
-}
-
-// pendingAsks lists the asks from a point in the exit phase onward, each naming
-// the playbook it belongs to. The cap answers them all in one pass, but the
-// refusal still happens where the first one sits, so a declared action before it
-// has already run.
-func pendingAsks(rest []planStep) []string {
-	var asks []string
-	for _, step := range rest {
-		if step.Kind == knowledge.KindAsk {
-			asks = append(asks, fmt.Sprintf("%s step %d: %q", step.Playbook, step.Index, step.Body))
-		}
-	}
-	return asks
-}
-
-// playbookNames is the distinct playbooks a phase's steps came from, in the order
-// they appear. It is how a note or a refusal names the protocols it is about
-// rather than a single hardcoded name.
-func playbookNames(steps []planStep) []string {
-	var names []string
-	seen := map[string]bool{}
-	for _, step := range steps {
-		if !seen[step.Playbook] {
-			seen[step.Playbook] = true
-			names = append(names, step.Playbook)
-		}
-	}
-	return names
-}
-
-// checkTree is the directory a check runs in: the tree the dispatch worked in
-// while it exists, and the project root once a declared action has removed it.
-// A postcondition about a removed resource has no footing inside the resource —
-// `test ! -e "$FS_WORKTREE_PATH"` cannot run with $FS_WORKTREE_PATH as its cwd —
-// and the root is the tree that outlives the teardown.
-func checkTree(tree, root string) string {
-	if info, err := os.Stat(tree); err == nil && info.IsDir() {
-		return tree
-	}
-	return root
-}
-
-// exitNote is the one-line account of the exit phase the response carries: which
-// playbooks ran, how many checks passed, how many declared actions ran, how many
-// asks were confirmed, and the tree the checks ran in. A gate whose report hides
-// which of those happened is how "the cleanup ran" stopped meaning anything.
-func exitNote(names []string, checks, actions, asks, says int, worktree string, abandoned bool) string {
-	var parts []string
-	if abandoned {
-		if actions > 0 {
-			parts = append(parts, fmt.Sprintf("%d actions run", actions))
-		} else {
-			parts = append(parts, "no steps ran")
-		}
-	} else {
-		parts = append(parts, fmt.Sprintf("%d checks passed", checks))
-		if actions > 0 {
-			parts = append(parts, fmt.Sprintf("%d actions run", actions))
-		}
-		if asks > 0 {
-			parts = append(parts, fmt.Sprintf("%d confirmed", asks))
-		}
-	}
-	if says > 0 {
-		parts = append(parts, fmt.Sprintf("%d say", says))
-	}
-
-	skipped := ""
-	if abandoned {
-		skipped = " skipped (abandoned)"
-	}
-	note := fmt.Sprintf("exit phase %s%s: %s", strings.Join(names, ", "), skipped, strings.Join(parts, ", "))
-	if worktree != "" {
-		note += " in worktree " + worktree
-	}
-	return note
-}
-
-// exitEnv is the closing dispatch's own inputs, exposed to every exit step as
-// FS_*. It is narrower than the entry gate's env: a close has no --goal to
-// offer, because the goal was the entry gate's. FS_CARDS is the same value the
-// entry gate saw, read back from the dispatch's recorded plan rather than
-// invented here — a card declares the paths the deliverable touches, and the
-// gate that asks whether the deliverable reached the repository runs here, long
-// after the command line that named the cards is gone. FS_INTEGRATES is the
-// member this integration merges, empty for a dispatch that merges nothing.
-//
-// FS_BASE is the revision the project stood at when the dispatch was prepared:
-// what a change is measured against by the deliverable check, read off the cap
-// node's own task-created event (see baseRevision). It is empty for a project
-// that was not a repository then, and the step that reads it stands down on an
-// empty value rather than refusing a close it cannot measure.
-//
-// FS_PANE, FS_WORKTREE, and FS_WORKTREE_PATH name what the delivery opened. They
-// are what lets a declared action be about this dispatch's own tree — removing
-// it, deleting its branch — without the mechanism knowing how.
-//
-// FS_BRANCH is the branch that checkout was created on, empty when this delivery
-// created no worktree. It is what lets a postcondition ask whether the branch
-// step did its job without re-deriving the branch from the tree it just removed
-// — the derivation that named the wrong branch four rounds running. It is
-// deliberately the record's value and not a lookup: a close that had to find the
-// branch again would be asking the question the branch is gone, and empty means
-// "this branch was not mine to remove", which is the answer a step must be able
-// to tell from "the branch I was responsible for is still here".
-//
-// FS_BIN is the running binary's own path, the same contract the entry gate
-// gets. The review gate is the step that needs it: `fs reviews $FS_NODE` is a
-// shipped check, and `fs` is not on PATH — the binary lives in ~/.fs — so the
-// gate that says whether a change was reviewed could not run at all until a step
-// could name the binary it is a step of. It is exported here as well as at the
-// entry gate because close is the other half of a plan: a `--tag spec` dispatch
-// can run its whole exit gate without a dispatch having been prepared in this
-// process. It carries the shipped scripts too — "$FS_BIN" script <name> — which
-// are read out of the binary and have no directory of their own.
-//
-// FS_WITHOUT_REVIEW is the cap's --without-review reason, empty when the flag
-// was not given. It is exported rather than kept in Go because the gate it
-// answers is a playbook step: a check cannot be answered with --confirm, so the
-// step itself has to be able to see that the cap took responsibility for
-// closing without a review. Empty means "no reason was given", and the step
-// must treat it as unset — the same rule FS_CARDS and FS_BATCH are held to.
-func exitEnv(delivery command.DeliveryRecord, capNodeID, integrates, batch, withoutReview, base string, cards []string) []string {
-	worker := ""
-	if delivery.Project != "" && delivery.Node != "" {
-		worker = delivery.Project + ":" + delivery.Node
-	}
-	return []string{
-		"FS_PROJECT=" + delivery.Project,
-		"FS_TYPE=" + delivery.Type,
-		"FS_NODE=" + capNodeID,
-		"FS_WORKER=" + worker,
-		"FS_CARDS=" + strings.Join(cards, ","),
-		"FS_BASE=" + base,
-		"FS_INTEGRATES=" + integrates,
-		"FS_PANE=" + delivery.PaneID,
-		"FS_WORKTREE=" + delivery.Worktree,
-		"FS_WORKTREE_PATH=" + delivery.WorktreePath,
-		"FS_BRANCH=" + delivery.Branch,
-		"FS_BATCH=" + batch,
-		"FS_WITHOUT_REVIEW=" + withoutReview,
-		"FS_BIN=" + command.BinaryPath(),
-	}
-}
-
-// withoutReviewDecision is the durable record of a close that skipped the review
-// gate: the flag that waived it, and the reason the cap gave. It is one line so
-// a reader of the node sees a skipped review rather than inferring one from a
-// check that passed without an explanation.
-func withoutReviewDecision(reason string) string {
-	return "--without-review waived the review gate: " + reason
-}
-
-// checkDir returns the directory the exit checks run in: the worktree the
+// checkDir returns the directory the deliverable check runs in: the worktree the
 // dispatch worked in when the record names one that is still there, and the
 // worker project's root otherwise.
 //
 // The worktree comes from the delivery record, not from herdr: the recorded path
 // is the tree the dispatch itself worked in — resolved from herdr at delivery
-// time — and it outlives the workspace, which is exactly the case that matters.
-// A workspace that is gone by close would otherwise leave the gate with no
-// footing, and the close would refuse and leave the checkout behind. A record
-// written before the path was recorded falls back to resolving the workspace,
-// and one that cannot be resolved is an error rather than a fall back to the
-// project root: the shipped checks assert things about the worktree — no
-// uncommitted files, branch merged — and the project root is routinely another
-// agent's dirty tree, so checking it would fail or pass for reasons that have
-// nothing to do with the dispatch while reporting that the gate ran.
+// time — and it outlives the workspace, which is exactly the case that matters. A
+// record written before the path was recorded falls back to resolving the
+// workspace, and one that cannot be resolved is an error rather than a fall back
+// to the project root: a revision is about one particular tree, and the root is
+// routinely another agent's dirty checkout.
 //
-// A worktree that is already gone is the third case, and it is not a refusal:
-// the tree the checks assert things about does not exist, so their footing falls
-// back to the project root. Refusing instead would make a retry — or a close
-// after a partial teardown — impossible, which is the failure this whole path is
-// meant to end.
+// A worktree that is already gone is the third case, and it is not a refusal: the
+// tree the check is about does not exist, so its footing falls back to the project
+// root. Refusing instead would make a retry — or a close after a partial teardown
+// — impossible.
 func checkDir(hc engine.Engine, delivery command.DeliveryRecord, root string) (string, error) {
 	if delivery.Worktree == "" {
 		return root, nil
@@ -1199,7 +350,7 @@ func checkDir(hc engine.Engine, delivery command.DeliveryRecord, root string) (s
 		resolved, err := hc.WorktreeCheckout(delivery.Worktree)
 		if err != nil {
 			return "", fmt.Errorf(
-				"worktree %s: %w; its checks must run in the tree the dispatch worked in, so fix the workspace or close with --abandoned --reason \"<why>\"",
+				"worktree %s: %w; the deliverable check must read the tree the dispatch worked in, so fix the workspace or close with --abandoned --reason \"<why>\"",
 				delivery.Worktree, err)
 		}
 		checkout = resolved
@@ -1218,15 +369,10 @@ func checkDir(hc engine.Engine, delivery command.DeliveryRecord, root string) (s
 // pane that is already gone is the goal state, not a failure.
 //
 // Closing is a claim; the read-back is the fact. Trusting a return code is the
-// mistake this path keeps making — the same error-mapped "already gone" that
-// made a worktree removal report success over a checkout still on disk — and the
-// pane is machinery, so its verification belongs in machinery too. A pane herdr
-// still reports after the close is a warning, never a claim that it is gone.
-//
-// This is machinery, not a declared step: every dispatch has a pane, and a
-// playbook that forgot to close one would leak a terminal with nothing left to
-// catch it. The worktree the dispatch ran in is the other case — its removal is
-// a git action, so it is declared by the exit playbook and run by runExit above.
+// mistake this path keeps making — the same error-mapped "already gone" that made
+// a worktree removal report success over a checkout still on disk — and the pane
+// is machinery, so its verification belongs in machinery too. A pane herdr still
+// reports after the close is a warning, never a claim that it is gone.
 func tearDownPane(hc engine.Engine, paneID string) string {
 	if err := hc.ClosePane(paneID); err != nil && !errors.Is(err, engine.ErrPaneGone) {
 		return fmt.Sprintf("could not close pane %s: %v — close it by hand", paneID, err)
@@ -1286,15 +432,14 @@ func capNode(h *command.Handler, nodeID string) (command.TaskInfo, error) {
 // Two conditions wear this one message and they are not the same fact. A worker
 // still going has not finished and the cap should let it work. A worker that
 // reported done and went idle *has* finished — what is unmarked is its node — and
-// the old text told the cap to wait for work that was already over, which cost
-// four round trips in a day, each one a cap telling an idle worker to run
+// a message that told the cap to wait for work that was already over cost four
+// round trips in a day, each one a cap telling an idle worker to run
 // `fs task update --status done`.
 //
 // The status is deliberately not moved for a report: the node is the record of
 // the work and the cap closes the dispatch, so a worker saying "done" must not
-// mark its own node done, and a close gate that passed on the assertion rather
-// than the record is worse than the round trip it saves. What the refusal owes
-// the reader instead is the real condition and the one command that ends it.
+// mark its own node done. What the refusal owes the reader instead is the real
+// condition and the one command that ends it.
 //
 // Only a done report counts. A question or a note is a worker that has not
 // finished, and reading either as a completion would be the same misdescription

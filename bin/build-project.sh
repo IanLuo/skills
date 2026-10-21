@@ -21,8 +21,7 @@
 # fs have sat on one machine at once and a fix that worked was concluded to have
 # failed because the binary under test predated it. If you have one, `./result/bin/fs
 # version` names the revision it was built from and its own path, which is how
-# you tell it apart; for the repo's own source, `bin/check-binary-fresh.sh`
-# refuses a binary the tree has moved past.
+# you tell it apart.
 #
 # The installed binaries are derived artifacts and gitignored — never edit them.
 #
