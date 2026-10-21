@@ -241,19 +241,9 @@ about is the name — a NAME the binary does not ship is refused, naming the one
 it does.`,
 	},
 
-	"state": {usage: `Usage: fs state <subcommand>
-
-Subcommands:
-  verify    Re-fold every scope into a scratch projection and compare it with
-            the live one. Writes nothing; exits 1 naming the first scope that
-            differs, the differing field, and a value from each side.
-  rebuild   Re-fold every scope into the live projection file. The repair for a
-            drifted or empty projection; it touches no non-fs row.`},
-	"state verify":  {usage: "Usage: fs state verify"},
-	"state rebuild": {usage: "Usage: fs state rebuild"},
-	"unfinished":    {usage: "Usage: fs unfinished"},
-	"gaps":          {usage: "Usage: fs gaps"},
-	"pending":       {usage: "Usage: fs pending"},
+	"unfinished": {usage: "Usage: fs unfinished"},
+	"gaps":       {usage: "Usage: fs gaps"},
+	"pending":    {usage: "Usage: fs pending"},
 
 	"version": {
 		usage: `Usage: fs version

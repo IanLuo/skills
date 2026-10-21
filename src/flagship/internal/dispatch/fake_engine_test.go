@@ -220,28 +220,9 @@ func recordLegacyDelivery(t *testing.T, f *fixture, capNode, paneID, project str
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := s.Append(store.Event{
+	if _, err := s.Append(store.Event{
 		Type: store.DeliveryRecorded, ProjectID: "cap", NodeID: &capNode, Payload: payload,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("append legacy delivery-recorded: %v", err)
-	}
-
-	// The event is written past the append path — that is the point of a legacy
-	// record: it predates the fold, or a process without a projection wrote it.
-	// The projection still has it, because the drift a missing row would cause is
-	// what fs state rebuild heals and not what a fixture is testing here.
-	written, err := s.Replay("cap", &store.ReplayFilter{Types: []store.EventType{store.DeliveryRecorded}})
-	if err != nil {
-		t.Fatalf("replay legacy delivery-recorded: %v", err)
-	}
-	for _, evt := range written {
-		if evt.ID != id {
-			continue
-		}
-		if err := store.FoldEvent(f.h.Projection(), evt); err != nil {
-			t.Fatalf("fold legacy delivery-recorded: %v", err)
-		}
-		break
 	}
 }

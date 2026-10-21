@@ -2,10 +2,7 @@ module github.com/flagship-dev/flagship
 
 go 1.27
 
-require (
-	github.com/IanLuo/memstore v0.0.0-20261019011146-b5be5fd147a9
-	modernc.org/sqlite v1.60.1
-)
+require modernc.org/sqlite v1.60.1
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

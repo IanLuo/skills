@@ -33,12 +33,6 @@ func newFixture(t *testing.T, root string) *fixture {
 	}
 	t.Cleanup(func() { h.Close() })
 
-	// The projection every append folds into, in the same temp dir as the event
-	// store: the fixture carries both files the way the CLI's process does.
-	if err := h.AttachProjection(filepath.Join(fsRoot, "mem.db")); err != nil {
-		t.Fatalf("AttachProjection: %v", err)
-	}
-
 	reg, err := registry.Open(filepath.Join(fsRoot, "registry.db"))
 	if err != nil {
 		t.Fatalf("registry.Open: %v", err)

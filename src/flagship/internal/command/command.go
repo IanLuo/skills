@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IanLuo/memstore"
 	"github.com/flagship-dev/flagship/internal/query"
 	"github.com/flagship-dev/flagship/internal/store"
 )
@@ -238,47 +237,16 @@ func (h *Handler) SetLogger(l *slog.Logger) {
 }
 
 // Logger returns the handler's logger, so a read that composes its own answer —
-// fs pending and its parity gate — records on the same running log as the
-// commands.
+// fs pending — records on the same running log as the commands.
 func (h *Handler) Logger() *slog.Logger {
 	return h.logger
 }
 
-// AttachProjection opens the memstore file at path and folds every later append
-// into it. The CLI attaches ~/.memstore/memory.db once per process; a test
-// attaches a scratch file. A handler with no projection attached folds nothing,
-// which is what keeps every pre-slice-2 unit test hermetic.
-func (h *Handler) AttachProjection(path string) error {
-	ms, err := store.OpenProjection(path)
-	if err != nil {
-		return err
-	}
-	h.store.AttachProjection(ms)
-	return nil
-}
-
-// Projection returns the attached projection, or nil.
-func (h *Handler) Projection() *memstore.Store {
-	return h.store.Projection()
-}
-
 // Scopes lists every scope the event store holds. A state read needs the set to
-// know which projects to ask the projection about; it is a DISTINCT query over
-// the event store, not a replay.
+// know which projects to ask; it is a DISTINCT query over the event store, not a
+// replay.
 func (h *Handler) Scopes() ([]string, error) {
 	return h.store.Scopes()
-}
-
-// StateVerify re-folds every scope into a scratch projection and compares it to
-// the live one, naming the first difference per scope and the two files it
-// compared. It writes nothing.
-func (h *Handler) StateVerify(projPath string) ([]store.StateIssue, store.VerifyReport, error) {
-	return h.store.StateVerify(projPath)
-}
-
-// StateRebuild re-folds every scope into the live projection file.
-func (h *Handler) StateRebuild(projPath string) (int, error) {
-	return h.store.StateRebuild(projPath)
 }
 
 // Close releases the underlying store.
@@ -289,26 +257,6 @@ func (h *Handler) Close() error {
 // SetCommitSHA sets the git HEAD sha to embed in events (ARCHITECTURE R4).
 func (h *Handler) SetCommitSHA(sha *string) {
 	h.commitSHA = sha
-}
-
-// storeWriteOk clears a projection failure and leaves every other error for the
-// caller's error path.
-//
-// The event is appended and committed before its fold runs (NFR Ordering), so a
-// fold failure is not a failed write: the action is recorded and only the
-// projection is behind. Reporting it as a failed write would invite a retry,
-// which appends a second event and doubles the state — the failure says so and
-// names the heal instead (AC10).
-func (h *Handler) storeWriteOk(op, projectID string, err error) error {
-	if err == nil {
-		return nil
-	}
-	var pf *store.ProjectionFailure
-	if errors.As(err, &pf) {
-		h.logger.Error(pf.Error(), "command", op, "project", projectID, "event_committed", true)
-		return nil
-	}
-	return err
 }
 
 // ProjectCreate appends a project-created event. AC1.
@@ -331,7 +279,6 @@ func (h *Handler) ProjectCreate(name, rootPath string) Response {
 		CommitSHA: h.commitSHA,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("project-create", name, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "project-create", "error", err)
 		return errResp(err.Error())
@@ -466,7 +413,6 @@ func (h *Handler) TaskAddKind(projectID, goal string, kind query.Kind, foundBy, 
 		CommitSHA:    h.commitSHA,
 		Payload:      data,
 	})
-	err = h.storeWriteOk("task-add", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-add", "error", err)
 		return errResp(err.Error())
@@ -670,7 +616,6 @@ func (h *Handler) TaskUpdate(projectID, nodeID, status, decision string, commitS
 			CommitSHA: sha,
 			Payload:   payload,
 		})
-		err = h.storeWriteOk("task-update", projectID, err)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -691,7 +636,6 @@ func (h *Handler) TaskUpdate(projectID, nodeID, status, decision string, commitS
 			CommitSHA: sha,
 			Payload:   payload,
 		})
-		err = h.storeWriteOk("task-update", projectID, err)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -746,7 +690,6 @@ func (h *Handler) RecordDelivery(projectID, nodeID string, d DeliveryRecord) Res
 		CommitSHA: h.commitSHA,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("record-delivery", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "record-delivery", "error", err)
 		return errResp(err.Error())
@@ -859,7 +802,6 @@ func (h *Handler) ClaimCap(scope string, c CapClaim) Response {
 		CommitSHA: h.commitSHA,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("cap-claim", scope, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "cap-claim", "error", err)
 		return errResp(err.Error())
@@ -944,7 +886,6 @@ func (h *Handler) ReportAdd(projectID, nodeID, kind, line string) Response {
 	}
 
 	ids, err := h.store.AppendBatch(batch)
-	err = h.storeWriteOk("report", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "report", "error", err)
 		return errResp(err.Error())
@@ -1155,7 +1096,6 @@ func (h *Handler) TaskEdit(projectID, nodeID, newGoal string, newKind query.Kind
 	}
 
 	ids, err := h.store.AppendBatch(batch)
-	err = h.storeWriteOk("task-edit", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-edit", "error", err)
 		return errResp(err.Error())
@@ -1276,7 +1216,6 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		CommitSHA: sha,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("task-merge", absorbedScope, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-merge", "error", err)
 		return errResp(err.Error())
@@ -1294,7 +1233,6 @@ func (h *Handler) TaskMerge(projectID, nodeID, into, reason string, commitSHA *s
 		CommitSHA: sha,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("task-merge", absorbedScope, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-merge", "error", err)
 		return errResp(err.Error())
@@ -1358,7 +1296,6 @@ func (h *Handler) appendMetadata(projectID, nodeID, field, oldValue, newValue st
 		CommitSHA: sha,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("metadata-changed", projectID, err)
 	if err != nil {
 		return EventData{}, err
 	}
@@ -1473,7 +1410,7 @@ func (h *Handler) Unfinished(rootOf func(scope string) string) Response {
 		}
 	}
 
-	h.logger.Info("command executed", "command", "unfinished", "source", StateSource("unfinished"),
+	h.logger.Info("command executed", "command", "unfinished",
 		"scopes", len(scopes), "unfinished", total)
 	return okResp(map[string]any{"unfinished": grouped})
 }
@@ -1555,10 +1492,7 @@ func (h *Handler) Gaps(rootOf func(scope string) string) Response {
 		return gaps[i].NodeID < gaps[j].NodeID
 	})
 
-	// The source is a property of the read (D2), so the read's own line carries
-	// it: a second line beside this one would leave AC1's `tail -1` proof reading
-	// whichever line came last.
-	h.logger.Info("command executed", "command", "gaps", "source", StateSource("gaps"),
+	h.logger.Info("command executed", "command", "gaps",
 		"scopes", len(scopes), "gaps", len(gaps), "open", counts.Open, "done", counts.Done)
 	// counts before gaps is the header position: encoding/json emits map keys in
 	// sorted order, and the counts are what a reader should meet first.
@@ -1791,7 +1725,6 @@ func (h *Handler) TaskBlockWithCheck(projectID, nodeID, reason, check string) Re
 	}
 
 	ids, err := h.store.AppendBatch(batch)
-	err = h.storeWriteOk("task-block", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-block", "error", err)
 		return errResp(err.Error())
@@ -1841,7 +1774,6 @@ func (h *Handler) TaskUnblock(projectID, nodeID string) Response {
 	}
 
 	ids, err := h.store.AppendBatch(batch)
-	err = h.storeWriteOk("task-unblock", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "task-unblock", "error", err)
 		return errResp(err.Error())
@@ -1881,7 +1813,6 @@ func (h *Handler) KnowledgeAdd(projectID, nodeID, summary string) Response {
 		CommitSHA: h.commitSHA,
 		Payload:   payload,
 	})
-	err = h.storeWriteOk("knowledge-add", projectID, err)
 	if err != nil {
 		h.logger.Error("store append failed", "command", "knowledge-add", "error", err)
 		return errResp(err.Error())

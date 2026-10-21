@@ -116,31 +116,26 @@ type PendingResult struct {
 // Pending lists every dispatch in the cap's scope that is not done, with what
 // the cap should do about each. It appends no events and touches no pane.
 //
-// Slice 2 switched this read: its store-derived answer comes from the memstore
-// projection, and it is returned only when the parity gate found it equal to the
-// event store's (spec D2, AC2). A divergence refuses the command — it never
-// answers from the event store on the side (AC3). Everything herdr contributes
-// is applied after the comparison, so the gate never compares an environment
-// read against itself.
+// The store-derived answer comes from the event log, and nothing else: the log is
+// the only source a state read may answer from (`.agents/specs/fs-contract.md`
+// R2). Everything herdr contributes — agent and pane states, the re-run checks,
+// the unavailable warning — is applied after that answer is derived, because the
+// store has none of it.
 func Pending(h *command.Handler, hc engine.Engine) command.Response {
-	source := command.StateSource("pending")
-	answer, err := gatedAnswer("pending", source, h,
-		func() (pendingAnswer, error) { return answerFromLog(h) },
-		func() (pendingAnswer, error) { return answerFromProjection(h) },
-	)
+	answer, err := answerFromLog(h)
 	if err != nil {
 		return errResp("pending: " + err.Error())
 	}
 
 	result := decoratePending(hc, answer)
-	h.Logger().Info("command executed", "command", "pending", "source", source,
+	h.Logger().Info("command executed", "command", "pending",
 		"pending", len(result.Pending), "undispatched_gaps", result.UndispatchedGaps)
 	return command.Response{OK: true, Data: result}
 }
 
-// decoratePending applies what neither source holds — herdr's agent states and
-// the re-run checks — to the answer the gate settled on, and counts the states a
-// cap acts on. It reads nothing from the store.
+// decoratePending applies what the store does not hold — herdr's agent states
+// and the re-run checks — to the derived answer, and counts the states a cap acts
+// on. It reads nothing from the store.
 func decoratePending(hc engine.Engine, answer pendingAnswer) PendingResult {
 	agents, herdrErr := hc.Agents()
 
@@ -190,9 +185,9 @@ func decoratePending(hc engine.Engine, answer pendingAnswer) PendingResult {
 	return result
 }
 
-// capStatusOf adds herdr's answer about the claim the gate compared: the claim
-// itself is a store value, and whether its pane still exists is the environment
-// read that goes beside it.
+// capStatusOf adds herdr's answer about the claim: the claim itself is a store
+// value, and whether its pane still exists is the environment read that goes
+// beside it.
 func capStatusOf(answer pendingAnswer, hc engine.Engine) CapStatus {
 	if answer.Cap == nil {
 		return CapStatus{State: CapNone}
@@ -214,8 +209,8 @@ func capStatusOf(answer pendingAnswer, hc engine.Engine) CapStatus {
 	return status
 }
 
-// pendingStateOf classifies one dispatch from the answer the gate settled on.
-// The worker's node is the truth about whether the work is done, so a done node
+// pendingStateOf classifies one dispatch from the derived answer. The worker's
+// node is the truth about whether the work is done, so a done node
 // is ready however herdr reads. A record carrying no worker node is unlinked
 // before anything else. A herdr that could not be asked is its own state, never
 // running.
@@ -240,4 +235,155 @@ func pendingStateOf(d pendingDispatch, agents map[string]string, herdrErr error)
 	default:
 		return StateRunning
 	}
+}
+
+// pendingAnswer is every value fs pending asks the store, before the environment
+// is read: the unresolved dispatch nodes, each dispatch's delivery record, its
+// worker's node and reports, the cap's claim, and the open-gap count.
+//
+// Everything derived from herdr is applied after this, because the store has it
+// not.
+type pendingAnswer struct {
+	Dispatches []pendingDispatch `json:"dispatches"`
+	Cap        *command.CapClaim `json:"cap,omitempty"`
+	// Gaps is the open-gap count across every scope.
+	Gaps int `json:"undispatched_gaps"`
+}
+
+// pendingDispatch is one unresolved dispatch and the state its record leads to.
+type pendingDispatch struct {
+	Node     command.UnfinishedNode  `json:"node"`
+	Delivery *command.DeliveryRecord `json:"delivery,omitempty"`
+	Worker   *command.UnfinishedNode `json:"worker,omitempty"`
+	Reports  []command.Report        `json:"reports,omitempty"`
+}
+
+// answerFromLog derives the pending answer from the event store: every scope's
+// unresolved dispatches, each one's delivery record read in the scope that holds
+// the dispatch, and the node and reports of the worker that record names.
+//
+// The scopes are every scope the events name, not the cap's alone. A dispatch is
+// a dispatch by its kind, wherever it was written, and a read filtered to the
+// cap's scope reported nothing in flight while four dispatch nodes stood in project
+// scopes — the read the cap is told to trust at the start of every turn. The
+// open-gap count is taken in the same walk, which it already made over every
+// scope.
+func answerFromLog(h *command.Handler) (pendingAnswer, error) {
+	scopes, err := h.Scopes()
+	if err != nil {
+		return pendingAnswer{}, fmt.Errorf("list scopes: %w", err)
+	}
+
+	answer := pendingAnswer{Dispatches: []pendingDispatch{}}
+	gaps := make(map[string]int, len(scopes))
+	for _, scope := range scopes {
+		nodes, err := h.UnfinishedIn(scope)
+		if err != nil {
+			return pendingAnswer{}, fmt.Errorf("replay %s: %w", scope, err)
+		}
+		for _, node := range nodes {
+			if node.Kind == "gap" {
+				gaps[scope]++
+				continue
+			}
+			if node.Kind != "dispatch" {
+				continue
+			}
+
+			d := pendingDispatch{Node: node}
+			delivery, recorded, err := h.DeliveryFor(scope, node.NodeID)
+			if err != nil {
+				return pendingAnswer{}, fmt.Errorf("read delivery record for %s:%s: %w", scope, node.NodeID, err)
+			}
+			if recorded {
+				d.Delivery = &delivery
+				if delivery.Project != "" && delivery.Node != "" {
+					worker, found, err := workerOf(h, delivery.Project, delivery.Node)
+					if err != nil {
+						return pendingAnswer{}, fmt.Errorf("read node %s:%s: %w", delivery.Project, delivery.Node, err)
+					}
+					if found {
+						d.Worker = &worker
+					}
+					reports, err := h.ReportsFor(delivery.Project, delivery.Node)
+					if err != nil {
+						return pendingAnswer{}, fmt.Errorf("read reports for %s:%s: %w", delivery.Project, delivery.Node, err)
+					}
+					d.Reports = reports
+				}
+			}
+			answer.Dispatches = append(answer.Dispatches, d)
+		}
+	}
+
+	answer.Dispatches = onePerDispatch(answer.Dispatches)
+
+	claim, claimed, err := h.CapFor(capScope)
+	if err != nil {
+		return pendingAnswer{}, fmt.Errorf("read the claim: %w", err)
+	}
+	if claimed {
+		answer.Cap = &claim
+	}
+	answer.Gaps = totalGaps(gaps)
+	return answer, nil
+}
+
+// onePerDispatch drops the WORKER node of a dispatch that is still open: one
+// dispatch is one entry, and its entry is the node the cap prepared. Both ends of
+// the link are kind=dispatch in their own scope, so a read that spanned scopes
+// without this would report every running dispatch twice — once as the dispatch
+// and once as an `unlinked` node that is in fact the work being waited on, which
+// is how a state the cap is told to act on becomes noise it learns to ignore.
+//
+// The test is what the record names, never the goal text. A dispatch node whose
+// own scope holds no delivery record, and which no OPEN dispatch names as its
+// worker, is kept: either nothing was ever dispatched from it, or the dispatch
+// that owned it was closed while the node was left open, and it is waiting on the
+// cap in the scope it stands in either way.
+func onePerDispatch(dispatches []pendingDispatch) []pendingDispatch {
+	covered := make(map[string]bool, len(dispatches))
+	for _, d := range dispatches {
+		if d.Delivery == nil || d.Delivery.Project == "" || d.Delivery.Node == "" {
+			continue
+		}
+		covered[workerRef(d.Delivery.Project, d.Delivery.Node)] = true
+	}
+
+	kept := make([]pendingDispatch, 0, len(dispatches))
+	for _, d := range dispatches {
+		if covered[workerRef(d.Node.ProjectID, d.Node.NodeID)] {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
+}
+
+// workerRef names a worker node the way a delivery record does: the scope it
+// lives in and its bare id, together, because the same id can stand in two
+// scopes.
+func workerRef(scope, node string) string { return scope + ":" + node }
+
+// totalGaps sums a per-scope count.
+func totalGaps(counts map[string]int) int {
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	return total
+}
+
+// workerOf reads one worker node's derived state from the event store, the way
+// fs status reports it.
+func workerOf(h *command.Handler, project, nodeID string) (command.UnfinishedNode, bool, error) {
+	info, found, err := h.NodeIn(project, nodeID)
+	if err != nil || !found {
+		return command.UnfinishedNode{}, false, err
+	}
+	return command.UnfinishedNode{
+		ProjectID: project, NodeID: info.NodeID, Status: info.Status, Goal: info.Goal,
+		Kind: info.Kind, FoundBy: info.FoundBy, ParentNodeID: info.ParentNodeID,
+		BlockCheck: info.BlockCheck, Check: info.Check,
+	}, true, nil
 }

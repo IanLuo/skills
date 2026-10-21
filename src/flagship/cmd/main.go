@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/flagship-dev/flagship/internal/command"
 	"github.com/flagship-dev/flagship/internal/dispatch"
@@ -113,8 +112,6 @@ func main() {
 		pendingCmd()
 	case "cap":
 		capCmd(os.Args[2:])
-	case "state":
-		stateCmd(os.Args[2:])
 	case "report":
 		checkArgs("report", os.Args[2:])
 		reportCmd(os.Args[2:])
@@ -212,15 +209,6 @@ Commands:
                                                 "recorded, not notified"
   tell PROJECT:NODE "TEXT"                      The cap's reply, routed through
                                                 that dispatch's delivery record
-  state verify                                 Does the projection agree with the
-                                               event store? Re-folds every scope
-                                               into a scratch file and compares;
-                                               writes nothing, exits 1 naming the
-                                               first difference
-  state rebuild                                Re-fold every scope into the live
-                                               projection file — the repair for a
-                                               drifted projection; touches no
-                                               non-fs row
   query SEARCH_TERM [--project PROJECT_ID]      FTS5 search events
   log [--project PROJECT_ID] [--node NODE_ID] [--type TYPE]  Replay events; --node
                                                 takes a node address — a bare
@@ -391,25 +379,6 @@ func openHandler(root string) *command.Handler {
 		fatal(err.Error())
 	}
 
-	// The projection: fs's rows in the one memory file it shares with personal
-	// memories. Attaching it here is what makes every append fold in the same
-	// command step (spec D3), and what lets fs pending answer from it.
-	//
-	// A projection that cannot be opened does not fail the command: most
-	// commands do not read state, and refusing them all would let one broken
-	// file stop the tool. The switched read refuses instead, naming the file.
-	path := store.ProjectionPath()
-	if err := h.AttachProjection(path); err != nil {
-		logger.Warn("projection unavailable; the switched read will refuse",
-			"path", path, "error", err)
-	}
-
-	// Every line this process writes says where its state went, so one grep over
-	// the running log answers "which file did this write fold into" — the
-	// question that cost two sessions to answer by absence (skills:t-55266895).
-	recordProjectionOnLogger()
-	warnIfProjectionRepointed()
-
 	// Inject structured logger (ARCHITECTURE R4: JSON to stderr).
 	h.SetLogger(logger)
 
@@ -417,45 +386,6 @@ func openHandler(root string) *command.Handler {
 	h.SetCommitSHA(command.DetectCommitSHAIn(root))
 
 	return h
-}
-
-// projectionLogOnce makes the projection fields a per-process fact rather than a
-// per-command one: openHandler sets them on the first attach and every later
-// line inherits them.
-var projectionLogOnce sync.Once
-
-// recordProjectionOnLogger puts the projection's path and what chose it on every
-// line this process writes. The question it exists for is "where did this
-// write's state go": a path alone leaves that ambiguous, and the source is what
-// says whether FS_MEMSTORE re-pointed it.
-func recordProjectionOnLogger() {
-	projectionLogOnce.Do(func() {
-		logger = logger.With(
-			"projection", store.ProjectionPath(),
-			"projection_env", store.ProjectionSource(),
-		)
-	})
-}
-
-// warnIfProjectionRepointed warns — loudly, on stderr and the running log — when
-// FS_MEMSTORE sends this process's folds somewhere other than the default file.
-//
-// It does NOT refuse, and must not be tightened into a refusal: the variable is a
-// test and scratch knob, and the suite exercises the REAL binary as a subprocess
-// with it set on purpose (cmd/state_test.go's stateFixture writes deliberately
-// unfolded rows that way). fs cannot tell a harness from production, so a refusal
-// would break the tests the variable exists for, while the write itself is
-// perfectly sound — the event is durable and the row lands where the line says.
-// Warning names the variable, its value and the default, so a person can see the
-// fold went elsewhere without reading the source.
-func warnIfProjectionRepointed() {
-	path := store.ProjectionPath()
-	def := store.DefaultProjectionPath()
-	if path == def {
-		return
-	}
-	logger.Warn("projection re-pointed: rows fold into this file, not the default",
-		"variable", store.ProjectionEnv, "value", path, "default", def)
 }
 
 func projectCmd(args []string) {
@@ -681,7 +611,6 @@ func taskGet(args []string) {
 	h := openHandler(root)
 	defer h.Close()
 
-	logReadSource("task get")
 	resp := h.StatusIn(name, root)
 	if !resp.OK {
 		output(resp)
@@ -866,7 +795,6 @@ func statusCmd(args []string) {
 	defer h.Close()
 
 	updateActivity(name)
-	logReadSource("status")
 	output(h.StatusIn(name, root))
 }
 
@@ -990,112 +918,6 @@ func gapsCmd() {
 // pendingCmd answers "what is waiting on the cap": every dispatch in the cap's
 // scope that is not done, classified against its delivery record, its worker's
 // node, and herdr. It is a read — it writes nothing.
-// stateCmd is fs state: the drift checkpoint and the repair. The event store is
-// the truth and the projection is derived, so `verify` says whether they agree
-// and `rebuild` makes them, and neither invents a third source.
-func stateCmd(args []string) {
-	if len(args) < 1 || isHelp(args[0]) {
-		fmt.Fprintln(os.Stderr, `Usage: fs state <subcommand>
-
-Subcommands:
-  verify    Re-fold every scope into a scratch projection and compare it with
-            the live one; writes nothing, and exits 1 naming the first scope
-            that differs and the differing field
-  rebuild   Re-fold every scope into the live projection file, touching no
-            non-fs: row`)
-		if len(args) < 1 {
-			os.Exit(2)
-		}
-		return
-	}
-	switch args[0] {
-	case "verify":
-		checkArgs("state verify", args[1:])
-		stateVerify()
-	case "rebuild":
-		checkArgs("state rebuild", args[1:])
-		stateRebuild()
-	default:
-		fmt.Fprintf(os.Stderr, "fs state: unknown subcommand %q\n", args[0])
-		os.Exit(2)
-	}
-}
-
-// stateVerify answers "does the projection agree with the event store?" without
-// writing anything. A difference is a refusal naming the scope, what differs and
-// a value from each side, with the command that repairs it. The answer names the
-// two files it compared — the live projection and the scratch re-fold — because a
-// bare "clean" would not say which projection is clean.
-func stateVerify() {
-	projPath := store.ProjectionPath()
-	s, err := store.Open(storePath())
-	if err != nil {
-		fatal(err.Error())
-	}
-	defer s.Close()
-
-	issues, report, err := s.StateVerify(projPath)
-	if err != nil {
-		fatal(err.Error())
-	}
-	if len(issues) > 0 {
-		output(command.Response{OK: false, Error: fmt.Sprintf(
-			"fs state verify: %s — the projection is %s; run \"fs state rebuild\"",
-			issues[0], projectionPhrase(report.Live))})
-		return
-	}
-	output(command.Response{OK: true, Data: map[string]any{
-		"clean":          true,
-		"scopes":         len(report.Scopes),
-		"projection":     report.Live,
-		"projection_env": store.ProjectionSource(),
-		"folded_against": report.Scratch,
-	}})
-}
-
-// projectionPhrase names a projection file and what chose it, so a message about
-// one projection can never be read as being about another.
-func projectionPhrase(path string) string {
-	if store.ProjectionSource() == store.ProjectionPathEnv {
-		return fmt.Sprintf("%s (chosen by %s)", path, store.ProjectionEnv)
-	}
-	return fmt.Sprintf("%s (the default)", path)
-}
-
-// stateRebuild re-folds the event store into the live projection file. It is the
-// repair for a drifted or missing projection, and it is the only command that
-// forgets fs's own rows. Like every write, it says which file it folded into and
-// warns when that is not the default.
-func stateRebuild() {
-	projPath := store.ProjectionPath()
-	recordProjectionOnLogger()
-	warnIfProjectionRepointed()
-	s, err := store.Open(storePath())
-	if err != nil {
-		fatal(err.Error())
-	}
-	defer s.Close()
-
-	rebuilt, err := s.StateRebuild(projPath)
-	if err != nil {
-		fatal(err.Error())
-	}
-	output(command.Response{OK: true, Data: map[string]any{
-		"rebuilt":        rebuilt,
-		"projection":     projPath,
-		"projection_env": store.ProjectionSource(),
-	}})
-}
-
-// logReadSource records which source a state read answered from, for the reads
-// whose handler method does not log a line of its own: fs status and fs task get.
-// fs pending logs its line in dispatch.Pending, and fs gaps and fs unfinished log
-// theirs in the handler — one line each, every one of them carrying source, so
-// AC1's `tail -1` proof reads the same field whichever read it asks about.
-func logReadSource(read string) {
-	logger.Info("command executed", "command", read, "source", command.StateSource(read))
-}
-
 func pendingCmd() {
 	h := openHandler("")
 	defer h.Close()
