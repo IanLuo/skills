@@ -36,13 +36,26 @@ The build script inlines the static chrome so the artifact is ONE self-contained
    content to a temp file, e.g. `.agents/artifacts/<name>.content.html` — with a
    **stable `data-anchor="<kebab-id>"`** on every element the user might comment on
    (ids must NOT change between iterations; pasted feedback resolves by id).
-2. Inline the chrome: run this skill's build script
-   `python3 scripts/build-artifact.py <name> <name>.content.html` — it merges
-   `references/chrome.css` + `references/chrome.js` + the template + your content into
-   one self-contained `.agents/artifacts/<name>.html`. Delete the temp content file.
-3. Open it in the browser: `open <path>` (macOS) or `xdg-open <path>` (Linux). Tell the
-   user it's open, that every element is clickable to annotate, and the Done button
-   copies the feedback for pasting back.
+2. **Anchor the unit, never the container.** The id goes on the thing the reader would
+   point at — a heading, a paragraph, a list item, a table row, a callout. An id on a
+   wrapper (`<section>`, a card, a column) makes the whole wrapper one click target:
+   the reader hovers a line, the entire section lights up, and they cannot say which
+   line they mean. The build rejects a container anchor and names it, so anchor every
+   unit and leave the wrapper bare.
+3. **Build and open in one command** — the build is instant; the wait is the HTML
+   generation, and a second turn between building and opening adds minutes of nothing:
+
+   ```bash
+   python3 scripts/build-artifact.py <name> <name>.content.html \
+     && rm -f .agents/artifacts/<name>.content.html \
+     && open .agents/artifacts/<name>.html      # xdg-open on Linux
+   ```
+
+   The script merges `references/chrome.css` + `references/chrome.js` + the template +
+   your content into one self-contained `.agents/artifacts/<name>.html`.
+4. **Then stop — one line.** `artifact at .agents/artifacts/<name>.html · N annotations
+   pending`. The page carries the content, the vocabulary and the freshness marks;
+   restating any of it in chat doubles the tokens and buys the user a longer wait.
 
 ## Answering a previous round
 
@@ -112,8 +125,10 @@ Read the file on demand; don't load it wholesale into context.
 
 - **Self-contained only.** No external requests, no CDN, no fonts, no backend — the page
   must work from `file://`.
-- **Stable anchors.** Kebab-case `data-anchor` ids that persist across iterations; the
-  snippet is the fallback locator, not the primary.
+- **Stable anchors, on units.** Kebab-case `data-anchor` ids that persist across
+  iterations; the snippet is the fallback locator, not the primary. An id sits on the
+  line or item the reader points at, never on a wrapper that holds several — the
+  build fails on a container anchor.
 - **Copy-paste transport.** No server, no POST, no polling. The user clicks **Done** to
   copy the JSON and paste it when ready — the loop is async.
 - **Two voices, paired.** A round that answers notes quotes them verbatim in a

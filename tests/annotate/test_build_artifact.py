@@ -21,6 +21,10 @@ Rules under test:
  10. a content file with no `.ev` rows still builds — plain artifacts are unaffected
  11. chrome.css defines the borrowed vocabulary (canvas selector names, not new ones)
  12. artifact-template.html documents the primitives
+ 13. an id on a container fails, naming the anchor and what to do instead
+ 14. the same content anchored per unit builds
+ 15. cells are not units — a table row anchor is a unit, not a container
+ 16. omitted end tags (<li>a<li>b) must not hide a container
 
 Usage: python3 tests/annotate/test_build_artifact.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -179,6 +183,47 @@ def main():
         # 9. --prev: carried forward passes.
         r = build(cwd, "carried", two_threads, extra=["--prev", str(prev)])
         check("carried thread passes", r.returncode == 0, r.stderr.strip())
+
+        # 13. An id on a container is a build error: chrome.js targets with
+        #     closest('[data-anchor]'), so the whole container becomes one click target
+        #     and the reader cannot point at the line they mean.
+        container = TITLE + """
+<section data-anchor="whole">
+  <h2>Heading</h2>
+  <p>First.</p>
+  <p>Second.</p>
+</section>
+"""
+        r = build(cwd, "container", container)
+        check("container anchor fails", r.returncode != 0, "expected non-zero")
+        check("container failure names the anchor", "whole" in r.stderr, r.stderr)
+        check("container failure says what to do", "units inside it" in r.stderr, r.stderr)
+
+        # 14. the same content anchored per unit builds.
+        units = TITLE + """
+<section>
+  <h2 data-anchor="heading">Heading</h2>
+  <p data-anchor="first">First.</p>
+  <p data-anchor="second">Second.</p>
+</section>
+"""
+        r = build(cwd, "units", units)
+        check("per-unit anchors build", r.returncode == 0, r.stderr.strip())
+
+        # 15. cells are not units — the row is the unit, so a row anchor is not a container.
+        rows = TITLE + """
+<table><tbody>
+  <tr data-anchor="row-1"><td>a</td><td>b</td><td>c</td></tr>
+  <tr data-anchor="row-2"><td>d</td><td>e</td><td>f</td></tr>
+</tbody></table>
+"""
+        r = build(cwd, "rows", rows)
+        check("table row anchors build", r.returncode == 0, r.stderr.strip())
+
+        # 16. end tags omitted (<li>a<li>b) must not hide a container.
+        loose = TITLE + '<ul data-anchor="list"><li>a<li>b<li>c</ul>\n'
+        r = build(cwd, "loose", loose)
+        check("unclosed <li> still counts as a container", r.returncode != 0, "expected non-zero")
 
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

@@ -20,6 +20,11 @@ outright, so the user cannot tell their words from the agent's or find the answe
 all. So the thread vocabulary is validated rather than trusted, and --prev proves
 coverage against the previous round. A thread that is finished must be retired
 explicitly (data-retired="r1a,r1b" on the round wrapper) — never just omitted.
+
+Checking pointability. The page is only as pointable as its anchors: the runtime
+targets with closest('[data-anchor]'), so one id on a wrapper makes the whole wrapper
+one target and the reader cannot point at a line. A container anchor is rejected here
+rather than discovered in the browser.
 """
 
 import pathlib
@@ -27,6 +32,24 @@ import sys
 from html.parser import HTMLParser
 
 STATUSES = ("new", "changed", "settled", "open")
+
+# Block-level elements that are a UNIT a reader points at. td/th are deliberately not
+# units: they are cells inside a row, and the row is the unit.
+UNITS = {
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "tr", "ul", "ol", "dl", "dt", "dd",
+    "table", "section", "article", "aside", "div", "pre", "blockquote", "figure",
+    "svg", "details", "summary", "fieldset",
+}
+
+# A start tag that closes an earlier one of the same kind when the source omits the
+# end tag (`<li>a<li>b`, `<tr>…<tr>…`), so the nesting stays honest either way.
+SIBLINGS = {
+    "li": {"li"}, "p": {"p"}, "dt": {"dt", "dd"}, "dd": {"dt", "dd"},
+    "tr": {"tr", "td", "th"}, "td": {"td", "th"}, "th": {"td", "th"}, "option": {"option"},
+}
+
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+        "source", "track", "wbr"}
 
 
 class _Scan(HTMLParser):
@@ -114,6 +137,52 @@ def validate(content):
     return bad
 
 
+def coarse_anchors(html):
+    """Anchors that hold several blocks — the failure this check exists for.
+
+    chrome.js targets with `e.target.closest('[data-anchor]')`, so an id on a wrapper
+    makes the WHOLE wrapper one click target: the reader hovers a line and the entire
+    section lights up, and cannot point at the item they mean. The id belongs on the
+    unit, so a container anchor is a build error, not a style preference.
+    """
+    kids, tag_of, stack = {}, {}, []
+
+    class _Nest(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            anchor = dict(attrs).get("data-anchor")
+            if tag in VOID:
+                if stack and stack[-1][1] and tag in UNITS:
+                    kids.setdefault(stack[-1][1], []).append(tag)
+                return
+            closes = SIBLINGS.get(tag)
+            if closes:
+                while stack and stack[-1][0] in closes:
+                    stack.pop()
+            if stack and stack[-1][1] and tag in UNITS:
+                kids.setdefault(stack[-1][1], []).append(tag)
+            if anchor:
+                tag_of[anchor] = tag
+            stack.append((tag, anchor))
+
+        def handle_endtag(self, tag):
+            if tag in VOID:
+                return
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i][0] == tag:
+                    del stack[i:]
+                    return
+
+    _Nest().feed(html)
+    return [
+        f'<{tag_of.get(a, "?")} data-anchor="{a}"> holds {len(k)} blocks '
+        f'({", ".join(k[:6])}{"…" if len(k) > 6 else ""}) — an id on a container makes the whole '
+        f'container one click target, so the reader cannot point at a line. Put the id on the units '
+        f'inside it — each heading, paragraph, list item or table row — and drop the wrapper\'s '
+        f'data-anchor'
+        for a, k in kids.items() if len(k) >= 2
+    ]
+
+
 def parse_argv(argv):
     """-> (name, content_path, prev_path_or_None, error_or_None)."""
     if len(argv) < 3:
@@ -133,7 +202,7 @@ def main(argv):
         return 2
 
     content = content_file.read_text()
-    problems = validate(content)
+    problems = validate(content) + coarse_anchors(content)
 
     # Coverage against the previous round: a note may be carried forward or explicitly
     # retired, but never quietly disappear.

@@ -19,6 +19,13 @@
      inline feedback box right there. Do not change anchor ids
      between iterations — the pasted feedback resolves by id.
 
+     Put the id on the UNIT the reader points at — a heading, a
+     paragraph, a list item, a table row, a callout. Never on a
+     wrapper (<section>, a card, a column) that holds several:
+     clicking walks up to the nearest id, so a container id makes
+     the whole container one target and the reader cannot point at
+     a line. build-artifact.py rejects a container anchor.
+
      Optional blueprint decoration classes:
      <p class="kicker">Figure 1 · the mechanism</p> above a heading,
      <p class="eyebrow">…</p> above the title, a mono status line as
