@@ -1,4 +1,4 @@
-<!-- specs:locked:7fedac60 2026-10-20 type=spec -->
+<!-- specs:locked:7be9f0a4 2026-10-21 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
@@ -53,7 +53,7 @@
 - One user, one machine, one set of repos.
 - **The suite is trustworthy** — load-bearing: if it is not, stop and fix the suite before any deletion.
 - Deleting a layer never touches the event log's data.
-- The gap split (41 machinery, ~12 real harm) is provisional until the triage runs.
+- The gap split was measured on 2026-10-20 and the provisional claim was wrong: **27 gaps went moot** with their layer, **21 survive** — 17 of them fs's own (build, `lock.sh`, the ledger's addressing and record, the registry, coordination) and 4 that belong to other tools (canvas, librarian, the herdr skill document, memstore's own comment).
 - A fresh HOME needs no seeding.
 - **Dependency fs cannot control** — the provider credential behind the launch config. The route is frozen here; the key is not.
 
