@@ -143,7 +143,7 @@ empty list and not a refusal.`,
 	},
 
 	"dispatch": {
-		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--fixes CAP_NODE]... [--batch BATCH_NODE] [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID] [--worktree-new]
+		usage: `Usage: fs dispatch --project PROJECT_ID --type TASK_TYPE --goal GOAL [--integrates MEMBER_NODE] [--reviews CAP_NODE] [--fixes CAP_NODE]... [--allow-unresolved] [--deliver] [--worktree WORKSPACE_ID] [--worktree-new]
 
 A dispatch is a worker node, a rendered brief, and a herdr delivery. There is no
 plan and no gate: the launch config — engine=herdr, agent=pi, and the provider
@@ -166,7 +166,7 @@ records the delivery close tears down.
 
 --integrates names the member cap node an integration merges. It must exist in
 the cap scope and be a dispatch node; the link is recorded on this dispatch's own
-task-created payload, so fs integrated can answer the member's question from the
+task-created payload, so a reader can answer the member's question from the
 record rather than from a goal string.
 
 --reviews names the cap node whose change this dispatch reviews. It must exist
@@ -185,17 +185,13 @@ so naming them is what stops the unresolved-dispatch read from treating them as
 open work piled on top of the fix. Without the flag they are open work like any
 other and the round needs --allow-unresolved.
 
---batch names the batch node this dispatch is a member of. It must be a
-kind: batch node; the member's cap node is recorded as the batch's child
-(parent_node_id).
-
 --worktree-new creates the worktree (herdr worktree create) instead of naming an
 existing one with --worktree; the created workspace and checkout path are
 recorded on the delivery exactly as --worktree records them.`,
 		flags: map[string]bool{
 			"--project": true, "--type": true, "--goal": true,
 			"--integrates": true, "--reviews": true,
-			"--fixes": true, "--batch": true,
+			"--fixes":            true,
 			"--allow-unresolved": false,
 			"--deliver":          false, "--worktree": true, "--worktree-new": false,
 		},
@@ -233,7 +229,7 @@ skips the reads, never the teardown: what the delivery opened is still closed.`,
 Run a script the binary ships — one of the files under
 src/flagship/defaults/scripts — read out of the binary and written nowhere.
 ARGS reach it unchanged as $1.., its output is fs's output, and its exit status
-is fs's exit status, so a gate a playbook runs this way can fail.
+is fs's exit status, so a caller that checks its result can fail.
 
 This is the spec fs enforces least: everything after the name belongs to the
 script, flags and positionals alike. The only argument shape fs has an opinion
@@ -278,7 +274,7 @@ what the claimant read before taking the scope.`,
 
 Print the cap scope's address — pane, tab, agent, when it was claimed — and
 whether herdr still has that pane. Exit 0 when a live cap exists, 1 when none
-does, so a script or a playbook step can use it.
+does, so a script can use it.
 
 "none" and "dead" do not read alike: an unclaimed scope is free to take, and a
 claim whose pane is gone is a cap nobody holds.`,
@@ -320,10 +316,6 @@ node, or one with no delivery record, is refused naming which.`,
 		positionals: 2,
 		address:     true,
 	},
-	"integrated": {
-		usage:       "Usage: fs integrated MEMBER_NODE",
-		positionals: 1,
-	},
 	"reviews": {
 		usage: `Usage: fs reviews CAP_NODE
 
@@ -340,17 +332,6 @@ opening a second one.
 
 It reads only, and the cap scope needs no registered project, so it works from
 anywhere — including the worktree the exit check runs it in.`,
-		positionals: 1,
-	},
-	"batch": {
-		usage: `Usage: fs batch BATCH_NODE
-
-Answer a batch's question: is every member integrated? Exit 0 iff every member
-has a done integration dispatch naming it; exit 1 naming the unintegrated
-members otherwise. A batch with no members is refused rather than read as
-complete. On success the payload carries each member and the resources its
-delivery opened (worktree, checkout path, pane) — what the batch's teardown
-loops over.`,
 		positionals: 1,
 	},
 }

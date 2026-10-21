@@ -1,7 +1,7 @@
 package dispatch_test
 
 // The branch a delivery created: from herdr's answer, onto the delivery record,
-// into the exit steps, and out through `fs batch` for a member.
+// and into the exit steps as $FS_BRANCH.
 //
 // Four rounds of fixes to the teardown's branch step all worked on naming the
 // branch to DELETE, and none of them left anything behind that could say whether
@@ -12,18 +12,9 @@ package dispatch_test
 // data, and the data has to exist before the assertion can.
 //
 // These tests are that half: what the delivery writes, what it writes for a
-// worktree it did not create, what reaches the exit step as $FS_BRANCH, and what
-// `fs batch` reports per member. The shell half — the step that reads $FS_BRANCH
-// and refuses — runs against the shipped step bodies in
-// cmd/kb_branch_postcondition_test.go.
-//
-// The two halves meet at a name: this file pins the record and the JSON key,
-// that file reads the key with the same spelling. Neither one alone would show
-// the assertion can be written; the chain is the evidence.
+// worktree it did not create, and what reaches the exit step as $FS_BRANCH.
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/flagship-dev/flagship/internal/command"
@@ -141,64 +132,9 @@ func TestDeliverRecordsNoBranchForAWorktreeHerdrCreatedDetached(t *testing.T) {
 	}
 }
 
-// Batch-exit's branch postcondition reads the members' branches out of `fs
-// batch`, so each member's branch has to be in that payload, under the key the
-// shipped step reads. A member whose worktree its delivery did not create
-// carries no branch, and that is the member the postcondition skips rather than
-// refuses over.
-func TestBatchPayloadCarriesEachMembersBranch(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	batch := mustAdd(t, f.h, "cap", "the batch", query.KindBatch, "", nil)
-	creator := mustAdd(t, f.h, "cap", "member that made its tree", query.KindDispatch, "", &batch)
-	named := mustAdd(t, f.h, "cap", "member that named a tree", query.KindDispatch, "", &batch)
-
-	for _, member := range []string{creator, named} {
-		integ := mustAdd(t, f.h, "cap", "integrate "+member, query.KindDispatch, member, nil)
-		if !f.h.TaskUpdate("cap", integ, "done", "merged", nil).OK {
-			t.Fatalf("marking the integration of %s done failed", member)
-		}
-	}
-	recordWorktreeDeliveryOnBranch(t, f, creator, "w1:p1", addWorkerNode(t, f, "done"),
-		"w1", "/checkouts/w1", "branch-one")
-	recordWorktreeDelivery(t, f, named, "w2:p1", addWorkerNode(t, f, "done"), "w2", "/checkouts/w2")
-
-	resp := dispatch.Batch(f.h, batch)
-	if !resp.OK {
-		t.Fatalf("Batch: %s", resp.Error)
-	}
-	result, ok := resp.Data.(dispatch.BatchResult)
-	if !ok {
-		t.Fatalf("data type %T, want dispatch.BatchResult", resp.Data)
-	}
-
-	branches := map[string]string{}
-	for _, member := range result.Members {
-		branches[member.Node] = member.Branch
-	}
-	if got := branches[creator]; got != "branch-one" {
-		t.Errorf("member %s branch = %q, want branch-one — the branch its delivery created", creator, got)
-	}
-	if got := branches[named]; got != "" {
-		t.Errorf("member %s branch = %q, want empty — its delivery named a worktree rather than making one",
-			named, got)
-	}
-
-	// The key the shipped step reads, spelled as jq reads it. `omitempty` drops
-	// the key for the member that has none, which is why the step reads
-	// `.branch // ""` rather than `.branch`.
-	blob, err := json.Marshal(result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(blob), `"branch":"branch-one"`) {
-		t.Errorf("the payload has no \"branch\" key holding the member's branch, so the shipped "+
-			"step's `.branch // \"\"` reads nothing:\n%s", blob)
-	}
-}
-
 // recordWorktreeDelivery writes a delivery record bound to a worktree workspace,
-// the shape a worktree dispatch records: a batch's workers ran in one, the exit
-// gate has to find that tree, and the teardown has to verify it gone afterwards.
+// the shape a worktree dispatch records: the exit gate has to find that tree,
+// and the teardown has to verify it gone afterwards.
 // path is the checkout the workspace was made from — what the record keeps so the
 // worktree can be removed after the workspace is forgotten.
 func recordWorktreeDelivery(t *testing.T, f *fixture, capNode, paneID, workerID, wsID, path string) {

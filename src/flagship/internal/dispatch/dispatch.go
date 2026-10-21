@@ -117,10 +117,6 @@ type PrepareRequest struct {
 	// different question from Integrates, which names what this dispatch merges.
 	Reviews string
 
-	// Batch names the batch this dispatch is a member of (--batch). A member's
-	// cap node is the batch's child.
-	Batch string
-
 	// Fixes names the cap-scope dispatch nodes this one repairs (--fixes), and it
 	// is repeatable because a fix round usually answers more than one: the change
 	// it repairs and the review whose finding it fixes are both open while the
@@ -163,16 +159,6 @@ func Prepare(h *command.Handler, reg *registry.Registry, req PrepareRequest) com
 		return errResp("dispatch: " + err.Error())
 	}
 
-	// A dispatch that names --batch is a member of that batch: its cap node is
-	// the batch's child. The batch node must already be a kind: batch node — the
-	// parent link is written into the task-created payload, an immutable event,
-	// so a wrong link is refused here before anything is recorded, naming what
-	// the node is.
-	batch, err := batchMember(h, req.Batch)
-	if err != nil {
-		return errResp("dispatch: " + err.Error())
-	}
-
 	member, err := integrateMember(h, req.Integrates)
 	if err != nil {
 		return errResp("dispatch: " + err.Error())
@@ -202,10 +188,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, req PrepareRequest) com
 	// What the read subtracts is the set of nodes this dispatch declares a
 	// relation to — see declaredSubjects. Those are the dispatches it is about
 	// or runs alongside, not open work piled on top of it.
-	subjects, err := declaredSubjects(h, member, reviewed, fixes, batch)
-	if err != nil {
-		return errResp("dispatch: " + err.Error())
-	}
+	subjects := declaredSubjects(member, reviewed, fixes)
 	unresolved, err := unresolvedDispatches(h)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
@@ -215,7 +198,7 @@ func Prepare(h *command.Handler, reg *registry.Registry, req PrepareRequest) com
 		return errResp(unresolvedError(unresolved))
 	}
 
-	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member, reviewed, batch)
+	nodeID, err := recordCapNode(h, req.TaskType, req.Goal, req.Project, member, reviewed)
 	if err != nil {
 		return errResp(fmt.Sprintf("dispatch: %v", err))
 	}
@@ -360,8 +343,8 @@ func fixedDispatches(h *command.Handler, fixes []string) ([]string, error) {
 }
 
 // bareNodeID resolves a node reference that must live in the cap's own scope —
-// a member, the dispatch a review reads, a batch, one of a fix round's subjects
-// — to its bare id.
+// a member, the dispatch a review reads, one of a fix round's subjects — to its
+// bare id.
 //
 // The splitting is not this function's: command.SplitAddress is the one resolver
 // for the address form, and this is the cap-scope judgement over it. What the
@@ -380,49 +363,6 @@ func bareNodeID(ref string) (string, error) {
 		return "", fmt.Errorf("%s names scope %s; a member lives in scope %s", ref, scope, capScope)
 	}
 	return node, nil
-}
-
-// Integrated answers the member's question: is there a done integration
-// dispatch in the cap scope that names this member? It returns that dispatch's
-// node id.
-//
-// It is the member's exit gate. An outcome — "HEAD is an ancestor of main" — is
-// satisfied by a hand merge, so it cannot tell a dispatched integration from a
-// bypass; a done integration node naming this member can. A pending one does
-// not count: the member is not integrated until the integration's own node is
-// done.
-func Integrated(h *command.Handler, member string) command.Response {
-	ref, err := bareNodeID(member)
-	if err != nil {
-		return errResp("integrated: " + err.Error())
-	}
-
-	// cap has no registered root, and nothing here needs one: the read is of the
-	// cap's own scope.
-	resp := h.StatusIn(capScope, "")
-	if !resp.OK {
-		return errResp("integrated: " + resp.Error)
-	}
-	result, ok := resp.Data.(command.StatusResult)
-	if !ok {
-		return errResp("integrated: read scope " + capScope + ": no status payload")
-	}
-
-	for _, task := range result.Tasks {
-		if task.Integrates == ref && task.Kind == query.KindDispatch && task.Status == "done" {
-			return command.Response{OK: true, Data: IntegratedResult{Member: ref, IntegratedBy: task.NodeID}}
-		}
-	}
-	return errResp(fmt.Sprintf(
-		"integrated: no done integration dispatch in scope %s names member %s; merge it with a dispatched integration (fs dispatch --type integrate --integrates %s), never by hand",
-		capScope, ref, ref))
-}
-
-// IntegratedResult is the data payload of fs integrated: which member was asked
-// about, and the done integration dispatch that names it.
-type IntegratedResult struct {
-	Member       string `json:"member"`
-	IntegratedBy string `json:"integrated_by"`
 }
 
 // Reviews answers a close's question: was this dispatch's change reviewed? It
@@ -502,141 +442,22 @@ type ReviewsResult struct {
 	ReviewedBy string `json:"reviewed_by"`
 }
 
-// batchMember resolves a --batch value to the bare id of the batch node it
-// names, or "" when the flag was not given. A member's parent link is written
-// into its task-created payload — an immutable event — so naming a node that is
-// not a batch is refused here, before the write, naming what the node is.
-func batchMember(h *command.Handler, batch string) (string, error) {
-	if batch == "" {
-		return "", nil
-	}
-	ref, err := bareNodeID(batch)
-	if err != nil {
-		return "", err
-	}
-	node, err := capNode(h, ref)
-	if err != nil {
-		return "", fmt.Errorf("--batch %s: %v", batch, err)
-	}
-	if node.Kind != query.KindBatch {
-		return "", fmt.Errorf(
-			"--batch %s names a %q node, not a %s node — a member's parent is a kind: batch node, and the link cannot be corrected after it is written",
-			batch, node.Kind, query.KindBatch)
-	}
-	return ref, nil
-}
-
-// BatchMember is one member of a batch, as fs batch reports it: the node, the
-// project its worker lived in, and the resources its delivery opened — the
-// worktree, checkout path, branch and pane a teardown removes. Branch is empty
-// for a member whose worktree the delivery did not create.
-type BatchMember struct {
-	Node         string `json:"node"`
-	Project      string `json:"project,omitempty"`
-	Worktree     string `json:"worktree,omitempty"`
-	WorktreePath string `json:"worktree_path,omitempty"`
-	Branch       string `json:"branch,omitempty"`
-	Pane         string `json:"pane,omitempty"`
-	IntegratedBy string `json:"integrated_by,omitempty"`
-}
-
-// BatchResult is the data payload of fs batch: the batch node, its members, and
-// the answer the read just gave. Complete is never vacuously true.
-type BatchResult struct {
-	Batch    string        `json:"batch"`
-	Complete bool          `json:"complete"`
-	Members  []BatchMember `json:"members"`
-}
-
-// Batch answers the batch's question: is every member integrated? It is a read
-// with an exit code — 0 iff every member has a done integration dispatch naming
-// it, 1 naming the unintegrated members otherwise. A batch with no members is
-// refused rather than read as complete: vacuously true is not complete.
-//
-// Members are the batch's children: cap-scope dispatch nodes whose
-// parent_node_id names the batch. Each member's integration is the same read fs
-// integrated makes, so the batch can never disagree with a member's own.
-func Batch(h *command.Handler, batch string) command.Response {
-	ref, err := bareNodeID(batch)
-	if err != nil {
-		return errResp("batch: " + err.Error())
-	}
-	node, err := capNode(h, ref)
-	if err != nil {
-		return errResp("batch: " + err.Error())
-	}
-	if node.Kind != query.KindBatch {
-		return errResp(fmt.Sprintf(
-			"batch: %s is a %q node, not a %s node — fs batch reads a kind: batch node",
-			ref, node.Kind, query.KindBatch))
-	}
-
-	resp := h.StatusIn(capScope, "")
-	if !resp.OK {
-		return errResp("batch: " + resp.Error)
-	}
-	result, ok := resp.Data.(command.StatusResult)
-	if !ok {
-		return errResp("batch: read scope " + capScope + ": no status payload")
-	}
-
-	members := make([]BatchMember, 0)
-	var unintegrated []string
-	for _, task := range result.Tasks {
-		if task.ParentNodeID != ref || task.Kind != query.KindDispatch {
-			continue
-		}
-		member := BatchMember{Node: task.NodeID}
-		if d, recorded, err := h.DeliveryFor(capScope, task.NodeID); err == nil && recorded {
-			member.Project = d.Project
-			member.Worktree = d.Worktree
-			member.WorktreePath = d.WorktreePath
-			member.Branch = d.Branch
-			member.Pane = d.PaneID
-		}
-		if integrated := Integrated(h, task.NodeID); integrated.OK {
-			if ir, ok := integrated.Data.(IntegratedResult); ok {
-				member.IntegratedBy = ir.IntegratedBy
-			}
-		} else {
-			unintegrated = append(unintegrated, task.NodeID)
-		}
-		members = append(members, member)
-	}
-
-	if len(members) == 0 {
-		return errResp(fmt.Sprintf(
-			"batch: %s has no members — a batch with no members is not complete; dispatch its members with fs dispatch --batch %s",
-			ref, ref))
-	}
-	if len(unintegrated) > 0 {
-		return errResp(fmt.Sprintf(
-			"batch: %s is not complete — %d member(s) have no done integration naming them: %s; merge each with a dispatched integration (fs dispatch --type integrate --integrates <member>)",
-			ref, len(unintegrated), strings.Join(unintegrated, ", ")))
-	}
-
-	return command.Response{OK: true, Data: BatchResult{
-		Batch: ref, Complete: true, Members: members,
-	}}
-}
-
 // declaredSubjects is what the unresolved-dispatch read subtracts: the cap-scope
 // node ids this dispatch declares a relation to, read from the flags fs already
 // parses. Each relation says the named nodes are what this dispatch is about
 // rather than work it piles on top of — an integration's member, a review's
-// change, the dispatch a fix round repairs, a member's siblings in a batch,
-// which are by construction running at the same time as it is.
+// change, the dispatch a fix round repairs.
 //
 // The flags are the declaration. A node id that merely appears in the dispatch's
 // goal text grants nothing, which is what keeps this an exemption the dispatch
 // states rather than one it can stumble into: every node named here was also
 // resolved and refused-if-absent before this ran (integrateMember,
-// reviewedDispatch, fixedDispatches, batchMember), so no dangling reference
-// reaches the read through it.
+// reviewedDispatch, fixedDispatches), so no dangling reference reaches the read
+// through it.
 //
 // A relation fs does not parse is not an exemption, and a dispatch with no
 // relation declares nothing — such a dispatch still carries --allow-unresolved.
-func declaredSubjects(h *command.Handler, member, reviewed string, fixes []string, batch string) (map[string]bool, error) {
+func declaredSubjects(member, reviewed string, fixes []string) map[string]bool {
 	subjects := map[string]bool{}
 	if member != "" {
 		subjects[member] = true
@@ -647,24 +468,7 @@ func declaredSubjects(h *command.Handler, member, reviewed string, fixes []strin
 	for _, fixed := range fixes {
 		subjects[fixed] = true
 	}
-	if batch == "" {
-		return subjects, nil
-	}
-
-	// --batch names the batch, and the batch's other members are the subjects:
-	// the fan-out's purpose is that they run concurrently, so a sibling is work
-	// this dispatch runs alongside, never work piled on top of it. Membership is
-	// the parent link the member's own dispatch wrote.
-	unfinished, err := h.UnfinishedIn(capScope)
-	if err != nil {
-		return nil, err
-	}
-	for _, node := range unfinished {
-		if node.ParentNodeID == batch {
-			subjects[node.NodeID] = true
-		}
-	}
-	return subjects, nil
+	return subjects
 }
 
 // withoutNodes drops every named node id from a list. It is how the nodes the
@@ -803,16 +607,11 @@ func findLockedDocs(root string) []string {
 }
 
 // recordCapNode writes the cap's two events for this dispatch: the node itself —
-// carrying the member it integrates (when it integrates one), the dispatch it
-// reads (when it reviews one), and the batch it is a member of (as its parent) —
-// and the decision naming the project the work went to. It returns the node id
-// so the cap can read its own dispatch back.
-func recordCapNode(h *command.Handler, taskType, goal, project, integrates, reviews, parent string) (string, error) {
-	var parentPtr *string
-	if parent != "" {
-		parentPtr = &parent
-	}
-	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), query.KindDispatch, "", integrates, reviews, "", "", parentPtr)
+// carrying the member it integrates (when it integrates one) and the dispatch it
+// reads (when it reviews one) — and the decision naming the project the work went
+// to. It returns the node id so the cap can read its own dispatch back.
+func recordCapNode(h *command.Handler, taskType, goal, project, integrates, reviews string) (string, error) {
+	added := h.TaskAddKind(capScope, dispatchGoal(taskType, goal), query.KindDispatch, "", integrates, reviews, "", "", nil)
 	if !added.OK {
 		return "", fmt.Errorf("record cap node: %s", added.Error)
 	}

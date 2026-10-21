@@ -84,15 +84,9 @@ func main() {
 	case "dispatch":
 		checkArgs("dispatch", os.Args[2:])
 		dispatchCmd(os.Args[2:])
-	case "integrated":
-		checkArgs("integrated", os.Args[2:])
-		integratedCmd(os.Args[2:])
 	case "reviews":
 		checkArgs("reviews", os.Args[2:])
 		reviewsCmd(os.Args[2:])
-	case "batch":
-		checkArgs("batch", os.Args[2:])
-		batchCmd(os.Args[2:])
 	case "close":
 		checkArgs("close", os.Args[2:])
 		closeCmd(os.Args[2:])
@@ -217,7 +211,7 @@ Commands:
                                                 scope when --project did not
   dispatch --project P --type TYPE --goal GOAL
            [--integrates MEMBER_NODE] [--reviews CAP_NODE]
-           [--fixes CAP_NODE]... [--batch BATCH_NODE]
+           [--fixes CAP_NODE]...
            [--allow-unresolved] [--deliver] [--worktree WS]
            [--worktree-new]
                                                A dispatch is a worker node, a
@@ -241,26 +235,15 @@ Commands:
                                                the same way. --fixes names a cap
                                                node this dispatch repairs, which
                                                is open while the fix is made;
-                                               repeatable. --batch names the
-                                               batch node this dispatch is a
-                                               member of. --allow-unresolved
+                                               repeatable. --allow-unresolved
                                                proceeds while another dispatch
                                                is open and undelivered, and
                                                records which ones.
-  integrated MEMBER_NODE                       Exit 0 and print the done
-                                               integration dispatch that names
-                                               this member cap node; exit 1 when
-                                               none does
   reviews CAP_NODE                             Exit 0 and print the done review
                                                dispatch that names this cap node
                                                as the one it reads; exit 1 when
                                                none does, or when one does and is
                                                not done yet
-  batch BATCH_NODE                            Exit 0 iff every member of the
-                                               batch has a done integration
-                                               naming it; exit 1 naming the
-                                               unintegrated ones. A batch with
-                                               no members is refused
   close --node NODE [--worker P:NODE] --decision TEXT
                                                Close out a dispatch: record one
                                                evidence line — the sha HEAD
@@ -1080,7 +1063,6 @@ func dispatchCmd(args []string) {
 	integrates := flagVal(args, "--integrates", "")
 	reviews := flagVal(args, "--reviews", "")
 	fixes := multiFlag(args, "--fixes")
-	batch := flagVal(args, "--batch", "")
 	allowUnresolved := hasFlag(args, "--allow-unresolved")
 	deliver := hasFlag(args, "--deliver")
 
@@ -1115,7 +1097,6 @@ func dispatchCmd(args []string) {
 		Integrates:      integrates,
 		Reviews:         reviews,
 		Fixes:           fixes,
-		Batch:           batch,
 		AllowUnresolved: allowUnresolved,
 	})
 	if resp.OK {
@@ -1170,22 +1151,6 @@ func closeCmd(args []string) {
 	output(dispatch.Close(h, herdr.New(), reg, req))
 }
 
-// integratedCmd answers a member's question: was it merged by a done integration
-// dispatch? It exits 0 and prints that dispatch's node id, or 1 with what to do
-// instead. It is a read, and the cap's scope needs no registered project, so it
-// works from anywhere — including the member's own worktree, which is where the
-// member's exit gate runs it.
-func integratedCmd(args []string) {
-	if len(args) < 1 {
-		fatal("fs integrated: MEMBER_NODE required")
-	}
-
-	h := openHandler("")
-	defer h.Close()
-
-	output(dispatch.Integrated(h, args[0]))
-}
-
 // reviewsCmd answers a close's question: was this dispatch's change reviewed? It
 // exits 0 printing the done review dispatch that names this node, or 1 naming
 // what it found instead. A review is a node kind with a link, never a gate: the
@@ -1199,20 +1164,6 @@ func reviewsCmd(args []string) {
 	defer h.Close()
 
 	output(dispatch.Reviews(h, args[0]))
-}
-
-// batchCmd answers a batch's question: is every member integrated? It is the
-// batch's exit gate and the fact that replaces the cap's "is this the next
-// merge" ask — a read with an exit code, mirroring fs integrated.
-func batchCmd(args []string) {
-	if len(args) < 1 {
-		fatal("fs batch: BATCH_NODE required")
-	}
-
-	h := openHandler("")
-	defer h.Close()
-
-	output(dispatch.Batch(h, args[0]))
 }
 
 // nodeArg splits a "<project>:<node>" node argument into the project it names

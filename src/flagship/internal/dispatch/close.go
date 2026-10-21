@@ -15,7 +15,7 @@
 // line, recorded with the sha.
 //
 // The pane is machinery, because every dispatch has one. A worktree's removal is
-// a git action the cap or the batch performs, not something a close declares.
+// a git action the cap performs, not something a close declares.
 package dispatch
 
 import (
@@ -81,9 +81,6 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, req Clo
 	node, err := capNode(h, req.NodeID)
 	if err != nil {
 		return errResp("close: " + err.Error())
-	}
-	if node.Kind == query.KindBatch {
-		return closeBatch(h, req)
 	}
 	if node.Kind != query.KindDispatch {
 		return errResp(fmt.Sprintf(
@@ -196,32 +193,6 @@ func Close(h *command.Handler, hc engine.Engine, reg *registry.Registry, req Clo
 		return errResp("mark node done: " + resp.Error)
 	}
 	return command.Response{OK: true, Data: result}
-}
-
-// closeBatch closes out a batch node. A batch has no delivery and no worker of
-// its own — it is the parent its members hang from — so the delivery, worker and
-// deliverable reads do not apply. What does apply is the batch's own question:
-// every member has a done integration naming it. It is the same read fs batch
-// makes, so a close can never disagree with it.
-func closeBatch(h *command.Handler, req CloseRequest) command.Response {
-	if req.Decision == "" {
-		return errResp("--decision is required: record the verdict this close-out rests on")
-	}
-
-	decision := req.Decision
-	if req.Abandoned {
-		if req.Reason == "" {
-			return errResp("--abandoned requires --reason: say why the batch is being abandoned")
-		}
-		decision = "abandoned, never delivered: " + req.Reason
-	} else if resp := Batch(h, req.NodeID); !resp.OK {
-		return errResp("close: " + resp.Error)
-	}
-
-	if resp := h.TaskUpdate(capScope, req.NodeID, "done", decision, nil); !resp.OK {
-		return errResp("mark node done: " + resp.Error)
-	}
-	return command.Response{OK: true, Data: CloseResult{NodeID: req.NodeID, Decision: decision}}
 }
 
 // deliverable is the close's one check, and the line it records: where the tree

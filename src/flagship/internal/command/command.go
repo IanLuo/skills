@@ -145,9 +145,9 @@ type UnfinishedNode struct {
 	Kind      query.Kind `json:"kind"`
 	FoundBy   string     `json:"found_by,omitempty"`
 	// ParentNodeID is the node this one was created under, for a reader that has
-	// to ask what a node is part of rather than what it is — the batch a member
-	// belongs to. It is derivable from fs status, which walks the tree; it is
-	// carried here so a reader can ask the question without the tree.
+	// to ask what a node is part of rather than what it is. It is derivable from
+	// fs status, which walks the tree; it is carried here so a reader can ask the
+	// question without the tree.
 	ParentNodeID string `json:"parent_node_id,omitempty"`
 	// BlockCheck is the command the node's last block recorded, when one did:
 	// what every reader re-runs to tell a live block from one whose condition is

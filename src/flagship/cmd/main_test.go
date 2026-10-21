@@ -1261,7 +1261,6 @@ func TestCLIRejectsUnknownFlags(t *testing.T) {
 		"task add":       {"task", "add", "--goal", "g", "--bogus"},
 		"project create": {"project", "create", "--name", "q", "--bogus"},
 		"reviews":        {"reviews", "t-1", "--bogus"},
-		"integrated":     {"integrated", "t-1", "--bogus"},
 		"close":          {"close", "--node", "n", "--bogus"},
 		"unfinished":     {"unfinished", "--bogus"},
 	}
@@ -2634,24 +2633,6 @@ func TestCLIPendingRefusesArguments(t *testing.T) {
 	if errMsg, _ := resp["error"].(string); !strings.Contains(errMsg, "--project") {
 		t.Errorf("error %q must name the rejected flag", errMsg)
 	}
-}
-
-// fsOnPath puts the built binary on PATH as `fs`, so a shipped gate that shells
-// out to `fs` — the member's exit gate runs `fs integrated $FS_NODE` — resolves
-// the binary under test. The fake herdr the caller installed stays first.
-func fsOnPath(t *testing.T, bin string, env []string) []string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.Symlink(bin, filepath.Join(dir, "fs")); err != nil {
-		t.Fatal(err)
-	}
-	path := os.Getenv("PATH")
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			path = strings.TrimPrefix(kv, "PATH=")
-		}
-	}
-	return append(env, "PATH="+dir+string(os.PathListSeparator)+path)
 }
 
 // capNodeOf adds a cap-scope node of the given kind and returns its id.

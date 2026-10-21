@@ -26,18 +26,13 @@ const (
 	KindDispatch Kind = "dispatch"
 	// KindGap is something noticed and not dispatched: the backlog.
 	KindGap Kind = "gap"
-	// KindBatch is a cap-scope node that holds a fan-out: a batch of member
-	// dispatches, each in its own worktree, merged one at a time. It is created
-	// by a dispatch whose plan declares `creates: batch` — never by a type-to-kind
-	// map in Go, and never by `fs task add --kind batch`.
-	KindBatch Kind = "batch"
 )
 
 // ValidKind reports whether k names a kind. The empty string is not a kind:
 // absence means the default, and callers resolve it rather than storing it.
 func ValidKind(k Kind) bool {
 	switch k {
-	case KindWork, KindDispatch, KindGap, KindBatch:
+	case KindWork, KindDispatch, KindGap:
 		return true
 	}
 	return false

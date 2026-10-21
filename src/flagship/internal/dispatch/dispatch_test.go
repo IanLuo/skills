@@ -350,55 +350,6 @@ func TestPrepareGatesOnOtherOpenDispatchesButNotOnTheMemberItIntegrates(t *testi
 	}
 }
 
-// A batch exists to run its members concurrently, so a sibling member's dispatch
-// is the work this one runs alongside rather than a dispatch piled on top of it:
-// member two prepares while member one is still open, without --allow-unresolved.
-//
-// The exemption is the relation the dispatch declares — here --batch — and never
-// the node id appearing in its text, so a dispatch that only *mentions* the open
-// node still refuses; and a batch exempts its own members, not the open work
-// beside them.
-func TestPrepareGatesOnOtherOpenDispatchesButNotOnItsBatchSiblings(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	batch := mustAdd(t, f.h, "cap", "the batch", query.KindBatch, "", nil)
-	memberOne := mustAdd(t, f.h, "cap", "dispatch dev-task: member one", query.KindDispatch, "", &batch)
-
-	second := func(goal string) dispatch.PrepareRequest {
-		return dispatch.PrepareRequest{
-			Project: "skills", TaskType: "dev-task", Goal: goal, Batch: batch,
-		}
-	}
-
-	// Member one is open and undelivered; member two prepares anyway.
-	if resp := f.prepare(second("member two")); !resp.OK {
-		t.Fatalf("a batch sibling must not trip the unresolved read: %s", resp.Error)
-	}
-
-	// The same goal text with no declared relation grants nothing.
-	resp := f.prepare(devReq("member one"))
-	if resp.OK {
-		t.Fatal("a node id in the goal text must not exempt anything")
-	}
-	for _, want := range []string{"unresolved dispatches", memberOne, "--allow-unresolved"} {
-		if !strings.Contains(resp.Error, want) {
-			t.Errorf("refusal %q must mention %q", resp.Error, want)
-		}
-	}
-
-	// A dispatch outside the batch is still other work piled on top of this one.
-	other := mustAdd(t, f.h, "cap", "dispatch dev-task: unrelated", query.KindDispatch, "", nil)
-	resp = f.prepare(second("member three"))
-	if resp.OK {
-		t.Fatal("an open dispatch outside the batch must still trip the read")
-	}
-	if !strings.Contains(resp.Error, other) {
-		t.Errorf("refusal %q must name the open dispatch %s", resp.Error, other)
-	}
-	if strings.Contains(resp.Error, memberOne) {
-		t.Errorf("refusal %q must not name the exempt sibling %s", resp.Error, memberOne)
-	}
-}
-
 // A blocking review finding is fixed while the change it was found in is still
 // open, so the fix round has to be dispatchable without --allow-unresolved: the
 // dispatches it repairs are its subjects, not open work piled on top of it.
@@ -506,64 +457,6 @@ func capEventsOf(t *testing.T, f *fixture, nodeID string) []store.Event {
 		t.Fatalf("Replay: %v", err)
 	}
 	return events
-}
-
-// fs integrated answers the member's question. A pending integration does not
-// count — the member is not integrated until the integration's own node is done
-// — and a scope with no such integration says so with what to do instead.
-func TestIntegratedAnswersWithTheDoneIntegrationThatNamesTheMember(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
-	other := addCapKindNode(t, f, "dispatch parallel: other member", query.KindDispatch)
-
-	link := addIntegrationNode(t, f, member)
-	unrelated := addIntegrationNode(t, f, other)
-
-	resp := dispatch.Integrated(f.h, member)
-	if resp.OK {
-		t.Fatal("a pending integration must not count as integrating the member")
-	}
-	if !strings.Contains(resp.Error, member) {
-		t.Errorf("refusal %q must name the member", resp.Error)
-	}
-
-	// A done integration that does not name this member does not answer for it.
-	if r := f.h.TaskUpdate("cap", unrelated, "done", "merged something else", nil); !r.OK {
-		t.Fatal(r.Error)
-	}
-	if resp := dispatch.Integrated(f.h, member); resp.OK {
-		t.Error("an integration naming another member must not answer for this one")
-	}
-
-	if r := f.h.TaskUpdate("cap", link, "done", "merged the member", nil); !r.OK {
-		t.Fatal(r.Error)
-	}
-	resp = dispatch.Integrated(f.h, member)
-	if !resp.OK {
-		t.Fatalf("Integrated: %s", resp.Error)
-	}
-	result := resp.Data.(dispatch.IntegratedResult)
-	if result.Member != member || result.IntegratedBy != link {
-		t.Errorf("result = %+v, want member %s integrated by %s", result, member, link)
-	}
-}
-
-// A member with no integration at all — the hand-merge case — is refused, with
-// the dispatched route named. An outcome check could not tell a hand merge from
-// a dispatched one.
-func TestIntegratedRefusesAMemberNoIntegrationNames(t *testing.T) {
-	f := newFixture(t, t.TempDir())
-	member := addCapKindNode(t, f, "dispatch parallel: member", query.KindDispatch)
-
-	resp := dispatch.Integrated(f.h, member)
-	if resp.OK {
-		t.Fatal("a member with no integration must be refused")
-	}
-	for _, want := range []string{member, "--integrates", "never by hand"} {
-		if !strings.Contains(resp.Error, want) {
-			t.Errorf("refusal %q must mention %q", resp.Error, want)
-		}
-	}
 }
 
 // fs reviews is a read over a link, never a gate over a plan: a done review
