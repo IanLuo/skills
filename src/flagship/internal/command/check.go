@@ -25,9 +25,8 @@ import (
 // — fs gaps walks every scope — so a check that blocks would otherwise stall the
 // reader with no output and no way to tell it is waiting.
 //
-// Ten seconds is the heaviest shipped check measured in this repo (check-specs.sh
-// at 0.22s) two orders of magnitude over, because the two ways of being wrong are
-// not alike: too tight reports a claim that held as one nobody finished checking,
+// Ten seconds is two orders of magnitude past the heaviest check measured in this
+// repo (0.22s), because the two ways of being wrong are not alike: too tight reports a claim that held as one nobody finished checking,
 // which is a false report, while too loose only waits. It leaves room for the
 // class of check a gap's claim can legitimately need — a git walk, a small test.
 const CheckTimeout = 10 * time.Second
@@ -95,7 +94,7 @@ func reRun(body, dir string) (string, error) {
 // shellEnv is this process's environment plus env, and FS_BIN when env does not
 // already name it.
 //
-// FS_BIN is how every card and playbook in this repo addresses the binary — it
+// FS_BIN is how a check addresses the binary — it
 // is installed into ~/.fs and is not on PATH — so a check written `"$FS_BIN" …`
 // exits 127 in a shell that was not given one, and its claim never reads as
 // expired. The entry gate and the exit steps give their steps the same value, so

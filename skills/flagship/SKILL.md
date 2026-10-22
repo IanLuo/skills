@@ -38,8 +38,12 @@ Never create a node or change a status without reading first.
 
 ## The loop
 
+0. `fs project create --name P --root PATH` if the project is not registered yet — `fs dispatch
+   --project P` refuses on an unknown project, and `fs project list` shows what exists.
 1. `fs pending` — everything waiting on you, in every project, with what to do about each.
 2. `fs dispatch --project P --type T --goal G --deliver` — the worker starts on the brief.
+   `T` is the node's kind: `work`, `dispatch` or `gap`. Since the protocols were deleted it selects nothing
+   else; it labels the node.
 3. The worker writes its node, then reports.
 4. `fs close --node <cap node> --decision "<verdict over the evidence line>"`.
 
@@ -64,6 +68,9 @@ fs close --node <cap node> --abandoned --reason "<why>"
 
 - The cap node is the one `fs dispatch` printed. The worker's node comes from the delivery record; `--worker` is only a check against it.
 - It refuses while the worker's node is not `done`, and while HEAD has not moved past the revision the dispatch was prepared at — unmoved HEAD means nothing reached the repository.
+- **The cap marks the worker's node done before closing** — `fs task update <project>:<node> --status
+  done --decision "<the verdict>"`. A report is not a status: a worker that reported `--done` leaves its
+  node `active` until someone says otherwise, and `fs close` reads the node.
 - On success it records one evidence line — the sha HEAD stands at, the base it was measured against, and the verdict — then tears down the pane and marks the node done.
 - The verdict is where the suite result belongs: the cap is what ran the suite.
 - A project that was not a git repository when the dispatch was prepared is reported, not refused; the line says the deliverable was not checked.
@@ -75,6 +82,9 @@ fs close --node <cap node> --abandoned --reason "<why>"
 - The kind decides the interruption: `--blocked`, `--question` and `--done` notify; no kind is silent.
 - A failed notification is not a failed report: exit 0, `recorded, not notified`.
 - A `--blocked` report also blocks the node, with the line as its reason.
+- **With no cap claimed, a report is still recorded — nothing is notified.** That is why a cap claims: the
+  address is what herdr routes to. `recorded, not notified` is not a failure, and a worker must not wait on
+  it.
 - Keep it a pointer, never the content: under 200 bytes. The node is the record, and the cap reads the node.
 - `fs tell PROJECT:NODE "TEXT"` — the cap's reply, routed through that dispatch's delivery record. A message, not a record: the decision lands on the node.
 

@@ -13,16 +13,14 @@ const scriptsSource = "defaults/scripts"
 // Script returns the shipped script named name, so `fs script` can run it with
 // none of it reaching the disk.
 //
-// This is the rule a shipped playbook already follows, applied to the one
-// artifact that could not simply be read the same way: a playbook is *parsed by
-// fs*, but a script is *executed by the shell*, and `bash "$FS_SCRIPTS/x.sh"`
+// A script cannot simply be read the way a document is: it is *executed by the
+// shell*, and `bash "$FS_SCRIPTS/x.sh"`
 // needs a real path — which is the entire reason a materialized copy once
 // existed. It does not need to be a file: the body runs through `bash -c`
 // instead, and the directory goes away with the reason for it.
 //
-// An unknown name is an error naming every script the binary does ship. The
-// caller is a playbook step that named a script which is gone, and a step that
-// silently runs nothing is a gate that silently passes.
+// An unknown name is an error naming every script the binary does ship, because
+// a caller that silently runs nothing believes it checked something.
 func Script(name string) ([]byte, error) {
 	scripts, err := fs.Sub(embedded, scriptsSource)
 	if err != nil {

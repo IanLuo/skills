@@ -3,9 +3,8 @@
 // Every other command prints the JSON response and its exit status is fs's
 // verdict on the request. `fs script` runs a script the binary ships and then
 // gets out of the way: the script's stdout is the stdout, the script's exit
-// status is the exit status. That is not a convenience — the shipped scripts
-// are gates, `check-specs.sh` exits 1 to say a locked doc is behind its code,
-// and a gate whose status is fs's rather than its own cannot fail.
+// status is the exit status. That is not a convenience: a script's own refusal
+// has to stay its own, or it reads as fs's verdict on the request.
 package main
 
 import (
@@ -21,7 +20,7 @@ import (
 //
 // The name and the arguments reach the script unchanged, and it runs with this
 // process's environment, working directory and stdio, so a step that runs
-// `"$FS_BIN" script check-parallel.sh $FS_CARDS` behaves exactly as the file
+// `"$FS_BIN" script branch-decision.sh <path>` behaves exactly as the file
 // form did — in a worktree, under a temp HOME, with the project's own FS_*.
 //
 // The third argument to `bash -c` is the trap this exists to close, and it is
@@ -29,8 +28,7 @@ import (
 // every word after that as $1.., so `bash -c "$body" a,b` makes a,b the
 // script's own *name* and leaves $1 empty: the script receives no arguments at
 // all, and a script with no arguments often still does something plausible —
-// check-parallel.sh exits 2 saying no cards were named, which is a refusal
-// nobody asked for. Passing the name as $0 (a placeholder that is also true)
+// a script that exits 2 on missing arguments is a refusal nobody asked for. Passing the name as $0 (a placeholder that is also true)
 // puts args[1:] where the script reads them.
 func scriptCmd(args []string) {
 	// The spec in cmdSpecs is not enforced here: everything after the name

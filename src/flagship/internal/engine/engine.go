@@ -1,5 +1,5 @@
 // Package engine defines the distribution engine interface: the dispatcher
-// surface a playbook selects with its `engine:` field. Engine adapters translate
+// surface dispatch needs. Engine adapters translate
 // dispatch's intent — split a pane, start a named agent in it, send the brief,
 // tear it down — into engine-specific calls. (ARCHITECTURE R2: Engine Adapters
 // layer; SYSTEM-DESIGN R3)
@@ -34,8 +34,8 @@ var ErrNoWorktree = errors.New("worktree workspace cannot be resolved")
 // Engine is the dispatcher surface: the slice of the dispatcher's CLI the
 // dispatch lifecycle uses — split a pane for the worker, start an agent in it,
 // send the brief, read what the agents are doing, and tear the pane down again.
-// v1 is herdr, which implements it in internal/engine/herdr; a playbook that
-// declares `engine: herdr` resolves to that adapter.
+// v1 is herdr, which implements it in internal/engine/herdr, and it is the only
+// adapter.
 //
 // A dispatch in the project root gets a sibling pane of the cap's own, not a
 // tab. A tab created by id carried no workspace, so a worker could land in

@@ -568,10 +568,9 @@ func taskAdd(args []string) {
 }
 
 // taskGet prints one node's derived state. It is a read with an exit code: it
-// answers "does this node exist, and is it the kind I think it is?" the way a
-// gate can use it, instead of leaving a playbook to parse fs status's JSON in
-// shell. --kind is the filter the integrate entry gate names: an integration
-// integrates a member's dispatch node, so the node it was given must be one.
+// answers "does this node exist, and is it the kind I think it is?" so a caller
+// reads a node instead of parsing fs status's JSON in shell. --kind is the filter:
+// work, dispatch or gap.
 func taskGet(args []string) {
 	pos := positionals("task get", args)
 	if len(pos) < 1 {
@@ -1038,7 +1037,7 @@ func tellCmd(args []string) {
 // writes to, and "" for an act that coordinates whatever its scope — a
 // dispatch, a close, a claim, a reply.
 //
-// The guard is fs's and not a playbook's: a worker cannot reach a coordinating
+// The guard is fs's, not a document's: a worker cannot reach a coordinating
 // act by not knowing a rule. It reads HERDR_PANE_ID and nothing else, and a
 // pane it holds no record for is unclaimed rather than a worker.
 func guardCoordinating(h *command.Handler, scope string) {

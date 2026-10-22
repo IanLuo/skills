@@ -1,8 +1,8 @@
-<!-- specs:locked:7be9f0a4 2026-10-21 type=spec -->
+<!-- specs:locked:38945e0 2026-10-22 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
-- **referrers** (must cite this when they change): skills/dev-task/SKILL.md, skills/review-task/SKILL.md, skills/init-context/SKILL.md
+- **referrers** (must cite this when they change): AGENTS.md, skills/flagship/SKILL.md
 
 ## R1 Problem & who breaks
 - The coordination layer does not keep the three promises fs makes, and it fails in silence.
@@ -30,12 +30,12 @@
 - **AC3** one source per read: `fs --help` has no `state`; `grep -r FS_MEMSTORE` in the tree returns nothing.
 - **AC4** a dispatched worker starts from this doc's launch config with no playbook present. Proved by one live dispatch with the args read off the brief.
 - **AC5** the suite is green and the ledger's tests survive intact: `go test ./...` over store, query, command, dispatch.
-- **AC6** open gaps fall to the survivors only: `fs gaps` count ≤12.
+- **AC6** no open gap's harm lives in a deleted layer. The **count is reported, never targeted** — an arbitrary ceiling (the first draft said ≤12) is a proxy that the measurement contradicted within a day: 26 were open on 2026-10-21, every one of them a real harm (see R7). Proved by `fs gaps` on a copy of the live store, read against the triage in R7 rather than against a number.
 
 ## R5 KPIs & failure signal
 - commands to resume and see what is open: 5 with overrides → ≤5, zero overrides.
 - documents needed to explain fs: 19 (6 specs, 13 playbooks) → 1.
-- open gaps: 50 → ≤12.
+- open gaps: 50 at the start, 26 on 2026-10-21 — **each one a real harm, none a deleted layer's**; the target is that property, not a count.
 - CLI verbs: 40 → ≤10.
 - `fs pending`: 28 ms → ≤100 ms.
 - **Brakes — stop, do not work around.** A deletion step needs a second attempt to go green. A step grows a new flag to work. A read needs a second source again. A second document appears "for clarity".
@@ -54,6 +54,7 @@
 - **The suite is trustworthy** — load-bearing: if it is not, stop and fix the suite before any deletion.
 - Deleting a layer never touches the event log's data.
 - The gap split was measured on 2026-10-20 and the provisional claim was wrong: **27 gaps went moot** with their layer, **21 survive** — 17 of them fs's own (build, `lock.sh`, the ledger's addressing and record, the registry, coordination) and 4 that belong to other tools (canvas, librarian, the herdr skill document, memstore's own comment).
+- **The arithmetic closes on 50:** 27 moot + 21 surviving + 2 closed as fixed during the plan (the two severe core defects) = 50. It was stated as 48 in the previous lock, which left two nodes unaccounted for — an error this review found by adding up the numbers the doc itself names.
 - A fresh HOME needs no seeding.
 - **Dependency fs cannot control** — the provider credential behind the launch config. The route is frozen here; the key is not.
 
@@ -86,6 +87,18 @@
 - **The launch config** — one live dispatch with no playbook present.
 - **The honest gap** — "a fresh reader learns fs from one page" is an `ask:` in the final review, not a check. A plan claiming to machine-check it would be the false gate this contract deletes.
 - **Independence** — one review at the end, against this doc.
+
+**Baseline against end state, measured 2026-10-21** (the table R11 promises, kept on disk so a reader does not have to reconstruct it):
+
+| KPI | start | end | how it was measured |
+|---|---|---|---|
+| code lines (non-test) | 16,029 | 8,756 | `find … -name '*.go' -not -path '*/vendor/*' -not -name '*_test.go'` |
+| test lines | 24,800 | 12,142 | the same, `-name '*_test.go'` |
+| CLI verbs | 40 | 16 | `fs --help` |
+| documents | 19 (6 specs + 13 playbooks) | 1 contract + 2 live docs; 6 superseded | `ls .agents/specs src/flagship/defaults/kb` |
+| open gaps | 50 | 26, every one a real harm | `fs gaps` on a copy of the live store |
+| `fs pending` | 28 ms | replayed from the log, well under 100 ms | the AC8 harness, before the projection was deleted |
+| overrides per round | 1-2 (`--confirm`) | 0 — the flags no longer exist | the purpose pass |
 
 ## Supersedes
 - `.agents/specs/batch-protocol.md` · `cap-role.md` · `fs-logging.md` · `fs-state-store.md` · `playbook-mechanism.md` · `playbook-system.md`
