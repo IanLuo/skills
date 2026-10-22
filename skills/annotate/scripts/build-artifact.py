@@ -51,6 +51,9 @@ SIBLINGS = {
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
         "source", "track", "wbr"}
 
+# Ids the template already defines. The content must not redefine them.
+CHROME_IDS = {"done", "count", "status", "form", "list", "comment", "levels", "add", "cancel"}
+
 
 class _Scan(HTMLParser):
     """Flat list of start-tag attributes. Thread rows are siblings, so nesting is unneeded."""
@@ -88,6 +91,32 @@ def retired_ids(html):
     for a in _rows(html):
         ids |= {t.strip() for t in (a.get("data-retired") or "").split(",") if t.strip()}
     return ids
+
+
+def copied_chrome(content):
+    """The content file must hold body content only — the template owns the chrome.
+
+    An author that starts from artifact-template.html can paste the buttons, form and
+    script along with the content. The page then carries every chrome id twice, and
+    chrome.js binds `getElementById` to the FIRST copy while the reader clicks the last
+    one drawn — the Done button does nothing. Fail loudly instead.
+    """
+    ids = sorted({a["id"] for a in _rows(content) if a.get("id") in CHROME_IDS})
+    bad = []
+    if ids:
+        bad.append(
+            f"the content includes page-chrome ids ({', '.join(ids)}) — the template already "
+            f"carries the buttons, form and script, so a second copy leaves two #done buttons "
+            f"and chrome.js binds to the wrong one. Delete the pasted chrome block; the "
+            f"content file holds body content only"
+        )
+    if "__CHROME_JS__" in content or "__CHROME_CSS__" in content:
+        bad.append(
+            "the content includes a chrome placeholder (__CHROME_JS__ / __CHROME_CSS__) — "
+            "the content is inserted after the placeholders are filled, so it stays as "
+            "literal text. Delete the pasted <script> block"
+        )
+    return bad
 
 
 def validate(content):
@@ -202,7 +231,7 @@ def main(argv):
         return 2
 
     content = content_file.read_text()
-    problems = validate(content) + coarse_anchors(content)
+    problems = validate(content) + coarse_anchors(content) + copied_chrome(content)
 
     # Coverage against the previous round: a note may be carried forward or explicitly
     # retired, but never quietly disappear.

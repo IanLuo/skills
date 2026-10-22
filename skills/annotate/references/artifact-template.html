@@ -74,7 +74,9 @@
 
 <h1 data-anchor="title">…</h1>
 
-<!-- Required chrome markup — keep verbatim. -->
+<!-- Chrome markup — already in the template. A content file must NOT copy this
+     block: the page would carry every id twice, chrome.js would bind to the first
+     copy and the reader would click the second, so Done would do nothing. -->
 <button id="done">Done · <span id="count">0</span></button>
 <div id="status"></div>
 

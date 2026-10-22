@@ -25,6 +25,8 @@ Rules under test:
  14. the same content anchored per unit builds
  15. cells are not units — a table row anchor is a unit, not a container
  16. omitted end tags (<li>a<li>b) must not hide a container
+ 17. content that copies the template's chrome fails, naming the ids
+ 18. content that copies a chrome placeholder fails, naming the placeholder
 
 Usage: python3 tests/annotate/test_build_artifact.py     (run from anywhere)
 Exit: 0 all pass, 1 any fail. Prints one line per failure, prefixed FAIL.
@@ -224,6 +226,29 @@ def main():
         loose = TITLE + '<ul data-anchor="list"><li>a<li>b<li>c</ul>\n'
         r = build(cwd, "loose", loose)
         check("unclosed <li> still counts as a container", r.returncode != 0, "expected non-zero")
+
+        # 17. The content file must not copy the template's chrome: the page would
+        #     carry two #done buttons, and chrome.js binds to the first while the
+        #     reader clicks the second.
+        pasted = TITLE + """
+<button id="done">Done · <span id="count">0</span></button>
+<div id="status"></div>
+<div id="form" hidden>
+  <div id="list"></div><textarea id="comment"></textarea>
+  <div id="levels"></div>
+  <div class="actions"><button id="add">Add</button><button id="cancel">Cancel</button></div>
+</div>
+"""
+        r = build(cwd, "copied", pasted)
+        check("copied chrome fails", r.returncode != 0, "expected non-zero")
+        check("copied chrome names #done", "two #done buttons" in r.stderr, r.stderr)
+        check("copied chrome says what to do", "body content only" in r.stderr, r.stderr)
+
+        # 18. A pasted chrome placeholder is filled before the content is inserted, so
+        #     it survives as literal text — the same copy mistake, caught earlier.
+        r = build(cwd, "placeholder", TITLE + "<script>//__CHROME_JS__</script>\n")
+        check("copied placeholder fails", r.returncode != 0, "expected non-zero")
+        check("copied placeholder is named", "__CHROME_JS__" in r.stderr, r.stderr)
 
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0
