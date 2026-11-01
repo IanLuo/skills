@@ -83,7 +83,7 @@ skills/          — the skills (README table is the index)
   annotate/         interactive HTML view of context + copy-paste annotation feedback
   canvas/           one live page per topic — daemon hot-swaps changed sections, annotations POST to disk
   librarian/       personal research library
-  flagship/        drive fs: projects, tasks, dispatch, close, report
+  flagship/        drive fs: add, claim, report, done, status over shared memstore
   skill-man/       create, revise, validate, audit, deploy skills
   skill-template/  starter skeleton
 src/flagship/    — current fs Go binary; rebuild contract: .agents/specs/fs-rebuild.md (implementation pending)
@@ -102,7 +102,7 @@ live immediately.
 |---|---|
 | fs rebuild requirements — task coordination, agent isolation, memstore boundary | `.agents/specs/fs-rebuild.md` |
 | fs rebuild system design — components, records, required memstore API, failure modes | `.agents/specs/fs-rebuild-design.md` |
-| how to use fs — dispatch, close, report, the pending statuses | `skills/flagship/SKILL.md` |
+| how to use fs — the five verbs, refusal messages, session identity, status fields | `skills/flagship/SKILL.md` |
 | skill authoring rules, spec cheatsheet, best practices | `skills/skill-man/SKILL.md` |
 | deploy topology and constraints | `bin/deploy-skills.sh` |
 | specs elicitation ladders (spec, system-design, architecture) | `skills/specs/references/` |

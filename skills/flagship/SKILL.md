@@ -1,6 +1,6 @@
 ---
 name: flagship
-description: 'Manage projects, tasks, decisions, and knowledge via the flagship (fs) CLI — the persistent memory layer for agent orchestration. Use when the user says "track this project", "create a project", "add a task", "what''s the status", "what tasks are active", "what decisions were made", "record this decision", "resume work on project X", "pick up where I left off", "dispatch this", "fs", "flagship", or any project/task tracking request. Do NOT use for writing code (dev-task), writing specs (specs), spawning agents yourself (herdr), or research (librarian).'
+description: 'Coordinate isolated agent tasks through the flagship (fs) CLI, backed by shared memstore. Use when the user says "add a task", "give this to an agent", "claim a task", "what is fs doing", "what is that agent doing", "what is the status", "is anyone on this", "fs", or "flagship" — or when an agent must find its next task, report progress, or complete a reviewed task. Do NOT use for spawning agents or panes (herdr), writing code (dev-task), writing specs (specs), or research (librarian).'
 metadata:
   audience: personal
   domain: agent-orchestration
@@ -8,174 +8,123 @@ metadata:
 
 # flagship
 
-- `fs` is the coordination layer: one append-only event log, and every node's status derived by replay.
-- A **dispatch** is a worker node, a rendered brief, and a herdr delivery. Nothing else.
-- A **close** is one evidence line and a pane teardown.
-- The requirements contract is [`.agents/specs/fs-contract.md`](../../.agents/specs/fs-contract.md). Read it before changing fs; this page is how to run it.
-
-## Verbs
-
-- `project create|list|get`
-- `task add|get|update|edit|merge|block|unblock|knowledge`
-- `status` · `unfinished` · `gaps` · `pending` · `query` · `log`
-- `dispatch` · `close` · `report` · `tell` · `cap claim|who`
-- `reviews` · `script` · `version`
+- `fs` coordinates **isolated agent tasks**. It records who is on what, keeps one task per agent session, and refuses to mark work complete without an independent review.
+- It is a **client of shared memstore**. Every record lives in `scope = "fs:<project>"` inside memstore. fs owns no database, no cache, no event ledger and no cap.
+- Five verbs: `add`, `claim`, `report`, `done`, `status`.
+- Contracts, both locked: [`.agents/specs/fs-rebuild.md`](../../.agents/specs/fs-rebuild.md) (requirements) and [`.agents/specs/fs-rebuild-design.md`](../../.agents/specs/fs-rebuild-design.md) (structure, record kinds, the claim protocol). Read the requirements before changing behaviour; read the design before touching keys or the claim path.
 
 ## Build
 
-- `./bin/build-project.sh flagship` — nix builds `packages.flagship` and installs `skills/flagship/scripts/fs`.
-- Nothing puts it on `PATH`. Below, `fs` means that binary.
-- `fs version` — the revision it was built from, whether that tree was dirty, and the file it runs from. Use it to tell two builds apart.
-- No binary, no skill. Run the build first.
-
-## Read before acting
-
-- `fs project list` — every project, most recent activity first. The first command in a fresh session.
-- `fs status --project <name>` — the task tree.
-- `fs query "<topic>" --project <name>` — decisions and knowledge recorded about it.
-
-Never create a node or change a status without reading first.
-
-## The loop
-
-0. `fs project create --name P --root PATH` if the project is not registered yet — `fs dispatch
-   --project P` refuses on an unknown project, and `fs project list` shows what exists.
-1. `fs pending` — everything waiting on you, in every project, with what to do about each.
-2. `fs dispatch --project P --type T --goal G --deliver` — the worker starts on the brief.
-   `T` is the node's kind: `work`, `dispatch` or `gap`. Since the protocols were deleted it selects nothing
-   else; it labels the node.
-3. The worker writes its node, then reports.
-4. `fs close --node <cap node> --decision "<verdict over the evidence line>"`.
-
-## Dispatch
-
-- **dispatch = worker node + brief + delivery.** There is no other machinery.
-- Without `--deliver` the cap node and the brief are recorded and printed. Nothing starts, no pane is split, no worker node exists, and the prepared node stays open.
-- `--deliver` splits a sibling pane of your own, creates the worker's node in the target project, starts the agent, sends the brief, records the delivery, and marks the cap node `active`.
-- The worker's node is created before the agent starts, because the brief has to name it: *note your work on `<project>:<node>`; do not create another*.
-- The brief carries the goal, the tree, the worker's node, every worker's standing obligations, the locked docs the tree carries, and the launch config.
-- **Launch config, frozen in the binary:** `engine=herdr` · `agent=pi` · `args=--provider magpie --model opencode-go/deepseek-v4.1-flash`. A fresh agent gets this wrong without being told.
-- One dispatch is one open unit per project: another dispatch into that project refuses while one is prepared and undelivered, unless `--allow-unresolved` names what it proceeds past.
-- `--integrates <member>` — this dispatch merges that member. `--reviews <cap node>` — this dispatch reads that change. `--fixes <cap node>` — this dispatch repairs it; repeatable.
-- `--worktree <workspace>` runs in an existing worktree; `--worktree-new` creates one.
-
-## Close
-
 ```bash
-fs close --node <cap node> --decision "<verdict>"
-fs close --node <cap node> --abandoned --reason "<why>"
+./bin/build-project.sh flagship     # nix build → skills/flagship/scripts/fs
 ```
 
-- The cap node is the one `fs dispatch` printed. The worker's node comes from the delivery record; `--worker` is only a check against it.
-- It refuses while the worker's node is not `done`, and while HEAD has not moved past the revision the dispatch was prepared at — unmoved HEAD means nothing reached the repository.
-- **The cap marks the worker's node done before closing** — `fs task update <project>:<node> --status
-  done --decision "<the verdict>"`. A report is not a status: a worker that reported `--done` leaves its
-  node `active` until someone says otherwise, and `fs close` reads the node.
-- On success it records one evidence line — the sha HEAD stands at, the base it was measured against, and the verdict — then tears down the pane and marks the node done.
-- The verdict is where the suite result belongs: the cap is what ran the suite.
-- A project that was not a git repository when the dispatch was prepared is reported, not refused; the line says the deliverable was not checked.
-- `--abandoned` skips the reads, never the teardown. Delivered or not, the record says it was abandoned, so the drop shows instead of hiding.
+Nothing puts it on `PATH`. Below, `fs` means that binary. There is no `fs version` any more — to tell two builds apart, compare `git rev-parse --short HEAD` with the commit you built from.
 
-## The worker's side
+## The user's loop
 
-- `fs report PROJECT:NODE --line "ONE LINE" [--blocked|--question|--done]` — the event is written first and always, addressed to the node and not to a cap; the live cap is notified best-effort through herdr.
-- The kind decides the interruption: `--blocked`, `--question` and `--done` notify; no kind is silent.
-- A failed notification is not a failed report: exit 0, `recorded, not notified`.
-- A `--blocked` report also blocks the node, with the line as its reason.
-- **With no cap claimed, a report is still recorded — nothing is notified.** That is why a cap claims: the
-  address is what herdr routes to. `recorded, not notified` is not a failure, and a worker must not wait on
-  it.
-- Keep it a pointer, never the content: under 200 bytes. The node is the record, and the cap reads the node.
-- `fs tell PROJECT:NODE "TEXT"` — the cap's reply, routed through that dispatch's delivery record. A message, not a record: the decision lands on the node.
+```bash
+fs add    --project demo --goal "add lease-expiry tests" --check "go test ./internal/coord" --path .
+fs status --project demo
+```
 
-## The cap's address
+`add` records intent: goal, project scope, the checks a reviewer must run, and optionally the worktree path. A review task is created with `--review-of <task-id>` and inherits the reviewed task's checks — it must not declare its own.
 
-- `fs cap claim [--reconstructed "WHAT YOU READ"]` — the pane in `$HERDR_PANE_ID` becomes the address herdr routes a report to, recorded with its tab, agent and time.
-- Refused while a live claim holds it; a take-over of a dead one requires `--reconstructed`.
-- `fs cap who` — the address and whether herdr still has it: exit 0 live, 1 not. `none` and `dead` do not read alike.
+## The agent's loop
 
-## What a worker's pane is refused
+```bash
+fs claim  --project demo --session "$FS_SESSION"          # oldest eligible task
+fs claim  --project demo --session "$FS_SESSION" --task t-…  # a specific one
+fs report --project demo --session "$FS_SESSION" --task t-… --state progress --note "half way"
+fs report --project demo --session "$FS_SESSION" --task t-… --state dev-done --note "tests added"
+```
 
-- A pane fs holds a delivery record for is refused coordinating acts: a write into the cap's own project `cap`, `dispatch`, `close`, `tell`.
-- `fs report` from that same pane succeeds.
-- It is a discipline guard, not a security boundary: `HERDR_PANE_ID` is an environment variable any process can unset.
+For a review:
 
-## `fs pending` states
+```bash
+fs report --project demo --session "$FS_SESSION" --task t-… --state pass --role review \
+          --command "go test ./internal/coord" --exit 0
+fs done   --project demo --session "$FS_SESSION" --task t-…
+```
 
-| status | meaning | what to do |
+- `report` is also the **keepalive**: there is no renew verb. A lease lapses 120 s after the session's newest write, and a lapsed lease reads as `unknown`, never as live or done.
+- `done` is refused unless this reviewer ran **every** declared check and each one passed. A worker cannot complete its own task.
+
+## The two invariants
+
+Both rest on `Put` refusing a duplicate `(origin, origin_id)` inside memstore — one unique key, so one row each.
+
+| row | key | refuses |
 |---|---|---|
-| `ready` | the worker's node is done | read the node, then `fs close` |
-| `blocked` | the agent is parked on a prompt or a modal | go look; never answer an approval for it |
-| `running` | working or idle | let it work |
-| `unknown` | herdr could not be asked at all | read the node; go look before acting |
-| `unseen` | the node is open but herdr reports the agent `done` | finished unseen — go look |
-| `gone` | herdr has no such agent | the worker died; needs the user |
-| `unlinked` | no delivery record for the node | `--abandoned`, or `--worker` for an old record |
+| `fs.bind` | `session:<sid>` | a session's **second** task, forever |
+| `fs.claim` | `claim:<tid>:<round>` | a **second holder** of one task |
 
-herdr is a hint about when to look, never the truth about whether the work is done.
+Order is **bind, then claim**. A claim that loses a race leaves the session spent and holding nothing — safe, and the fix is a new session, not a retry.
 
-## Task status
+## Session identity
 
-There are four, and status is derived: the `to` of a node's last `status-changed` event.
+`--session` is a stable unique id supplied by the harness, one per fresh agent context. fs can only enforce that one identity carries one task; it cannot see a reused conversation. Start every task in a new session, and every review in a session different from the developer's.
 
-- `pending` — prepared but not delivered; revisit it.
-- `active` — dispatched; a worker is on it.
-- `blocked` — waiting on the user.
-- `done` — closed, with a closing decision.
+## Verbs
 
-Never mark unfinished work `done`.
-
-## Event model rules
-
-1. Never write `~/.fs/store.db` or `~/.fs/registry.db` directly — only through `fs`.
-2. Events are immutable. Correct with compensating events, never by editing one.
-3. Record decisions as you make them: `--decision` on `task update`.
-4. Record knowledge as you learn it: `fs task knowledge`.
-5. Update status honestly: `active` when starting, `done` when finished, `blocked` when stuck.
-
-## Querying and history
-
-```bash
-fs unfinished                            # every task not done, all projects
-fs gaps                                  # the backlog: open before done, heaviest first
-fs query "auth" --project myapp          # FTS5 search over event payloads
-fs log --project myapp --node t-abc12345 # one node's raw history
+```text
+fs add    --project P --goal G --check C [--check C]... [--path DIR] [--review-of TID]
+fs claim  --project P --session S [--task TID]
+fs report --project P --session S --task TID --state S [--role dev|review|runtime]
+          [--command C --exit N] [--digest D] [--note TEXT]
+fs done   --project P --session S --task TID [--note TEXT]
+fs status [--project P] [--session S]
 ```
 
+States: `progress`, `dev-done`, `pass`, `fail`, `blocked`. Roles: `dev` (default), `review`, `runtime`.
+
+## Reading `status`
+
 ```bash
-fs log --project skills --node t-7609aede | jq -r '
-  .data.events[] | "\(.timestamp)  \(.type)  \(.node_id // "-")\n    \(.payload)"'
+fs status                        # every project (the user's view)
+fs status --project demo         # one project
+fs status --session s-1          # what this session's binding authorizes
 ```
+
+Per task: `task`, `kind` (`dev`/`review`), `state`, `goal`, `checks`, `session`, `round`, `lease_expires`, `lease_live`, and two observations:
+
+- `agent` — what the agent last reported (`source: fs.event`, with `age_seconds` and `fresh`).
+- `runtime` — what a harness reported with `--role runtime`. `{state: "unknown", source: "none", fresh: false}` means **nobody reported it**. Absence is not health.
+
+A task whose lease has lapsed shows `lease_live: false` and `agent.state: unknown`. Neither means done.
+
+## Refusals you will actually see
+
+```text
+session s1 is bound to task t-02cf…; it cannot touch t-other
+completion refused: no recorded reviewer run of: go test ./internal/coord; the task stays incomplete
+a review task runs the task's declared checks: drop --check, or add a task of its own
+no eligible task in fs:demo: every task there is held or closed
+```
+
+Each is a state decision, not an error to retry blindly. Read `fs status` first.
 
 ## Output and exit codes
 
-- Every command returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": "…"}`. The one exception is `fs script`, which exits with the script's own status.
-- Exit 0 success, 1 app error, 2 usage.
-- Exit 2 means the command line was wrong: an unknown flag, a flag missing its value, or a stray positional. It is refused, never ignored.
-- Every subcommand answers `--help` / `-h` / `help` on stderr with exit 0, without touching the store.
-- `fs --help` lists every command and flag.
+- Every command prints a JSON envelope on stdout: `{"ok":true,"data":…}` or `{"ok":false,"error":…}`.
+- `0` result · `1` refused (bad input, wrong session, failed gate) · `2` malformed command line (unknown command, unknown flag, no command).
+- **Known wart:** `fs --help` prints the usage block but exits `2`, and `fs <verb> --help` prints the top-level usage rather than per-verb help. Do not treat a help call as a failed command.
 
-## Data locations
+## Where data lives
 
-- `~/.fs/store.db` — every project's events, partitioned by `project_id`.
-- `~/.fs/registry.db` — the project registry.
-- `~/.fs/logs/fs.log` — the running log: JSON lines, rotating at 4 MiB keeping three files.
-- No project directory is written to.
+- `$MEMSTORE_DB`, else `~/.memstore/memory.db` — every coordination record, in `fs:<project>` scopes. Shared with other services; fs touches only its own scopes.
+- `~/.fs/logs/fs.log` — the running log, JSON lines, rotating at 4 MiB keeping three files. Never gates a decision. `-v`/`--verbose` sets DEBUG, `FS_LOG_LEVEL` is the fallback.
+- `~/.fs/store.db` is **legacy**: the rebuilt fs never reads or writes it. Leave it alone.
 
-## Project identity
+## Rules
 
-- One store holds every project, partitioned by `project_id`.
-- A command targets `--project NAME` if given, else the registered project whose `root_path` owns the working directory, else the directory name.
-- `fs project create` registers a project; `--project` reaches any registered project from anywhere.
-
-## The running log
-
-- Every invocation appends JSON lines to `~/.fs/logs/fs.log`: `time`, `level`, `msg`, and the command's own fields.
-- The same JSON goes to stderr, teed to the file.
-- `-v` / `--verbose` sets DEBUG; `FS_LOG_LEVEL=debug|info|warn|error` is the fallback, the flag winning. An unparseable level is refused, naming the accepted values.
-- It never gates: a write failure is at most a WARN and never fails the command.
+1. Never write memstore's SQLite file directly, and never add a second store — the coordination model depends on memstore's own duplicate refusal being the only arbiter.
+2. Never claim work without a session id, and never reuse a session id for a second task.
+3. A claim is not evidence. Completion needs a reviewer's own run of every declared check.
+4. When a refusal surprises you, the answer is in `fs status`, not in a retry.
+5. Changing a key, the claim order, or the completion gate needs the design doc re-locked first: the safety argument is the order of the two writes.
 
 ## References
 
-- **The contract this skill implements:** [`.agents/specs/fs-contract.md`](../../.agents/specs/fs-contract.md) — the outcome, the verbs, the log's shape, the launch config, and what was deliberately left out.
-- [references/fs-advanced.md](references/fs-advanced.md) — full event payload schemas, FTS5 query syntax, the registry, and the store's integrity and WAL behaviour.
+- [`.agents/specs/fs-rebuild.md`](../../.agents/specs/fs-rebuild.md) — acceptance criteria, KPIs, failure signals.
+- [`.agents/specs/fs-rebuild-design.md`](../../.agents/specs/fs-rebuild-design.md) — record kinds, the claim protocol, layers, and the delete list.
