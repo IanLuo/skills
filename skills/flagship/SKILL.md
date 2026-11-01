@@ -100,7 +100,7 @@ fs claim  --project P --session S [--task TID]
 fs report --project P --session S --task TID --state S [--role dev|review|runtime]
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
-fs status [--project P] [--session S]
+fs status [--project P] [--session S] [--format json|table]
 ```
 
 States: `progress`, `dev-done`, `pass`, `fail`, `blocked`. Roles: `dev` (default), `review`, `runtime`.
@@ -111,7 +111,16 @@ States: `progress`, `dev-done`, `pass`, `fail`, `blocked`. Roles: `dev` (default
 fs status                        # every project (the user's view)
 fs status --project demo         # one project
 fs status --session s-1          # what this session's binding authorizes
+fs status --format table         # the same report, laid out for a human
 ```
+
+`--format table` is for reading, not parsing: same single read, no second query, columns
+`TASK KIND STATE HOLDER ROUND LEASE AGENT GOAL`. `LEASE` is the time the holder has left
+before it must write again (`lapsed` once it has), and `AGENT` is its last reported state,
+`unknown` when that is stale. Projects with no tasks are folded into one trailing line — a
+scope keeps its name while any `fs:` row exists, so empty projects say nothing about work.
+Reach for `--format table` when a human asked for status; keep the default when a script
+parses the answer.
 
 Per task: `task`, `kind` (`dev`/`review`), `state`, `goal`, `checks`, `session`, `round`, `lease_expires`, `lease_live`, and two observations:
 
@@ -157,7 +166,7 @@ Each is a state decision, not an error to retry blindly. Read `fs status` first.
 
 ## Output and exit codes
 
-- Every command prints a JSON envelope on stdout: `{"ok":true,"data":…}` or `{"ok":false,"error":…}`.
+- Every command prints a JSON envelope on stdout: `{"ok":true,"data":…}` or `{"ok":false,"error":…}`. One exception, on request only: `status --format table` prints text and exits `0`, because a human asked not to be given JSON.
 - `0` result · `1` refused (bad input, wrong session, failed gate) · `2` malformed command line (unknown command, unknown flag, no command).
 - Help is an answer, not a failure: `fs --help` prints the whole interface and `fs <verb> --help` prints that verb's block, both on stdout with exit `0`.
 
