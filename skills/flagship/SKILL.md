@@ -16,8 +16,8 @@ metadata:
 ## The binary
 
 `fs` resolves from `PATH`. Call it by name; never look for a copy inside this skill folder —
-there is no `scripts/` here, and no vendored binary has shipped in this skill since the tool
-moved to its own repository.
+the only thing in `scripts/` is `dispatch-review.sh`, which drives `fs` and `herdr` and is not
+a copy of the tool.
 
 ```bash
 command -v fs     # the install this skill drives
@@ -42,8 +42,8 @@ readlink -f "$(command -v fs)"            # the store path in use
 readlink ~/Documents/apps/fs/result       # the build of the current tree
 ```
 
-If `fs` is not on `PATH`, stop and report it. Do not build a copy, and do not add a `scripts/`
-folder to this skill to hold one. There is no `fs version` — to tell two builds apart, compare
+If `fs` is not on `PATH`, stop and report it. Do not build a copy, and do not put one in
+`scripts/`. There is no `fs version` — to tell two builds apart, compare
 `git -C ~/Documents/apps/fs rev-parse --short HEAD` with the commit you installed from.
 
 ## The user's loop
@@ -91,6 +91,38 @@ Order is **bind, then claim**. A claim that loses a race leaves the session spen
 ## Session identity
 
 `--session` is a stable unique id supplied by the harness, one per fresh agent context. fs can only enforce that one identity carries one task; it cannot see a reused conversation. Start every task in a new session, and every review in a session different from the developer's.
+
+## Handing a review to a fresh agent
+
+fs will not start the reviewer, and that is not a gap: the session that wrote the code must
+not choose the session that reviews it, or the review inherits the author's context. R3 puts
+"fs starting or managing agent processes" out of scope on purpose. The **coordinator
+dispatches** instead — you, or a loop — and fs still decides: `done` refuses unless the
+reviewer really ran each declared check.
+
+```bash
+scripts/dispatch-review.sh --project demo --dry-run                          # what it would spawn
+scripts/dispatch-review.sh --project demo --commit "$(git rev-parse HEAD)"    # real run
+```
+
+- It reads `fs status`, takes the review tasks that are open and held by nobody, mints a
+  fresh session id per task, splits a herdr pane, starts an agent and prompts it with the
+  claim, the declared checks, the report command and `done`.
+- **Success is the claim, not the spawn.** After prompting it polls fs until a session holds
+  the task, prints that session, and exits `1` if none does — a prompt typed into an agent
+  that never acted is a failed dispatch. herdr's own `agent_prompt_stalled` is a hint, not a
+  verdict: it fires when the agent has not visibly started within 5 s.
+- **Run it from a coordinator, never from the developer's session.** A developer that spawns
+  its own reviewer has chosen its judge.
+- `--commit` gives each reviewer `git worktree add --detach <sha>`. fs records no commit, so
+  AC5's "detached at the reviewed commit" is the dispatcher's job; without it the reviewer
+  runs in `--cwd`.
+- `MEMSTORE_DB` is passed into the prompt. A spawned pane inherits herdr's environment, not
+  this shell's, so without it the reviewer reads `~/.memstore/memory.db`, finds no such task
+  and correctly refuses — a silent, confusing failure.
+- The parent's last report is **not** the trigger. Any observation older than the 120 s lease
+  reads `unknown`, so waiting for a fresh `dev-done` starves every slow review. Adding the
+  review task is the ready signal; a reviewer that finds unfinished work reports `fail`.
 
 ## Verbs
 
