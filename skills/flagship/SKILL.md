@@ -53,7 +53,7 @@ fs add    --project demo --goal "add lease-expiry tests" --check "go test ./inte
 fs status --project demo
 ```
 
-`add` records intent: goal, project scope, the checks a reviewer must run, and optionally the worktree path. A review task is created with `--review-of <task-id>` and inherits the reviewed task's checks — it must not declare its own.
+`add` records intent: goal, project scope, the checks a reviewer must run, and optionally the worktree path. A review task is created with `--review-of <task-id>` and inherits the reviewed task's checks — it must not declare its own. `--path` is resolved when the task is written, so `--path .` records the directory you ran it from, not a dot that means whatever directory the reader stands in.
 
 ## The agent's loop
 
@@ -62,7 +62,13 @@ fs claim  --project demo --session "$FS_SESSION"          # oldest eligible task
 fs claim  --project demo --session "$FS_SESSION" --task t-…  # a specific one
 fs report --project demo --session "$FS_SESSION" --task t-… --state progress --note "half way"
 fs report --project demo --session "$FS_SESSION" --task t-… --state dev-done --note "tests added"
+fs add    --project demo --goal "review t-…" --review-of t-…  # the review task, before you stop
 ```
+
+`add` is not session-gated, so the development session creates its own review task — creating a
+task grants no review authority, so independence is untouched. Do it before the session ends: a
+dev-done with no review task is work nobody can complete, and the dispatcher has nothing to hand
+to a reviewer.
 
 For a review, in a session that is not the developer's:
 
@@ -149,7 +155,8 @@ fs status --format table         # the same report, laid out for a human
 `--format table` is for reading, not parsing: same single read, no second query, columns
 `TASK KIND STATE HOLDER ROUND LEASE AGENT GOAL`. `LEASE` is the time the holder has left
 before it must write again (`lapsed` once it has), and `AGENT` is its last reported state,
-`unknown` when that is stale. Projects with no tasks are folded into one trailing line — a
+with a `~` when that report is older than the lease (`dev-done~`: verdict unknown, and the
+state shown is the last report). Projects with no tasks are folded into one trailing line — a
 scope keeps its name while any `fs:` row exists, so empty projects say nothing about work.
 Reach for `--format table` when a human asked for status; keep the default when a script
 parses the answer.
@@ -159,7 +166,12 @@ Per task: `task`, `kind` (`dev`/`review`), `state`, `goal`, `checks`, `session`,
 - `agent` — what the agent last reported (`source: fs.event`, with `age_seconds` and `fresh`).
 - `runtime` — what a harness reported with `--role runtime`. `{state: "unknown", source: "none", fresh: false}` means **nobody reported it**. Absence is not health.
 
-A task whose lease has lapsed shows `lease_live: false` and `agent.state: unknown`. Neither means done.
+`agent` carries two facts, and they differ once a report goes stale: `state` is the verdict
+(`unknown` past the lease — expiry is not evidence), `reported` is what that source last said,
+with its age. Read `reported` to know what happened, and `state` to know how much to trust it.
+
+A task whose lease has lapsed shows `lease_live: false` and `agent.state: unknown`, with
+`agent.reported` still naming the last thing that session said. Neither means done.
 
 ### All projects, and who is on them
 
