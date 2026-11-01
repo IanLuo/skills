@@ -53,7 +53,7 @@ fs add    --project demo --goal "add lease-expiry tests" --check "go test ./inte
 fs status --project demo
 ```
 
-`add` records intent: goal, project scope, the checks a reviewer must run, and optionally the worktree path. A review task is created with `--review-of <task-id>` and inherits the reviewed task's checks — it must not declare its own. `--path` is resolved when the task is written, so `--path .` records the directory you ran it from, not a dot that means whatever directory the reader stands in.
+`add` records intent: goal, project scope, the checks a reviewer must run, and optionally the worktree path. A review task is created with `--review-of <task-id>` and inherits the reviewed task's checks — it must not declare its own. `--path` is resolved when the task is written, so `--path .` records the directory you ran it from, not a dot that means whatever directory the reader stands in. A row written by an older build can still hold `.`: records are append-only, so an upgrade does not repair it — re-add the task.
 
 ## The agent's loop
 
@@ -114,21 +114,67 @@ scripts/dispatch-review.sh --project demo --commit "$(git rev-parse HEAD)"    # 
 - It reads `fs status`, takes the review tasks that are open and held by nobody, mints a
   fresh session id per task, splits a herdr pane, starts an agent and prompts it with the
   claim, the declared checks, the report command and `done`.
-- **Success is the claim, not the spawn.** After prompting it polls fs until a session holds
-  the task, prints that session, and exits `1` if none does — a prompt typed into an agent
-  that never acted is a failed dispatch. herdr's own `agent_prompt_stalled` is a hint, not a
-  verdict: it fires when the agent has not visibly started within 5 s.
+- **Success is `done`, not the spawn and not the claim.** After prompting it polls fs until the
+  task is closed, and exits `1` if it is not — a prompt typed into an agent that never acted is
+  a failed dispatch, and so is a reviewer that claims, runs the checks, then reads past its
+  120 s lease and reopens the task. The prompt therefore tells the reviewer to write a
+  `progress` report at least every 90 s while it still has reading to do, and to `done` as soon
+  as it is finished. herdr's `agent_prompt_stalled` is a hint, not a verdict: it fires when the
+  agent has not visibly started within 5 s.
 - **Run it from a coordinator, never from the developer's session.** A developer that spawns
   its own reviewer has chosen its judge.
 - `--commit` gives each reviewer `git worktree add --detach <sha>`. fs records no commit, so
   AC5's "detached at the reviewed commit" is the dispatcher's job; without it the reviewer
-  runs in `--cwd`.
+  runs in `--cwd` (default `$PWD`).
+- **The task's `project_path` is not used.** A reviewer's directory is `--cwd` or the
+  `--commit` worktree, so dispatching from the wrong directory points the checks at the wrong
+  tree, and a check that passes there is evidence of nothing. Without `--commit`, the script
+  refuses when a task records an absolute `project_path` that differs from the directory it
+  would use.
 - `MEMSTORE_DB` is passed into the prompt. A spawned pane inherits herdr's environment, not
   this shell's, so without it the reviewer reads `~/.memstore/memory.db`, finds no such task
   and correctly refuses — a silent, confusing failure.
 - The parent's last report is **not** the trigger. Any observation older than the 120 s lease
   reads `unknown`, so waiting for a fresh `dev-done` starves every slow review. Adding the
   review task is the ready signal; a reviewer that finds unfinished work reports `fail`.
+
+## Picking up a task whose session died
+
+A dead session takes its context with it, and fs keeps no transcript on purpose. What survives
+is the task: the goal, the declared checks, the absolute path, the last reported state, and the
+reports in `evidence`. Resume from those, never from a guess about what the old agent was
+thinking.
+
+```bash
+# 1. is it free?  LEASE: lapsed, AGENT: progress~ (half done) or dev-done~ (finished)
+fs status --project P --format table
+
+# 2. take it over — round+1. If the claim is refused, retry with THIS session id:
+#    the bind is written before the claim is decided, so a refused id is spent otherwise.
+fs claim --project P --session s-take --task T
+
+# 3. where did it stop?
+fs status --project P | jq -r '.data.projects[].tasks[] | select(.task=="T") | .evidence[0]'
+
+# 4. run the declared checks before reading the code: the cheapest objective state
+# 5. read the work itself: git status, git log, git diff, TASK.md in the worktree
+
+# 6. write the resume point down before editing — this is also the keepalive
+fs report --project P --session s-take --task T --state progress --note "…" --digest "…"
+```
+
+Then continue. Three ways this goes wrong:
+
+- **Not taking the task over.** A dev task resumed as a *new* task leaves two rows for one
+goal and nobody can tell which attempt closed it. Take over the row that exists.
+- **Asking the dead session to continue.** Its writes are refused — the claim row names the new
+holder now. There is nothing to ask.
+- **Starting to work without reporting.** Then the next crash is as expensive as this one, because
+`progress` with no note is all the next session gets.
+
+A reviewer does not need this: a review task is normally unheld, so a fresh session claims it at
+round 1 (see above). And a reviewer must not receive the developer's conclusions — the contract,
+the diff and the check results are the input, not the notes the developer wrote to itself.
 
 ## Verbs
 
@@ -148,7 +194,7 @@ States: `progress`, `dev-done`, `pass`, `fail`, `blocked`. Roles: `dev` (default
 ```bash
 fs status                        # every project (the user's view)
 fs status --project demo         # one project
-fs status --session s-1          # what this session's binding authorizes
+fs status --session s-1          # what this session's binding authorizes; refused when it holds nothing
 fs status --format table         # the same report, laid out for a human
 ```
 
@@ -158,13 +204,19 @@ before it must write again (`lapsed` once it has), and `AGENT` is its last repor
 with a `~` when that report is older than the lease (`dev-done~`: verdict unknown, and the
 state shown is the last report). Projects with no tasks are folded into one trailing line — a
 scope keeps its name while any `fs:` row exists, so empty projects say nothing about work.
+The header line carries the counts, and an over-long cell is cut with `…`.
 Reach for `--format table` when a human asked for status; keep the default when a script
 parses the answer.
 
-Per task: `task`, `kind` (`dev`/`review`), `state`, `goal`, `checks`, `session`, `round`, `lease_expires`, `lease_live`, and two observations:
+Per task: `task`, `kind` (`dev`/`review`), `state`, `goal`, `checks`, `session`, `round`,
+`lease_expires`, `lease_live`. A lapsed claim keeps its old holder in `session` — expiry is not erasure — so `state: open` is what means unheld, never `session == null`.
+`state` is the **hold** state — `open`, `claimed`, `done` — not a
+reported state: `claimed` means a live holder, `open` a task nobody holds or whose lease
+lapsed, and `done` a completed one. Then two observations:
 
 - `agent` — what the agent last reported (`source: fs.event`, with `age_seconds` and `fresh`).
 - `runtime` — what a harness reported with `--role runtime`. `{state: "unknown", source: "none", fresh: false}` means **nobody reported it**. Absence is not health.
+- `evidence` — every report the task carries, newest first, capped at 20, whatever role wrote it: `role`, `state`, `session`, `age_seconds`, `note`, `digest`, and for a check run the exact `command` and `exit`. This is the resume record; see below.
 
 `agent` carries two facts, and they differ once a report goes stale: `state` is the verdict
 (`unknown` past the lease — expiry is not evidence), `reported` is what that source last said,
@@ -202,6 +254,7 @@ completion refused: no recorded reviewer run of: go test ./internal/coord; the t
 completion refused: failed: go test ./internal/coord (exit 1); the task stays incomplete
 t-02cf… is development work: completion requires a review task, claimed by a fresh session, that runs the checks — a worker cannot complete its own work
 task t-02cf… is held by session s2 until 2026-11-01T12:20:03Z
+session s1's lease on task t-02cf… expired at 2026-11-01T12:31:38Z; it may no longer write
 a review task runs the task's declared checks: drop --check, or add a task of its own
 no eligible task in fs:demo: every task there is held or closed
 ```
