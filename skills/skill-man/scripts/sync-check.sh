@@ -50,7 +50,7 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 log "Fetching current HEAD of $REMOTE main..."
-HEAD_SHA="$(git ls-remote "$REMOTE" main 2>/dev/null | awk '{print $1}')"
+HEAD_SHA="$(git ls-remote "$REMOTE" main 2>/dev/null | awk '{print $1}' || true)"
 if [ -z "$HEAD_SHA" ]; then
   log "⚠ could not reach upstream (offline?). Pinned SHA: ${PINED_SHA:0:7}"
   exit 0
