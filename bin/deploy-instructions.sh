@@ -81,7 +81,6 @@ if [ "$LIST_ONLY" -eq 1 ]; then
   for entry in "${INSTRUCTIONS[@]}"; do
     printf '  • %-9s %s\n' "${entry%%|*}" "${entry#*|}"
   done
-  printf '\nNot yet wired: pi, cursor, hermes, windsurf, zed, aider, cline\n'
   exit 0
 fi
 
