@@ -99,6 +99,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   vague. Say "I don't know" rather than hedge or fabricate. Verify claims
   against what you actually read or ran — never assert unverified output as
   fact.
+- **fs for coordination.** `fs` is on PATH in every project. Before claiming work
+  that another agent could hold, run `fs status`. One task per session. The verbs and
+  the refusals live in the `flagship` skill — load it; don't guess them.
 - **Prefer a diagram to prose.** When a reply is structural — control flow,
   architecture, a refactor, a large diff, data flow, a hierarchy, a state
   machine — draw it: a diagram, tree, or sketch. A picture is easier to parse
