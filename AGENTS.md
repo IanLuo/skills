@@ -4,7 +4,7 @@
 
 - Personal-skills manager: author, validate, and deploy AI coding-agent skills across 12 agent harnesses from one repo.
 - Deployability and spec-conformance are non-negotiable.
-- `fs` — built from `src/flagship` — is the coordination layer every other skill runs its work through.
+- `fs` — the coordination layer every other skill runs its work through — lives in its **own repository**, `~/Documents/apps/fs`. This repo ships the skill that drives it, not the tool.
 
 ## How to run / build / test
 
@@ -19,11 +19,9 @@ python3 skills/skill-man/scripts/audit.py
 # Run test suite (10 fixtures + upstream-conformance + audit)
 bash tests/run.sh
 
-# fs: the Go suite, the vet, and the format — all three, no exceptions
-nix develop --command sh -c 'cd src/flagship && go test ./... -count=1 && go vet ./... && gofmt -l .'
-
-# Build fs into skills/flagship/scripts/fs (derived and gitignored — never edit it)
-./bin/build-project.sh flagship
+# fs lives in ~/Documents/apps/fs: build, test and install there, not here
+#   cd ~/Documents/apps/fs && nix develop -c sh -c 'go test ./... -count=1 && go vet ./...'
+#   nix profile install .#default     → fs on PATH
 
 # Deploy
 ./bin/deploy-skills.sh
@@ -46,7 +44,7 @@ bash skills/skill-man/scripts/new-skill.sh <name> [--resources scripts,reference
 
 # Nix outputs: one pair per project, no `default` — name the project you want
 nix build .#credentials                # hermetic; cred-run has no dependencies
-nix develop                            # both toolchains; .#credentials / .#flagship for one
+nix develop                            # the credentials toolchain
 ```
 
 The `skills` repo has no separate integration suite: `tests/run.sh` is it, and `fs` is verified by its own Go suite above.
@@ -61,9 +59,9 @@ The `skills` repo has no separate integration suite: `tests/run.sh` is it, and `
 - References resolve **against the skill's own dir** (the harness rule), never the skills root: use `references/x.md` for your own files, `../other-skill/references/x.md` for a sibling. The bare `other-skill/references/x.md` form is ambiguous and `audit.py` fails it.
 - Forward-test new skills with a fresh subagent (baseline-then-write: watch it fail without the skill first).
 - Each project under `src/` is a build unit with one output pair in the root flake (`packages.<project>` + `devShells.<project>`) — the flake owns every recipe. `./bin/build-project.sh` installs a project's binary into `skills/<project>/scripts/`. Those binaries are derived and gitignored — never edit them, and never restate a recipe outside `flake.nix`.
-- `src/flagship` is the source of `fs`.
-- The current fs requirements contract is `.agents/specs/fs-rebuild.md`. It replaces the prior cap/event-ledger contract in `.agents/specs/fs-contract.md`; the latter is historical.
-- The rebuilt fs is a client of shared memstore. It stores and retrieves coordination data only through memstore's supported API; it has no fs-owned persistent store or legacy event-DB migration in scope.
+- `fs` is **not** built here. It moved to `~/Documents/apps/fs`, which owns its flake, its Go suite and its locked contracts. Nothing in this repo builds it, and no `src/flagship` path exists any more.
+- `skills/flagship/SKILL.md` is the one consumer: it teaches the five verbs. A change to a verb is a change to that page, in the other repo's commit.
+- `.agents/specs/fs-contract.md` is the retired cap/event-ledger contract, kept as history. The current contracts live in the fs repo.
 - A doc naming a command `fs` no longer has is worse than no doc: delete the command and its docs in the same commit.
 
 ## Architecture elevator
@@ -86,7 +84,6 @@ skills/          — the skills (README table is the index)
   flagship/        drive fs: add, claim, report, done, status over shared memstore
   skill-man/       create, revise, validate, audit, deploy skills
   skill-template/  starter skeleton
-src/flagship/    — current fs Go binary; rebuild contract: .agents/specs/fs-rebuild.md (implementation pending)
 bin/             — deploy-skills.sh (symlinks skills into each detected agent's global skills dir)
 tests/           — validation fixture tests + upstream-conformance cross-check + audit.py behaviour tests
 ```
@@ -100,9 +97,8 @@ live immediately.
 
 | When you need… | Read… |
 |---|---|
-| fs rebuild requirements — task coordination, agent isolation, memstore boundary | `.agents/specs/fs-rebuild.md` |
-| fs rebuild system design — components, records, required memstore API, failure modes | `.agents/specs/fs-rebuild-design.md` |
 | how to use fs — the five verbs, refusal messages, session identity, status fields | `skills/flagship/SKILL.md` |
+| fs's contracts and code — requirements, claim protocol, build | `~/Documents/apps/fs` (`AGENTS.md`, `.agents/specs/`) |
 | skill authoring rules, spec cheatsheet, best practices | `skills/skill-man/SKILL.md` |
 | deploy topology and constraints | `bin/deploy-skills.sh` |
 | specs elicitation ladders (spec, system-design, architecture) | `skills/specs/references/` |

@@ -16,10 +16,10 @@ metadata:
 ## Build
 
 ```bash
-./bin/build-project.sh flagship     # nix build → skills/flagship/scripts/fs
+cd ~/Documents/apps/fs && nix profile install .#default   # puts fs on PATH
 ```
 
-Nothing puts it on `PATH`. Below, `fs` means that binary. There is no `fs version` any more — to tell two builds apart, compare `git rev-parse --short HEAD` with the commit you built from.
+`fs` is its **own repository** (`~/Documents/apps/fs`). Build, test and install it there; this skill only drives it. There is no `fs version` — to tell two builds apart, compare `git -C ~/Documents/apps/fs rev-parse --short HEAD` with the commit you installed from.
 
 ## The user's loop
 
@@ -126,5 +126,6 @@ Each is a state decision, not an error to retry blindly. Read `fs status` first.
 
 ## References
 
-- [`.agents/specs/fs-rebuild.md`](../../.agents/specs/fs-rebuild.md) — acceptance criteria, KPIs, failure signals.
-- [`.agents/specs/fs-rebuild-design.md`](../../.agents/specs/fs-rebuild-design.md) — record kinds, the claim protocol, layers, and the delete list.
+- `~/Documents/apps/fs/.agents/specs/fs-rebuild.md` — acceptance criteria, KPIs, failure signals.
+- `~/Documents/apps/fs/.agents/specs/fs-rebuild-design.md` — record kinds, the claim protocol, layers, and the delete list.
+- `~/Documents/apps/fs/AGENTS.md` — build, test, and the invariants a change must not break.

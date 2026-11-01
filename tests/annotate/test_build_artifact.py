@@ -106,9 +106,10 @@ def main():
 
         # 1. chrome inlined, placeholders gone.
         r = build(cwd, "basic", PLAIN)
-        out = cwd / ".agents/artifacts/basic.html"
+        out = cwd / "basic.html"
         check("build exits 0", r.returncode == 0, r.stderr.strip())
-        check("artifact written", out.is_file())
+        check("artifact written beside content", out.is_file())
+        check("legacy project artifact path unused", not (cwd / ".agents/artifacts/basic.html").exists())
         if out.is_file():
             html = out.read_text()
             check("placeholders replaced",
@@ -243,6 +244,19 @@ def main():
         check("copied chrome fails", r.returncode != 0, "expected non-zero")
         check("copied chrome names #done", "two #done buttons" in r.stderr, r.stderr)
         check("copied chrome says what to do", "body content only" in r.stderr, r.stderr)
+
+        # 19. Output follows the content file into an external temp/session directory,
+        #     not the working project directory.
+        with tempfile.TemporaryDirectory() as external_dir:
+            inputs = pathlib.Path(external_dir)
+            (inputs / "content.html").write_text(PLAIN)
+            r = subprocess.run(
+                [sys.executable, str(BUILD), "external", str(inputs / "content.html")],
+                cwd=cwd, capture_output=True, text=True,
+            )
+            check("external content builds", r.returncode == 0, r.stderr.strip())
+            check("artifact follows external content path", (inputs / "external.html").is_file())
+            check("external build leaves no project artifact", not (cwd / ".agents/artifacts/external.html").exists())
 
         # 18. A pasted chrome placeholder is filled before the content is inserted, so
         #     it survives as literal text — the same copy mistake, caught earlier.

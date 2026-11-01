@@ -33,6 +33,26 @@ If the doc already has a lock marker (re-entry): show the user the locked doc, s
 "locked at `<sha>` on `<date>`," and ask what changed. Re-elicit **only** the rungs
 whose answers the reported changes would alter. If nothing changed, stop.
 
+**On a resume where your own context is older than the repo, verify the chain on disk
+before asking the first rung.** Use `search_files` (`target='files'`) on the doc you
+intend to resume, `git log --oneline -5`, and a `grep -rn "locked:"` over the doc root. The contract
+may have moved on without you: a different doc at a different level (`spec.md`
+instead of `prd.md`), a different lock family (`specs:locked` where you expect
+`prd:locked`), and the rungs you were about to ask already frozen inside it. Grepping
+only the marker name you expect returns nothing and reads as "unlocked" when the work
+is in fact frozen — so re-eliciting a rung that `spec.md` already answers reconstructs
+a decision the user has made and burns their attention on it. Same check applies when
+the doc you were resuming no longer exists: say so and ask which doc the work continues
+in, rather than continuing the ladder against a stale path.
+
+**The same staleness hits a skill, not just a doc.** `/prd` was superseded by `specs` —
+when a skill invocation names a skill the registry no longer has, `skill_view` fails with
+"not found" and lists the live names. That failure is the rename signal: load the successor
+named in the list (`specs`, here) and read *its* ladder before asking anything, because the
+rungs, the question format and the lock marker all moved with it. Continuing to elicit from
+the ladder text in your own context, against a handoff written when the old skill was live,
+produces drafts the user has already locked and questions they answered months ago.
+
 **Many tasks (a batch) → batch mode.** Grep `<!-- specs:locked:` first. Settle the
 rungs the tasks share — scope, NFRs, data assumptions — **once**, then elicit each
 task's private rungs. If an upstream doc already freezes the shared answers, cite it,

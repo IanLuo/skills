@@ -1,0 +1,150 @@
+- generic [ref=f1e1]:
+  - generic [ref=f1e2]:
+    - banner [ref=f1e3]:
+      - generic [ref=f1e4]:
+        - generic [ref=f1e5]: ◈
+        - text: observe
+      - generic [ref=f1e7]:
+        - strong [ref=f1e8]: observe
+        - generic [ref=f1e9]: ~/Documents/apps/observe
+      - button "Current branch" [ref=f1e10] [cursor=pointer]: ⌥ main
+      - generic [ref=f1e11]: local only
+      - generic "Personal workspace" [ref=f1e13]: I
+    - generic [ref=f1e14]:
+      - generic [ref=f1e15]: Project / Progress map
+      - generic [ref=f1e16]: Concept preview · sample data
+      - button "Δ Working tree 6 files ▾" [ref=f1e17] [cursor=pointer]:
+        - generic [ref=f1e18]: Δ
+        - text: Working tree
+        - generic [ref=f1e19]: 6 files
+        - generic [ref=f1e20]: ▾
+    - main [ref=f1e21]:
+      - complementary [ref=f1e22]:
+        - generic [ref=f1e23]: Goal alignment
+        - heading "Project goals" [level=2] [ref=f1e24]
+        - generic [ref=f1e25]:
+          - generic [ref=f1e26]:
+            - generic [ref=f1e27]: "4"
+            - text: goals in view
+          - generic [ref=f1e28]:
+            - generic [ref=f1e29]: "6"
+            - text: changed files
+        - generic [ref=f1e30]:
+          - button "Trace every requirement to code Appears to support · 3 areas" [ref=f1e31] [cursor=pointer]:
+            - generic [ref=f1e33]:
+              - text: Trace every requirement to code
+              - generic [ref=f1e34]: Appears to support · 3 areas
+          - button "Highlight the selected diff Appears to support · 2 areas" [ref=f1e35] [cursor=pointer]:
+            - generic [ref=f1e37]:
+              - text: Highlight the selected diff
+              - generic [ref=f1e38]: Appears to support · 2 areas
+          - button "Keep verification separate Unknown · no test evidence" [active] [ref=f1e39] [cursor=pointer]:
+            - generic [ref=f1e41]:
+              - text: Keep verification separate
+              - generic [ref=f1e42]: Unknown · no test evidence
+          - button "Refresh after settled edits Unmapped · no implementation" [ref=f1e43] [cursor=pointer]:
+            - generic [ref=f1e45]:
+              - text: Refresh after settled edits
+              - generic [ref=f1e46]: Unmapped · no implementation
+        - generic [ref=f1e47]:
+          - generic [ref=f1e48]: Appears to support
+          - generic [ref=f1e50]: Conflict
+          - generic [ref=f1e52]: Unmapped
+          - generic [ref=f1e54]: Unknown
+      - generic [ref=f1e56]:
+        - generic [ref=f1e57]:
+          - heading "Goal-to-code map" [level=1] [ref=f1e58]
+          - generic [ref=f1e59]: Current · just now
+          - generic [ref=f1e60]: V1 structure
+        - generic [ref=f1e61]:
+          - generic [ref=f1e62]:
+            - heading "Whole project" [level=2] [ref=f1e63]
+            - generic [ref=f1e64]: 4 goals · 5 areas · 6 evidence links
+            - searchbox "Find a goal or area" [ref=f1e65]
+            - button "↻ Preview refresh" [ref=f1e66] [cursor=pointer]
+          - generic [ref=f1e68]:
+            - generic [ref=f1e69]: GOALS
+            - generic [ref=f1e70]: PROJECT AREAS
+            - generic [ref=f1e71]: EVIDENCE · EXAMPLE
+            - button "Trace requirements appears to support · inferred" [ref=f1e86] [cursor=pointer]:
+              - generic [ref=f1e87]: Trace requirements
+              - generic [ref=f1e90]: appears to support · inferred
+            - button "Highlight selected diff appears to support" [ref=f1e91] [cursor=pointer]:
+              - generic [ref=f1e92]: Highlight selected diff
+              - generic [ref=f1e95]: appears to support
+            - button "Separate verification unknown · evidence absent" [ref=f1e96] [cursor=pointer]:
+              - generic [ref=f1e97]: Separate verification
+              - generic [ref=f1e100]: unknown · evidence absent
+            - button "Refresh after edits unmapped · planned" [ref=f1e101] [cursor=pointer]:
+              - generic [ref=f1e102]: Refresh after edits
+              - generic [ref=f1e105]: unmapped · planned
+            - button "internal/analyze Δ 2 candidate links" [ref=f1e106] [cursor=pointer]:
+              - generic [ref=f1e107]:
+                - generic [ref=f1e108]: internal/analyze
+                - generic [ref=f1e109]: Δ 2
+              - generic [ref=f1e110]: candidate links
+            - button "internal/model status contract" [ref=f1e111] [cursor=pointer]:
+              - generic [ref=f1e112]: internal/model
+              - generic [ref=f1e114]: status contract
+            - button "internal/watch Δ 1 planned · not implemented" [ref=f1e115] [cursor=pointer]:
+              - generic [ref=f1e116]:
+                - generic [ref=f1e117]: internal/watch
+                - generic [ref=f1e118]: Δ 1
+              - generic [ref=f1e119]: planned · not implemented
+            - button "web/map Δ 3 map + detail panel" [ref=f1e120] [cursor=pointer]:
+              - generic [ref=f1e121]:
+                - generic [ref=f1e122]: web/map
+                - generic [ref=f1e123]: Δ 3
+              - generic [ref=f1e124]: map + detail panel
+            - button "links.go Δ DIFF" [ref=f1e125] [cursor=pointer]:
+              - text: links.go
+              - generic [ref=f1e126]: Δ
+              - text: DIFF
+            - button "snapshot.go" [ref=f1e127] [cursor=pointer]
+            - button "MapView.ts Δ DIFF" [ref=f1e128] [cursor=pointer]:
+              - text: MapView.ts
+              - generic [ref=f1e129]: Δ
+              - text: DIFF
+            - button "watcher.go Δ DIFF" [ref=f1e130] [cursor=pointer]:
+              - text: watcher.go
+              - generic [ref=f1e131]: Δ
+              - text: DIFF
+            - 'button "tests: none found" [ref=f1e132] [cursor=pointer]'
+            - button "routes.ts" [ref=f1e133] [cursor=pointer]
+            - generic [ref=f1e134]:
+              - generic [ref=f1e135]: Connections are candidate links · dashed = inferred · example structure only
+              - generic [ref=f1e136]:
+                - button "Zoom out" [ref=f1e137] [cursor=pointer]: −
+                - button "Reset zoom" [ref=f1e138] [cursor=pointer]: ⌂
+                - button "Zoom in" [ref=f1e139] [cursor=pointer]: +
+      - complementary [ref=f1e140]:
+        - generic [ref=f1e141]: Selected goal · G01
+        - generic [ref=f1e142]:
+          - generic [ref=f1e143]:
+            - heading "Keep verification separate" [level=2] [ref=f1e144]
+            - generic [ref=f1e145]: Unknown
+          - button "Close details" [ref=f1e146] [cursor=pointer]: ×
+        - paragraph [ref=f1e147]: Code presence must not be treated as proof. Verification remains unknown until a test or other explicit evidence is available.
+        - generic [ref=f1e148]:
+          - heading "Verification · separate" [level=3] [ref=f1e149]
+          - generic [ref=f1e150]:
+            - generic [ref=f1e151]: No test evidence found
+            - generic [ref=f1e152]: Unknown
+        - generic [ref=f1e153]:
+          - heading "Evidence links" [level=3] [ref=f1e154]
+          - generic [ref=f1e155]:
+            - button "◇ internal/model/snapshot.go:18 verification status contract · illustrative" [ref=f1e156] [cursor=pointer]:
+              - generic [ref=f1e157]: ◇
+              - generic [ref=f1e158]:
+                - generic [ref=f1e159]: internal/model/snapshot.go:18
+                - generic [ref=f1e160]: verification status contract · illustrative
+            - button "! tests/ no matching test evidence found" [ref=f1e161] [cursor=pointer]:
+              - generic [ref=f1e162]: "!"
+              - generic [ref=f1e163]:
+                - generic [ref=f1e164]: tests/
+                - generic [ref=f1e165]: no matching test evidence found
+          - generic [ref=f1e166]: ⓘ Relationship is inferred. Verify against code and tests.
+        - generic [ref=f1e167]:
+          - button "Show selected diff" [ref=f1e168] [cursor=pointer]
+          - button "Copy evidence link" [ref=f1e169] [cursor=pointer]
+  - status

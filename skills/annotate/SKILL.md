@@ -32,28 +32,34 @@ The build script inlines the static chrome so the artifact is ONE self-contained
 `<link>`/`<script src>` to sibling files).
 
 1. **Produce the content** — answer the user's request (the options, the plan, the
-   list). This is your full response; don't duplicate it in chat. Write ONLY the body
-   content to a temp file, e.g. `.agents/artifacts/<name>.content.html` — with a
-   **stable `data-anchor="<kebab-id>"`** on every element the user might comment on
-   (ids must NOT change between iterations; pasted feedback resolves by id).
+   list). This is your full response; don't duplicate it in chat. Create a unique temp
+   directory outside the project (`ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/annotate.XXXXXX")"`)
+   and write ONLY the body content there as `<name>.content.html` — with a **stable
+   `data-anchor="<kebab-id>"`** on every element the user might comment on (ids must NOT
+   change between iterations; pasted feedback resolves by id). Keep the temp directory
+   path in context for the annotation loop; never write the artifact or its source into
+   the project.
 2. **Anchor the unit, never the container.** The id goes on the thing the reader would
    point at — a heading, a paragraph, a list item, a table row, a callout. An id on a
    wrapper (`<section>`, a card, a column) makes the whole wrapper one click target:
    the reader hovers a line, the entire section lights up, and they cannot say which
    line they mean. The build rejects a container anchor and names it, so anchor every
    unit and leave the wrapper bare.
-3. **Build and open in one command** — the build is instant; the wait is the HTML
-   generation, and a second turn between building and opening adds minutes of nothing:
+3. **Build and open in one command** — pass the temp content path; the builder writes
+   `<name>.html` beside it. The build is instant; the wait is the HTML generation:
+
+   Set `ANNOTATE_SKILL_DIR` to the directory containing this skill's `SKILL.md`, then run:
 
    ```bash
-   python3 scripts/build-artifact.py <name> <name>.content.html \
-     && rm -f .agents/artifacts/<name>.content.html \
-     && open .agents/artifacts/<name>.html      # xdg-open on Linux
+   python3 "$ANNOTATE_SKILL_DIR/scripts/build-artifact.py" <name> "$ARTIFACT_DIR/<name>.content.html" \
+     && rm -f "$ARTIFACT_DIR/<name>.content.html" \
+     && open "$ARTIFACT_DIR/<name>.html"      # xdg-open on Linux
    ```
 
    The script merges `references/chrome.css` + `references/chrome.js` + the template +
-   your content into one self-contained `.agents/artifacts/<name>.html`.
-4. **Then stop — one line.** `artifact at .agents/artifacts/<name>.html · N annotations
+   your content into one self-contained HTML file in the temp directory. Do not copy the
+   artifact into the project.
+4. **Then stop — one line.** `artifact at <full-temp-path>/<name>.html · N annotations
    pending`. The page carries the content, the vocabulary and the freshness marks;
    restating any of it in chat doubles the tokens and buys the user a longer wait.
 
@@ -91,8 +97,8 @@ retired — so loss is loud, not silent. A finished thread is retired explicitly
 `data-retired="r1a,r1b"` on the round wrapper.
 
 ```bash
-python3 scripts/build-artifact.py <name> <name>.content.html \
-  --prev .agents/artifacts/<previous-round>.html
+python3 "$ANNOTATE_SKILL_DIR/scripts/build-artifact.py" <name> "$ARTIFACT_DIR/<name>.content.html" \
+  --prev "$ARTIFACT_DIR/<previous-round>.html"
 ```
 
 ## Resolve feedback
@@ -117,7 +123,7 @@ Keep it terse. Group same-element feedback; never echo the whole artifact.
 In the conversation, reference the artifact by path + a one-line summary — never inline
 the HTML:
 
-`artifact at .agents/artifacts/<name>.html · N annotations pending`
+`artifact at <full-temp-path>/<name>.html · N annotations pending`
 
 Read the file on demand; don't load it wholesale into context.
 
@@ -136,6 +142,9 @@ Read the file on demand; don't load it wholesale into context.
   carried forward or explicitly retired — never dropped, never paraphrased.
 - **Simple format.** One line per annotation in the pasted JSON, no noise, severity only
   when it adds signal.
+- **One-time artifact cleanup.** Keep the HTML in the temp directory only while the
+  user may annotate or refer to it. When the feedback loop ends or the topic changes,
+  remove the temp directory; never leave these generated files in the project.
 - **Code/context is truth.** If the artifact is stale vs the current context, say so
   rather than silently resolving against outdated data.
 - **Inspect before opening** if the HTML source isn't trusted — it runs in the browser

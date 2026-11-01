@@ -12,7 +12,7 @@ Usage:
 Reads:  this skill's references/artifact-template.html, chrome.css, chrome.js
         <content-file> (the AI's rendered body content)
         --prev: the previous round's artifact, to check nothing was silently dropped
-Writes: .agents/artifacts/<name>.html  (single self-contained file)
+Writes: <content-file's directory>/<name>.html  (single self-contained file)
 
 Checking the round loop. A round answers notes the user left on the last one, and the
 failure to design against is SILENT LOSS: a note paraphrased into prose, or dropped
@@ -263,7 +263,7 @@ def main(argv):
                 .replace('<h1 data-anchor="title">…</h1>', content)
     )
 
-    out = pathlib.Path(".agents/artifacts") / f"{name}.html"
+    out = content_file.parent / f"{name}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html)
     print(out)

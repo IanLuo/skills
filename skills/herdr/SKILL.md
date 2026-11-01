@@ -26,7 +26,22 @@ echo $HERDR_TAB_ID       # w1:t1
 echo $HERDR_PANE_ID      # w1:p1 — your pane
 ```
 
-If unset, tell the user to launch herdr first.
+`HERDR_ENV` set is what you need to **spawn or drive** agents: `pane split --current`
+and `$PWD` targeting resolve against *your* pane, so they require a session.
+**Inspection does not.** `herdr workspace list`, `herdr tab list`, `herdr agent list`,
+`herdr agent get` and `herdr agent read <target>` talk to the already-running server
+and work from any shell — including a Hermes gateway session with every `HERDR_*`
+variable empty. So "check my herdr sessions / what did that agent say" is answerable
+from outside herdr; claim herdr isn't running only when the CLI itself fails to reach
+the server, not because your own env vars are blank. `herdr workspace list` labels each
+workspace by its project directory name, which is the fastest answer to "which sessions
+are up, and is one on <project>" — take the `workspace_id` from there, then `agent list`
+for state and cwd.
+
+`herdr agent list` entries **omit `name`** for agents started without one — read it as
+`.get('name')`, never `a['name']`, or the whole listing raises `KeyError` and you lose
+the data you were about to report. Same for `agent_session`, which some agents carry
+and others don't.
 
 ## The one-shot shorthand — `/herdr <kind>: [pane|tab] <task> [keep]`
 
@@ -143,7 +158,11 @@ failed to enable": read what it asks and tell the user before answering.
    explicitly ask.
 2. **Target explicitly.** `--current`, an explicit pane ID, or a unique agent name.
    Never rely on another client's focused pane.
-3. **Parse IDs from JSON responses**, never from sidebar order or examples.
+3. **Parse IDs from JSON responses**, never from sidebar order or examples. **The exit
+   status is not the error channel either** — `herdr pane get <gone-pane>` exits 0 while the
+   body carries `{"error":{"code":"pane_not_found"}}`, so a liveness check written on `$?`
+   reports a torn-down pane as alive. Test the JSON `error` key whenever the answer decides
+   something, such as whether a dispatch's delivery pane still exists.
 4. **Close only what you created.** Don't close panes/agents/workspaces the user or
    another session owns. Never `herdr server stop` from an active session; never
    kill the main herdr process — for experiments use `herdr --session <name>`.
