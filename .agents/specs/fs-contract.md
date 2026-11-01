@@ -1,8 +1,10 @@
-<!-- specs:locked:38945e0 2026-10-22 type=spec -->
+<!-- specs:locked:5d9392e 2026-10-31 type=spec -->
 
 ## Link contract
 - **upstream** (this doc relies on): none
 - **referrers** (must cite this when they change): AGENTS.md, skills/flagship/SKILL.md
+
+**Superseded by:** `.agents/specs/fs-rebuild.md` (locked 2026-10-31). This document records the prior cap/event-ledger implementation contract and is historical; it does not govern new fs behavior.
 
 ## R1 Problem & who breaks
 - The coordination layer does not keep the three promises fs makes, and it fails in silence.
