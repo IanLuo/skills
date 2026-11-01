@@ -1,6 +1,6 @@
 ---
 name: review-task
-description: Verify that a completed task's changes match its defining docs and task goal. Catch regressions, invariant violations, stale evidence, and code-health problems. Checks the diff's structure against the house code-quality bar.
+description: Verify that a completed task's changes match its defining docs and task goal. Catch regressions, invariant violations, stale evidence, and code-health problems. Checks the diff's structure against the house code-quality bar. Use for "review this diff", "verify this is done", "check this against the spec", "did I miss anything", "is this ready to merge". Do NOT use to write or fix the code (dev-task).
 metadata:
   audience: personal
   domain: development
