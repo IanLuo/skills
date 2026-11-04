@@ -25,6 +25,12 @@ Checking pointability. The page is only as pointable as its anchors: the runtime
 targets with closest('[data-anchor]'), so one id on a wrapper makes the whole wrapper
 one target and the reader cannot point at a line. A container anchor is rejected here
 rather than discovered in the browser.
+
+Checking answers. An .answers group records a click against the rung named by its
+data-for. If that name is not an anchor on the page, the click is recorded against
+nothing: the reader sees the button mark itself and the payload names a rung the agent
+cannot resolve. That is the same silent loss the thread checks exist for, so a group
+that points nowhere — or points at a rung twice — fails the build.
 """
 
 import pathlib
@@ -52,7 +58,8 @@ VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "met
         "source", "track", "wbr"}
 
 # Ids the template already defines. The content must not redefine them.
-CHROME_IDS = {"done", "count", "status", "form", "list", "comment", "levels", "add", "cancel"}
+CHROME_IDS = {"done", "count", "status", "form", "list", "comment", "levels", "add",
+              "cancel", "rail", "rail-count", "rail-next"}
 
 
 class _Scan(HTMLParser):
@@ -212,6 +219,53 @@ def coarse_anchors(html):
     ]
 
 
+def answer_groups(html):
+    """Answer controls whose target does not resolve — the silent-loss check for rungs.
+
+    chrome.js records an .answers click against the id in data-for, and finds the rung
+    wrapper by data-rung. Neither is derived: both are written by hand in the content.
+    A name with no matching data-anchor still marks the button and still lands in the
+    pasted payload, so the reader gets a round the agent cannot resolve, and nothing
+    in the browser says so. Fail here instead.
+    """
+    rows = _rows(html)
+    anchors = {a["data-anchor"] for a in rows if a.get("data-anchor")}
+    bad, seen = [], {}
+
+    for a in rows:
+        name = a.get("data-for")
+        if not name:
+            continue
+        if "answers" not in _classes(a):
+            bad.append(
+                f'data-for={name!r} sits outside an .answers group — only a group of '
+                f'answer buttons records a choice, so this attribute does nothing'
+            )
+            continue
+        if name not in anchors:
+            bad.append(
+                f'.answers data-for={name!r} names no data-anchor on the page — the click '
+                f'would be recorded against a rung that does not exist. Put '
+                f'data-anchor="{name}" on the rung\'s heading'
+            )
+            continue
+        if name in seen:
+            bad.append(
+                f'.answers data-for={name!r} appears twice — two button groups for one '
+                f'rung make the recorded choice ambiguous'
+            )
+        seen[name] = a
+
+    for a in rows:
+        rung = a.get("data-rung")
+        if rung and rung not in anchors:
+            bad.append(
+                f'data-rung={rung!r} names no data-anchor — the answered state would '
+                f'never paint. Point it at the rung heading\'s data-anchor'
+            )
+    return bad
+
+
 def parse_argv(argv):
     """-> (name, content_path, prev_path_or_None, error_or_None)."""
     if len(argv) < 3:
@@ -231,7 +285,8 @@ def main(argv):
         return 2
 
     content = content_file.read_text()
-    problems = validate(content) + coarse_anchors(content) + copied_chrome(content)
+    problems = (validate(content) + coarse_anchors(content) + copied_chrome(content)
+                + answer_groups(content))
 
     # Coverage against the previous round: a note may be carried forward or explicitly
     # retired, but never quietly disappear.

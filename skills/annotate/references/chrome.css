@@ -140,6 +140,47 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.6rem 0; }
           color: var(--ink-3); font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   Answer controls — a round is a form, not a comment box.
+
+   A rung is one decision. Its wrapper carries data-rung; its heading carries the
+   stable data-anchor (the click target for a free-text note); its buttons live in
+   .answers[data-for], so one click records accept / option B / change without
+   typing. Answered rungs recede in tone so what is LEFT is what stands out — the
+   wrapper, never the anchor, because an id on a container makes the whole block
+   one click target (build-artifact.py rejects that).
+   ══════════════════════════════════════════════════════════════════════════ */
+.rung { margin: 1.5rem 0; padding-left: .9rem; border-left: 2px solid var(--line); }
+.rung.done { border-left-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.rung.done .rung-body { opacity: .55; }
+
+.answers { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 .2rem; }
+.answers button {
+  padding: .4rem .75rem; font-size: .8rem; font-family: inherit; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface); color: var(--ink); }
+.answers button:hover { border-color: var(--ink-3); }
+.answers button.chosen { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.answers button[data-choice="other"]:not(.chosen) { border-style: dashed; color: var(--ink-2); }
+.answers button[data-choice="accept"]:not(.chosen) { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+
+/* The rail — sticky, and only on a page that has rungs (chrome.js unhides it).
+   Counts rungs, not annotations: the question is "what is left", not "how much". */
+#rail { position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        padding: .45rem 1rem; border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(6px);
+        font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+        font-size: .72rem; letter-spacing: .06em; color: var(--ink-2); }
+#rail[hidden] { display: none; }
+#rail-count { text-transform: uppercase; }
+#rail-next { padding: .2rem .6rem; font-size: .7rem; font-family: inherit; cursor: pointer;
+             border: 1px solid var(--line); border-radius: 999px;
+             background: transparent; color: var(--ink-2); }
+#rail-next:hover { border-color: var(--ink-3); color: var(--ink); }
+body.has-rail { padding-top: 4.2rem; }
+
+/* ══════════════════════════════════════════════════════════════════════════
    Round loop — two voices, and what is fresh.
 
    A round answers the previous round's notes, so the page carries two authored

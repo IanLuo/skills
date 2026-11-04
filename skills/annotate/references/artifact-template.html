@@ -32,6 +32,31 @@
      <div class="meta-row"><span><b>N</b> items</span><span class="sep">·</span>…</div>,
      and .card for a boxed block.
 
+     Write arrows as → (U+2192), never as the emoji ➡️: the emoji renders as a
+     monochrome tofu box in IBM Plex body text, and a page full of boxes reads as broken.
+
+     ── A ROUND OF DECISIONS (specs re-grill, option pages) ──────
+     When the reader is choosing between answers rather than commenting, give each
+     decision a rung: a wrapper, an anchored heading, and one .answers group. One
+     click then records the answer, and the rail counts what is left.
+
+       <section class="rung" data-rung="r3-scope">
+         <h3 data-anchor="r3-scope">R3 · Scope in / out</h3>
+         <div class="rung-body">
+           <p data-anchor="r3-scope-q">V1 ships X. Not Y · ➡️ X only.</p>
+           <p data-anchor="r3-scope-cost">If wrong: R4 gains two criteria.</p>
+         </div>
+         <div class="answers" data-for="r3-scope">
+           <button data-choice="accept">Accept →</button>
+           <button data-choice="B">B · narrower V1</button>
+           <button data-choice="other">Other…</button>
+         </div>
+       </section>
+
+     data-rung and data-for must name the heading's data-anchor — a group that
+     points nowhere records a click against nothing, and build-artifact.py refuses
+     it. Keep the wrapper bare: it is not a click target, the heading is.
+
      ── ANSWERING A PREVIOUS ROUND ────────────────────────────────
      If this artifact answers notes from an earlier round, do NOT
      paraphrase them into prose — the reader cannot tell their words
@@ -73,6 +98,11 @@
      ============================================================ -->
 
 <h1 data-anchor="title">…</h1>
+
+<div id="rail" hidden>
+  <span id="rail-count"></span>
+  <button id="rail-next">next open →</button>
+</div>
 
 <!-- Chrome markup — already in the template. A content file must NOT copy this
      block: the page would carry every id twice, chrome.js would bind to the first

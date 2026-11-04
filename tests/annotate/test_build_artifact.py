@@ -41,6 +41,7 @@ from html.parser import HTMLParser
 REPO = pathlib.Path(__file__).resolve().parents[2]
 BUILD = REPO / "skills/annotate/scripts/build-artifact.py"
 CHROME_CSS = REPO / "skills/annotate/references/chrome.css"
+CHROME_JS = REPO / "skills/annotate/references/chrome.js"
 TEMPLATE = REPO / "skills/annotate/references/artifact-template.html"
 
 PASS, FAILS = 0, []
@@ -97,6 +98,20 @@ THREAD_OK = TITLE + """
 </section>
 """
 
+RUNG_OK = TITLE + """
+<section class="rung" data-rung="r3-scope">
+  <h3 data-anchor="r3-scope">R3 · Scope in / out</h3>
+  <div class="rung-body">
+    <p data-anchor="r3-scope-q">V1 ships X. Not Y.</p>
+  </div>
+  <div class="answers" data-for="r3-scope">
+    <button data-choice="accept">Accept →</button>
+    <button data-choice="B">B · narrower V1</button>
+    <button data-choice="other">Other…</button>
+  </div>
+</section>
+"""
+
 PLAIN = TITLE + '<p data-anchor="body">A plain answer with no thread rows.</p>\n'
 
 
@@ -121,13 +136,20 @@ def main():
         css = CHROME_CSS.read_text()
         for token in (".ev.user", ".ev.agent", ".ev .who", ".ev .txt", ".secpill",
                       '[data-status="new"]', '[data-status="changed"]',
-                      '[data-status="settled"]'):
+                      '[data-status="settled"]', ".answers", "#rail", ".rung.done"):
             check(f"chrome.css has {token}", token in css)
 
         # 12. the template documents the primitives for the writer.
         tpl = TEMPLATE.read_text()
         check("template documents data-thread", "data-thread" in tpl)
         check("template documents data-status", "data-status" in tpl)
+        check("template documents data-rung", "data-rung" in tpl)
+        check("template carries the rail", 'id="rail"' in tpl)
+
+        # 19b. The page is re-read while the agent applies the round, so Done must
+        #      copy without closing it. A runtime-only rule, so it is checked at the
+        #      source: no window.close call survives in the chrome.
+        check("chrome never closes the page", "window.close" not in CHROME_JS.read_text())
 
         # 10. plain content (no .ev) still builds.
         check("plain artifact unaffected", r.returncode == 0)
@@ -263,6 +285,33 @@ def main():
         r = build(cwd, "placeholder", TITLE + "<script>//__CHROME_JS__</script>\n")
         check("copied placeholder fails", r.returncode != 0, "expected non-zero")
         check("copied placeholder is named", "__CHROME_JS__" in r.stderr, r.stderr)
+
+        # 20. A well-formed rung builds — controls are not mistaken for a container anchor.
+        r = build(cwd, "rungs", RUNG_OK)
+        check("rung with answer controls builds", r.returncode == 0, r.stderr.strip())
+        if r.returncode == 0:
+            html = (cwd / "rungs.html").read_text()
+            check("built page carries the rail", 'id="rail-count"' in html)
+            check("built page carries the choice verb formatter", "option ' + a.choice" in html)
+
+        # 21. A group that points at no anchor would record a click against nothing.
+        r = build(cwd, "dangling", RUNG_OK.replace('data-for="r3-scope"', 'data-for="r3-scop"'))
+        check("dangling answer group fails", r.returncode != 0, "expected non-zero")
+        check("dangling group names its target", "r3-scop" in r.stderr, r.stderr)
+
+        # 22. Two groups for one rung make the recorded choice ambiguous.
+        twice = RUNG_OK.replace(
+            'data-choice="other">Other…</button>',
+            'data-choice="other">Other…</button></div>'
+            '<div class="answers" data-for="r3-scope">'
+            '<button data-choice="accept">Accept →</button>')
+        r = build(cwd, "twogroups", twice)
+        check("duplicate answer group fails", r.returncode != 0, "expected non-zero")
+
+        # 23. A rung wrapper naming no anchor never paints its answered state.
+        r = build(cwd, "danglung", RUNG_OK.replace('data-rung="r3-scope"', 'data-rung="r3"'))
+        check("dangling data-rung fails", r.returncode != 0, "expected non-zero")
+        check("dangling rung names it", "r3" in r.stderr, r.stderr)
 
     print(f"\n  {PASS} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

@@ -45,7 +45,32 @@ The build script inlines the static chrome so the artifact is ONE self-contained
    the reader hovers a line, the entire section lights up, and they cannot say which
    line they mean. The build rejects a container anchor and names it, so anchor every
    unit and leave the wrapper bare.
-3. **Build and open in one command** — pass the temp content path; the builder writes
+3. **When the reader is choosing, give them buttons, not a blank box.** A round of
+decisions (a spec frontier, a re-grill) is answered by clicking, not by typing. Make
+each decision a rung: a bare wrapper, an anchored heading, and one `.answers` group
+that names the rung.
+
+   ```html
+   <section class="rung" data-rung="r3-scope">
+     <h3 data-anchor="r3-scope">R3 · Scope in / out</h3>
+     <div class="rung-body">
+       <p data-anchor="r3-scope-q">V1 ships X. Not Y · ➡️ X only.</p>
+     </div>
+     <div class="answers" data-for="r3-scope">
+       <button data-choice="accept">Accept →</button>
+       <button data-choice="B">B · narrower V1</button>
+       <button data-choice="other">Other…</button>
+     </div>
+   </section>
+   ```
+
+   One click records `accept` or `option B`; `Other…` opens the note box and records
+   `change`. Clicking the chosen answer again clears it. `data-for` and `data-rung`
+   must name the heading's `data-anchor` — the build refuses a group that points
+   nowhere. A page with rungs gets the sticky rail (`N open · M answered`), so the
+   reader sees what is left without scrolling; a plain page hides it.
+
+4. **Build and open in one command** — pass the temp content path; the builder writes
    `<name>.html` beside it. The build is instant; the wait is the HTML generation:
 
    Set `ANNOTATE_SKILL_DIR` to the directory containing this skill's `SKILL.md`, then run:
@@ -59,10 +84,9 @@ The build script inlines the static chrome so the artifact is ONE self-contained
    The script merges `references/chrome.css` + `references/chrome.js` + the template +
    your content into one self-contained HTML file in the temp directory. Do not copy the
    artifact into the project.
-4. **Then stop — one line.** `artifact at <full-temp-path>/<name>.html · N annotations
+5. **Then stop — one line.** `artifact at <full-temp-path>/<name>.html · N annotations
    pending`. The page carries the content, the vocabulary and the freshness marks;
    restating any of it in chat doubles the tokens and buys the user a longer wait.
-
 ## Answering a previous round
 
 When the artifact answers notes from an earlier round, the page carries two authored
@@ -106,8 +130,12 @@ python3 "$ANNOTATE_SKILL_DIR/scripts/build-artifact.py" <name> "$ARTIFACT_DIR/<n
 The user pastes the feedback into chat — one annotation per line, compact and readable:
 
 ```text
-<data-anchor> (severity): <comment> — "<short snippet…>"
+<data-anchor> (<verb>): <comment> — "<short snippet…>"
 ```
+
+The verb is `accept`, `option <choice>`, `change`, or a severity for a plain note.
+It sits where the severity used to sit, so one format covers both. An `accept` line
+means take the recommendation on that rung — no re-reading the page to find it.
 
 For each line, resolve it against the artifact file:
 1. **Locate** the element by `data-anchor` id in the artifact; if the id changed, use
@@ -136,7 +164,9 @@ Read the file on demand; don't load it wholesale into context.
   line or item the reader points at, never on a wrapper that holds several — the
   build fails on a container anchor.
 - **Copy-paste transport.** No server, no POST, no polling. The user clicks **Done** to
-  copy the JSON and paste it when ready — the loop is async.
+  copy the JSON and paste it when ready — the loop is async. Done copies and leaves the
+  page open: the reader re-reads it while the agent applies the round, and closing the
+  tab is their act, never the button's.
 - **Two voices, paired.** A round that answers notes quotes them verbatim in a
   `.ev.user` row and pairs each with its `.ev.agent` answer by `data-thread`. A note is
   carried forward or explicitly retired — never dropped, never paraphrased.
