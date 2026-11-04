@@ -1,6 +1,6 @@
 ---
 name: specs
-description: Interactively elicit decisions as a decision tree — frontier rounds, each with a recommended answer — and LOCK them into a durable formal spec, system-design, or architecture doc. The spec is the complete requirements contract (problem, outcome, scope+flow, acceptance criteria, KPIs, NFRs, assumptions, data, rollback, security, verification — IEEE 29148 §9.6 shape). On re-entry, show the locked doc and re-elicit only what changed. Many tasks at once → batch mode — settle what they share in one pass, then per-task rungs. The lock stamps a contract (upstream/referrers) at the top. Use for "write a spec", "spec this task before building", "lock the requirements", "what are the NFRs / assumptions / data requirements", "update the architecture doc", "what's our system design", "re-open the spec". Do NOT use for repo indexing (init-context), one-shot research, visual design (design-task), or doc-vs-code review (review-task).
+description: Interactively elicit decisions as a decision tree — frontier rounds, each with a recommended answer — and LOCK them into a durable formal spec, system-design, or architecture doc. The spec is the complete requirements contract (problem, outcome, scope+flow, acceptance criteria, KPIs, NFRs, assumptions, data, rollback, security, verification — IEEE 29148 §9.6 shape). After a session → regrill reads the evidence, re-asks only the decisions it strained, and re-locks. Many tasks → batch mode settles shared rungs once. The lock stamps a contract (upstream/referrers) at the top. Use for "write a spec", "spec this task before building", "lock the requirements", "what are the NFRs / assumptions / data requirements", "update the architecture doc", "what's our system design", "re-open the spec", "regrill the spec", "what did the session disprove". Do NOT use for repo indexing (init-context), one-shot research, visual design (design-task), or doc-vs-code review (review-task).
 metadata:
   audience: personal
   domain: specification
@@ -20,6 +20,14 @@ Three doc types, one skill. Pick or infer the type:
 | `system-design` | [references/system-design.md](references/system-design.md) | upstream spec; referrers architecture, design-system |
 | `architecture` | [references/architecture.md](references/architecture.md) | upstream spec + system-design; referrers dev/design tasks |
 
+Two modes, one ritual. The type picks the ladder; the mode picks whether the session
+came before or after the lock.
+
+| mode | fires on | ladder |
+|---|---|---|
+| **lock** (default) | a doc to write, or a change the user reports | the type's ladder |
+| **regrill** | a locked doc **plus a session behind it** — "regrill the spec", "what did the session disprove" | [references/regrill.md](references/regrill.md) |
+
 ## Ritual
 
 ### 1. Pick or infer the type
@@ -29,9 +37,12 @@ assumptions/data/rollback/security" → `spec`, "components/interfaces/data" →
 `system-design`, "structure/layers/repo tree" → architecture. Confirm the inferred
 type with the user before starting.
 
-If the doc already has a lock marker (re-entry): show the user the locked doc, say
-"locked at `<sha>` on `<date>`," and ask what changed. Re-elicit **only** the rungs
-whose answers the reported changes would alter. If nothing changed, stop.
+**Re-entry has two shapes.** The user reports a change → show the locked doc, say
+"locked at `<sha>` on `<date>`," and re-elicit **only** the rungs the change alters. If
+nothing changed, stop. A session ran since the lock → that is `regrill`, not re-entry:
+evidence in, a verdict per decision, one page, re-lock. Read
+[references/regrill.md](references/regrill.md) before you ask anything — the questions and
+the doc sections differ.
 
 **On a resume where your own context is older than the repo, verify the chain on disk
 before asking the first rung.** Use `search_files` (`target='files'`) on the doc you
@@ -60,6 +71,9 @@ never re-ask. If the batch shares scope/NFRs and no upstream exists, that is the
 signal to lock the upstream (architecture / system-design) before the task specs.
 
 ### 2. Elicit + draft, as a decision tree
+
+In `regrill` mode the round shape differs — verdicts per locked section, not a frontier.
+Use [references/regrill.md](references/regrill.md); the page vocabulary is the same.
 
 Read the ladder for the type. Its rungs are a **decision tree** — each rung has
 prerequisites (the spec ladder maps them explicitly; shorter ladders follow their
@@ -153,6 +167,9 @@ doc by grepping `<!-- specs:locked:` on disk.
 - **Once per batch, not per task.** Shared rungs are asked once and locked where they
   belong; task rungs are asked per task. Re-asking a frozen answer — in another task or
   another session — is the fail this rule exists to prevent.
+- **A session's evidence re-opens the doc, not the user's mood.** Re-grill asks only the
+  decisions the evidence strained; a decision the session never touched stays locked.
+  Facts first, then verdicts, then questions.
 - Add only what a fresh agent can't derive — concrete frozen decisions, not recoverable
   boilerplate. Prefer pointers to existing docs over restating them.
 - **What this skill owns:** the elicitation ritual + the lock. **Not:** the index (init-context),
