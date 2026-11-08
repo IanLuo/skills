@@ -98,13 +98,36 @@ Order is **bind, then claim**. A claim that loses a race leaves the session spen
 
 `--session` is a stable unique id supplied by the harness, one per fresh agent context. fs can only enforce that one identity carries one task; it cannot see a reused conversation. Start every task in a new session, and every review in a session different from the developer's.
 
-## Handing a review to a fresh agent
+## Starting an agent
 
-fs will not start the reviewer, and that is not a gap: the session that wrote the code must
-not choose the session that reviews it, or the review inherits the author's context. R3 puts
-"fs starting or managing agent processes" out of scope on purpose. The **coordinator
-dispatches** instead — you, or a loop — and fs still decides: `done` refuses unless the
-reviewer really ran each declared check.
+fs starts the agent. `fs dispatch` mints the session id, hands it over in the prompt with the
+store to use and every declared check, starts exactly one process, records the launch, and
+returns. The agent still claims itself, so starting a process proves nothing: `done` refuses
+unless the reviewer really ran each declared check.
+
+```bash
+fs dispatch --project demo --task t-dev    # → the pane, the minted session id, the prompt
+fs reap     --project demo                 # close the agents fs started whose round is over
+```
+
+- **The developer session creates its own review task and dispatches it.** The old rule was
+  that a developer must not start its own reviewer, because it would choose its judge. That
+  objection is now answered by fs, not by the caller: fs mints the session id and writes the
+  prompt, so the developer chooses *when* the round starts and nothing else. The reviewer is a
+  fresh session that gets the task contract and the checks, never the author's notes.
+- **A coordinator re-dispatches only an orphaned reviewer**: a review whose launch exists, whose
+  lease has lapsed, and that has no verdict. An orphaned *developer* is a takeover, not a
+  review: claim the task again with a new session and continue from `evidence`.
+- **Dispatch refuses rather than doubles.** A closed task, a task with a live holder, and a
+  second start for a task launched moments ago are all refused before anything starts. A
+  launcher that fails is a refusal, never a retry.
+- **`reap` closes a round, never a worker.** It closes an agent fs recorded when the task is
+  closed, when its review verdict is `fail`/`blocked`, or when its lease has lapsed. A working
+  agent is left alone however long its checks run, and a pane fs has no launch row for is never
+  touched.
+
+The round loop below predates `fs dispatch` and still works; prefer `fs dispatch` for anything
+new, because it owns the prompt and the launch record.
 
 ```bash
 scripts/dispatch-review.sh --project demo --dry-run                  # what it would spawn
@@ -134,8 +157,9 @@ scripts/dispatch-review.sh --project demo --commit HEAD --watch 30   # rounds un
   `--role review`; without it they are recorded as developer reports. herdr's
   `agent_prompt_stalled` is a hint, not a verdict: it fires when the agent has not visibly started
   within 5 s.
-- **Run it from a coordinator, never from the developer's session.** A developer that spawns
-  its own reviewer has chosen its judge.
+- **The script spawns panes itself**, so it can dispatch over a live claim that fs dispatch
+  would refuse; that is why it waits for the lease. `fs dispatch` is the narrower, safer
+  command: one agent, one task, one record.
 - `--commit` gives each reviewer `git worktree add --detach <commit>`. fs records no commit, so
   AC5's "detached at the reviewed commit" is the dispatcher's job; without it the reviewer
   runs in `--cwd` (default `$PWD`). The worktree is removed when the round ends, so a round
@@ -203,6 +227,8 @@ fs claim  --project P --session S [--task TID]
 fs report --project P --session S --task TID --state S [--role dev|review|runtime]
           [--command C --exit N] [--digest D] [--note TEXT]
 fs done   --project P --session S --task TID [--note TEXT]
+fs dispatch --project P --task TID [--kind pi|claude|codex] [--dir DIR]
+fs reap   [--project P]
 fs status [--project P] [--session S] [--format json|table]
 ```
 

@@ -75,10 +75,12 @@ Not evidence: "Looks right." "I inspected the code." "Should work."
   `references/code-quality.md` and fix or record what it flags. Verification
   proves it works; the rubric proves it's buildable-on.
 - If the project is coordinated through `fs` (`fs status` answers), record the work as a
-  task and add the review task before you stop: `fs add --review-of <task>` inherits the
-  declared checks. You never review your own work and never spawn your own reviewer — the
-  coordinator runs `../flagship/scripts/dispatch-review.sh --project <p> --commit HEAD`, which
-  mints a fresh session for the reviewer and closes it again once its verdict is in. Details:
+  task, and add the review task before you stop: `fs add --review-of <task>` inherits the
+  declared checks. You never review your own work. You do start the reviewer, though: run
+  `fs dispatch --project <p> --task <review>` once you have reported `dev-done`. fs mints a
+  fresh session for it and writes the prompt, so you are not choosing your judge — you are
+  only choosing when the round starts. The reviewer gets the contract and the checks, never
+  your notes. `fs reap --project <p>` then closes the agents whose round is over. Details:
   `../flagship/SKILL.md`.
 - If a review comes back `fail`, the feedback is in that review task's `evidence` (`--note`).
   Implement it, report `dev-done` again, and the next review round starts from that report.
