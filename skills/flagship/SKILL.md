@@ -119,8 +119,10 @@ fs reap     --project demo                 # close the agents fs started whose r
   lease has lapsed, and that has no verdict. An orphaned *developer* is a takeover, not a
   review: claim the task again with a new session and continue from `evidence`.
 - **Dispatch refuses rather than doubles.** A closed task, a task with a live holder, and a
-  second start for a task launched moments ago are all refused before anything starts. A
-  launcher that fails is a refusal, never a retry.
+  second start while the agent already launched for it is still running are all refused
+  before anything starts. Liveness is asked of the launcher, never inferred from the lease: a
+  lapsed lease means the agent stopped writing, and silence is not death. A launcher that
+  fails or cannot answer is a refusal, never a retry.
 - **`reap` closes a round, never a worker.** It closes an agent fs recorded when the task is
   closed, when its review verdict is `fail`/`blocked`, or when its lease has lapsed. A working
   agent is left alone however long its checks run, and a pane fs has no launch row for is never
@@ -180,6 +182,10 @@ scripts/dispatch-review.sh --project demo --commit HEAD --watch 30   # rounds un
 - The reviewer's own claim keeps its task `claimed` for up to 120 s after it finishes. That is why
   a round 2 waits: `fs status` shows `claimed` while the failed reviewer's lease is live, and the
   dispatcher treats a live claim as somebody else still working.
+
+`fs status --format table` now carries a `PROCESS` column — `working`, `idle`, `gone`, or `-`
+when fs has no launch record — so a silent agent and a dead one are no longer the same row.
+Read it beside `LEASE`: a lapsed lease with a `working` process is a slow agent.
 
 ## Picking up a task whose session died
 
