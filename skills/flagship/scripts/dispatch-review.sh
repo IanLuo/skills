@@ -59,6 +59,8 @@ COMMIT=""
 CWD_DIR="${PWD}"
 KIND="pi"
 WAIT_S=180
+LEASE_S=120    # fs lease: a session that has not written for this long can no longer write
+POLL_S=2
 WATCH_S=0
 DRY_RUN=0
 FAILED=0
@@ -117,22 +119,34 @@ pending() {
     | @tsv'
 }
 
-# await polls fs until the reviewer under <session> gives its verdict. It prints
-# done (the task closed), or fail (the reviewer wrote fail or blocked), and returns 1
-# when neither arrives within --wait. The claim is not a verdict: a reviewer that
-# claims, runs the checks, and reads past its 120 s lease reopens the task.
-await() { # await <task> <session>
-  local task="$1" sid="$2" i=0 out=""
-  while [ "$i" -lt "$WAIT_S" ]; do
-    out="$(fs status --project "$PROJECT" 2>/dev/null | jq -r --arg t "$task" --arg s "$sid" '
+# await polls until the reviewer under <session> gives its verdict, and prints done
+# (the task closed) or fail (the reviewer wrote fail or blocked). It gives up only
+# when the reviewer is idle — herdr reports its turn as ended — and has written
+# nothing for a lease, for --wait seconds in a row. A reviewer that is working is
+# never given up on: a check run blocks the shell for minutes without a write, and
+# a total timeout would close a healthy reviewer mid-check. An idle reviewer with
+# no verdict has stopped, and its claim will lapse on its own.
+await() { # await <task> <session> <agent name>
+  local task="$1" sid="$2" name="$3" snap age status quiet=0
+  while :; do
+    snap="$(fs status --project "$PROJECT" 2>/dev/null | jq -r --arg t "$task" --arg s "$sid" '
       .data.projects[].tasks[] | select(.task == $t)
       | if .state == "done" then "done"
         elif any(.evidence[]?; .session == $s and .role == "review" and (.state == "fail" or .state == "blocked")) then "fail"
-        else empty end')" || true
-    if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
-    sleep 2; i=$((i + 2))
+        else "open \(([.evidence[]? | select(.session == $s) | .age_seconds] | min) // 1e9)" end')" || true
+    case "$snap" in
+      done|fail) printf '%s' "$snap"; return 0 ;;
+    esac
+    age="${snap#open }"
+    status="$(herdr agent list 2>/dev/null | jq -r --arg n "$name" '.result.agents[] | select(.name == $n) | .agent_status')" || status=""
+    if [ "$status" != working ] && awk -v a="$age" -v t="$LEASE_S" 'BEGIN { exit !(a > t) }'; then
+      quiet=$((quiet + POLL_S))
+      [ "$quiet" -lt "$WAIT_S" ] || return 1
+    else
+      quiet=0
+    fi
+    sleep "$POLL_S"
   done
-  return 1
 }
 
 # retire closes a reviewer's pane and removes its worktree. The worktree is removed
@@ -158,7 +172,7 @@ dispatch_one() { # dispatch_one <task> <dev> <checks> <commit> <last verdict>
   dir="$CWD_DIR"
   if [ -n "$commit" ]; then dir="$CWD_DIR/.worktrees/$name"; fi
 
-  prompt="You are the independent reviewer for fs task $task in project $PROJECT. You did not write this code and you do not have the author's context; do not trust the task text. You review once, then stop. In order: (1) ${ENVP}$FS claim --project $PROJECT --session $sid --task $task  (2) run every declared check yourself, exactly as declared: $checks — after each run, record it: ${ENVP}$FS report --project $PROJECT --session $sid --task $task --role review --state pass --command \"<the exact command you ran>\" --exit <the real exit code>, using --state fail when the exit was non-zero. (3) If you still have to read anything after the checks, write ${ENVP}$FS report --project $PROJECT --session $sid --task $task --role review --state progress --note \"reviewing\" at least every 90 s; your lease lapses 120 s after your newest write and cannot be renewed. (4) If every check passed: ${ENVP}$FS done --project $PROJECT --session $sid --task $task, then stop. (5) If a check failed, or you could not run one: report --role review with --state fail (or blocked) and a --note saying what is wrong, then stop. Do not fix the code and do not run done: your verdict is the feedback, the developer implements it, and a new reviewer is dispatched. Never report a check you did not run, and never repeat a result from the task or from another session."
+  prompt="You are the independent reviewer for fs task $task in project $PROJECT. You did not write this code and you do not have the author's context; do not trust the task text. You review once, then stop. In order: (1) ${ENVP}$FS claim --project $PROJECT --session $sid --task $task  (2) run every declared check yourself, exactly as declared: $checks — after each run, record it: ${ENVP}$FS report --project $PROJECT --session $sid --task $task --role review --state pass --command \"<the exact command you ran>\" --exit <the real exit code>, using --state fail when the exit was non-zero. (3) While you still have anything to read or run, write ${ENVP}$FS report --project $PROJECT --session $sid --task $task --role review --state progress --note \"reviewing\" at least every 90 s, because your lease lapses 120 s after your newest write. If a write is refused with \"lease ... expired\", re-run the claim in step (1) with this same session id: that takes the next round, and it lets you continue. (4) If every check passed: ${ENVP}$FS done --project $PROJECT --session $sid --task $task, then stop. (5) If a check failed, or you could not run one: report --role review with --state fail (or blocked) and a --note saying what is wrong, then stop. Do not fix the code and do not run done: your verdict is the feedback, the developer implements it, and a new reviewer is dispatched. Never report a check you did not run, and never repeat a result from the task or from another session."
 
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '\n[dry run] %s (reviews %s; last reviewer verdict: %s)\n' "$task" "$dev" "$last"
@@ -183,7 +197,7 @@ dispatch_one() { # dispatch_one <task> <dev> <checks> <commit> <last verdict>
   # fs below is the verdict.
   herdr agent prompt "$name" "$prompt" --wait --timeout 30000 >/dev/null 2>&1 || true
 
-  if verdict="$(await "$task" "$sid")"; then
+  if verdict="$(await "$task" "$sid" "$name")"; then
     retire "$pane" "$dir" "$commit"
     if [ "$verdict" = done ]; then
       printf 'closed %s → %s in pane %s: reviewed and completed\n' "$task" "$name" "$pane"

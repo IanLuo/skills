@@ -116,8 +116,10 @@ scripts/dispatch-review.sh --project demo --commit HEAD --watch 30   # rounds un
   reviewed yet, or one whose last verdict was `fail`/`blocked` and whose developer has reported
   `dev-done` since. A review whose reviewer is still live is never dispatched over.
 - **Each reviewer reviews once, then its pane closes.** When fs shows the verdict, the
-  dispatcher closes the pane and removes the worktree. A reviewer that gives no verdict within
-  `--wait` is closed too, and the task stays open. Nothing is left running between rounds.
+  dispatcher closes the pane and removes the worktree. The clock is idle time, not total time:
+  a reviewer that is still working is never closed, however long its checks run. A reviewer is
+  given up on only when herdr reports it idle and fs has seen no write from it for a lease
+  (120 s), for `--wait` seconds in a row. Then its pane closes and the task stays open.
 - **A `fail` starts no round by itself.** The developer implements the feedback, reports
   `dev-done`, and the next round dispatches a new reviewer. Until then the loop waits.
 - `--commit HEAD` is resolved at each round. A fixed sha would give round 2 the code round 1
@@ -297,6 +299,7 @@ Each is a state decision, not an error to retry blindly. Read `fs status` first.
 3. A claim is not evidence. Completion needs a reviewer's own run of every declared check.
 4. When a refusal surprises you, the answer is in `fs status`, not in a retry.
 5. Changing a key, the claim order, or the completion gate needs the design doc re-locked first: the safety argument is the order of the two writes.
+6. A declared check must exit 0 on a clean tree, or the task can never close. `gofmt -l . | grep -v ^vendor/` is the trap: the pipeline's status is grep's, and grep exits 1 when it finds nothing. Use `test -z "$(gofmt -l .)"` or a command whose own exit code is the answer.
 
 ## References
 
