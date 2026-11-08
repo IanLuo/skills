@@ -14,7 +14,7 @@ and Code Complete's cohesion/coupling checks.
 
 ## Checks
 
-Run all twelve over the diff. Every finding cites `file:line` and names the concrete fix.
+Run all thirteen over the diff. Every finding cites `file:line` and names the concrete fix.
 
 | # | Check | Fails when |
 |---|---|---|
@@ -30,6 +30,22 @@ Run all twelve over the diff. Every finding cites `file:line` and names the conc
 | 10 | Orphans | This change left unused imports, params, branches, or config behind. |
 | 11 | Consistency | Differs from the file's existing style or the project's linter/formatter config. |
 | 12 | Tests as structure | The test reaches into private internals or needs heavy mocking — the seam is wrong, not the test. |
+| 13 | Reinvention | General, already-solved work is hand-written while a stable library or existing tool does it — parsing, retries/backoff, dates and time zones, HTTP, encoding, CSV, globs, semver, CLI args, auth. → name the library and its adoption, or why nothing fits. |
+
+## Check 13 — build vs. buy
+
+**General** means "not specific to this project's domain": a date formatter, a retry loop, a
+JSON-RPC client, a diff algorithm, an argument parser. Before writing one, search the
+language's package index and the dependencies the repo already has. Use the library when it
+is **stable** — released, still maintained, real users, tests — licensed compatibly, and
+cheaper than the code it replaces, transitive dependencies included.
+
+Not a finding: a few lines of pure logic with no failure modes, a domain rule that only this
+project has, or a dependency the project's platform/lockfile rules forbid. Naming one of
+those, with the reason, is the whole requirement.
+
+Do not wrap the library in your own thin layer to keep it at arm's length — that is check 4.
+Record the choice in the diff: library, version, why it beat writing it.
 
 ## Scope limits
 
