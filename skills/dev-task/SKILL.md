@@ -34,6 +34,9 @@ metadata:
 Read `references/code-quality.md` before writing — it is the bar the diff is
 reviewed against. Baseline while writing:
 
+- Build vs. buy first: a general function — parser, retry loop, date/time handling, HTTP
+  client, arg parser — is imported from a stable, maintained library or run as an existing
+  tool, not written from scratch. Hand-rolling it is a finding (check 13).
 - Smallest structure that works: no speculative config, flags, or single-implementation
   abstraction.
 - One reason to change per unit; name units for intent; handle the failure paths you add.
@@ -71,4 +74,12 @@ Not evidence: "Looks right." "I inspected the code." "Should work."
 - Passing verification is not the whole gate: re-read your own diff against
   `references/code-quality.md` and fix or record what it flags. Verification
   proves it works; the rubric proves it's buildable-on.
+- If the project is coordinated through `fs` (`fs status` answers), record the work as a
+  task and add the review task before you stop: `fs add --review-of <task>` inherits the
+  declared checks. You never review your own work and never spawn your own reviewer — the
+  coordinator runs `../flagship/scripts/dispatch-review.sh --project <p> --commit HEAD`, which
+  mints a fresh session for the reviewer and closes it again once its verdict is in. Details:
+  `../flagship/SKILL.md`.
+- If a review comes back `fail`, the feedback is in that review task's `evidence` (`--note`).
+  Implement it, report `dev-done` again, and the next review round starts from that report.
 - If verification cannot run, record the blocker and leave the task unverified.

@@ -107,25 +107,37 @@ dispatches** instead — you, or a loop — and fs still decides: `done` refuses
 reviewer really ran each declared check.
 
 ```bash
-scripts/dispatch-review.sh --project demo --dry-run                          # what it would spawn
-scripts/dispatch-review.sh --project demo --commit "$(git rev-parse HEAD)"    # real run
+scripts/dispatch-review.sh --project demo --dry-run                  # what it would spawn
+scripts/dispatch-review.sh --project demo --commit HEAD              # one round, now
+scripts/dispatch-review.sh --project demo --commit HEAD --watch 30   # rounds until stopped
 ```
 
-- It reads `fs status`, takes the review tasks that are open and held by nobody, mints a
-  fresh session id per task, splits a herdr pane, starts an agent and prompts it with the
-  claim, the declared checks, the report command and `done`.
-- **Success is `done`, not the spawn and not the claim.** After prompting it polls fs until the
-  task is closed, and exits `1` if it is not — a prompt typed into an agent that never acted is
-  a failed dispatch, and so is a reviewer that claims, runs the checks, then reads past its
-  120 s lease and reopens the task. The prompt therefore tells the reviewer to write a
-  `progress` report at least every 90 s while it still has reading to do, and to `done` as soon
-  as it is finished. herdr's `agent_prompt_stalled` is a hint, not a verdict: it fires when the
-  agent has not visibly started within 5 s.
+- **A round** gives a fresh reviewer to each review that needs one: a review nobody has
+  reviewed yet, or one whose last verdict was `fail`/`blocked` and whose developer has reported
+  `dev-done` since. A review whose reviewer is still live is never dispatched over.
+- **Each reviewer reviews once, then its pane closes.** When fs shows the verdict, the
+  dispatcher closes the pane and removes the worktree. A reviewer that gives no verdict within
+  `--wait` is closed too, and the task stays open. Nothing is left running between rounds.
+- **A `fail` starts no round by itself.** The developer implements the feedback, reports
+  `dev-done`, and the next round dispatches a new reviewer. Until then the loop waits.
+- `--commit HEAD` is resolved at each round. A fixed sha would give round 2 the code round 1
+  reviewed. `--watch` therefore needs `HEAD`.
+- It reads `fs status`, mints a fresh session id per reviewer, splits a herdr pane, starts an
+  agent and prompts it with the claim, the declared checks, the report command and `done`.
+- **Success is the verdict in fs, not the spawn and not the claim.** A `done` closes the review;
+  a `fail` is the verdict that starts the wait for a fix. A reviewer that claims, runs the checks,
+  then reads past its 120 s lease reopens the task, and the dispatcher reports it as no verdict.
+  The prompt tells the reviewer to write a `progress` report at least every 90 s while it still
+  has reading to do, and to `done` as soon as it is finished. The reviewer writes its reports with
+  `--role review`; without it they are recorded as developer reports. herdr's
+  `agent_prompt_stalled` is a hint, not a verdict: it fires when the agent has not visibly started
+  within 5 s.
 - **Run it from a coordinator, never from the developer's session.** A developer that spawns
   its own reviewer has chosen its judge.
-- `--commit` gives each reviewer `git worktree add --detach <sha>`. fs records no commit, so
+- `--commit` gives each reviewer `git worktree add --detach <commit>`. fs records no commit, so
   AC5's "detached at the reviewed commit" is the dispatcher's job; without it the reviewer
-  runs in `--cwd` (default `$PWD`).
+  runs in `--cwd` (default `$PWD`). The worktree is removed when the round ends, so a round
+  leaves nothing behind; one a reviewer changed is kept, and named.
 - **The task's `project_path` is not used.** A reviewer's directory is `--cwd` or the
   `--commit` worktree, so dispatching from the wrong directory points the checks at the wrong
   tree, and a check that passes there is evidence of nothing. Without `--commit`, the script
@@ -134,9 +146,14 @@ scripts/dispatch-review.sh --project demo --commit "$(git rev-parse HEAD)"    # 
 - `MEMSTORE_DB` is passed into the prompt. A spawned pane inherits herdr's environment, not
   this shell's, so without it the reviewer reads `~/.memstore/memory.db`, finds no such task
   and correctly refuses — a silent, confusing failure.
-- The parent's last report is **not** the trigger. Any observation older than the 120 s lease
-  reads `unknown`, so waiting for a fresh `dev-done` starves every slow review. Adding the
-  review task is the ready signal; a reviewer that finds unfinished work reports `fail`.
+- Freshness is **not** the trigger, and the two reports are compared with each other, never with
+  the clock. Any observation older than the 120 s lease reads `unknown`, so waiting for a *fresh*
+  `dev-done` starves every slow review. Adding the review task is the signal for round 1; after a
+  `fail`, the next round is "the developer reported `dev-done` more recently than the reviewer said
+  `fail`", which is a comparison of ages and holds however long both sat there.
+- The reviewer's own claim keeps its task `claimed` for up to 120 s after it finishes. That is why
+  a round 2 waits: `fs status` shows `claimed` while the failed reviewer's lease is live, and the
+  dispatcher treats a live claim as somebody else still working.
 
 ## Picking up a task whose session died
 
