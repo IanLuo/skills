@@ -82,5 +82,5 @@ review first.
 Reply:
 
 > One new dev task. Top pick is `t-abc` (balcony review): unheld reviews rank
-> before dev. No review command exists yet, so cap can only recommend it.
-> Want me to act on it, or on the new dev task?
+> before dev, and a review command exists. Want me to act on it, or on the new
+> dev task?
