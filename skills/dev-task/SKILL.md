@@ -1,6 +1,6 @@
 ---
 name: dev-task
-description: Start and run software development tasks with TDD/BDD, the house code-quality bar, implementation, and verification. Use for "new dev task", "implement", "fix bug", "add feature", "refactor", "write tests", "make this code change", "clean up this code", "improve the structure", "remove duplication", or any coding task expected to modify a repo. Do NOT use for visual/product design tasks without code changes or pure research summaries.
+description: Start and run software development tasks with TDD/BDD, the house code-quality bar, implementation, and verification. Plans against the locked spec and works that plan without re-asking settled decisions. Use for "new dev task", "implement", "implement the spec", "work the plan", "fix bug", "add feature", "refactor", "write tests", "make this code change", "clean up this code", "improve the structure", "remove duplication", or any coding task expected to modify a repo. Do NOT use for visual/product design tasks without code changes or pure research summaries.
 metadata:
   audience: personal
   domain: development
@@ -16,15 +16,47 @@ metadata:
    Read the exit code, not the silence: 0 = docs listed below; 1 = nothing matched (BSD
    grep is also silent for a path that doesn't exist, so confirm you're at the repo root);
    2 = the command failed (bad pattern or unreadable dir) — fix it. Only then conclude
-   "no locked docs". If a needed doc (PRD, system-design, architecture) is absent, flag it
-   and ask before proceeding. If `design-system.md` exists, check its first line for
+   "no locked docs". If `design-system.md` exists, check its first line for
    `<!-- design:locked:` — if absent, flag "design not frozen; run design-task first."
-   Don't silently assume scope.
-3. If the locked PRD covers more than one deliverable, ask the user which slice this
-   task implements. One dev-task = one deliverable.
+3. **The locked spec is the decision record. Never ask a question it already answers.**
+   Scope, outcome, acceptance criteria, NFRs and non-goals are settled — read them as the
+   answer. Ask only when one of these holds:
+   - no locked spec covers the request,
+   - the spec is silent on a decision you must make, or
+   - two independent deliverables exist and the request names neither.
+   In the first two cases, state the smallest reversible assumption, put it in the plan,
+   and proceed. Ask the user only when the assumption is hard to undo.
+4. **Scope from the spec, not from a question.** Take the deliverable the request names.
+   If it names none, take the smallest slice that completes at least one acceptance
+   criterion end to end, say so in the plan, and continue.
+
+## Plan
+
+Write the plan before the first code edit. It is a coverage table of the locked spec, not
+a feature list:
+
+| spec id | what changes | files | proof |
+|---|---|---|---|
+| AC1 | … | … | `<command>` or inspection |
+| NFR2 | … | … | … |
+
+- One row per acceptance criterion and per kept NFR. A rung marked `N/A:` in the spec gets
+  a row saying so, or no row — never a silent omission.
+- Show the table, then work it. No approval round: the spec settled the decisions, so the
+  plan is a reading of it. The user stops you if the reading is wrong.
+- An acceptance criterion that cannot be implemented as written is a spec problem: mark
+  the row `blocked`, name the reason, and route it to `specs`. Do not substitute a
+  different requirement and carry on.
+- Re-plan when a row uncovers a dependency you did not see. Update the table; do not reopen
+  the spec.
 
 ## Work
 
+- Work the plan row by row, top to bottom. Each row: smallest failing test → implement →
+  run the row's proof.
+- Do not pause for approval between rows. A row is authorized by the spec row it cites.
+- If a row turns out to need a decision the spec does not contain, stop that row only, mark
+  it `blocked`, and continue with the rows that are not blocked.
 - Keep edits scoped to the request and existing project style.
 - Multi-file or noisy work: delegate rather than fan out inline — `delegate` for an
   in-process subagent, `task-agent` for a standalone task in its own worktree.
@@ -69,6 +101,9 @@ Not evidence: "Looks right." "I inspected the code." "Should work."
 
 ## Done
 
+- **The plan is the gate.** Walk the table. Every row has either fresh evidence from its
+  own `proof` column, or a stated `blocked` reason. An uncovered row is a failure, not an
+  omission — say "AC4 not implemented" rather than not mentioning it.
 - A dev task is verified only when fresh command output, CI status, or equivalent
   executable check supports the claim.
 - Passing verification is not the whole gate: re-read your own diff against

@@ -96,8 +96,12 @@ CWD_DIR="$(cd "$CWD_DIR" 2>/dev/null && pwd -P)" || die "--cwd is not a director
 # the herdr server's environment, not this shell's, so MEMSTORE_DB is passed in the
 # prompt; without it the reviewer reads ~/.memstore/memory.db, finds no such task,
 # and correctly refuses — a silent, confusing failure.
+#
+# DATABASE_URL is passed the same way for integration checks. It lands in the
+# reviewer's prompt and transcript, so pass a development or test database only.
 ENVP=""
 if [ -n "${MEMSTORE_DB:-}" ]; then ENVP="MEMSTORE_DB=$MEMSTORE_DB "; fi
+if [ -n "${DATABASE_URL:-}" ]; then ENVP="${ENVP}DATABASE_URL=$DATABASE_URL "; fi
 
 # pending prints one TSV row per review that needs a reviewer this round:
 # task, developer task, checks, recorded path, last reviewer verdict. It reads fs
