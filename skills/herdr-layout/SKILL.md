@@ -1,181 +1,199 @@
 ---
 name: herdr-layout
-description: 'Shape the structure of a herdr session — workspaces, tabs, panes, Git worktree workspaces, named persistent sessions: list, create, rename, focus, resize, zoom, move, swap, close. Literal triggers: "create a workspace", "list workspaces", "which workspaces are open", "rename this workspace", "close the workspace", "list tabs", "rename this tab", "focus that tab", "close the tab", "pane layout", "list panes", "resize the pane", "zoom the pane", "move the pane", "swap two panes", "worktree workspace", "open a worktree", "list sessions". Not for starting, prompting, waiting on or reading the agent that occupies a pane — that is the herdr skill. Not for running commands in a shell. Requires herdr running.'
+description: 'Shape the Herdr desktop app window — its spaces, tabs and panes, and the layouts that frame them: list what is open, create, rename, move, select, settle, zoom, split, swap, close. Literal triggers: "herdr app", "the Herdr window", "open a space", "new space", "list my spaces", "which spaces are open", "rename this space", "close the space", "switch layout", "split the terminal", "zoom this pane", "screenshot herdr", "herdr-app", "hc", "list my terminals". Not the old terminal multiplexer: that is the herdr skill. Starting, prompting, reading or waiting on an agent is hc, not this. Requires the app running for ls/status/do; commands works without it.'
 metadata:
   audience: personal
   domain: agent-orchestration
-compatibility: Requires herdr talking to a running server. The installed binary is the authority for syntax — run `herdr <group> --help` and `herdr <group> <verb> --help`. Behaviours below were exercised against herdr 0.9.5.
+compatibility: Requires herdr-app 0.1.x and herdr-core (hc) 0.1.x. `herdr-app commands` is the authority for every argument — read it, never guess. Behaviours below were exercised against herdr-app 0.1.11 / hc 0.1.18.
 disable-model-invocation: true
 ---
 
 # herdr-layout
 
-herdr runs agents; this skill builds and shapes the container they run in.
-Routing, one line each way: **spawn an agent in a pane** (start, prompt, wait,
-read, close the agent) is the [`herdr`](../herdr/SKILL.md) skill; **name, list,
-focus, resize or close that workspace, tab or pane** is this one.
+Herdr is two programs. `herdr-app` **shows** spaces, tabs and panes;
+`herdr-core` (`hc`) **runs** their terminals and keeps them alive when the window
+closes. This skill arranges what the person sees; starting, prompting, reading and
+waiting on an agent is `hc` — see `hc --skill`.
 
-## The TUI is not a control surface
+The old terminal multiplexer (`herdr`: workspaces `w7`, tabs `w7:t2`, panes
+`w7:p3`) is a different product with its own skill; nothing here drives it.
 
-Never run bare `herdr` — it launches or attaches to the interactive TUI. The TUI
-belongs to the human. Shape structure only through `herdr <group> <verb>`, and
-never drive the TUI with keystrokes. Confirm syntax from the binary, not memory:
+## Never launch the window to inspect it
 
-```bash
-herdr --help
-herdr workspace --help        # likewise: tab, pane, worktree, session, api
-herdr pane resize --help
-```
+Bare `herdr-app` opens or raises the person's window: inspect with `ls`,
+`status` and `commands` instead. Never automate their pointer or keyboard, and
+never quit, stop or restart their app or core.
 
 ## The model
 
 ```
-workspace  w7            one project/directory context; holds 1..n tabs
-└── tab    w7:t2         a screen the human switches between
-    └── pane w7:p3       a terminal; an agent may occupy it
+space   sp861c4c…        a folder (and machine) with tabs
+└── tab tbe22bef…        a screen in that space
+    └── pane p19e828…    a rectangle in a tab; it shows one terminal
+        └── terminal t3  the program; lives in hc, outlives panes and the window
 ```
 
-- IDs are opaque and stable: `w7`, `w7:t2`, `w7:p3`. Closed tab and pane IDs are
-  never reused.
-- A pane keeps its ID when it moves inside its workspace; it gets a **new**
-  workspace-qualified ID when it moves to another workspace.
-- A **worktree workspace** is a workspace whose cwd is a linked Git worktree.
-- A **named session** is a whole separate server — its own socket and workspaces.
+| id | looks like | who owns it |
+|---|---|---|
+| space | `sp861c4c32859f1680…` | the app |
+| tab | `tbe22bef3228016452…` | the app |
+| pane | `p19e828798d112eb27…` | the app |
+| terminal | `t3`, or a name you gave it | hc |
 
-## Discovery — read before you change
+A **layout** is not content: it is the chrome — sidebar, tab strip, terminal
+area — read from `~/.config/herdr-app/layouts/<name>.json`.
+
+## Inspect
 
 ```bash
-herdr workspace list                 # .result.workspaces[]: label, focused, tab_count, pane_count, worktree
-herdr workspace get w7               # .result.workspace
-herdr tab list --workspace w7        # .result.tabs[]
-herdr tab get w7:t2                  # .result.tab
-herdr pane list --workspace w7       # .result.panes[]: pane_id, tab_id, label, cwd, focused
-herdr pane current --current         # .result.pane — or --pane w7:p3
-herdr pane get w7:p3                 # .result.pane
-herdr pane layout --current          # .result.layout: area, panes[rect], splits[ratio], zoomed
-herdr pane process-info --current    # what is actually running in that pane
-herdr pane neighbor --pane w7:p3 --direction left   # .result.neighbor_pane_id
-herdr pane edges --pane w7:p3        # .result.edges: left/right/up/down booleans
-herdr api snapshot                   # .result.snapshot: the whole live state in one document
-herdr api schema --json              # the socket API schema (protocol 22 on 0.9.5)
+herdr-app ls                 # spaces > tabs > terminals, with pane IDs
+herdr-app status             # layout, space, tab, focused pane, zoom, overlays, errors
+herdr-app commands           # every command, its arguments, its description
+herdr-app shot /tmp/w.png    # the window's own frame, full size, even if covered
 ```
 
-`--current` needs to be inside a pane (`HERDR_ENV=1`, `HERDR_PANE_ID` set). From
-outside herdr the same commands work with an explicit ID, but `--current` falls
-back to the *focused* pane, which may belong to the human — pass the ID instead.
+`ls` and `status` talk to the running window. `commands` works without one.
+`shot` needs a window that has drawn a frame; it prints the file's path.
 
-## Create and close a workspace
+## Changing anything: `herdr-app do`
 
 ```bash
-WS=$(herdr workspace create --cwd "$PWD" --label scratch --no-focus \
-     | jq -r '.result.workspace.workspace_id')
-herdr tab list --workspace "$WS"
-herdr workspace close "$WS"      # .result.type == "ok"
+herdr-app do space.new --name api --folder /path/to/api
+herdr-app do space.select '{"index":1}'
 ```
 
-`create` returns `.result.workspace`, `.result.tab` and `.result.root_pane`.
-`close` destroys every tab, pane and agent inside — close only what you opened.
+`--key value` pairs (JSON for arrays and objects), or one JSON object. It prints
+the created ids as JSON, or `{"error": "..."}` and exits 1. An unknown argument
+name fails and lists the valid ones — it never falls back to the focused pane.
+Read the returned ids; confirm with `ls` or `status`.
 
-## Split, zoom and resize a pane
+## Spaces
 
 ```bash
-P=$(herdr pane split --current --direction right --cwd "$PWD" --no-focus \
-    | jq -r '.result.pane.pane_id')
-herdr pane zoom "$P" --on        # .result.zoom.zoomed == true
-herdr pane zoom "$P" --off
-herdr pane resize --pane "$P" --direction right --amount 0.1
-herdr pane layout --pane "$P"
-herdr pane close "$P"            # .result.type == "ok"
+herdr-app do space.new --name api --folder /path/to/api
+herdr-app do space.rename --id sp861c4c… --name "api v2"
+herdr-app do space.move --id sp861c4c… --index 1
+herdr-app do space.select --index 1            # or --id sp861c4c…
+herdr-app do space.next                        # space.prev
+herdr-app do space.close --id sp861c4c… --confirmed true
 ```
 
-- `split` takes `--direction right|down`, `--ratio`, `--cwd`, `--env K=V` and
-  `--focus|--no-focus`. Name the target: a pane ID, or `--current` for your own pane.
-- Zoom is per tab, not per split: `--on`, `--off`, `--toggle` (the default when
-  no flag is given). Zooming focuses the pane.
-- `resize --amount` is a fraction of the split: `0.1` moved a `0.5` ratio to `0.6`.
+- New spaces are **shown immediately**, so create one only when asked, and name
+  it — an unnamed space is called after where its first terminal lands.
+- `--folder` defaults to the focused terminal's folder; `--machine` (`hc machine
+  ls`) puts the space on another machine, where that folder must exist.
+- `close` asks first unless `--confirmed true`. It ends the space's terminals —
+  but check `hc ls` afterwards: in one run three terminals were still `live`
+  after the space closed, and needed `hc kill`.
 
-## Rename, focus, close — one verb per level
-
-| verb | workspace | tab | pane |
-|---|---|---|---|
-| list / get | `workspace list` · `get w7` | `tab list --workspace w7` · `get w7:t2` | `pane list --workspace w7` · `get w7:p3` |
-| rename | `workspace rename w7 NAME` | `tab rename w7:t2 NAME` | `pane rename w7:p3 NAME` (`--clear` drops it) |
-| focus | `workspace focus w7` | `tab focus w7:t2` | `pane focus --direction left` |
-| close | `workspace close w7` | `tab close w7:t2` | `pane close w7:p3` |
-
-Rename takes the label as trailing words — `workspace rename w7 my project`.
-Focus moves the human's view: do it when asked, and put it back afterwards.
-
-## Move and swap panes
+## Tabs
 
 ```bash
-herdr pane move w7:p3 --tab w7:t1 --split right    # into another tab
-herdr pane move w7:p3 --new-tab --label logs       # into a new tab
-herdr pane move w7:p3 --new-workspace --label split-out
-herdr pane swap --source-pane w7:p3 --target-pane w7:p4
-herdr pane swap --pane w7:p3 --direction left      # with its neighbour
+herdr-app do tab.new --name "fix login" --space sp861c4c… --folder /path
+herdr-app do tab.rename --id tbe22bef… --name logs
+herdr-app do tab.move --id tbe22bef… --index 1
+herdr-app do tab.select --index 2              # or --id tbe22bef…
+herdr-app do tab.next                          # tab.prev
+herdr-app do tab.settle --id tbe22bef…         # put away; still running
+herdr-app do tab.unsettle --id tbe22bef…
+herdr-app do tab.close --id tbe22bef… --confirmed true
 ```
 
-`.result.move_result` carries the new `.pane.pane_id`, `.previous_pane_id`, and
-`.closed_tab_id` when the emptied source tab was removed. `--tab-label` belongs
-to `--new-workspace` only; `--new-tab` takes `--label`. Swaps report
-`.result.swap.changed`.
+Unnamed tabs are called by their number, and moving or closing renumbers the
+rest — take names from a fresh `ls`, not from the previous one. `settle` takes a
+tab out of the lists without ending it; showing it, or an agent in it needing
+the person, brings it back.
 
-## Worktree workspaces
+## Panes
 
 ```bash
-herdr worktree list --cwd ~/code/proj        # .result.worktrees[]: path, branch, open_workspace_id
-herdr worktree create --cwd ~/code/proj --branch feat-x --base main \
-    --path ~/code/proj-feat-x --label feat-x --no-focus
-herdr worktree open --cwd ~/code/proj --path ~/code/proj-feat-x --label feat-x --no-focus
-herdr worktree remove --workspace w1P        # deletes the checkout, closes that workspace
+herdr-app do pane.split --direction right --pane p19e828…    # or down
+herdr-app do pane.focus --pane p19e828…                      # or --terminal t3
+herdr-app do pane.go --direction left                        # focus the neighbour
+herdr-app do pane.swap --direction left                      # swap with it
+herdr-app do pane.zoom --pane p19e828…                       # toggle: alone / all
+herdr-app do pane.close --pane p19e828…                      # ends its terminal
 ```
 
-- `create` opens the worktree as a workspace **and** opens (or reuses) one for
-  the repo root; `.result.workspace.worktree` describes the checkout.
-- `open` attaches an existing checkout that has no open workspace
-  (`.result.type == "worktree_opened"`).
-- `remove` takes a **workspace id**, not a path; it deletes the checkout, drops
-  the Git registration and closes only that worktree workspace.
+`split` defaults to the focused pane and accepts `--argv` (launch a program or
+agent there) or `--mod` with `--props` (a mod as the pane). `pane.close` ends the
+terminal, so prefer `terminal.park` when the work should survive.
 
-## Named sessions
+## Terminals
 
-A session is a separate server: its own socket, workspaces and agents.
+A terminal can exist with no pane — a hidden worker, a sub-agent, a parked one.
+`herdr-app ls` is the authority for which terminals have a pane; `hc ls` lists
+all of them.
 
 ```bash
-herdr session list            # text table: name, status, directory, socket
-herdr session list --json     # .sessions[]: name, running, session_dir, socket_path
-herdr --session work          # attach (TUI) — creates the session if absent
-herdr session stop work --json
-herdr session delete work --json   # only after it is stopped
+herdr-app do terminal.open --folder /tmp --place tab --name ex   # or right|down
+herdr-app do terminal.park --terminal t3          # take its pane away; keeps running
+herdr-app do terminal.keep --terminal t3 --place right          # give it a pane back
+herdr-app do terminal.show --terminal t3 --pane p19e828…        # borrow a pane
+herdr-app do terminal.show                                      # give it back
+herdr-app do terminal.kill --terminal t3                        # end it and sub-agents
 ```
 
-`--session <name>` with a subcommand does not create anything; attaching does.
+`park` and `keep` answer `{"pending": true}`: the window applies them, so confirm
+with `ls` rather than assuming. `terminal.copy` / `paste` / `paste_image` touch
+the person's clipboard and are out of scope here.
+
+## Layouts
+
+```bash
+herdr-app do layout.switch --name main      # no name: the next layout
+herdr-app do layout.clone --name main --as mine      # personal copy, shown at once
+herdr-app do layout.hide --id agents        # layout.show, layout.toggle
+herdr-app do layout.resize --id sidebar --px 320      # or --weight
+herdr-app do layout.reset --name mine       # old file kept aside
+```
+
+Nodes are addressed by their `id` in the JSON (`sidebar`, `spaces`, `agents`,
+`work-body`, `main`). Shipped layouts accept only click/look fields — change
+structure on a clone. `layout.select` needs a **stack** node and the shipped
+`main` has none, so it fails there; `layout.set` replaces a personal tree
+wholesale. A broken layout keeps the old one running and reports in `status`.
+
+## The terminals behind the panes
+
+```bash
+hc ls                 # live terminals: address, agent, cwd, state, where
+hc get t3             # one terminal's state and status
+hc label t3 role=review
+hc kill t3            # end the program
+hc rm t3              # remove a finished record
+```
+
+That is the whole of `hc` this skill needs: find a terminal, label it, free it.
+`hc run --bg` starts a worker with **no pane** unless it carries a `herdr.space`
+label, so a background job never disturbs the window — `terminal.keep` gives it
+a pane when the person should see it. Everything else is `hc --skill`.
 
 ## Rules
 
-1. **`--no-focus` by default.** Never yank the human's view; restore focus if you move it.
-2. **IDs from JSON, never from order.** A gone pane answers with an `error` key;
-   check that key, not the exit status — exit codes differ between commands.
-3. **Only touch what you created.** Do not close the human's workspaces, tabs,
-   panes or sessions, and never stop the server.
-4. **Clean up.** Close the workspace or pane you opened, remove temp worktrees.
-5. **Structure here; agents in `herdr`; in-process subagents in `delegate`.**
+1. **Read `ls` / `status` first**, and use the ids from them. Never guess the
+   focused pane or reuse an id from an earlier listing.
+2. **Do not change what the person did not ask to see.** New spaces and tabs
+   appear at once; splits and zooms reshape their screen.
+3. **Never launch bare `herdr-app`**, never automate pointer/keys, never quit,
+   stop or restart their app or core.
+4. **Close only what you opened**, then check for terminals left running.
+5. **Arrangement here; agents in `hc`; the old TUI in `herdr`; subagents in `delegate`.**
 
-## Out of scope
+## Not covered here
 
-`--machine` and `--remote` (other hosts), `config`, `channel`, `update`,
-`integration`, and `notification show` are not covered here.
+`app.*` (settings, theme, palette, updates, quit), `window.*`, `mod.*`,
+`overlay.close`, the clipboard commands, `agent.focus` / `agent.next` /
+`agent.prev`, and the mod API — that last one is documented in
+`~/.config/herdr-app/AGENTS.md` and its generated `.d.ts` files, which the app
+rewrites on start.
 
-## Exercised against herdr 0.9.5
+## Exercised against herdr-app 0.1.11 / hc 0.1.18
 
-Every command above ran against a live server in a disposable workspace. Three
-with a caveat:
+Every command above ran on a live window, in disposable spaces that were closed
+and removed afterwards; the original space, tab and layout were restored.
 
-- `workspace report-metadata w7 --source X --token k=v --ttl-ms N` — ran and
-  wrote the token (readable as `.result.workspace.tokens` in `workspace get`);
-  it prints no JSON on success. Display-only metadata.
-- `pane input --right-click herdr|pane` — ran; `.result.type == "ok"`.
-- `session attach/stop/delete` — only the no-such-session paths ran (stop
-  returns `session_stop_failed`, delete returns `deleted: true`). Stopping a
-  live session would end the human's work, so it was not exercised.
+- `layout.select`, `layout.set`, `terminal.copy/paste/paste_image` and the
+  `agent.*` show commands were not run — the first fails on the shipped `main`
+  (no stack node), the rest were skipped to leave the tree and clipboard alone.
+- `space.close` ended some terminals and not others; see the note under **Spaces**.

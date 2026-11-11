@@ -168,9 +168,6 @@ failed to enable": read what it asks and tell the user before answering.
    kill the main herdr process — for experiments use `herdr --session <name>`.
 5. **herdr = external agents/panes.** In-process subagents → `delegate`; wide
    deterministic sweeps → the Workflow tool.
-6. **Structure is `herdr-layout`.** Naming, listing, focusing, resizing, moving or
-   closing a workspace, tab or pane → [`herdr-layout`](../herdr-layout/SKILL.md);
-   spawning and driving the agent stays here.
 
 ## Reference
 
