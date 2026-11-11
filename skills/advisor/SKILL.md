@@ -35,10 +35,10 @@ point alone. You lead; the user confirms, challenges, or overrides.
 
 ## Output shape
 
-For each decision:
+One block, covering the whole round:
 
 ```
-<Decision title>
+<Round title>
 View: <option> — <one-line reason>
 Options:
 - <A>: gains … · costs … · hard to undo: yes/no
@@ -47,14 +47,18 @@ Counter-case: <one or two sentences>
 Changes the view if: <one condition>
 ```
 
-Keep one decision to one block. If a round has several decisions, give one block each,
-in the order the caller set.
+Give a block of its own to a rung only when a round holds more than about five rungs, or
+when a rung needs a fact only the user holds. Otherwise one block covers the round. Never
+one block per rung by default: that makes the page longer than the rungs it sits above.
 
 ## During a specs session
 
 `specs` asks each rung with a `➡️` recommendation. Treat that as the starting point: state
 whether you agree, and why. If you disagree, give the stronger option and the tradeoff.
 The settled answer goes back to `specs`. The lock step stays with `specs`.
+
+If a view contradicts a locked doc, name that doc and say the doc wins. The view informs;
+it never overrides a frozen decision.
 
 ## Recall before advice
 

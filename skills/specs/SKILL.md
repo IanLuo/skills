@@ -105,6 +105,11 @@ order — each rung depends on the ones before it). Work the **frontier** in rou
   where they belong (the upstream doc, or the first task's spec) before task rounds
   start. Each task then gets its own page with only its private rungs; a shared rung
   appears as a settled note whose answer cites the frozen doc — re-asking it is a fail.
+- **Advise once per round.** Before the user answers, load `advisor` and give one view on
+  the whole round, not one per rung. Put it in the artifact or the chat message, above the
+  rungs. If a round has more than about five rungs, or a rung needs a fact only the user
+  holds, give that rung its own block. The advisor view informs the user; it never settles
+  a rung. Only the user's answer settles it.
 - Wait for answers, recompute the frontier (settled answers unblock downstream rungs),
   ask the next round — on a new annotate artifact.
 
