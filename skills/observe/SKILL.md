@@ -39,6 +39,9 @@ Filter it. The raw document is 170–270 KB; never paste it whole.
 
 ## Rules for reading a verdict
 
+- **A `violated` check outranks everything, including a missing one.** A goal with
+  no check is a gap; a violated goal failed. Say so first, quote the evidence, and
+  treat "done" as blocked until it is fixed or the check is corrected.
 - **`unknown` plus its reason is a complete answer.** Report it as it stands. Never
   replace it with an inference from the code.
 - **`pass` on a presence check** says a name exists. It says nothing about behaviour.
