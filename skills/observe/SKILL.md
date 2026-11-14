@@ -17,7 +17,9 @@ what evidence. Ask it before grepping a spec, and before claiming a task is done
 observe -report -no-open -cache '' <repo> > /tmp/state.json
 ```
 
-One JSON document, then exit. No server, no browser. Drop `-cache ''` to reuse the
+One JSON document, then exit. No server, no browser. It exits **1 when any check is
+violated** and prints the count on stderr; the JSON is complete either way, so read the
+status first and the document second. Drop `-cache ''` to reuse the
 stored cache; the tool is one repository per run.
 
 `observe <repo>` (without `-report`) is for a human at a browser. An agent wants
@@ -41,7 +43,8 @@ Filter it. The raw document is 170–270 KB; never paste it whole.
 
 - **A `violated` check outranks everything, including a missing one.** A goal with
   no check is a gap; a violated goal failed. Say so first, quote the evidence, and
-  treat "done" as blocked until it is fixed or the check is corrected.
+  treat "done" as blocked until it is fixed or the check is corrected. A non-zero
+  exit from the report is that same failure, not a tool error: do not retry it.
 - **`unknown` plus its reason is a complete answer.** Report it as it stands. Never
   replace it with an inference from the code.
 - **`pass` on a presence check** says a name exists. It says nothing about behaviour.
