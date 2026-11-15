@@ -79,6 +79,49 @@ jq -r '.data.goals[] | select(.verification=="verified")
 jq -r '.data.flows[] | select(.stop) | .stop' /tmp/state.json | sort | uniq -c
 ```
 
+## Producing the report — in that project, not from yours
+
+Observe never runs a test, and neither should you from outside: a report needs that
+project's own tests and the services they talk to. Work inside the project, with its
+toolchain and its environment.
+
+1. **Ask what is needed.** Every unknown check whose `assertion` is `passes` names the
+   test it wants. The name is `subject` minus the leading `test `:
+
+   ```bash
+   jq -r '.data.goals[].checks[]? | select(.assertion=="passes" and .status=="unknown")
+     | "\(.id)\t\(.subject|ltrimstr("test "))"' /tmp/state.json
+   ```
+
+2. **Find that project's own test command** — its `package.json` scripts, `go test`, or
+   its README. Produce JUnit XML with the runner it already uses:
+
+   | runner | flag |
+   |---|---|
+   | vitest | `--reporter=junit --outputFile=junit.xml` |
+   | jest | `--reporters=jest-junit --outputFile=junit.xml` |
+   | go test | `gotestsum --junitfile junit.xml -- ./...` |
+
+3. **Use its services or make them disposable.** Read the suite's `beforeAll` and
+   `beforeEach` first: a database-backed suite often runs `TRUNCATE … CASCADE`, which
+   destroys whatever `DATABASE_URL` points at. Never aim that at a shared or
+   development database; start a throwaway instance, or ask the user which one is safe.
+
+4. **Hand it over.** The running instance takes a path; nothing restarts:
+
+   ```bash
+   token=$(curl -s http://127.0.0.1:8080/ | sed -n 's/.*observe-token" content="\([^"]*\)".*/\1/p')
+   curl -s -X POST http://127.0.0.1:8080/api/test-report \
+     -H "X-Observe-Token: $token" -d '{"path":"/abs/path/junit.xml"}'
+   ```
+
+   For a one-shot run, `observe -report -test-report junit.xml <repo>` does the same
+   without a server. A report that cannot be read, or is not JUnit XML, is refused and
+   the previous verdicts stand.
+
+5. **Re-read the verdicts**, and say what moved and what did not. A check whose test
+   did not appear stays `unknown` — the report has no test of that name.
+
 ## When a goal has no verdict
 
 A verdict needs a declaration in a locked document. Prose cannot produce one: a
