@@ -1,6 +1,6 @@
 ---
 name: cap
-description: Use when the user asks what is next on the fs board, wants a task dispatched, asks to run cap, or asks whether the watcher is running. cap is the supervised watcher over fs status, with tick, watch, act, status, start, stop and logs. This skill fixes how to present cap to the user - short, plain, one line per task, a diagram only when structure helps, never a raw command or trace dump. Do NOT use for the flagship coordinator role (that is flagship) or for pane work (that is herdr).
+description: Use when the user asks what is next on the fs board, wants a task dispatched, asks to run cap, or asks whether the watcher is running. cap is the supervised watcher over fs status, with tick, watch, act, claim, status, start, stop and logs. Only the session holding cap's claim may run act, start or stop; ask the user before taking it. This skill fixes how to present cap to the user - short, plain, one line per task, a diagram only when structure helps, never a raw command or trace dump. Do NOT use for the flagship coordinator role (that is flagship) or for pane work (that is herdr).
 metadata:
   audience: personal
   domain: dev
@@ -19,11 +19,16 @@ launches on the 30 s clock.
 Call the CLI, read the JSON, then summarize.
 
 ```bash
-cap status --json            # running, pid, last tick, last error
-cap tick --json              # changes + ranked recommendations
-cap act <task> --json        # one named instruction
-cap logs --tail 20 --json    # the trace, for diagnosis
+cap status --json                     # running, pid, ticks, last error, claim
+cap tick --json                       # changes + ranked recommendations
+cap claim --session "$CAP_SESSION"    # take or renew cap's write lease
+cap act <task> --json                 # one named instruction (needs the claim)
+cap logs --tail 20 --json             # the trace, for diagnosis
 ```
+
+`act`, `start` and `stop` run only for the session that holds `cap.claim`.
+`status` shows it under `claim`: `{session, expires, held}`. A claim that is
+unheld or stale needs `--confirm`, which is the user's yes.
 
 Never run `cap watch` from an agent: launchd supervises it.
 
@@ -39,6 +44,8 @@ Lead with the answer. Then at most five lines.
   `--json` and in the `cap.act` record. Name it only when the user asks.
 - **A diagram only when the rank or the act flow is the point.** Keep it to
   six lines. Text is fine for everything else.
+- **A claim refusal:** one line naming the holder and when its lease ends,
+  then ask whether to take the claim over. Never take it unprompted.
 
 Rank, when it is the point:
 
@@ -58,19 +65,26 @@ cap act t-abc
 
 ## Safety
 
+- **Hold the claim before a write verb.** `act`, `start` and `stop` refuse any
+  session that does not hold a live `cap.claim`. When `status` says the claim
+  is unheld or stale, ask the user, then run `cap claim --session "$CAP_SESSION" --confirm`.
+  A live holder is never taken over.
 - Act only on the task the user names. "What's next" is not an instruction:
   name the top pick and ask.
 - One act per task per 90 s. A refusal names the earlier launch. Report it;
   do not retry.
-- cap never writes fs and never claims. Do not claim on its behalf.
+- cap never writes fs and never claims an fs task. Its only claim is
+  `cap.claim`, its own write lease.
 - Do not edit knowledge from this skill. Knowledge is the user's.
 
 ## Failures
 
-- `running:false`: offer `cap start`.
+- `running:false`: offer `cap start` — you need the claim first.
+- A claim refusal (`held` or `stale`): name the holder and its expiry; take the
+  claim only if the user agrees.
 - `last_error`: quote it in one line, then stop.
 - `stale:true`: the process is alive but not ticking; offer
-  `cap stop && cap start`.
+  `cap stop && cap start` as the claim holder.
 
 ## Example
 
