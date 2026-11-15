@@ -85,13 +85,17 @@ Observe never runs a test, and neither should you from outside: a report needs t
 project's own tests and the services they talk to. Work inside the project, with its
 toolchain and its environment.
 
-1. **Ask what is needed.** Every unknown check whose `assertion` is `passes` names the
-   test it wants. The name is `subject` minus the leading `test `:
+1. **Ask the instance what it needs.** `GET /api/test-report` is read-only and
+   token-free; it answers with the report it is reading (or nothing) and a `wanted`
+   list of the checks still undecided, each with its exact test name:
 
    ```bash
-   jq -r '.data.goals[].checks[]? | select(.assertion=="passes" and .status=="unknown")
-     | "\(.id)\t\(.subject|ltrimstr("test "))"' /tmp/state.json
+   curl -s http://127.0.0.1:8080/api/test-report | jq -r '.data | (.path // "no report"), .run, (.wanted[] | "\(.check_id)\t\(.test)")'
    ```
+
+   Against a one-shot `-report` run, the same list comes from the state document:
+   `.data.goals[].checks[] | select(.assertion=="passes" and .status=="unknown")`,
+   where `subject` is `test <name>`.
 
 2. **Find that project's own test command** — its `package.json` scripts, `go test`, or
    its README. Produce JUnit XML with the runner it already uses:
