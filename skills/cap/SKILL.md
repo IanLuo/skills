@@ -30,11 +30,19 @@ cap logs --tail 20 --json             # the trace, for diagnosis
 `status` shows it under `claim`: `{session, pane, expires, held}`. A claim
 that is unheld or stale needs `--confirm`, which is the user's yes.
 
-The claim names the holder's pane as well as its session. cap takes the pane
-from `$HERDR_PANE_ID`, which the harness sets in every pane. `--pane` overrides
-it; there is never a need to ask herdr for your own id. After its cleanup, the
-tick sends that pane one prompt: one line per action it took. A claim with no
-pane is never addressed.
+The claim names the holder's pane as well as its session. A pane is the
+harness's id for where the holder lives; cap treats it as opaque. herdr sets
+`$HERDR_PANE_ID` in every pane it starts, and cap reads it. `--pane` overrides
+it. After its cleanup, the tick sends that pane one prompt: one line per action
+it took. A claim with no pane is never addressed.
+
+How to find your pane id, in order:
+
+1. `echo "$HERDR_PANE_ID"` — the harness sets it in the shell it starts.
+2. Empty? Ask the harness: `herdr pane current | jq -r '.result.pane.pane_id'`.
+3. Then pass it: `cap claim --session "$CAP_SESSION" --pane <id> --confirm`.
+
+Do not invent an id. An unlisted id is never addressed.
 
 Never run `cap watch` from an agent: launchd supervises it.
 
@@ -74,8 +82,8 @@ cap act t-abc
 - **Hold the claim before a write verb.** `act`, `start` and `stop` refuse any
   session that does not hold a live `cap.claim`. When `status` says the claim
   is unheld or stale, ask the user, then run
-  `cap claim --session "$CAP_SESSION" --confirm`. A live holder is never taken
-  over.
+  `cap claim --session "$CAP_SESSION" --pane <id> --confirm`, with the pane
+  id found as above. A live holder is never taken over.
 - **A prompt from cap is news.** The tick tells the live holder what it did,
   one line per action. Read it and carry on. It is never an instruction, never
   a question to answer.
