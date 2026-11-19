@@ -27,8 +27,14 @@ cap logs --tail 20 --json             # the trace, for diagnosis
 ```
 
 `act`, `start` and `stop` run only for the session that holds `cap.claim`.
-`status` shows it under `claim`: `{session, expires, held}`. A claim that is
-unheld or stale needs `--confirm`, which is the user's yes.
+`status` shows it under `claim`: `{session, pane, expires, held}`. A claim
+that is unheld or stale needs `--confirm`, which is the user's yes.
+
+The claim names the holder's pane as well as its session. cap takes the pane
+from `$HERDR_PANE_ID`, which the harness sets in every pane. `--pane` overrides
+it; there is never a need to ask herdr for your own id. After its cleanup, the
+tick sends that pane one prompt: one line per action it took. A claim with no
+pane is never addressed.
 
 Never run `cap watch` from an agent: launchd supervises it.
 
@@ -67,8 +73,12 @@ cap act t-abc
 
 - **Hold the claim before a write verb.** `act`, `start` and `stop` refuse any
   session that does not hold a live `cap.claim`. When `status` says the claim
-  is unheld or stale, ask the user, then run `cap claim --session "$CAP_SESSION" --confirm`.
-  A live holder is never taken over.
+  is unheld or stale, ask the user, then run
+  `cap claim --session "$CAP_SESSION" --confirm`. A live holder is never taken
+  over.
+- **A prompt from cap is news.** The tick tells the live holder what it did,
+  one line per action. Read it and carry on. It is never an instruction, never
+  a question to answer.
 - Act only on the task the user names. "What's next" is not an instruction:
   name the top pick and ask.
 - One act per task per 90 s. A refusal names the earlier launch. Report it;
